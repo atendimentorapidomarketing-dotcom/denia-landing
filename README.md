@@ -1,27 +1,38 @@
-# DENIA Platform V11 — Conversas e Treinamento Reais
+# DENIA Platform V12 — Painel corrigido + experiência imersiva
 
-Pré-requisito:
-1. DENIA Engine V28 publicada no Worker que responde o WhatsApp.
-2. DENIA_ENGINE_URL configurada na Platform.
-3. DENIA_PLATFORM_SERVICE_TOKEN igual nos dois Workers.
+Corrige o travamento da V11 em "Carregando...".
 
-Recursos desta V11:
-- status real da Engine
-- lista de conversas reais do D1 operacional
-- histórico real
-- responder pelo WhatsApp real
-- ao responder manualmente, IA fica pausada 30 minutos
-- botão Assumir atendimento
-- botão Devolver para DENIA
-- carregar treinamento real
-- salvar treinamento real
-- listar profissionais reais
+Causa real:
+o app.js da V11 ainda tentava registrar eventos em elementos antigos (#saveTraining etc.)
+que já não existiam. Isso interrompia todo o JavaScript do painel.
 
-Não altera a landing, login ou cadastro da V10.
+Correções:
+- JavaScript não quebra mais quando um elemento não existe
+- timeout de 12 s no navegador
+- timeout de 10 s na comunicação Worker -> Engine
+- erros claros em vez de carregamento infinito
+- diagnóstico explícito para URL/token da Engine
+- remove rota antiga que verificava DENIA_ENGINE_BASE_URL errada
+- luz interativa no mouse e no toque
+- partículas no fundo
+- cards 3D
+- botões com ripple
+- carregadores futuristas
+- painel visualmente alinhado à landing
 
-Ordem:
-1. publique V28 no Worker da DENIA Engine;
-2. confirme que o WhatsApp continua funcionando;
-3. publique V11 no repositório/Worker da Platform;
-4. entre no /app;
-5. abra Conversas e Treinar IA.
+Pré-requisitos que já devem existir:
+- DENIA Engine V28 publicada
+- DENIA_ENGINE_URL na Platform apontando para o Worker que responde WhatsApp
+- DENIA_PLATFORM_SERVICE_TOKEN igual na Engine e Platform
+
+Teste depois do deploy:
+1. /app
+2. Visão geral: DENIA Engine deve mostrar Online ou um erro explícito
+3. Conversas
+4. Treinar IA
+5. Profissionais
+
+Se a integração falhar, abra:
+`/api/engine/diagnostic`
+enquanto estiver logado.
+A resposta informa URL configurada, token configurado e erro real.

@@ -1,12 +1,38 @@
 
 const $=s=>document.querySelector(s),$$=s=>[...document.querySelectorAll(s)];
-async function api(url,opts={}){const r=await fetch(url,{...opts,headers:{'content-type':'application/json',...(opts.headers||{})}});if(r.status===401){location.href='/login';throw new Error('unauthorized')}const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.error||'Erro');return j}
+async function api(url,opts={}){
+  const controller=new AbortController();
+  const timeout=setTimeout(()=>controller.abort(),12000);
+  try{
+    const r=await fetch(url,{...opts,signal:controller.signal,headers:{'content-type':'application/json',...(opts.headers||{})}});
+    if(r.status===401){location.href='/login';throw new Error('Sessão expirada.')}
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok)throw new Error(j.error||j.erro||j.detail||`Erro HTTP ${r.status}`);
+    return j;
+  }catch(e){
+    if(e?.name==='AbortError')throw new Error('A conexão com a DENIA Engine demorou mais de 12 segundos. Verifique DENIA_ENGINE_URL e o token privado.');
+    throw e;
+  }finally{clearTimeout(timeout)}
+}
 $$('#nav button').forEach(b=>b.onclick=()=>{$$('#nav button').forEach(x=>x.classList.remove('active'));b.classList.add('active');$$('.page').forEach(p=>p.classList.remove('active'));$('#page-'+b.dataset.page).classList.add('active')});
-$('#homeBtn').onclick=()=>{const p=location.pathname;location.href=p.startsWith('/en/')?'/en':p.startsWith('/es/')?'/es':'/'};
-$('#logoutBtn').onclick=async()=>{await api('/api/auth/logout',{method:'POST'}).catch(()=>{});const p=location.pathname;location.href=p.startsWith('/en/')?'/en/login':p.startsWith('/es/')?'/es/login':'/login'};
-$('#saveTraining').onclick=async()=>{await api('/api/config/training',{method:'POST',body:JSON.stringify({identity:$('#identity').value,rules:$('#rules').value})});alert('Treinamento salvo.')};
-$('#saveConfig').onclick=async()=>{await api('/api/config/settings',{method:'POST',body:JSON.stringify({organization:$('#orgInput').value,phone:$('#phoneInput').value})});$('#orgName').textContent=$('#orgInput').value;alert('Configurações salvas.')};
-(async()=>{try{const me=await api('/api/me');$('#userName').textContent=me.user.name+' · '+me.user.email;$('#orgName').textContent=me.organization.name;$('#orgInput').value=me.organization.name;const c=await api('/api/config');$('#identity').value=c.training?.identity||'';$('#rules').value=c.training?.rules||'';$('#phoneInput').value=c.settings?.phone||'+55 21 97546-9162';}catch(e){}})();
+$('#homeBtn')?.addEventListener('click',()=>{const p=location.pathname;location.href=p.startsWith('/en/')?'/en':p.startsWith('/es/')?'/es':'/'});
+$('#logoutBtn')?.addEventListener('click',async()=>{await api('/api/auth/logout',{method:'POST'}).catch(()=>{});const p=location.pathname;location.href=p.startsWith('/en/')?'/en/login':p.startsWith('/es/')?'/es/login':'/login'});
+$('#saveTraining')?.addEventListener('click',async()=>{const identity=$('#identity')?.value||'';const rules=$('#rules')?.value||'';await api('/api/config/training',{method:'POST',body:JSON.stringify({identity,rules})});alert('Treinamento salvo.')});
+$('#saveConfig')?.addEventListener('click',async()=>{const organization=$('#orgInput')?.value||'DENIA Operação Principal';const phone=$('#phoneInput')?.value||'';await api('/api/config/settings',{method:'POST',body:JSON.stringify({organization,phone})});if($('#orgName'))$('#orgName').textContent=organization;alert('Configurações salvas.')});
+(async()=>{
+  try{
+    const me=await api('/api/me');
+    if($('#userName'))$('#userName').textContent=me.user.name+' · '+me.user.email;
+    if($('#orgName'))$('#orgName').textContent=me.organization.name;
+    if($('#orgInput'))$('#orgInput').value=me.organization.name;
+    const c=await api('/api/config');
+    if($('#identity'))$('#identity').value=c.training?.identity||'';
+    if($('#rules'))$('#rules').value=c.training?.rules||'';
+    if($('#phoneInput'))$('#phoneInput').value=c.settings?.phone||'+55 21 97546-9162';
+  }catch(e){
+    console.error('Falha ao inicializar perfil:',e);
+  }
+})();
 
 
 // DENIA Platform V11 — integração operacional real
@@ -21,14 +47,15 @@ async function loadEngineStatus(){
     if(el)el.textContent=s.engine_online?'Online':'Indisponível';
     if(tx)tx.textContent=`${s.mensagens||0} mensagens · ${s.pessoas||0} pessoas · WhatsApp ${s.whatsapp_configurado?'configurado':'não configurado'}`;
   }catch(e){
-    if($('#engineStatus'))$('#engineStatus').textContent='Offline';
+    if($('#engineStatus'))$('#engineStatus').textContent='Atenção';
     if($('#engineStatusText'))$('#engineStatusText').textContent=e.message;
+    showSystemAlert('A Platform abriu normalmente, mas não conseguiu consultar a DENIA Engine: '+e.message,'error');
   }
 }
 
 async function loadConversations(){
   const list=$('#liveChatList'); if(!list)return;
-  list.innerHTML='<div class="chatitem"><b>Carregando...</b></div>';
+  list.innerHTML='<div class="loading-state"><span class="ai-loader"></span><div><b>Consultando a DENIA Engine</b><small>Buscando conversas reais no banco operacional…</small></div></div>';
   try{
     const d=await api('/api/engine/conversations');
     const items=d.conversas||[];
@@ -40,7 +67,9 @@ async function loadConversations(){
       item.onclick=()=>openConversation(c.pessoa_id);
       list.appendChild(item);
     });
-  }catch(e){list.innerHTML=`<div class="chatitem"><b>Falha ao carregar</b><div class="muted">${esc(e.message)}</div></div>`}
+  }catch(e){
+    list.innerHTML=`<div class="error-state"><b>Não foi possível carregar as conversas.</b><div class="muted">${esc(e.message)}</div><button class="btn" onclick="loadConversations()">Tentar novamente</button></div>`;
+  }
 }
 
 async function openConversation(id){
@@ -98,6 +127,7 @@ $('#saveLiveTraining')?.addEventListener('click',async()=>{
 
 async function loadProfessionals(){
   const box=$('#professionalsRows');if(!box)return;
+  box.innerHTML='<div class="loading-state"><span class="ai-loader"></span><div><b>Sincronizando profissionais</b><small>Consultando a base operacional real…</small></div></div>';
   try{
     const d=await api('/api/engine/professionals');const items=d.profissionais||[];
     box.innerHTML=items.length?'':'<div class="row"><span>Nenhum profissional cadastrado.</span></div>';
@@ -116,3 +146,99 @@ $$('#nav button').forEach(b=>b.addEventListener('click',()=>{
   if(b.dataset.page==='prestadores')loadProfessionals();
 }));
 loadEngineStatus();
+
+
+// ============================================================================
+// DENIA V12 — EXPERIÊNCIA INTERNA IMERSIVA + DIAGNÓSTICO
+// ============================================================================
+function showSystemAlert(message,type='info'){
+  let box=document.getElementById('systemAlert');
+  if(!box){
+    box=document.createElement('div');
+    box.id='systemAlert';
+    box.className='system-alert';
+    document.body.appendChild(box);
+  }
+  box.className='system-alert show '+type;
+  box.innerHTML=`<span class="alert-core"></span><div>${esc(message)}</div><button aria-label="Fechar">×</button>`;
+  box.querySelector('button').onclick=()=>box.classList.remove('show');
+}
+
+function installImmersiveUI(){
+  // fundo de partículas
+  const canvas=document.createElement('canvas');
+  canvas.id='appFxCanvas';
+  document.body.prepend(canvas);
+  const ctx=canvas.getContext('2d');
+  let w=0,h=0,dpr=Math.min(devicePixelRatio||1,2),pts=[];
+  function resize(){
+    w=innerWidth;h=innerHeight;
+    canvas.width=w*dpr;canvas.height=h*dpr;
+    canvas.style.width=w+'px';canvas.style.height=h+'px';
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+    const count=Math.max(24,Math.min(70,Math.floor(w/22)));
+    pts=Array.from({length:count},()=>({x:Math.random()*w,y:Math.random()*h,vx:(Math.random()-.5)*.15,vy:(Math.random()-.5)*.15,r:Math.random()*1.1+.25,a:Math.random()*.36+.08}));
+  }
+  resize();addEventListener('resize',resize);
+  (function draw(){
+    ctx.clearRect(0,0,w,h);
+    for(const p of pts){
+      p.x+=p.vx;p.y+=p.vy;
+      if(p.x<0)p.x=w;if(p.x>w)p.x=0;if(p.y<0)p.y=h;if(p.y>h)p.y=0;
+      ctx.beginPath();ctx.arc(p.x,p.y,p.r,0,Math.PI*2);
+      ctx.fillStyle=`rgba(84,220,255,${p.a})`;ctx.fill();
+    }
+    requestAnimationFrame(draw);
+  })();
+
+  // mouse / dedo luminoso
+  const glow=document.createElement('div');
+  glow.className='app-pointer-glow';
+  document.body.appendChild(glow);
+  const coarse=matchMedia('(pointer:coarse)').matches;
+  if(coarse){
+    const move=e=>{
+      const t=e.touches?.[0]; if(!t)return;
+      glow.style.left=t.clientX+'px';glow.style.top=t.clientY+'px';glow.style.opacity='.9';
+    };
+    addEventListener('touchstart',move,{passive:true});
+    addEventListener('touchmove',move,{passive:true});
+    addEventListener('touchend',()=>glow.style.opacity='.18',{passive:true});
+  }else{
+    addEventListener('mousemove',e=>{
+      glow.style.left=e.clientX+'px';glow.style.top=e.clientY+'px';glow.style.opacity='.72';
+    });
+  }
+
+  // cards 3D
+  document.querySelectorAll('.card,.panel,.chatwindow,.chatlist').forEach(el=>{
+    if(coarse)return;
+    el.addEventListener('mousemove',e=>{
+      const r=el.getBoundingClientRect(),x=e.clientX-r.left,y=e.clientY-r.top;
+      const rx=((y/r.height)-.5)*-2.3,ry=((x/r.width)-.5)*2.3;
+      el.style.transform=`perspective(1100px) rotateX(${rx}deg) rotateY(${ry}deg) translateY(-2px)`;
+      el.style.setProperty('--mx',x+'px');el.style.setProperty('--my',y+'px');
+    });
+    el.addEventListener('mouseleave',()=>el.style.transform='');
+  });
+
+  // ripple nos botões
+  document.querySelectorAll('button,.btn').forEach(btn=>{
+    btn.addEventListener('click',e=>{
+      const r=btn.getBoundingClientRect();
+      const dot=document.createElement('span');
+      dot.className='btn-ripple';
+      dot.style.left=(e.clientX-r.left)+'px';dot.style.top=(e.clientY-r.top)+'px';
+      btn.appendChild(dot);setTimeout(()=>dot.remove(),650);
+    });
+  });
+}
+installImmersiveUI();
+
+// se a aba já estiver aberta por hash / navegação, busca dados
+setTimeout(()=>{
+  const active=document.querySelector('#nav button.active')?.dataset.page;
+  if(active==='conversas')loadConversations();
+  if(active==='treino')loadLiveTraining();
+  if(active==='prestadores')loadProfessionals();
+},250);

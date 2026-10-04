@@ -19,17 +19,34 @@ async function body(r){try{return await r.json()}catch{return{}}}
 async function engineFetchV11(env, path, init = {}) {
   const base = String(env?.DENIA_ENGINE_URL || "").replace(/\/+$/,"");
   const token = String(env?.DENIA_PLATFORM_SERVICE_TOKEN || "");
-  if (!base) throw new Error("DENIA_ENGINE_URL não configurada.");
+  if (!base) throw new Error("DENIA_ENGINE_URL não configurada na Platform.");
+  if (!/^https?:\/\//i.test(base)) throw new Error("DENIA_ENGINE_URL inválida. Use a URL completa https://... do Worker que responde o WhatsApp.");
   if (!token) throw new Error("DENIA_PLATFORM_SERVICE_TOKEN não configurado na Platform.");
+
   const headers = new Headers(init.headers || {});
   headers.set("Authorization", `Bearer ${token}`);
   if (!headers.has("Content-Type") && init.body) headers.set("Content-Type","application/json");
-  const r = await fetch(base + path, {...init, headers});
-  const body = await r.text();
+
+  const controller = new AbortController();
+  const timer = setTimeout(()=>controller.abort(),10000);
+  let r;
+  try {
+    r = await fetch(base + path, {...init, headers, signal:controller.signal, redirect:"follow"});
+  } catch (e) {
+    if (e?.name === "AbortError") throw new Error(`Timeout consultando a Engine em ${path}. Confira se DENIA_ENGINE_URL aponta para o Worker do WhatsApp.`);
+    throw new Error(`Falha de rede consultando a Engine: ${e?.message || e}`);
+  } finally {
+    clearTimeout(timer);
+  }
+
+  const raw = await r.text();
   let data = null;
-  try { data = JSON.parse(body); } catch { data = {raw:body}; }
+  try { data = JSON.parse(raw); } catch {
+    throw new Error(`A Engine retornou conteúdo não-JSON em ${path}. Confirme que DENIA_ENGINE_URL aponta para o Worker da DENIA Engine, não para a landing.`);
+  }
+
   if (!r.ok) {
-    const e = new Error(data?.erro || data?.error || `Engine respondeu ${r.status}`);
+    const e = new Error(data?.erro || data?.error || data?.detail || `Engine respondeu HTTP ${r.status}`);
     e.status = r.status; e.data = data; throw e;
   }
   return data;
@@ -56,8 +73,16 @@ export default{async fetch(req,env){
     if(url.pathname==='/api/config'&&req.method==='GET'){const c=await env.DB.prepare(`SELECT * FROM organization_config WHERE organization_id=?`).bind(u.organization_id).first();return J({training:JSON.parse(c?.training_json||'{}'),settings:JSON.parse(c?.settings_json||'{}')})}
     if(url.pathname==='/api/config/training'&&req.method==='POST'){const d=await body(req),cur=await env.DB.prepare(`SELECT settings_json FROM organization_config WHERE organization_id=?`).bind(u.organization_id).first();await env.DB.prepare(`INSERT INTO organization_config(organization_id,training_json,settings_json,updated_at) VALUES(?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(organization_id) DO UPDATE SET training_json=excluded.training_json,updated_at=CURRENT_TIMESTAMP`).bind(u.organization_id,JSON.stringify(d),cur?.settings_json||'{}').run();return J({ok:true})}
     if(url.pathname==='/api/config/settings'&&req.method==='POST'){const d=await body(req),name=String(d.organization||u.organization_name).trim();await env.DB.prepare(`UPDATE organizations SET name=? WHERE id=?`).bind(name,u.organization_id).run();const cur=await env.DB.prepare(`SELECT training_json FROM organization_config WHERE organization_id=?`).bind(u.organization_id).first();await env.DB.prepare(`INSERT INTO organization_config(organization_id,training_json,settings_json,updated_at) VALUES(?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(organization_id) DO UPDATE SET settings_json=excluded.settings_json,updated_at=CURRENT_TIMESTAMP`).bind(u.organization_id,cur?.training_json||'{}',JSON.stringify(d)).run();return J({ok:true})}
-    if(url.pathname==='/api/engine/status')return J({connected:Boolean(env.DENIA_ENGINE_BASE_URL),status:env.DENIA_ENGINE_BASE_URL?'configured':'pending'});
-
+    if(url.pathname==='/api/engine/diagnostic'&&req.method==='GET'){
+      const base=String(env?.DENIA_ENGINE_URL||'').replace(/\/+$/,'');
+      const token=String(env?.DENIA_PLATFORM_SERVICE_TOKEN||'');
+      try{
+        const status=await engineFetchV11(env,'/platform/status');
+        return J({ok:true,engine_url:base,token_configured:Boolean(token),engine:status});
+      }catch(e){
+        return J({ok:false,engine_url:base,token_configured:Boolean(token),error:e.message},e.status||502);
+      }
+    }
     if(url.pathname==='/api/engine/status'&&req.method==='GET'){
       try{return J(await engineFetchV11(env,'/platform/status'))}
       catch(e){return J({sucesso:false,error:e.message,connected:false},e.status||502)}
