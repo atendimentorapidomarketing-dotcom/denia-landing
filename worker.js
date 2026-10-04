@@ -9,7 +9,11 @@ async function schema(env){for(const s of [
 `CREATE TABLE IF NOT EXISTS organizations(id TEXT PRIMARY KEY,name TEXT NOT NULL,created_at TEXT DEFAULT CURRENT_TIMESTAMP)`,
 `CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY,organization_id TEXT NOT NULL,name TEXT NOT NULL,email TEXT NOT NULL UNIQUE,password_hash TEXT NOT NULL,password_salt TEXT NOT NULL,role TEXT NOT NULL DEFAULT 'OWNER',created_at TEXT DEFAULT CURRENT_TIMESTAMP)`,
 `CREATE TABLE IF NOT EXISTS sessions(token_hash TEXT PRIMARY KEY,user_id TEXT NOT NULL,expires_at TEXT NOT NULL,created_at TEXT DEFAULT CURRENT_TIMESTAMP)`,
-`CREATE TABLE IF NOT EXISTS organization_config(organization_id TEXT PRIMARY KEY,training_json TEXT DEFAULT '{}',settings_json TEXT DEFAULT '{}',updated_at TEXT DEFAULT CURRENT_TIMESTAMP)`
+`CREATE TABLE IF NOT EXISTS organization_config(organization_id TEXT PRIMARY KEY,training_json TEXT DEFAULT '{}',settings_json TEXT DEFAULT '{}',updated_at TEXT DEFAULT CURRENT_TIMESTAMP)`,
+`CREATE TABLE IF NOT EXISTS standalone_training(organization_id TEXT NOT NULL,section TEXT NOT NULL,content TEXT NOT NULL DEFAULT '',updated_at TEXT DEFAULT CURRENT_TIMESTAMP,PRIMARY KEY(organization_id,section))`,
+`CREATE TABLE IF NOT EXISTS standalone_professionals(id TEXT PRIMARY KEY,organization_id TEXT NOT NULL,name TEXT NOT NULL,phone TEXT DEFAULT '',specialty TEXT DEFAULT '',notes TEXT DEFAULT '',active INTEGER NOT NULL DEFAULT 1,created_at TEXT DEFAULT CURRENT_TIMESTAMP)`,
+`CREATE TABLE IF NOT EXISTS standalone_conversations(id TEXT PRIMARY KEY,organization_id TEXT NOT NULL,name TEXT NOT NULL,phone TEXT DEFAULT '',ai_paused INTEGER NOT NULL DEFAULT 0,created_at TEXT DEFAULT CURRENT_TIMESTAMP,updated_at TEXT DEFAULT CURRENT_TIMESTAMP)`,
+`CREATE TABLE IF NOT EXISTS standalone_messages(id TEXT PRIMARY KEY,conversation_id TEXT NOT NULL,direction TEXT NOT NULL,content TEXT NOT NULL,created_at TEXT DEFAULT CURRENT_TIMESTAMP)`
 ])await env.DB.prepare(s).run()}
 const cookie=(r,n)=>(r.headers.get('cookie')||'').split(';').map(x=>x.trim()).find(x=>x.startsWith(n+'='))?.slice(n.length+1)||null;
 async function user(req,env){const t=cookie(req,'denia_session');if(!t)return null;return env.DB.prepare(`SELECT u.id,u.name,u.email,u.role,u.organization_id,o.name organization_name FROM sessions s JOIN users u ON u.id=s.user_id JOIN organizations o ON o.id=u.organization_id WHERE s.token_hash=? AND s.expires_at>datetime('now')`).bind(await sha(t)).first()}
@@ -122,6 +126,85 @@ export default{async fetch(req,env){
     if(url.pathname==='/api/engine/professionals'&&req.method==='GET'){
       try{return J(await engineFetchV11(env,'/platform/professionals'))}
       catch(e){return J({sucesso:false,error:e.message},e.status||502)}
+    }
+
+
+    // ----- DENIA V13 STANDALONE -----
+    if(url.pathname==='/api/standalone/summary'&&req.method==='GET'){
+      const pc=await env.DB.prepare(`SELECT COUNT(*) c FROM standalone_professionals WHERE organization_id=? AND active=1`).bind(u.organization_id).first();
+      const cc=await env.DB.prepare(`SELECT COUNT(*) c FROM standalone_conversations WHERE organization_id=?`).bind(u.organization_id).first();
+      return J({professionals:Number(pc?.c||0),conversations:Number(cc?.c||0)});
+    }
+
+    if(url.pathname==='/api/standalone/training'&&req.method==='GET'){
+      const r=await env.DB.prepare(`SELECT section,content,updated_at FROM standalone_training WHERE organization_id=?`).bind(u.organization_id).all();
+      const training={}; for(const row of (r?.results||[])) training[row.section]=row.content;
+      return J({training});
+    }
+    if(url.pathname==='/api/standalone/training'&&req.method==='POST'){
+      const d=await body(req),section=String(d.section||'').trim(),content=String(d.content||'');
+      if(!section)return J({error:'Seção inválida.'},400);
+      await env.DB.prepare(`INSERT INTO standalone_training(organization_id,section,content,updated_at) VALUES(?,?,?,CURRENT_TIMESTAMP)
+        ON CONFLICT(organization_id,section) DO UPDATE SET content=excluded.content,updated_at=CURRENT_TIMESTAMP`).bind(u.organization_id,section,content).run();
+      return J({ok:true});
+    }
+
+    if(url.pathname==='/api/standalone/professionals'&&req.method==='GET'){
+      const r=await env.DB.prepare(`SELECT * FROM standalone_professionals WHERE organization_id=? AND active=1 ORDER BY name`).bind(u.organization_id).all();
+      return J({professionals:r?.results||[]});
+    }
+    if(url.pathname==='/api/standalone/professionals'&&req.method==='POST'){
+      const d=await body(req),name=String(d.name||'').trim();
+      if(!name)return J({error:'Informe o nome.'},400);
+      const id=crypto.randomUUID();
+      await env.DB.prepare(`INSERT INTO standalone_professionals(id,organization_id,name,phone,specialty,notes) VALUES(?,?,?,?,?,?)`)
+        .bind(id,u.organization_id,name,String(d.phone||''),String(d.specialty||''),String(d.notes||'')).run();
+      return J({ok:true,id});
+    }
+    const proDel=url.pathname.match(/^\/api\/standalone\/professionals\/([^/]+)$/);
+    if(proDel&&req.method==='DELETE'){
+      await env.DB.prepare(`UPDATE standalone_professionals SET active=0 WHERE id=? AND organization_id=?`).bind(proDel[1],u.organization_id).run();
+      return J({ok:true});
+    }
+
+    if(url.pathname==='/api/standalone/conversations'&&req.method==='GET'){
+      const r=await env.DB.prepare(`SELECT * FROM standalone_conversations WHERE organization_id=? ORDER BY datetime(updated_at) DESC`).bind(u.organization_id).all();
+      return J({conversations:r?.results||[]});
+    }
+    if(url.pathname==='/api/standalone/conversations'&&req.method==='POST'){
+      const d=await body(req),name=String(d.name||'Cliente de teste').trim(),id=crypto.randomUUID();
+      await env.DB.prepare(`INSERT INTO standalone_conversations(id,organization_id,name,phone) VALUES(?,?,?,?)`).bind(id,u.organization_id,name,String(d.phone||'')).run();
+      await env.DB.prepare(`INSERT INTO standalone_messages(id,conversation_id,direction,content) VALUES(?,?,?,?)`).bind(crypto.randomUUID(),id,'in','Olá! Esta é uma conversa de teste da plataforma.').run();
+      return J({ok:true,id});
+    }
+    if(url.pathname==='/api/standalone/conversations/clear'&&req.method==='POST'){
+      const ids=await env.DB.prepare(`SELECT id FROM standalone_conversations WHERE organization_id=?`).bind(u.organization_id).all();
+      for(const c of (ids?.results||[])) await env.DB.prepare(`DELETE FROM standalone_messages WHERE conversation_id=?`).bind(c.id).run();
+      await env.DB.prepare(`DELETE FROM standalone_conversations WHERE organization_id=?`).bind(u.organization_id).run();
+      return J({ok:true});
+    }
+    const conv=url.pathname.match(/^\/api\/standalone\/conversations\/([^/]+)$/);
+    if(conv&&req.method==='GET'){
+      const c=await env.DB.prepare(`SELECT * FROM standalone_conversations WHERE id=? AND organization_id=?`).bind(conv[1],u.organization_id).first();
+      if(!c)return J({error:'Conversa não encontrada.'},404);
+      const m=await env.DB.prepare(`SELECT * FROM standalone_messages WHERE conversation_id=? ORDER BY datetime(created_at),rowid`).bind(conv[1]).all();
+      return J({conversation:c,messages:m?.results||[]});
+    }
+    const convSend=url.pathname.match(/^\/api\/standalone\/conversations\/([^/]+)\/messages$/);
+    if(convSend&&req.method==='POST'){
+      const d=await body(req),content=String(d.content||'').trim();
+      if(!content)return J({error:'Mensagem vazia.'},400);
+      const c=await env.DB.prepare(`SELECT id FROM standalone_conversations WHERE id=? AND organization_id=?`).bind(convSend[1],u.organization_id).first();
+      if(!c)return J({error:'Conversa não encontrada.'},404);
+      await env.DB.prepare(`INSERT INTO standalone_messages(id,conversation_id,direction,content) VALUES(?,?,?,?)`).bind(crypto.randomUUID(),convSend[1],'out',content).run();
+      await env.DB.prepare(`UPDATE standalone_conversations SET updated_at=CURRENT_TIMESTAMP WHERE id=?`).bind(convSend[1]).run();
+      return J({ok:true});
+    }
+    const convPause=url.pathname.match(/^\/api\/standalone\/conversations\/([^/]+)\/pause$/);
+    if(convPause&&req.method==='POST'){
+      const d=await body(req),paused=d.paused?1:0;
+      await env.DB.prepare(`UPDATE standalone_conversations SET ai_paused=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=?`).bind(paused,convPause[1],u.organization_id).run();
+      return J({ok:true,paused:Boolean(paused)});
     }
 
     return J({error:'Endpoint não encontrado.'},404)
