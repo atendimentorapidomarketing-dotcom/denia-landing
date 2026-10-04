@@ -1,0 +1,15 @@
+{
+  "$schema":"node_modules/wrangler/config-schema.json",
+  "name":"denia-landing",
+  "main":"./worker.js",
+  "compatibility_date":"2026-10-04",
+  "assets":{"directory":"./dist","binding":"ASSETS"},
+  "d1_databases":[
+    {
+      "binding":"DB",
+      "database_name":"denia-saas",
+      "database_id":"01bd6b23-af41-461d-8b86-7ad1f4c9d4f9"
+    }
+  ],
+  "observability":{"enabled":true}
+}
