@@ -15,6 +15,26 @@ const cookie=(r,n)=>(r.headers.get('cookie')||'').split(';').map(x=>x.trim()).fi
 async function user(req,env){const t=cookie(req,'denia_session');if(!t)return null;return env.DB.prepare(`SELECT u.id,u.name,u.email,u.role,u.organization_id,o.name organization_name FROM sessions s JOIN users u ON u.id=s.user_id JOIN organizations o ON o.id=u.organization_id WHERE s.token_hash=? AND s.expires_at>datetime('now')`).bind(await sha(t)).first()}
 async function session(uid,env){const t=rnd(32);await env.DB.prepare(`INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?,?,datetime('now','+30 days'))`).bind(await sha(t),uid).run();return t}
 async function body(r){try{return await r.json()}catch{return{}}}
+
+async function engineFetchV11(env, path, init = {}) {
+  const base = String(env?.DENIA_ENGINE_URL || "").replace(/\/+$/,"");
+  const token = String(env?.DENIA_PLATFORM_SERVICE_TOKEN || "");
+  if (!base) throw new Error("DENIA_ENGINE_URL não configurada.");
+  if (!token) throw new Error("DENIA_PLATFORM_SERVICE_TOKEN não configurado na Platform.");
+  const headers = new Headers(init.headers || {});
+  headers.set("Authorization", `Bearer ${token}`);
+  if (!headers.has("Content-Type") && init.body) headers.set("Content-Type","application/json");
+  const r = await fetch(base + path, {...init, headers});
+  const body = await r.text();
+  let data = null;
+  try { data = JSON.parse(body); } catch { data = {raw:body}; }
+  if (!r.ok) {
+    const e = new Error(data?.erro || data?.error || `Engine respondeu ${r.status}`);
+    e.status = r.status; e.data = data; throw e;
+  }
+  return data;
+}
+
 export default{async fetch(req,env){
  const url=new URL(req.url);
  try{
@@ -37,6 +57,48 @@ export default{async fetch(req,env){
     if(url.pathname==='/api/config/training'&&req.method==='POST'){const d=await body(req),cur=await env.DB.prepare(`SELECT settings_json FROM organization_config WHERE organization_id=?`).bind(u.organization_id).first();await env.DB.prepare(`INSERT INTO organization_config(organization_id,training_json,settings_json,updated_at) VALUES(?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(organization_id) DO UPDATE SET training_json=excluded.training_json,updated_at=CURRENT_TIMESTAMP`).bind(u.organization_id,JSON.stringify(d),cur?.settings_json||'{}').run();return J({ok:true})}
     if(url.pathname==='/api/config/settings'&&req.method==='POST'){const d=await body(req),name=String(d.organization||u.organization_name).trim();await env.DB.prepare(`UPDATE organizations SET name=? WHERE id=?`).bind(name,u.organization_id).run();const cur=await env.DB.prepare(`SELECT training_json FROM organization_config WHERE organization_id=?`).bind(u.organization_id).first();await env.DB.prepare(`INSERT INTO organization_config(organization_id,training_json,settings_json,updated_at) VALUES(?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(organization_id) DO UPDATE SET settings_json=excluded.settings_json,updated_at=CURRENT_TIMESTAMP`).bind(u.organization_id,cur?.training_json||'{}',JSON.stringify(d)).run();return J({ok:true})}
     if(url.pathname==='/api/engine/status')return J({connected:Boolean(env.DENIA_ENGINE_BASE_URL),status:env.DENIA_ENGINE_BASE_URL?'configured':'pending'});
+
+    if(url.pathname==='/api/engine/status'&&req.method==='GET'){
+      try{return J(await engineFetchV11(env,'/platform/status'))}
+      catch(e){return J({sucesso:false,error:e.message,connected:false},e.status||502)}
+    }
+    if(url.pathname==='/api/engine/conversations'&&req.method==='GET'){
+      try{return J(await engineFetchV11(env,'/platform/conversations?limit=150'))}
+      catch(e){return J({sucesso:false,error:e.message},e.status||502)}
+    }
+    const convMatch=url.pathname.match(/^\/api\/engine\/conversations\/(\d+)$/);
+    if(convMatch&&req.method==='GET'){
+      try{return J(await engineFetchV11(env,`/platform/conversations/${convMatch[1]}`))}
+      catch(e){return J({sucesso:false,error:e.message},e.status||502)}
+    }
+    const sendMatch=url.pathname.match(/^\/api\/engine\/conversations\/(\d+)\/send$/);
+    if(sendMatch&&req.method==='POST'){
+      try{return J(await engineFetchV11(env,`/platform/conversations/${sendMatch[1]}/send`,{method:'POST',body:JSON.stringify(await body(req))}))}
+      catch(e){return J({sucesso:false,error:e.message},e.status||502)}
+    }
+    const takeMatch=url.pathname.match(/^\/api\/engine\/conversations\/(\d+)\/takeover$/);
+    if(takeMatch&&req.method==='POST'){
+      try{return J(await engineFetchV11(env,`/platform/conversations/${takeMatch[1]}/takeover`,{method:'POST'}))}
+      catch(e){return J({sucesso:false,error:e.message},e.status||502)}
+    }
+    const relMatch=url.pathname.match(/^\/api\/engine\/conversations\/(\d+)\/release$/);
+    if(relMatch&&req.method==='POST'){
+      try{return J(await engineFetchV11(env,`/platform/conversations/${relMatch[1]}/release`,{method:'POST'}))}
+      catch(e){return J({sucesso:false,error:e.message},e.status||502)}
+    }
+    if(url.pathname==='/api/engine/training'&&req.method==='GET'){
+      try{return J(await engineFetchV11(env,'/platform/training'))}
+      catch(e){return J({sucesso:false,error:e.message},e.status||502)}
+    }
+    if(url.pathname==='/api/engine/training'&&req.method==='POST'){
+      try{return J(await engineFetchV11(env,'/platform/training',{method:'POST',body:JSON.stringify(await body(req))}))}
+      catch(e){return J({sucesso:false,error:e.message},e.status||502)}
+    }
+    if(url.pathname==='/api/engine/professionals'&&req.method==='GET'){
+      try{return J(await engineFetchV11(env,'/platform/professionals'))}
+      catch(e){return J({sucesso:false,error:e.message},e.status||502)}
+    }
+
     return J({error:'Endpoint não encontrado.'},404)
   }
   if(url.pathname==='/en')return env.ASSETS.fetch(new URL('/index-en.html',url));
