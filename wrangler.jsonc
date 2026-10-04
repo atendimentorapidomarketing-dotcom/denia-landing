@@ -8,7 +8,7 @@
     {
       "binding":"DB",
       "database_name":"denia-saas",
-      "database_id":"SUBSTITUA_PELO_DATABASE_ID"
+      "database_id":"01bd6b23-af41-461d-8b86-7ad1f4c9d4f9"
     }
   ],
   "observability":{"enabled":true}
