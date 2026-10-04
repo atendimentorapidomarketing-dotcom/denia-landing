@@ -115,3 +115,49 @@ immersive();
 
 const hash=location.hash.replace('#','');if(hash&&$('#page-'+hash))document.querySelector(`[data-page="${hash}"]`)?.click();
 init();loadTrainingSection('identidade');
+
+// V14 RESPONSIVE
+(function(){
+  const sidebar=document.getElementById('sidebar');
+  const overlay=document.getElementById('mobileNavOverlay');
+  const openBtn=document.getElementById('mobileMenuBtn');
+  const closeBtn=document.getElementById('mobileCloseBtn');
+  if(!sidebar||!overlay||!openBtn||!closeBtn)return;
+  function openMenu(){
+    sidebar.classList.add('mobile-open');
+    overlay.classList.add('open');
+    document.body.classList.add('nav-open');
+    openBtn.setAttribute('aria-expanded','true');
+  }
+  function closeMenu(){
+    sidebar.classList.remove('mobile-open');
+    overlay.classList.remove('open');
+    document.body.classList.remove('nav-open');
+    openBtn.setAttribute('aria-expanded','false');
+  }
+  openBtn.addEventListener('click',openMenu);
+  closeBtn.addEventListener('click',closeMenu);
+  overlay.addEventListener('click',closeMenu);
+  document.querySelectorAll('#nav button').forEach(b=>b.addEventListener('click',()=>{
+    if(matchMedia('(max-width:900px)').matches) closeMenu();
+  }));
+  addEventListener('keydown',e=>{if(e.key==='Escape')closeMenu()});
+  const mq=matchMedia('(min-width:901px)');
+  const reset=e=>{if(e.matches)closeMenu()};
+  if(mq.addEventListener)mq.addEventListener('change',reset);else mq.addListener(reset);
+  if(window.visualViewport){
+    const apply=()=>document.documentElement.style.setProperty('--vvh',window.visualViewport.height+'px');
+    apply();
+    window.visualViewport.addEventListener('resize',apply);
+  }
+})();
+
+// DENIA V15 — proteção contra deslocamento horizontal do documento
+(function(){
+  const clampHorizontal=()=>{
+    if(window.scrollX!==0) window.scrollTo(0, window.scrollY);
+  };
+  window.addEventListener('scroll',clampHorizontal,{passive:true});
+  window.addEventListener('resize',clampHorizontal,{passive:true});
+  window.addEventListener('orientationchange',()=>setTimeout(clampHorizontal,60),{passive:true});
+})();

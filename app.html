@@ -2,13 +2,26 @@
 <html lang="pt-BR">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>DENIA Control</title>
 <link rel="stylesheet" href="/app.css">
+
+<style id="denia-v15-mobile-lock">
+html,body{margin:0!important;padding:0!important;width:100%!important;max-width:100%!important;overflow-x:hidden!important;overscroll-behavior-x:none!important;background:#04070b!important}
+body{position:relative!important;touch-action:pan-y pinch-zoom}
+*,*:before,*:after{box-sizing:border-box}
+img,svg,video,iframe,canvas{max-width:100%!important}
+@media(max-width:900px){
+  html,body{width:100%!important;max-width:100%!important;overflow-x:hidden!important}
+  body>*{max-width:100%!important}
+}
+</style>
 </head>
 <body>
 <div class="app">
-<aside class="side">
+<div class="mobile-nav-overlay" id="mobileNavOverlay"></div>
+<aside class="side" id="sidebar">
+  <button class="mobile-close-btn" id="mobileCloseBtn" aria-label="Fechar menu">×</button>
   <div class="brand">DENIA <b>AI</b></div>
   <div class="org"><b id="orgName">DENIA Operação Principal</b><small id="userName">carregando...</small></div>
   <div class="nav" id="nav">
@@ -27,7 +40,8 @@
 
 <main class="main">
 <div class="top">
-  <span class="status"><i></i> DENIA Control online</span>
+  <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Abrir menu" aria-expanded="false"><span></span><span></span><span></span></button>
+  <span class="status top-status"><i></i> DENIA Control online</span>
   <div class="top-actions">
     <button class="btn" id="homeBtn">Landing</button>
     <button class="btn" id="logoutBtn">Sair</button>

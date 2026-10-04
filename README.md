@@ -1,35 +1,32 @@
-# DENIA Platform V13 — Standalone
+# DENIA Platform V15 — Mobile Locked
 
-Objetivo: permitir que a equipe use e explore toda a plataforma AGORA,
-sem depender da DENIA Engine, WhatsApp, Meta ou OpenAI.
+Esta versão corrige especificamente o deslocamento lateral no celular.
 
-Funciona:
-- login real
-- D1 real
-- todos os menus abrem
-- nenhum carregamento infinito
-- conversas de teste locais
-- criar/enviar mensagens no ambiente de teste
-- pausar/reativar IA na conversa de teste
-- treinamento por abas, persistido no D1
-- cadastro/exclusão de profissionais
-- configurações
-- relatório de prévia
-- filtros de desempenho
-- botões Meta/OpenAI/WhatsApp respondem com informações claras
-- experiência imersiva com mouse/toque e partículas
+## Correções
+- página presa à largura exata da tela;
+- não existe rolagem horizontal do documento;
+- remove "margens brancas" ao arrastar para os lados;
+- fundo do `html` e `body` igual ao fundo da DENIA;
+- bloqueio de overscroll lateral;
+- `viewport-fit=cover` em todas as páginas;
+- landing, login, cadastro e painel corrigidos;
+- menu mobile continua em gaveta;
+- cards não criam largura fantasma;
+- efeitos 3D são desligados no touch;
+- canvas e efeitos visuais não aumentam a largura do documento;
+- modais respeitam 100% da largura móvel;
+- telas de conversas, treinamento e profissionais ficam dentro do viewport.
 
-Não usa dados reais de clientes.
-Não envia WhatsApp.
-Não depende da Engine.
+## Deploy
+Substitua os arquivos atuais do repositório `denia-landing` pelos arquivos desta versão.
 
-Para publicar:
-- substitua os arquivos da V12 pelos arquivos desta V13 no repositório denia-landing
-- Build: npm run build
-- Deploy: npx wrangler deploy
-- Root: /
+Build:
+npm run build
 
-O D1 existente `denia-saas` continua sendo usado.
-As tabelas novas são criadas automaticamente no primeiro acesso.
+Deploy:
+npx wrangler deploy
 
-Depois, quando quisermos dados reais, conectamos a Engine às mesmas telas sem reconstruir o painel.
+Root:
+/
+
+Não altere D1, bindings, secrets ou variáveis.

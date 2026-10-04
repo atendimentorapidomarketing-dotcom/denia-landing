@@ -1,4 +1,15 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Create access — DENIA AI</title><link rel="stylesheet" href="/auth.css"></head><body>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><title>Create access — DENIA AI</title><link rel="stylesheet" href="/auth.css">
+<style id="denia-v15-mobile-lock">
+html,body{margin:0!important;padding:0!important;width:100%!important;max-width:100%!important;overflow-x:hidden!important;overscroll-behavior-x:none!important;background:#04070b!important}
+body{position:relative!important;touch-action:pan-y pinch-zoom}
+*,*:before,*:after{box-sizing:border-box}
+img,svg,video,iframe,canvas{max-width:100%!important}
+@media(max-width:900px){
+  html,body{width:100%!important;max-width:100%!important;overflow-x:hidden!important}
+  body>*{max-width:100%!important}
+}
+</style>
+</head><body>
 <main class="wrap"><div class="brand">DENIA <b>AI</b></div><h1>Create your access</h1><p class="muted">For this phase, the first signup creates the main organization and the team administrator access.</p>
 <form id="form"><label>Name</label><input name="name" required><label>Email</label><input name="email" type="email" required><label>Password</label><input name="password" type="password" minlength="10" required><label>Confirm password</label><input name="confirm" type="password" minlength="10" required><button>Create account</button><div id="msg"></div></form><a class="secondary" href="/en/login">I already have access</a></main>
 <script>const f=document.getElementById('form'),m=document.getElementById('msg');f.addEventListener('submit',async e=>{e.preventDefault();const d=Object.fromEntries(new FormData(f));if(d.password!==d.confirm){m.className='error';m.textContent='As senhas não coincidem.';return}const r=await fetch('/api/auth/bootstrap',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(d)});const j=await r.json();if(!r.ok){m.className='error';m.textContent=(j.error||'Não foi possível criar a conta.')+(j.detail?' — '+j.detail:'');return}location.href='/en/app'});</script></body></html>

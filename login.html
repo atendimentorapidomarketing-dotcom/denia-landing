@@ -1,4 +1,15 @@
-<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Entrar — DENIA AI</title><link rel="stylesheet" href="/auth.css"></head><body>
+<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><title>Entrar — DENIA AI</title><link rel="stylesheet" href="/auth.css">
+<style id="denia-v15-mobile-lock">
+html,body{margin:0!important;padding:0!important;width:100%!important;max-width:100%!important;overflow-x:hidden!important;overscroll-behavior-x:none!important;background:#04070b!important}
+body{position:relative!important;touch-action:pan-y pinch-zoom}
+*,*:before,*:after{box-sizing:border-box}
+img,svg,video,iframe,canvas{max-width:100%!important}
+@media(max-width:900px){
+  html,body{width:100%!important;max-width:100%!important;overflow-x:hidden!important}
+  body>*{max-width:100%!important}
+}
+</style>
+</head><body>
 <main class="wrap"><div class="brand">DENIA <b>AI</b></div><h1>Entrar na Central DENIA</h1><p class="muted">Acesse a operação, treinamento, conversas, desempenho e integrações da sua empresa.</p>
 <form id="form"><label>E-mail</label><input name="email" type="email" required autocomplete="email"><label>Senha</label><input name="password" type="password" required autocomplete="current-password"><button>Entrar</button><div id="msg"></div></form><a class="secondary" href="/">← Voltar para a experiência</a></main>
 <script>const f=document.getElementById('form'),m=document.getElementById('msg');f.addEventListener('submit',async e=>{e.preventDefault();const d=Object.fromEntries(new FormData(f));const r=await fetch('/api/auth/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(d)});const j=await r.json();if(!r.ok){m.className='error';m.textContent=j.error||'Não foi possível entrar.';return}location.href='/app'});</script></body></html>
