@@ -161,3 +161,35 @@ init();loadTrainingSection('identidade');
   window.addEventListener('resize',clampHorizontal,{passive:true});
   window.addEventListener('orientationchange',()=>setTimeout(clampHorizontal,60),{passive:true});
 })();
+
+
+// DENIA V18 — account profile controls
+(async function deniaV18Account(){
+  try{
+    const me=await api('/api/me');
+    const n=document.getElementById('profileNameInput'),e=document.getElementById('profileEmailInput'),o=document.getElementById('profileOrgInput'),r=document.getElementById('profileRole');
+    if(n)n.value=me.user?.name||''; if(e)e.value=me.user?.email||''; if(o)o.value=me.organization?.name||''; if(r)r.textContent=me.user?.role||'OWNER';
+  }catch{}
+  const save=document.getElementById('saveProfile');
+  if(save)save.addEventListener('click',async()=>{
+    const name=document.getElementById('profileNameInput')?.value?.trim();
+    const organization=document.getElementById('profileOrgInput')?.value?.trim();
+    await api('/api/account/profile',{method:'POST',body:JSON.stringify({name,organization})});
+    document.getElementById('orgName').textContent=organization;
+    toast('Perfil atualizado.');
+  });
+  const del=document.getElementById('deleteAccountBtn');
+  if(del)del.addEventListener('click',()=>{
+    showModal('Excluir conta',`<p class="lead">Esta ação é permanente para contas elegíveis. Digite <b>EXCLUIR MINHA CONTA</b> para confirmar.</p>
+    <div class="field"><input id="deleteConfirm" placeholder="EXCLUIR MINHA CONTA"></div>
+    <button class="btn danger" id="confirmDeleteAccount">Confirmar exclusão</button>`);
+  });
+})();
+document.addEventListener('click',async e=>{
+  if(e.target?.id==='confirmDeleteAccount'){
+    try{
+      await api('/api/account/delete',{method:'POST',body:JSON.stringify({confirm:document.getElementById('deleteConfirm')?.value||''})});
+      location.href='/';
+    }catch(err){toast(err.message||'Não foi possível excluir a conta.')}
+  }
+});

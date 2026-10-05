@@ -4,319 +4,147 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#05070a">
-<meta name="description" content="DENIA AI — atendimento digital de ponta a ponta com inteligência artificial para empresas.">
-<title>DENIA AI — La IA que dirige tu atención digital</title>
+<meta name="description" content="DENIA — plataforma de IA para atendimento, operação, agenda, marketing local e canais digitais.">
+<title>DENIA — Plataforma de operaciones con IA</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/styles.css">
-<style id="v14-mobile-safety">html,body{max-width:100%;overflow-x:hidden}*,*:before,*:after{box-sizing:border-box}img,svg,video,canvas{max-width:100%;height:auto}@media(max-width:900px){body{width:100%;overflow-x:hidden}header,nav,main,section,footer{max-width:100vw}.container,.wrap,.hero,.section,.content{max-width:100%;min-width:0}}@media(max-width:620px){button,a,input,textarea,select{max-width:100%}h1{overflow-wrap:anywhere}}</style>
 <style id="denia-v15-mobile-lock">
 html,body{margin:0!important;padding:0!important;width:100%!important;max-width:100%!important;overflow-x:hidden!important;overscroll-behavior-x:none!important;background:#04070b!important}
 body{position:relative!important;touch-action:pan-y pinch-zoom}
 *,*:before,*:after{box-sizing:border-box}
 img,svg,video,iframe,canvas{max-width:100%!important}
-@media(max-width:900px){
-  html,body{width:100%!important;max-width:100%!important;overflow-x:hidden!important}
-  body>*{max-width:100%!important}
-}
+@media(max-width:900px){html,body{width:100%!important;max-width:100%!important;overflow-x:hidden!important}body>*{max-width:100%!important}}
 </style>
 </head>
 <body>
 <canvas id="fxCanvas" aria-hidden="true"></canvas>
-<div class="noise"></div>
-<div class="cursor-glow" id="cursorGlow"></div>
+<div class="noise"></div><div class="cursor-glow" id="cursorGlow"></div>
 
 <header class="topbar">
-  <nav class="shell nav">
-    <a href="#top" class="brand"><span class="brand-core"></span><span>DENIA</span><b>AI</b></a>
-    <div class="navlinks">
-      <a href="#transformacao">Transformación</a>
-      <a href="#capacidades">Capacidades</a>
-      <a href="#como-funciona">Cómo funciona</a>
-      <a href="#infra">Infraestructura</a>
-    </div>
-    <div class="navactions">
-      <div class="lang-wrap">
-        <button class="lang-btn" id="langButton">PT ▾</button>
-        <div class="lang-menu" id="langMenu">
-          <a href="/">Português</a>
-          <a href="/en">English</a>
-          <a href="/es">Español</a>
-        </div>
-      </div>
-      <a class="btn ghost desktop-only" href="/es/login">Ingresar</a>
-      <a class="btn primary magnetic desktop-only" href="/es/registro">Crear cuenta</a>
-      <button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Abrir menu">☰</button>
-    </div>
-  </nav>
-</header>
-<div class="mobile-menu" id="mobileMenu">
-  <div class="mobile-menu-inner">
-    <div class="mobile-menu-head">
-      <div class="brand"><span class="brand-core"></span><span>DENIA</span><b>AI</b></div>
-      <button id="mobileMenuClose">✕</button>
-    </div>
-    <a href="#transformacao">Transformación</a>
-    <a href="#capacidades">Capacidades</a>
-    <a href="#como-funciona">Cómo funciona</a>
-    <a href="#infra">Infraestructura</a>
-    <div class="mobile-lang">
-      <a href="/">PT</a>
-      <a href="/en">EN</a>
-      <a href="/es">ES</a>
-    </div>
-    <a class="btn ghost" href="/es/login">Ingresar</a>
-    <a class="btn primary" href="/es/registro">Crear cuenta</a>
-  </div>
+<nav class="shell nav">
+<a href="#top" class="brand"><span class="brand-core"></span><span>DENIA</span><b>AI</b></a>
+<div class="navlinks">
+<a href="#plataforma">Plataforma</a><a href="#canais">Canales</a><a href="#marketing">Marketing</a><a href="#seguranca">Seguridad</a><a href="#planos">Planes</a>
 </div>
+<div class="navactions">
+<div class="lang-wrap"><button class="lang-btn" id="langButton">ES ▾</button><div class="lang-menu" id="langMenu"><a href="/es">Español</a><a href="/">Português</a><a href="/en">English</a></div></div>
+<a class="btn ghost desktop-only" href="/es/login">Ingresar</a>
+<a class="btn primary magnetic desktop-only" href="/es/registro">Probar 7 días</a>
+<button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Abrir menu">☰</button>
+</div>
+</nav>
+</header>
 
+<div class="mobile-menu" id="mobileMenu"><div class="mobile-menu-inner">
+<div class="mobile-menu-head"><div class="brand"><span class="brand-core"></span><span>DENIA</span><b>AI</b></div><button id="mobileMenuClose">✕</button></div>
+<a href="#plataforma">Plataforma</a><a href="#canais">Canales</a><a href="#marketing">Marketing</a><a href="#seguranca">Seguridad</a><a href="#planos">Planes</a>
+<div class="mobile-lang"><a href="/">PT</a><a href="/en">EN</a><a href="/es">ES</a></div>
+<a class="btn ghost" href="/es/login">Ingresar</a><a class="btn primary" href="/es/registro">Probar 7 días</a>
+</div></div>
 
 <main id="top">
 <section class="hero shell">
-  <div class="hero-light light-a"></div>
-  <div class="hero-light light-b"></div>
-  <div class="hero-copy reveal">
-    <div class="eyebrow"><span class="pulse-dot"></span> atendimento digital autônomo • 24/7</div>
-    <h1>
-      Reduce la dependencia operativa de personas.
-      <span class="gradient-text">Pon una IA en la primera línea.</span>
-    </h1>
-    <p class="hero-lead">
-      DENIA asume la primera línea de la atención digital: conversa con clientes, interpreta texto, audio e imágenes, contacta profesionales, reenvía medios, agenda servicios, acompaña casos, envía informes y aprende de la operación diaria para mejorar continuamente.
-    </p>
-    <div class="hero-actions">
-      <a class="btn primary big magnetic" href="#cta">Quiero DENIA en mi empresa <span>→</span></a>
-      <a class="btn glass big" href="#demo">Ver la experiencia</a>
-    </div>
-    <div class="proof-row">
-      <span><i></i> WhatsApp en coexistencia</span>
-      <span><i></i> OpenAI</span>
-      <span><i></i> Integración oficial vía Meta</span>
-      <span><i></i> Operación 24/7</span>
-    </div>
-  </div>
+<div class="hero-light light-a"></div><div class="hero-light light-b"></div>
+<div class="hero-copy reveal">
+<div class="eyebrow"><span class="pulse-dot"></span> IA para atención, operaciones y presencia digital</div>
+<h1>Un centro de comando para la operación digital de tu empresa. <span class="gradient-text">Con IA trabajando junto a tu equipo.</span></h1>
+<p class="hero-lead">DENIA reúne atención, memoria, agenda, profesionales, canales sociales, Google Business, aprobaciones e informes en una sola plataforma. Las funciones se activan según el plan, las integraciones disponibles y los permisos concedidos por la empresa.</p>
+<div class="hero-actions"><a class="btn primary big magnetic" href="/es/registro">Comenzar prueba de 7 días <span>→</span></a><a class="btn glass big" href="#plataforma">Conocer la plataforma</a></div>
+<div class="proof-row"><span><i></i> WhatsApp / Meta</span><span><i></i> Google Business</span><span><i></i> Agenda</span><span><i></i> Instagram & Facebook</span></div>
+</div>
 
-  <div class="hero-stage reveal" id="demo">
-    <div class="stage-ring r1"></div>
-    <div class="stage-ring r2"></div>
-    <div class="stage-ring r3"></div>
-    <div class="ai-orb-wrap">
-      <div class="ai-orb">
-        <div class="orb-core">AI</div>
-        <div class="orb-scan"></div>
-      </div>
-      <span class="satellite s1">OUVE</span>
-      <span class="satellite s2">VÊ</span>
-      <span class="satellite s3">DECIDE</span>
-      <span class="satellite s4">EXECUTA</span>
-    </div>
-    <div class="hud-card hud-top">
-      <span class="tiny">DENIA ENGINE</span>
-      <b>ONLINE</b>
-      <div class="hud-wave"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
-    </div>
-    <div class="hud-card hud-bottom">
-      <div class="tiny">ATENDIMENTO ATIVO</div>
-      <p>“Minha lava e seca parou. Enviei uma foto.”</p>
-      <div class="steps-mini">
-        <span>✓ imagem</span><span>✓ contexto</span><span>✓ profissional</span><span>✓ resposta</span>
-      </div>
-    </div>
-    <div class="lightning-line l1"></div>
-    <div class="lightning-line l2"></div>
-  </div>
+<div class="hero-stage reveal">
+<div class="stage-ring r1"></div><div class="stage-ring r2"></div><div class="stage-ring r3"></div>
+<div class="ai-orb-wrap"><div class="ai-orb"><div class="orb-core">AI</div><div class="orb-scan"></div></div>
+<span class="satellite s1">ATIENDE</span><span class="satellite s2">ORGANIZA</span><span class="satellite s3">ANALIZA</span><span class="satellite s4">EJECUTA</span></div>
+<div class="hud-card hud-top"><span class="tiny">DENIA CONTROL</span><b>ONLINE</b><div class="hud-wave"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div>
+<div class="hud-card hud-bottom"><div class="tiny">CENTRO DE COMANDO</div><p>Conversas · Agenda · Google · Social · Relatórios</p><div class="steps-mini"><span>✓ canais</span><span>✓ aprovações</span><span>✓ memória</span><span>✓ gestão</span></div></div>
+</div>
 </section>
 
-<section class="ticker">
-  <div class="ticker-track">
-    <span>ENTENDE</span><i></i><span>DECIDE</span><i></i><span>EXECUTA</span><i></i><span>APRENDE</span><i></i><span>RELATA</span><i></i><span>AGENDA</span><i></i>
-    <span>ENTENDE</span><i></i><span>DECIDE</span><i></i><span>EXECUTA</span><i></i><span>APRENDE</span><i></i><span>RELATA</span><i></i><span>AGENDA</span>
-  </div>
+<section class="ticker"><div class="ticker-track">
+<span>ATIENDE</span><i></i><span>AGENDA</span><i></i><span>ORGANIZA</span><i></i><span>PUBLICA</span><i></i><span>INFORMA</span><i></i><span>ACOMPAÑA</span><i></i>
+<span>ATIENDE</span><i></i><span>AGENDA</span><i></i><span>ORGANIZA</span><i></i><span>PUBLICA</span><i></i><span>INFORMA</span><i></i><span>ACOMPAÑA</span>
+</div></section>
+
+<section class="section shell" id="plataforma">
+<div class="section-head reveal"><span class="label">DENIA Business</span><h2>Más que una bandeja de entrada. Una capa operativa de IA para tu negocio.</h2>
+<p>Centraliza tareas digitales que normalmente están dispersas entre atención, agenda, marketing local, redes sociales e informes. El equipo mantiene el control y puede intervenir cuando quiera.</p></div>
+<div class="impact-grid">
+<article class="impact-card interactive reveal"><span class="impact-number">01</span><h3>Atención conectada</h3><p>Organiza conversaciones, contexto, historial, medios, profesionales y próximos pasos en un solo flujo.</p><div class="glow-node"></div></article>
+<article class="impact-card interactive reveal"><span class="impact-number">02</span><h3>Operación asistida por IA</h3><p>Automatiza tareas compatibles con las reglas de la empresa y conserva aprobaciones humanas para acciones sensibles.</p><div class="glow-node"></div></article>
+<article class="impact-card interactive reveal"><span class="impact-number">03</span><h3>Gestión visible</h3><p>Supervisa actividad, costos, canales, pendientes y decisiones en un panel único y trazable.</p><div class="glow-node"></div></article>
+</div>
 </section>
 
-<section class="section shell" id="transformacao">
-  <div class="section-head reveal">
-    <span class="label">El cambio</span>
-    <h2>No se trata de responder más rápido. Se trata de transferir una operación digital completa a la IA.</h2>
-    <p>
-      A DENIA foi criada para assumir o trabalho digital repetitivo que hoje ocupa pessoas: entender o cliente,
-      localizar contexto, falar com profissionais, acompanhar retorno, organizar atendimento e manter a operação fluindo.
-    </p>
-  </div>
-  <div class="impact-grid">
-    <article class="impact-card interactive reveal">
-      <span class="impact-number">01</span>
-      <h3>Atendimento de ponta a ponta</h3>
-      <p>Da primeira mensagem até o encaminhamento, orçamento, agendamento e acompanhamento — a IA mantém a continuidade.</p>
-      <div class="glow-node"></div>
-    </article>
-    <article class="impact-card interactive reveal">
-      <span class="impact-number">02</span>
-      <h3>Menos dependência de equipe humana</h3>
-      <p>A equipe deixa de viver presa ao WhatsApp e passa a entrar apenas quando o atendimento realmente exige decisão humana ou execução física.</p>
-      <div class="glow-node"></div>
-    </article>
-    <article class="impact-card interactive reveal">
-      <span class="impact-number">03</span>
-      <h3>Autoestudo operacional diário</h3>
-      <p>A plataforma aprende com histórico, correções, resultados e padrões para identificar oportunidades de melhoria contínua.</p>
-      <div class="glow-node"></div>
-    </article>
-  </div>
-</section>
+<section class="section immersive-band" id="canais"><div class="shell">
+<div class="section-head centered reveal"><span class="label">Canales e relacionamento</span><h2>Una experiencia unificada para conversar, organizar y acompañar.</h2><p>Las integraciones dependen de la autorización de los proveedores y de la disponibilidad de sus APIs.</p></div>
+<div class="cap-grid">
+<article class="cap-card interactive reveal"><div class="cap-icon">◉</div><h3>WhatsApp</h3><p>Atención, medios, intervención humana, contexto y seguimiento mediante integración oficial.</p></article>
+<article class="cap-card interactive reveal"><div class="cap-icon">◎</div><h3>Instagram</h3><p>Prepara mensajes, comentarios, contenido y métricas según los permisos de Meta.</p></article>
+<article class="cap-card interactive reveal"><div class="cap-icon">f</div><h3>Facebook & Messenger</h3><p>Centraliza página, mensajes, comentarios y publicaciones cuando la integración esté habilitada.</p></article>
+<article class="cap-card interactive reveal"><div class="cap-icon">⌚</div><h3>Agenda</h3><p>Organiza citas, disponibilidad, confirmaciones y sincronización con calendarios conectados.</p></article>
+<article class="cap-card interactive reveal"><div class="cap-icon">▥</div><h3>Relatórios</h3><p>Resume atención, pendientes, resultados y costos para facilitar la gestión.</p></article>
+<article class="cap-card interactive reveal"><div class="cap-icon">✦</div><h3>Hablar con DENIA</h3><p>Consulta la operación por chat y, más adelante, por voz, con respuestas basadas en los datos disponibles.</p></article>
+</div></div></section>
 
-<section class="section immersive-band" id="capacidades">
-  <div class="shell">
-    <div class="section-head centered reveal">
-      <span class="label">Lo que asume</span>
-      <h2>Una IA trabajando entre clientes, profesionales y tu empresa.</h2>
-      <p>Ela não fica parada esperando uma pergunta. Ela acompanha o que precisa acontecer depois.</p>
-    </div>
-
-    <div class="cap-grid">
-      <article class="cap-card interactive reveal"><div class="cap-icon">◉</div><h3>Atende clientes</h3><p>Texto, áudio, imagem e contexto em uma mesma conversa.</p></article>
-      <article class="cap-card interactive reveal"><div class="cap-icon">⌁</div><h3>Contacta prestadores</h3><p>Consulta o profissional correto sem expor contatos indevidos ao cliente.</p></article>
-      <article class="cap-card interactive reveal"><div class="cap-icon">↗</div><h3>Encaminha mídias</h3><p>Fotos, áudios, vídeos e documentos podem seguir para o responsável certo.</p></article>
-      <article class="cap-card interactive reveal"><div class="cap-icon">⌚</div><h3>Marca serviços</h3><p>Organiza disponibilidade, confirmação e acompanhamento operacional.</p></article>
-      <article class="cap-card interactive reveal"><div class="cap-icon">▥</div><h3>Envia relatórios</h3><p>Resume avanços, pendências, riscos e resultados para a gestão.</p></article>
-      <article class="cap-card interactive reveal"><div class="cap-icon">∞</div><h3>Melhora continuamente</h3><p>Usa resultados, correções e padrões para tornar o atendimento cada vez mais consistente.</p></article>
-    </div>
-  </div>
-</section>
-
-<section class="section shell" id="como-funciona">
-  <div class="section-head reveal">
-    <span class="label">Fluxo operacional</span>
-    <h2>El cliente habla. DENIA entiende. La operación continúa.</h2>
-  </div>
-  <div class="flow-scene reveal">
-    <div class="flow-card client-card">
-      <span class="flow-kicker">CLIENTE</span>
-      <b>“Preciso de ajuda com meu equipamento.”</b>
-      <small>texto • áudio • foto</small>
-    </div>
-    <div class="flow-connector"><span></span></div>
-    <div class="flow-card ai-card">
-      <span class="flow-kicker">DENIA</span>
-      <b>Interpreta contexto e decide o próximo passo.</b>
-      <small>memória • regras • IA</small>
-    </div>
-    <div class="flow-connector"><span></span></div>
-    <div class="flow-card pro-card">
-      <span class="flow-kicker">PROFISSIONAL</span>
-      <b>Recebe o contexto necessário.</b>
-      <small>sem confusão • sem exposição indevida</small>
-    </div>
-    <div class="flow-connector"><span></span></div>
-    <div class="flow-card result-card">
-      <span class="flow-kicker">RESULTADO</span>
-      <b>Cliente recebe continuidade.</b>
-      <small>orçamento • agenda • acompanhamento</small>
-    </div>
-  </div>
-</section>
-
-<section class="section split-section">
-  <div class="shell split-grid">
-    <div class="story-panel reveal">
-      <span class="label">Antes</span>
-      <h2>Uma equipe inteira vivendo dentro do WhatsApp.</h2>
-      <ul>
-        <li>mensagens acumuladas</li>
-        <li>informação fragmentada</li>
-        <li>clientes esperando retorno</li>
-        <li>profissionais sem contexto</li>
-        <li>gestão sem visão consolidada</li>
-      </ul>
-    </div>
-    <div class="story-panel future reveal">
-      <span class="label">Con DENIA</span>
-      <h2>Uma operação digital que continua mesmo quando ninguém está olhando.</h2>
-      <ul>
-        <li>triagem automática</li>
-        <li>contexto persistente</li>
-        <li>profissionais acionados pela IA</li>
-        <li>ações e follow-up automatizados</li>
-        <li>relatórios para a gestão</li>
-      </ul>
-    </div>
-  </div>
-</section>
-
-<section class="section shell" id="infra">
-  <div class="section-head reveal">
-    <span class="label">Infraestructura e transparência</span>
-    <h2>Supervisa la inteligencia, el canal y la operación.</h2>
-    <p>OpenAI, Meta, mensagens, mídia, consumo e saúde da DENIA entram no painel da empresa.</p>
-  </div>
-  <div class="infra-grid">
-    <article class="infra-card interactive reveal">
-      <div class="infra-head"><span class="provider ai">AI</span><div><b>OpenAI</b><small>inteligência</small></div><em>● online</em></div>
-      <div class="metric-line"><span>Modelos</span><b>monitorados</b></div>
-      <div class="metric-line"><span>Uso</span><b>tokens e custo</b></div>
-      <div class="spark"><i style="height:24%"></i><i style="height:52%"></i><i style="height:41%"></i><i style="height:75%"></i><i style="height:61%"></i><i style="height:88%"></i><i style="height:72%"></i></div>
-    </article>
-    <article class="infra-card interactive reveal">
-      <div class="infra-head"><span class="provider meta">M</span><div><b>Meta / WhatsApp</b><small>canal oficial</small></div><em>● integrado</em></div>
-      <div class="metric-line"><span>Coexistência</span><b>WhatsApp Business + API</b></div>
-      <div class="metric-line"><span>Consumo</span><b>monitorado</b></div>
-      <div class="progress"><span style="width:66%"></span></div>
-      <p class="mini-copy">A plataforma pode acompanhar uso, status e regras comerciais vigentes da Meta.</p>
-    </article>
-    <article class="infra-card interactive reveal">
-      <div class="infra-head"><span class="provider denia">D</span><div><b>DENIA Engine</b><small>operação</small></div><em>● ativo</em></div>
-      <div class="metric-line"><span>Casos</span><b>acompanhados</b></div>
-      <div class="metric-line"><span>Ações</span><b>registradas</b></div>
-      <div class="heartbeat"><span></span></div>
-    </article>
-  </div>
-
-  <div class="meta-seal reveal">
-    <div class="seal-icon">M</div>
-    <div>
-      <span class="label">Meta / WhatsApp Business Platform</span>
-      <h3>Integração oficial para operar com WhatsApp en coexistencia.</h3>
-      <p>A DENIA utiliza a infraestrutura oficial da Meta para conectar o WhatsApp Business à camada de inteligência e automação.</p>
-    </div>
-  </div>
+<section class="section shell" id="marketing">
+<div class="section-head reveal"><span class="label">Marketing local y reputación</span><h2>Google Business y contenido social dentro del mismo centro de comando.</h2>
+<p>DENIA puede preparar contenido, respuestas y análisis para revisión o automatización según la política elegida por la empresa.</p></div>
+<div class="impact-grid">
+<article class="impact-card interactive reveal"><span class="impact-number">G</span><h3>Google Business</h3><p>Supervisa información del perfil, reseñas, publicaciones, medios e indicadores disponibles mediante la integración.</p></article>
+<article class="impact-card interactive reveal"><span class="impact-number">A</span><h3>Aprobaciones</h3><p>Revisa imágenes, textos, respuestas y acciones públicas antes de publicar cuando lo desees.</p></article>
+<article class="impact-card interactive reveal"><span class="impact-number">S</span><h3>Social</h3><p>Planifica contenido para Instagram y Facebook y centraliza la gestión de los canales habilitados.</p></article>
+</div>
 </section>
 
 <section class="section shell">
-  <div class="manifesto reveal">
-    <span class="label">La nueva estructura de atención</span>
-    <h2>Tu equipo humano deja de ser la primera capa. La IA asume la primera línea.</h2>
-    <p>
-      Pessoas continuam essenciais onde existe presença, julgamento e relacionamento. Mas repetição, triagem, encaminhamento,
-      acompanhamento e organização não precisam mais consumir a mesma quantidade de tempo humano.
-    </p>
-  </div>
+<div class="section-head reveal"><span class="label">Flujo controlado</span><h2>La IA prepara. Tu empresa define el nivel de autonomía.</h2></div>
+<div class="flow-scene reveal">
+<div class="flow-card client-card"><span class="flow-kicker">ENTRADA</span><b>Mensaje, reseña, cita o solicitud de contenido.</b><small>canales conectados</small></div>
+<div class="flow-connector"><span></span></div>
+<div class="flow-card ai-card"><span class="flow-kicker">DENIA</span><b>Consulta contexto, reglas y permisos antes de sugerir o ejecutar.</b><small>memoria • políticas • herramientas</small></div>
+<div class="flow-connector"><span></span></div>
+<div class="flow-card pro-card"><span class="flow-kicker">CONTROL</span><b>Aprobación humana cuando se configura.</b><small>auditoría • intervención • trazabilidad</small></div>
+</div>
+</section>
+
+<section class="section shell" id="seguranca">
+<div class="section-head reveal"><span class="label">Control y seguridad</span><h2>Diseñada para operar con permisos, auditoría y separación de responsabilidades.</h2>
+<p>Ningún sistema conectado a internet puede prometer riesgo cero. DENIA está estructurada para reducir riesgos con controles de acceso, registro de acciones y aislamiento por organización.</p></div>
+<div class="cap-grid">
+<article class="cap-card interactive reveal"><div class="cap-icon">⌁</div><h3>Roles de acceso</h3><p>Owner, Admin, Agent, Marketing, Finance y Viewer, con distintos alcances.</p></article>
+<article class="cap-card interactive reveal"><div class="cap-icon">✓</div><h3>Aprobación humana</h3><p>Define qué acciones requieren revisión antes de ejecutarse.</p></article>
+<article class="cap-card interactive reveal"><div class="cap-icon">◎</div><h3>Auditoría</h3><p>Registra cambios y acciones importantes para facilitar investigación y gobernanza.</p></article>
+<article class="cap-card interactive reveal"><div class="cap-icon">2F</div><h3>2FA planificado</h3><p>Capa adicional de autenticación para cuentas administrativas y recursos sensibles.</p></article>
+<article class="cap-card interactive reveal"><div class="cap-icon">↯</div><h3>Límites y alertas</h3><p>Supervisa consumo, errores y comportamiento anormal para actuar rápidamente.</p></article>
+<article class="cap-card interactive reveal"><div class="cap-icon">∞</div><h3>Integraciones oficiales</h3><p>Los conectores se activan según autorización, plan y disponibilidad de los proveedores.</p></article>
+</div>
+</section>
+
+<section class="section shell" id="planos">
+<div class="section-head centered reveal"><span class="label">Planes</span><h2>Elige cuánto de tu operación digital quieres centralizar.</h2><p>7 días de prueba para nuevas cuentas comerciales. Las funciones y límites pueden variar según integraciones y volumen contratado.</p></div>
+<div class="pricing-grid">
+<article class="price-card reveal"><span>Start</span><h3>R$ 690<small>/mês</small></h3><p>Para comenzar con atención por IA y gestión básica.</p><ul><li>1 organización</li><li>Atención por IA</li><li>Memoria y entrenamiento</li><li>Panel e informes básicos</li><li>1 número de WhatsApp</li></ul><a class="btn glass" href="/es/registro?plan=start">Probar 7 días</a></article>
+<article class="price-card reveal"><span>Pro</span><h3>R$ 1.290<small>/mês</small></h3><p>Para empresas que quieren automatizar atención y operaciones.</p><ul><li>Todo lo de Start</li><li>Profesionales y proveedores</li><li>Agenda y seguimiento</li><li>Automatizaciones operativas</li><li>Informes avanzados</li></ul><a class="btn glass" href="/es/registro?plan=pro">Probar 7 días</a></article>
+<article class="price-card featured reveal"><div class="popular">MÁS ELEGIDO</div><span>Growth</span><h3>R$ 1.890<small>/mês</small></h3><p>Atención, operaciones y marketing local en el mismo entorno.</p><ul><li>Todo lo de Pro</li><li>Google Business</li><li>Reseñas y reputación</li><li>Contenido y aprobaciones</li><li>Social conectado</li></ul><a class="btn primary" href="/es/registro?plan=growth">Probar 7 días</a></article>
+<article class="price-card reveal"><span>Elite</span><h3>R$ 2.990<small>/mês</small></h3><p>Para operaciones más amplias, integraciones y gobernanza avanzada.</p><ul><li>Todo lo de Growth</li><li>Múltiples canales/unidades*</li><li>API e integraciones</li><li>Permisos avanzados</li><li>Mayor capacidad contratada</li></ul><a class="btn glass" href="/es/registro?plan=elite">Probar 7 días</a></article>
+</div>
+<p class="pricing-note">*La disponibilidad y los límites dependen de la configuración comercial y de las APIs conectadas. El consumo extraordinario de canales, telefonía y proveedores puede cobrarse por separado.</p>
 </section>
 
 <section class="section shell" id="cta">
-  <div class="final-cta reveal">
-    <div class="cta-orbit c1"></div><div class="cta-orbit c2"></div>
-    <span class="label">DENIA AI</span>
-    <h2>Entrega la atención digital de tu empresa a una IA que realmente trabaja.</h2>
-    <p>Comece com uma experiência que entende o cliente, movimenta a operação e continua aprendendo.</p>
-    <div class="hero-actions center">
-      <a class="btn primary big magnetic" href="https://wa.me/5521975469162?text=Ol%C3%A1%2C%20quero%20implantar%20a%20DENIA%20na%20minha%20empresa." target="_blank" rel="noopener">Hablar con DENIA <span>→</span></a>
-      <a class="btn glass big" href="#top">Volver arriba</a>
-    </div>
-  </div>
+<div class="cta-box reveal"><span class="label">DENIA Business</span><h2>Una plataforma para que tu equipo opere con más contexto, automatización y control.</h2><p>Empieza por la atención y habilita nuevos módulos a medida que evoluciona tu operación.</p>
+<div class="hero-actions"><a class="btn primary big magnetic" href="/es/registro">Crear cuenta</a><a class="btn glass big" href="/es/login">Ya tengo cuenta</a></div></div>
 </section>
 </main>
 
-<section class="section" id="plans"><div class="section-head"><p class="eyebrow">DENIA BUSINESS</p><h2>Planes para cada nivel de operación</h2><p>Empieza con atención por IA y escala hasta una operación digital completa.</p></div><div class="pricing-grid"><article class="price-card"><span>Start</span><h3>R$ 690/mes</h3><p>Atención por IA, memoria, panel y WhatsApp.</p><a class="btn" href="/cadastro">Começar</a></article><article class="price-card"><span>Pro</span><h3>R$ 1.290/mes</h3><p>Operación, profesionales, agenda, automatizaciones e informes.</p><a class="btn" href="/cadastro">Começar</a></article><article class="price-card"><span>Growth</span><h3>R$ 1.890/mes</h3><p>Todo Pro + Google Business, reputación y marketing local.</p><a class="btn" href="/cadastro">Começar</a></article><article class="price-card"><span>Elite</span><h3>R$ 2.990/mes</h3><p>Operación completa, integraciones, social, permisos y mayor escala.</p><a class="btn" href="/cadastro">Começar</a></article></div><p class="pricing-note">7 días gratis para nuevas cuentas comerciales.</p></section><footer class="footer shell">
-  <div class="brand"><span class="brand-core"></span><span>DENIA</span><b>AI</b></div>
-  <p>Inteligência operacional para atendimento digital.</p>
-  <span>© 2026 DENIA AI</span>
+<footer class="footer shell">
+<div><div class="brand"><span class="brand-core"></span><span>DENIA</span><b>AI</b></div><p>Plataforma de operaciones con IA para empresas.</p></div>
+<div class="footer-links"><a href="#plataforma">Plataforma</a><a href="#marketing">Marketing</a><a href="#planos">Planes</a><a href="/es/login">Ingresar</a></div>
+<div class="footer-legal">Las funciones dependen del plan, la configuración, las integraciones y los permisos de terceros. La automatización y la IA pueden requerir revisión humana. Los resultados operativos y de marketing varían según el negocio, el uso y factores externos. DENIA no garantiza posiciones en buscadores, volumen de ventas ni resultados financieros específicos.</div>
 </footer>
-
-<a class="whatsapp-float" href="https://wa.me/5521975469162?text=Ol%C3%A1%2C%20quero%20conhecer%20a%20DENIA%20AI." target="_blank" rel="noopener" aria-label="Falar no WhatsApp">
-  <span class="wa-mark">✦</span><span>Habla con nosotros</span>
-</a>
-
 <script src="/script.js"></script>
-</body>
-</html>
+</body></html>

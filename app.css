@@ -477,3 +477,13 @@ body::before{
 .approval-board,.role-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
 .role-grid .card h3{letter-spacing:.08em}
 @media(max-width:900px){.denia-command{grid-template-columns:1fr;padding:20px 14px}.denia-orb{width:145px;height:145px}.approval-board,.role-grid{grid-template-columns:1fr}}
+
+/* DENIA V18 dashboard additions */
+.nav-group{padding:16px 14px 6px;font-size:.62rem;letter-spacing:.16em;color:#607281;font-weight:800}
+.plan-comparison{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin:16px 0}
+.plan-price{font-size:1.35rem;font-weight:800;margin:8px 0;color:#dffbff}
+.featured-plan{border-color:rgba(141,255,210,.35)!important;box-shadow:0 0 32px rgba(141,255,210,.05)}
+.danger-zone{border-color:rgba(255,95,115,.18)!important;margin-top:16px}
+.btn.danger{border-color:rgba(255,95,115,.35);color:#ff9aaa;background:rgba(255,95,115,.06)}
+@media(max-width:1050px){.plan-comparison{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:620px){.plan-comparison{grid-template-columns:1fr}.nav-group{padding-left:16px}}

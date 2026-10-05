@@ -1,19 +1,28 @@
-# DENIA Platform V17 — Business Control
+# DENIA Platform V18 — Complete Product Structure
 
-Baseada na V16 Premium, preservando o mobile sem deslocamento lateral.
+Versão completa da estrutura comercial e operacional da DENIA Business.
 
-Novas áreas:
-- DENIA Elite Internal para a Central
-- Falar com a DENIA (interface preparada para chat/voz)
-- Agenda / Google Calendar
-- Marketing Local / Google Business
-- Social (Instagram, Facebook, Messenger)
-- Aprovações de conteúdo e ações sensíveis
-- Minha conta / plano
-- Usuários e permissões (OWNER, ADMIN, AGENT, MARKETING, FINANCE, VIEWER)
-- Planos Start, Pro, Growth e Elite na landing PT/EN/ES
+## Inclui
+- landing page refeita com linguagem comercial prudente;
+- planos Start, Pro, Growth e Elite;
+- teste de 7 dias descrito na oferta;
+- dashboard Elite Internal da Central;
+- Conversas, Falar com a DENIA, Agenda, Treinamento e Profissionais;
+- Google Business, Redes Sociais, Conteúdo e Aprovações;
+- WhatsApp, Meta, OpenAI e Integrações;
+- Perfil editável;
+- Plano e cobrança;
+- Usuários e permissões;
+- Segurança e Auditoria;
+- fluxo de exclusão de conta (SUPER_ADMIN principal protegido);
+- PT/EN/ES na landing;
+- preserva o bloqueio mobile da V15 e o visual premium da V16.
 
-Importante: esta versão estrutura a experiência. WhatsApp/Engine/Google/Meta/OpenAI reais serão conectados nas próximas etapas conforme o roadmap definido.
+## Importante
+Google, Meta, OpenAI, redes sociais, calendário, cobrança e Engine real continuam exibidos como "a conectar" até que as respectivas APIs, permissões e bindings sejam habilitados. A interface não simula dados reais.
 
-Build: npm run build
-Deploy: npx wrangler deploy
+Build:
+npm run build
+
+Deploy:
+npx wrangler deploy

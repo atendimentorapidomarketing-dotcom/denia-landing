@@ -63,17 +63,33 @@ export default{async fetch(req,env){
   await schema(env);
   if(url.pathname==='/api/health'){
     const c=await env.DB.prepare(`SELECT COUNT(*) c FROM users`).first();
-    return J({ok:true,d1:true,database:'denia-saas',users:Number(c?.c||0),version:'1.0.0'});
+    return J({ok:true,d1:true,database:'denia-saas',users:Number(c?.c||0),version:'1.8.0'});
   }
   if(url.pathname==='/health'){
     const c=await env.DB.prepare(`SELECT COUNT(*) c FROM users`).first();
-    return new Response(`DENIA Platform V10\nD1: OK\nDatabase: denia-saas\nUsers: ${Number(c?.c||0)}\n`,{headers:{'content-type':'text/plain;charset=utf-8'}});
+    return new Response(`DENIA Platform V18\nD1: OK\nDatabase: denia-saas\nUsers: ${Number(c?.c||0)}\n`,{headers:{'content-type':'text/plain;charset=utf-8'}});
   }
   if(url.pathname==='/api/auth/bootstrap'&&req.method==='POST'){const c=await env.DB.prepare(`SELECT COUNT(*) c FROM users`).first();if(+c.c>0)return J({error:'O acesso principal já foi criado.'},409);const d=await body(req),name=String(d.name||'').trim(),email=String(d.email||'').trim().toLowerCase(),password=String(d.password||'');if(!name||!email||password.length<10)return J({error:'Preencha os campos corretamente. A senha precisa ter pelo menos 10 caracteres.'},400);const oid=crypto.randomUUID(),uid=crypto.randomUUID(),h=await hpw(password);await env.DB.prepare(`INSERT INTO organizations(id,name) VALUES(?,?)`).bind(oid,'DENIA Operação Principal').run();await env.DB.prepare(`INSERT INTO users(id,organization_id,name,email,password_hash,password_salt,role) VALUES(?,?,?,?,?,?,?)`).bind(uid,oid,name,email,h.hash,h.salt,'SUPER_ADMIN').run();await env.DB.prepare(`INSERT INTO organization_config(organization_id,settings_json) VALUES(?,?)`).bind(oid,JSON.stringify({phone:'+55 21 97546-9162'})).run();const t=await session(uid,env);return J({ok:true},200,{'set-cookie':`denia_session=${t}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=2592000`})}
   if(url.pathname==='/api/auth/login'&&req.method==='POST'){const d=await body(req),e=String(d.email||'').trim().toLowerCase(),p=String(d.password||'');const u=await env.DB.prepare(`SELECT * FROM users WHERE email=?`).bind(e).first();if(!u)return J({error:'E-mail ou senha inválidos.'},401);const h=await hpw(p,u.password_salt);if(h.hash!==u.password_hash)return J({error:'E-mail ou senha inválidos.'},401);const t=await session(u.id,env);return J({ok:true},200,{'set-cookie':`denia_session=${t}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=2592000`})}
   if(url.pathname==='/api/auth/logout'&&req.method==='POST'){const t=cookie(req,'denia_session');if(t)await env.DB.prepare(`DELETE FROM sessions WHERE token_hash=?`).bind(await sha(t)).run();return J({ok:true},200,{'set-cookie':'denia_session=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0'})}
   if(url.pathname.startsWith('/api/')){const u=await user(req,env);if(!u)return J({error:'Não autenticado.'},401);
     if(url.pathname==='/api/me')return J({user:{id:u.id,name:u.name,email:u.email,role:u.role},organization:{id:u.organization_id,name:u.organization_name}});
+    if(url.pathname==='/api/account/profile'&&req.method==='POST'){
+      const d=await body(req),name=String(d.name||'').trim(),org=String(d.organization||'').trim();
+      if(!name||!org)return J({error:'Nome e organização são obrigatórios.'},400);
+      await env.DB.prepare(`UPDATE users SET name=? WHERE id=?`).bind(name,u.id).run();
+      await env.DB.prepare(`UPDATE organizations SET name=? WHERE id=?`).bind(org,u.organization_id).run();
+      return J({ok:true});
+    }
+    if(url.pathname==='/api/account/delete'&&req.method==='POST'){
+      const d=await body(req);
+      if(String(d.confirm||'')!=='EXCLUIR MINHA CONTA')return J({error:'Confirmação inválida.'},400);
+      if(u.role==='SUPER_ADMIN')return J({error:'A conta SUPER_ADMIN principal não pode ser excluída por este fluxo. Remova essa proteção somente após configurar outro proprietário seguro.'},403);
+      const t=cookie(req,'denia_session');
+      if(t)await env.DB.prepare(`DELETE FROM sessions WHERE token_hash=?`).bind(await sha(t)).run();
+      await env.DB.prepare(`DELETE FROM users WHERE id=?`).bind(u.id).run();
+      return J({ok:true},200,{'set-cookie':'denia_session=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0'});
+    }
     if(url.pathname==='/api/config'&&req.method==='GET'){const c=await env.DB.prepare(`SELECT * FROM organization_config WHERE organization_id=?`).bind(u.organization_id).first();return J({training:JSON.parse(c?.training_json||'{}'),settings:JSON.parse(c?.settings_json||'{}')})}
     if(url.pathname==='/api/config/training'&&req.method==='POST'){const d=await body(req),cur=await env.DB.prepare(`SELECT settings_json FROM organization_config WHERE organization_id=?`).bind(u.organization_id).first();await env.DB.prepare(`INSERT INTO organization_config(organization_id,training_json,settings_json,updated_at) VALUES(?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(organization_id) DO UPDATE SET training_json=excluded.training_json,updated_at=CURRENT_TIMESTAMP`).bind(u.organization_id,JSON.stringify(d),cur?.settings_json||'{}').run();return J({ok:true})}
     if(url.pathname==='/api/config/settings'&&req.method==='POST'){const d=await body(req),name=String(d.organization||u.organization_name).trim();await env.DB.prepare(`UPDATE organizations SET name=? WHERE id=?`).bind(name,u.organization_id).run();const cur=await env.DB.prepare(`SELECT training_json FROM organization_config WHERE organization_id=?`).bind(u.organization_id).first();await env.DB.prepare(`INSERT INTO organization_config(organization_id,training_json,settings_json,updated_at) VALUES(?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(organization_id) DO UPDATE SET settings_json=excluded.settings_json,updated_at=CURRENT_TIMESTAMP`).bind(u.organization_id,cur?.training_json||'{}',JSON.stringify(d)).run();return J({ok:true})}
