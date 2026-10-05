@@ -464,3 +464,16 @@ body::before{
   box-shadow:0 8px 24px rgba(118,234,255,.12),0 0 22px rgba(141,255,210,.07);
 }
 .metric{text-shadow:0 0 18px rgba(118,234,255,.08),0 0 34px rgba(127,166,255,.04)}
+
+/* DENIA V17 Business Control */
+.denia-command{padding:26px;display:grid;grid-template-columns:minmax(180px,260px) 1fr;gap:28px;align-items:center;overflow:hidden;position:relative}
+.denia-orb{width:190px;height:190px;border-radius:50%;margin:auto;display:flex;flex-direction:column;align-items:center;justify-content:center;background:radial-gradient(circle at 36% 30%,rgba(218,255,255,.38),rgba(85,226,255,.16) 20%,rgba(131,117,255,.12) 48%,rgba(4,10,16,.72) 74%);border:1px solid rgba(120,236,255,.28);box-shadow:inset 0 0 42px rgba(118,234,255,.10),0 0 45px rgba(118,234,255,.13);position:relative}
+.denia-orb:before,.denia-orb:after{content:'';position:absolute;border-radius:50%;inset:-12px;border:1px solid rgba(118,234,255,.12);animation:deniaRing 7s linear infinite}
+.denia-orb:after{inset:-25px;border-color:rgba(173,140,255,.08);animation-duration:11s;animation-direction:reverse}
+.denia-orb b{font-size:28px;letter-spacing:.18em;color:#c9fbff;text-shadow:0 0 24px rgba(118,234,255,.52)}
+.denia-orb small{margin-top:8px;letter-spacing:.22em;text-transform:uppercase;color:#77cbd9}
+@keyframes deniaRing{to{transform:rotate(360deg)}}
+.denia-chat-placeholder{min-width:0}.voice-strip{display:flex;gap:10px;flex-wrap:wrap;margin-top:18px}
+.approval-board,.role-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+.role-grid .card h3{letter-spacing:.08em}
+@media(max-width:900px){.denia-command{grid-template-columns:1fr;padding:20px 14px}.denia-orb{width:145px;height:145px}.approval-board,.role-grid{grid-template-columns:1fr}}

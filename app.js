@@ -34,7 +34,7 @@ $('#logoutBtn').onclick=async()=>{await api('/api/auth/logout',{method:'POST'}).
 async function init(){
   try{
     const me=await api('/api/me');
-    $('#userName').textContent=me.user.name+' · '+me.user.email;$('#orgName').textContent=me.organization.name;$('#orgInput').value=me.organization.name;
+    $('#userName').textContent=me.user.name+' · '+me.user.email;$('#orgName').textContent=me.organization.name;$('#orgInput').value=me.organization.name;if($('#profileName'))$('#profileName').textContent=me.user.name;if($('#profileEmail'))$('#profileEmail').textContent=me.user.email;if($('#profileOrg'))$('#profileOrg').textContent=me.organization.name;
     const cfg=await api('/api/config');$('#phoneInput').value=cfg.settings?.phone||'+55 21 97546-9162';$('#assistantNameInput').value=cfg.settings?.assistantName||'DENIA';
     await loadSummary();
   }catch(e){toast('Falha ao carregar a conta: '+e.message)}

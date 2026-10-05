@@ -27,13 +27,20 @@ img,svg,video,iframe,canvas{max-width:100%!important}
   <div class="nav" id="nav">
     <button class="active" data-page="dashboard">Visão geral</button>
     <button data-page="conversas">Conversas</button>
+    <button data-page="denia">Falar com a DENIA</button>
+    <button data-page="agenda">Agenda</button>
     <button data-page="treino">Treinar IA</button>
     <button data-page="desempenho">Desempenho</button>
     <button data-page="whatsapp">WhatsApp</button>
     <button data-page="prestadores">Profissionais</button>
     <button data-page="relatorios">Relatórios</button>
+    <button data-page="marketing">Marketing Local</button>
+    <button data-page="social">Social</button>
+    <button data-page="aprovacoes">Aprovações</button>
     <button data-page="openai">OpenAI</button>
     <button data-page="meta">Meta</button>
+    <button data-page="perfil">Minha conta</button>
+    <button data-page="usuarios">Usuários e permissões</button>
     <button data-page="config">Configurações</button>
   </div>
 </aside>
@@ -50,9 +57,9 @@ img,svg,video,iframe,canvas{max-width:100%!important}
 
 <section class="page active" id="page-dashboard">
   <h1>Visão geral</h1>
-  <p class="lead">Sua central de operação está pronta. As integrações externas podem ser conectadas depois sem alterar a experiência da equipe.</p>
+  <p class="lead">Central de Atendimento · ambiente proprietário DENIA Elite. Este painel será o centro de comando da operação, atendimento e marketing.</p>
   <div class="grid">
-    <div class="card interactive-card"><div class="muted">MODO ATUAL</div><div class="metric">Standalone</div><span class="status"><i></i> plataforma operacional</span></div>
+    <div class="card interactive-card"><div class="muted">PLANO</div><div class="metric">Elite</div><span class="status"><i></i> Internal · cobrança isenta</span></div>
     <div class="card interactive-card"><div class="muted">CONVERSAS</div><div class="metric" id="metricConversations">0</div><span class="muted">conversas de teste salvas</span></div>
     <div class="card interactive-card"><div class="muted">PROFISSIONAIS</div><div class="metric" id="metricProfessionals">0</div><span class="muted">cadastros locais</span></div>
   </div>
@@ -163,6 +170,98 @@ img,svg,video,iframe,canvas{max-width:100%!important}
     <div class="card interactive-card"><div class="muted">QUALIDADE</div><div class="metric">—</div></div>
   </div>
   <div class="panel"><div class="panel-head"><b>Meta / WhatsApp Business Platform</b><button class="btn primary action-info" data-message="A leitura de consumo da Meta será ativada quando conectarmos a Engine.">Preparar integração</button></div><div class="row"><span>Coexistência</span><b>A configurar</b></div><div class="row"><span>Janela de atendimento</span><b>—</b></div><div class="row"><span>Consumo</span><b>—</b></div></div>
+</section>
+
+
+<section class="page" id="page-denia">
+  <h1>Falar com a DENIA</h1>
+  <p class="lead">Sua interface conversacional para consultar a operação e, depois da integração, executar ações com confirmação.</p>
+  <div class="denia-command panel">
+    <div class="denia-orb"><span></span><b>DENIA</b><small>Command AI</small></div>
+    <div class="denia-chat-placeholder">
+      <div class="bubble in">Olá. Quando a Engine estiver conectada, você poderá me perguntar sobre conversas, agenda, Google, Meta, custos, clientes e operação.</div>
+      <div class="voice-strip"><button class="btn primary action-info" data-message="O modo de voz será ativado na etapa do aplicativo. A interface já está reservada no DENIA Control.">◉ Falar por voz</button><button class="btn action-info" data-message="O chat operacional será conectado à Engine real depois da versão mobile, seguindo a ordem definida para o projeto.">Abrir chat operacional</button></div>
+    </div>
+  </div>
+</section>
+
+<section class="page" id="page-agenda">
+  <h1>Agenda</h1>
+  <p class="lead">Centralize compromissos da equipe e prepare a sincronização com Google Calendar.</p>
+  <div class="grid">
+    <div class="card interactive-card"><div class="muted">HOJE</div><div class="metric">0</div><span class="muted">eventos reais após conexão</span></div>
+    <div class="card interactive-card"><div class="muted">PENDENTES</div><div class="metric">0</div><span class="muted">confirmações</span></div>
+    <div class="card interactive-card"><div class="muted">GOOGLE CALENDAR</div><div class="metric small-metric">A conectar</div></div>
+  </div>
+  <div class="panel"><div class="panel-head"><b>Calendário da operação</b><button class="btn primary action-info" data-message="Na integração real, a DENIA criará, alterará e cancelará eventos no Google Calendar conforme as permissões da organização.">Preparar Google Calendar</button></div><div class="empty-state">Nenhum evento conectado ainda.</div></div>
+</section>
+
+<section class="page" id="page-marketing">
+  <h1>Marketing Local</h1>
+  <p class="lead">Google Business, reputação, conteúdo local e desempenho em um único centro de controle.</p>
+  <div class="grid">
+    <div class="card interactive-card"><div class="muted">GOOGLE BUSINESS HEALTH</div><div class="metric">—</div><span class="muted">score após conexão</span></div>
+    <div class="card interactive-card"><div class="muted">AVALIAÇÕES PENDENTES</div><div class="metric">0</div></div>
+    <div class="card interactive-card"><div class="muted">PRÓXIMO POST</div><div class="metric small-metric">Não agendado</div></div>
+  </div>
+  <div class="panel"><div class="panel-head"><b>Google Business Profile</b><span class="badge">Elite</span></div>
+    <div class="row"><span>Perfil conectado</span><b>Aguardando autorização Google</b></div>
+    <div class="row"><span>Respostas automáticas</span><b>A configurar</b></div>
+    <div class="row"><span>Publicações semanais</span><b>A configurar</b></div>
+    <div class="row"><span>Monitoramento de desempenho</span><b>A configurar</b></div>
+    <div style="padding:16px"><button class="btn primary action-info" data-message="Quando o projeto Google Business receber acesso, esta área fará a autorização OAuth e carregará os perfis gerenciados.">Preparar conexão Google</button></div>
+  </div>
+</section>
+
+<section class="page" id="page-social">
+  <h1>Social</h1>
+  <p class="lead">Instagram, Facebook e Messenger preparados para conteúdo, inbox e atendimento omnichannel.</p>
+  <div class="grid">
+    <div class="card interactive-card"><h3>Instagram</h3><div class="connection-state"><span class="connection-dot off"></span>A conectar</div><p class="muted">DMs, comentários, conteúdo e métricas.</p></div>
+    <div class="card interactive-card"><h3>Facebook</h3><div class="connection-state"><span class="connection-dot off"></span>A conectar</div><p class="muted">Página, posts, comentários e Messenger.</p></div>
+    <div class="card interactive-card"><h3>Inbox omnichannel</h3><div class="metric small-metric">Preparado</div><p class="muted">WhatsApp + Instagram + Messenger no mesmo histórico.</p></div>
+  </div>
+</section>
+
+<section class="page" id="page-aprovacoes">
+  <h1>Aprovações</h1>
+  <p class="lead">Ações públicas e sensíveis passam por revisão humana até que você decida aumentar a autonomia.</p>
+  <div class="approval-board">
+    <div class="card interactive-card"><div class="muted">CONTEÚDO</div><h3>Posts e imagens</h3><p class="muted">A DENIA cria → você aprova → ela publica.</p><span class="badge">0 aguardando</span></div>
+    <div class="card interactive-card"><div class="muted">REPUTAÇÃO</div><h3>Avaliações sensíveis</h3><p class="muted">Notas baixas podem exigir aprovação antes da resposta.</p><span class="badge">0 aguardando</span></div>
+    <div class="card interactive-card"><div class="muted">AÇÕES</div><h3>Operações críticas</h3><p class="muted">Confirmação antes de ações de maior risco.</p><span class="badge">0 aguardando</span></div>
+  </div>
+</section>
+
+<section class="page" id="page-perfil">
+  <h1>Minha conta</h1>
+  <p class="lead">Perfil, assinatura e segurança da conta proprietária.</p>
+  <div class="grid">
+    <div class="card interactive-card"><div class="muted">PLANO ATUAL</div><div class="metric">Elite</div><span class="status"><i></i> Internal · R$ 0</span></div>
+    <div class="card interactive-card"><div class="muted">FUNÇÃO</div><div class="metric small-metric">Owner + Super Admin</div></div>
+    <div class="card interactive-card"><div class="muted">RENOVAÇÃO</div><div class="metric small-metric">Isenta</div></div>
+  </div>
+  <div class="panel"><div class="panel-head"><b>Dados da conta</b><span class="badge">Protegido</span></div>
+    <div class="row"><span>Nome</span><b id="profileName">Carregando…</b></div>
+    <div class="row"><span>E-mail</span><b id="profileEmail">Carregando…</b></div>
+    <div class="row"><span>Organização</span><b id="profileOrg">Carregando…</b></div>
+    <div class="row"><span>Autenticação em dois fatores</span><b>Planejada</b></div>
+    <div style="padding:16px"><button class="btn action-info" data-message="A área de segurança receberá 2FA, gestão de sessões e recuperação segura na etapa de autenticação reforçada.">Segurança da conta</button></div>
+  </div>
+</section>
+
+<section class="page" id="page-usuarios">
+  <h1>Usuários e permissões</h1>
+  <p class="lead">Cada pessoa acessa somente o que precisa dentro da organização.</p>
+  <div class="grid role-grid">
+    <div class="card interactive-card"><h3>OWNER</h3><p class="muted">Controle total, billing, integrações e segurança.</p></div>
+    <div class="card interactive-card"><h3>ADMIN</h3><p class="muted">Administração operacional sem transferir propriedade.</p></div>
+    <div class="card interactive-card"><h3>AGENT</h3><p class="muted">Conversas, clientes e atendimento humano.</p></div>
+    <div class="card interactive-card"><h3>MARKETING</h3><p class="muted">Google Business, conteúdo, social e aprovações.</p></div>
+    <div class="card interactive-card"><h3>FINANCE</h3><p class="muted">Plano, cobranças e relatórios financeiros.</p></div>
+    <div class="card interactive-card"><h3>VIEWER</h3><p class="muted">Somente leitura.</p></div>
+  </div>
+  <div class="toolbar"><button class="btn primary action-info" data-message="Convites e permissões granulares serão persistidos no backend multiusuário da próxima etapa operacional.">+ Convidar usuário</button></div>
 </section>
 
 <section class="page" id="page-config">
