@@ -1,0 +1,30 @@
+{
+  "name": "DENIA Business",
+  "short_name": "DENIA",
+  "description": "Centro de comando de IA para atendimento, operação e presença digital.",
+  "start_url": "/app",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#04070b",
+  "theme_color": "#05070a",
+  "orientation": "portrait-primary",
+  "lang": "pt-BR",
+  "categories": [
+    "business",
+    "productivity"
+  ],
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

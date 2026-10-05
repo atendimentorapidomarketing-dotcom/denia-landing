@@ -16,6 +16,11 @@ img,svg,video,iframe,canvas{max-width:100%!important}
   body>*{max-width:100%!important}
 }
 </style>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="DENIA">
 </head>
 <body>
 <div class="app">
@@ -187,5 +192,7 @@ img,svg,video,iframe,canvas{max-width:100%!important}
 </div>
 
 <script src="/app.js"></script>
-</body>
+<button class="app-install-pill" data-install-denia type="button">＋ Instalar DENIA</button>
+<div class="ios-install-help" id="iosInstallHelp"><div class="ios-install-card"><button data-close-ios-help>✕</button><h3>Instalar DENIA no iPhone</h3><p>Abra no Safari → Compartilhar → Adicionar à Tela de Início.</p></div></div>
+<script src="/pwa.js"></script></body>
 </html>

@@ -17,6 +17,11 @@ body{position:relative!important;touch-action:pan-y pinch-zoom}
 img,svg,video,iframe,canvas{max-width:100%!important}
 @media(max-width:900px){html,body{width:100%!important;max-width:100%!important;overflow-x:hidden!important}body>*{max-width:100%!important}}
 </style>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="DENIA">
 </head>
 <body>
 <canvas id="fxCanvas" aria-hidden="true"></canvas>
@@ -32,7 +37,7 @@ img,svg,video,iframe,canvas{max-width:100%!important}
 <div class="lang-wrap"><button class="lang-btn" id="langButton">ES ▾</button><div class="lang-menu" id="langMenu"><a href="/es">Español</a><a href="/">Português</a><a href="/en">English</a></div></div>
 <a class="btn ghost desktop-only" href="/es/login">Ingresar</a>
 <a class="btn primary magnetic desktop-only" href="/es/registro">Probar 7 días</a>
-<button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Abrir menu">☰</button>
+<button class="btn glass desktop-only" data-install-denia type="button">Instalar app</button><button class="mobile-menu-btn" id="mobileMenuBtn" aria-label="Abrir menu">☰</button>
 </div>
 </nav>
 </header>
@@ -147,4 +152,8 @@ img,svg,video,iframe,canvas{max-width:100%!important}
 <div class="footer-legal">Las funciones dependen del plan, la configuración, las integraciones y los permisos de terceros. La automatización y la IA pueden requerir revisión humana. Los resultados operativos y de marketing varían según el negocio, el uso y factores externos. DENIA no garantiza posiciones en buscadores, volumen de ventas ni resultados financieros específicos.</div>
 </footer>
 <script src="/script.js"></script>
-</body></html>
+
+<a class="wa-float-denia" href="https://wa.me/5521975469162?text=Ol%C3%A1%21%20Gostaria%20de%20saber%20mais%20sobre%20a%20DENIA." target="_blank" rel="noopener" aria-label="Hablar por WhatsApp">
+<span class="wa-icon">✆</span><span class="wa-text">Hablar por WhatsApp</span></a>
+<div class="ios-install-help" id="iosInstallHelp"><div class="ios-install-card"><button data-close-ios-help>✕</button><h3>Instalar DENIA no iPhone</h3><p>1. Abra esta página no Safari.</p><p>2. Toque em <b>Compartilhar</b>.</p><p>3. Toque em <b>Adicionar à Tela de Início</b>.</p><p>4. Confirme em <b>Adicionar</b>.</p></div></div>
+<script src="/pwa.js"></script></body></html>

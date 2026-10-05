@@ -9,7 +9,12 @@ img,svg,video,iframe,canvas{max-width:100%!important}
   body>*{max-width:100%!important}
 }
 </style>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="DENIA">
 </head><body>
 <main class="wrap"><div class="brand">DENIA <b>AI</b></div><h1>Crea tu acceso</h1><p class="muted">En esta fase, el primer registro crea la organización principal y el acceso de administrador del equipo.</p>
 <form id="form"><label>Nombre</label><input name="name" required><label>Correo</label><input name="email" type="email" required><label>Contraseña</label><input name="password" type="password" minlength="10" required><label>Confirmar contraseña</label><input name="confirm" type="password" minlength="10" required><button>Crear cuenta</button><div id="msg"></div></form><a class="secondary" href="/es/login">Ya tengo acceso</a></main>
-<script>const f=document.getElementById('form'),m=document.getElementById('msg');f.addEventListener('submit',async e=>{e.preventDefault();const d=Object.fromEntries(new FormData(f));if(d.password!==d.confirm){m.className='error';m.textContent='As senhas não coincidem.';return}const r=await fetch('/api/auth/bootstrap',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(d)});const j=await r.json();if(!r.ok){m.className='error';m.textContent=(j.error||'Não foi possível criar a conta.')+(j.detail?' — '+j.detail:'');return}location.href='/es/app'});</script></body></html>
+<script>const f=document.getElementById('form'),m=document.getElementById('msg');f.addEventListener('submit',async e=>{e.preventDefault();const d=Object.fromEntries(new FormData(f));if(d.password!==d.confirm){m.className='error';m.textContent='As senhas não coincidem.';return}const r=await fetch('/api/auth/bootstrap',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(d)});const j=await r.json();if(!r.ok){m.className='error';m.textContent=(j.error||'Não foi possível criar a conta.')+(j.detail?' — '+j.detail:'');return}location.href='/es/app'});</script><script src="/pwa.js"></script></body></html>

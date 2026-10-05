@@ -487,3 +487,8 @@ body::before{
 .btn.danger{border-color:rgba(255,95,115,.35);color:#ff9aaa;background:rgba(255,95,115,.06)}
 @media(max-width:1050px){.plan-comparison{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:620px){.plan-comparison{grid-template-columns:1fr}.nav-group{padding-left:16px}}
+
+.app-install-pill{position:fixed;right:16px;bottom:16px;z-index:980;padding:10px 14px;border-radius:999px;border:1px solid rgba(118,234,255,.24);color:#dffbff;background:rgba(4,14,22,.88);backdrop-filter:blur(16px);box-shadow:0 12px 38px rgba(0,0,0,.28),0 0 26px rgba(118,234,255,.07);font-weight:750;cursor:pointer}
+.ios-install-help{position:fixed;inset:0;background:rgba(0,0,0,.72);display:none;place-items:center;padding:20px;z-index:2000;backdrop-filter:blur(10px)}.ios-install-help.open{display:grid}.ios-install-card{width:min(440px,100%);background:#08111a;border:1px solid rgba(118,234,255,.18);border-radius:22px;padding:24px}.ios-install-card>button{float:right;background:transparent;border:0;color:#fff;font-size:1.1rem}
+@media(display-mode:standalone){.app-install-pill{display:none!important}}
+@media(max-width:900px){body{padding-bottom:max(18px,env(safe-area-inset-bottom))}.app-install-pill{right:12px;bottom:calc(12px + env(safe-area-inset-bottom))}}

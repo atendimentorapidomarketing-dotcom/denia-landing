@@ -77,3 +77,11 @@ a{text-decoration:none;color:inherit}.shell{width:min(1200px,calc(100% - 40px));
 .footer{display:grid;grid-template-columns:1fr auto;gap:24px;align-items:start}
 .footer-legal{grid-column:1/-1;border-top:1px solid rgba(255,255,255,.07);padding-top:20px;color:#75818e;font-size:.82rem;line-height:1.65;max-width:1050px}
 @media(max-width:700px){.footer{grid-template-columns:1fr}.price-card.featured{transform:none}}
+
+.wa-float-denia{position:fixed;right:22px;bottom:22px;z-index:1100;display:flex;align-items:center;gap:10px;padding:12px 16px;border:1px solid rgba(141,255,210,.34);border-radius:999px;background:linear-gradient(135deg,rgba(12,35,29,.96),rgba(5,15,18,.96));color:#d9ffef;text-decoration:none;font-weight:750;font-size:.86rem;box-shadow:0 14px 45px rgba(0,0,0,.35),0 0 28px rgba(141,255,210,.11);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);transition:.2s}
+.wa-float-denia:hover{transform:translateY(-2px);box-shadow:0 18px 55px rgba(0,0,0,.4),0 0 38px rgba(141,255,210,.18)}
+.wa-icon{display:grid;place-items:center;width:31px;height:31px;border-radius:50%;background:#8dffd2;color:#04100b}
+.ios-install-help{position:fixed;inset:0;background:rgba(0,0,0,.72);display:none;place-items:center;padding:20px;z-index:2000;backdrop-filter:blur(10px)}
+.ios-install-help.open{display:grid}.ios-install-card{width:min(440px,100%);background:#08111a;border:1px solid rgba(118,234,255,.18);border-radius:22px;padding:24px;box-shadow:0 30px 90px rgba(0,0,0,.6)}
+.ios-install-card>button{float:right;background:transparent;border:0;color:#fff;font-size:1.1rem}
+@media(max-width:640px){.wa-float-denia{right:14px;bottom:14px;padding:11px}.wa-text{display:none}}

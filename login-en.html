@@ -9,7 +9,12 @@ img,svg,video,iframe,canvas{max-width:100%!important}
   body>*{max-width:100%!important}
 }
 </style>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="DENIA">
 </head><body>
 <main class="wrap"><div class="brand">DENIA <b>AI</b></div><h1>Sign in to DENIA Control</h1><p class="muted">Access operations, training, conversations, performance and integrations.</p>
 <form id="form"><label>Email</label><input name="email" type="email" required autocomplete="email"><label>Password</label><input name="password" type="password" required autocomplete="current-password"><button>Sign in</button><div id="msg"></div></form><a class="secondary" href="/">← Back to the experience</a></main>
-<script>const f=document.getElementById('form'),m=document.getElementById('msg');f.addEventListener('submit',async e=>{e.preventDefault();const d=Object.fromEntries(new FormData(f));const r=await fetch('/api/auth/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(d)});const j=await r.json();if(!r.ok){m.className='error';m.textContent=j.error||'Não foi possível entrar.';return}location.href='/en/app'});</script></body></html>
+<script>const f=document.getElementById('form'),m=document.getElementById('msg');f.addEventListener('submit',async e=>{e.preventDefault();const d=Object.fromEntries(new FormData(f));const r=await fetch('/api/auth/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(d)});const j=await r.json();if(!r.ok){m.className='error';m.textContent=j.error||'Não foi possível entrar.';return}location.href='/en/app'});</script><script src="/pwa.js"></script></body></html>

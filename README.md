@@ -1,28 +1,15 @@
-# DENIA Platform V18 — Complete Product Structure
+# DENIA Platform V19 — PWA Mobile
 
-Versão completa da estrutura comercial e operacional da DENIA Business.
+Preserva a V18 completa e adiciona:
+- PWA instalável em iPhone e Android;
+- ícone DENIA;
+- abertura standalone;
+- service worker sem cache de APIs;
+- botão de instalação;
+- instrução de instalação no iPhone;
+- botão flutuante de WhatsApp para +55 21 97546-9162.
 
-## Inclui
-- landing page refeita com linguagem comercial prudente;
-- planos Start, Pro, Growth e Elite;
-- teste de 7 dias descrito na oferta;
-- dashboard Elite Internal da Central;
-- Conversas, Falar com a DENIA, Agenda, Treinamento e Profissionais;
-- Google Business, Redes Sociais, Conteúdo e Aprovações;
-- WhatsApp, Meta, OpenAI e Integrações;
-- Perfil editável;
-- Plano e cobrança;
-- Usuários e permissões;
-- Segurança e Auditoria;
-- fluxo de exclusão de conta (SUPER_ADMIN principal protegido);
-- PT/EN/ES na landing;
-- preserva o bloqueio mobile da V15 e o visual premium da V16.
+No iPhone: Safari → Compartilhar → Adicionar à Tela de Início.
+No Android: Chrome → Instalar app / Adicionar à tela inicial.
 
-## Importante
-Google, Meta, OpenAI, redes sociais, calendário, cobrança e Engine real continuam exibidos como "a conectar" até que as respectivas APIs, permissões e bindings sejam habilitados. A interface não simula dados reais.
-
-Build:
-npm run build
-
-Deploy:
-npx wrangler deploy
+O login atual ainda usa o backend existente. A autenticação e a conexão real com a Engine serão tratadas na etapa seguinte.
