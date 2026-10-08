@@ -1,0 +1,351 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DENIA — Centro de comando da operação digital</title>
+  <meta name="description" content="DENIA é a plataforma que une inteligência artificial e sua equipe para atender clientes no WhatsApp, coordenar profissionais, agendar serviços e acompanhar tudo em um só lugar.">
+  <meta name="theme-color" content="#04060c">
+  <link rel="icon" href="/assets/img/logo.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap">
+  <link rel="stylesheet" href="/assets/css/base.css">
+  <link rel="stylesheet" href="/assets/css/site.css">
+</head>
+<body>
+  <a class="sr-only" href="#conteudo">Ir para o conteúdo</a>
+  <canvas class="rede" id="rede" aria-hidden="true"></canvas>
+  <div class="luz-cursor" id="luz-cursor" aria-hidden="true"></div>
+
+  <header class="topo" id="topo">
+    <div class="container topo-linha">
+      <a class="marca" href="/" aria-label="DENIA — página inicial">
+        <img src="/assets/img/logo.svg" alt="" width="34" height="34">
+        <span>DENIA</span>
+      </a>
+      <nav class="menu" id="menu" aria-label="Navegação principal">
+        <a href="#plataforma">Plataforma</a>
+        <a href="#demonstracao">Demonstração</a>
+        <a href="#como-funciona">Como funciona</a>
+        <a href="#seguranca">Segurança</a>
+        <a href="#planos">Planos</a>
+        <a href="#perguntas">Perguntas</a>
+      </nav>
+      <div class="topo-acoes">
+        <a class="btn btn-secundario btn-pequeno" href="/entrar">Entrar</a>
+        <a class="btn btn-primario btn-pequeno js-contato oculto" href="#planos">Falar com especialista</a>
+        <button class="menu-botao" id="menu-botao" type="button" aria-label="Abrir menu" aria-expanded="false" aria-controls="menu">
+          <span></span><span></span><span></span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main id="conteudo">
+    <section class="hero">
+      <div class="container hero-grade">
+        <div class="hero-texto">
+          <span class="selo selo-info"><span class="ponto"></span> Inteligência artificial operacional</span>
+          <h1>A inteligência que <span class="gradiente-texto" id="palavra-viva">atende</span> como a sua melhor equipe.</h1>
+          <p class="hero-sub">A DENIA atende seus clientes no WhatsApp com empatia, consulta os profissionais certos, confirma orçamentos e agenda serviços. Aprende com o histórico da sua empresa — e só age sobre fatos confirmados.</p>
+          <div class="hero-acoes">
+            <a class="btn btn-primario js-contato oculto" href="#planos">Solicitar demonstração</a>
+            <a class="btn btn-secundario" href="#demonstracao">Ver a DENIA em ação</a>
+          </div>
+          <ul class="hero-provas">
+            <li><strong>24/7</strong><span>atendimento contínuo</span></li>
+            <li><strong>1 lugar</strong><span>para toda a operação</span></li>
+            <li><strong>Humano + IA</strong><span>sem perder o controle</span></li>
+          </ul>
+        </div>
+
+        <div class="hero-visual" aria-hidden="true">
+          <div class="nucleo-ia"><i></i><i></i><i></i></div>
+          <div class="mock vidro">
+            <div class="mock-topo"><span></span><span></span><span></span><em>Conversas · ao vivo</em></div>
+            <div class="mock-corpo" id="mock-corpo">
+              <div class="bolha bolha-cliente">Oi! Minha geladeira parou de gelar 😕</div>
+              <div class="bolha bolha-denia">Poxa, imagino o transtorno! Já estou verificando com o técnico especializado.</div>
+              <div class="mock-evento"><span class="ponto"></span> Consulta enviada ao profissional · Caso #1284</div>
+              <div class="bolha bolha-denia">O técnico pode ir amanhã às 14h. Posso confirmar para você?</div>
+              <div class="bolha bolha-cliente">Pode sim, obrigada!</div>
+              <div class="mock-evento mock-ok"><span class="ponto"></span> Atendimento confirmado pelo profissional</div>
+            </div>
+          </div>
+          <div class="cartao-flutuante vidro cf-1">
+            <span class="cf-rotulo">Etapa do caso</span>
+            <strong>Agendado</strong>
+            <div class="barra"><i></i></div>
+          </div>
+          <div class="cartao-flutuante vidro cf-2">
+            <span class="cf-rotulo">Atendente humano</span>
+            <strong>IA em pausa por 10 min</strong>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <div class="faixa" aria-hidden="true">
+      <div class="faixa-trilho">
+        <span>Atendimento no WhatsApp</span><span>Memória de cada cliente</span><span>Rede de profissionais</span><span>Agendamento confirmado</span><span>Aprendizado com o histórico</span><span>Humano no controle</span><span>Multiempresa</span><span>Auditoria completa</span>
+        <span>Atendimento no WhatsApp</span><span>Memória de cada cliente</span><span>Rede de profissionais</span><span>Agendamento confirmado</span><span>Aprendizado com o histórico</span><span>Humano no controle</span><span>Multiempresa</span><span>Auditoria completa</span>
+      </div>
+    </div>
+
+    <section class="secao" id="demonstracao">
+      <div class="container">
+        <div class="secao-cabeca revelar">
+          <span class="sobretitulo">Demonstração</span>
+          <h2>Veja como a DENIA pensa antes de responder.</h2>
+          <p>Escolha uma situação. À esquerda, a conversa; à direita, o que acontece nos bastidores.</p>
+        </div>
+        <div class="demo revelar">
+          <div class="demo-opcoes" role="tablist" aria-label="Situações da demonstração">
+            <button class="demo-opcao ativo" type="button" role="tab" aria-selected="true" data-cenario="geladeira">Geladeira parou</button>
+            <button class="demo-opcao" type="button" role="tab" aria-selected="false" data-cenario="preco">Pergunta de preço</button>
+            <button class="demo-opcao" type="button" role="tab" aria-selected="false" data-cenario="antigo">Cliente antigo</button>
+            <button class="demo-opcao" type="button" role="tab" aria-selected="false" data-cenario="humano">Atendente assume</button>
+          </div>
+          <div class="demo-grade">
+            <div class="demo-chat vidro">
+              <div class="mock-topo"><span></span><span></span><span></span><em>WhatsApp · demonstração ilustrativa</em></div>
+              <div class="demo-mensagens" id="demo-mensagens" aria-live="polite"></div>
+            </div>
+            <div class="demo-bastidores vidro">
+              <p class="demo-rotulo"><span class="ponto"></span> Bastidores da IA</p>
+              <ol class="demo-passos" id="demo-passos"></ol>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="secao secao-alt" id="plataforma">
+      <div class="container">
+        <div class="secao-cabeca revelar">
+          <span class="sobretitulo">Plataforma</span>
+          <h2>Tudo o que a sua operação precisa, coordenado por uma única inteligência.</h2>
+          <p>Você conversa com uma DENIA. Por trás dela, módulos especializados cuidam de cada etapa do atendimento.</p>
+        </div>
+        <div class="grade-recursos">
+          <article class="recurso vidro revelar">
+            <div class="icone">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8.5 8.5 0 0 1-12.6 7.4L3 21l1.6-5.2A8.5 8.5 0 1 1 21 12z"/></svg>
+            </div>
+            <h3>Atendimento no WhatsApp</h3>
+            <p>Respostas curtas, cordiais e no tom da sua equipe. Mensagens seguidas são agrupadas em uma única resposta.</p>
+          </article>
+          <article class="recurso vidro revelar">
+            <div class="icone">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a9 9 0 1 0 9 9"/><path d="M12 7v5l3 2"/><path d="M17 3h4v4"/></svg>
+            </div>
+            <h3>Memória de cada cliente</h3>
+            <p>Histórico, atendimentos anteriores e etapa de cada caso. Cliente antigo nunca é tratado como novo.</p>
+          </article>
+          <article class="recurso vidro revelar">
+            <div class="icone">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 5.5a3 3 0 0 1 0 5.8"/><path d="M18.5 14.5A5.5 5.5 0 0 1 21.5 20"/></svg>
+            </div>
+            <h3>Rede de profissionais</h3>
+            <p>Cada pedido vai ao especialista certo, com o caso identificado. Valores só são repassados quando confirmados.</p>
+          </article>
+          <article class="recurso vidro revelar">
+            <div class="icone">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="16" rx="3"/><path d="M3 9.5h18M8 2.5v4M16 2.5v4"/><path d="m9 15 2 2 4-4"/></svg>
+            </div>
+            <h3>Agendamento com confirmação</h3>
+            <p>O serviço só é marcado depois que o profissional confirma. Sua equipe recebe o resumo na hora.</p>
+          </article>
+          <article class="recurso vidro revelar">
+            <div class="icone">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.5 4 6v6c0 4.7 3.4 8.6 8 9.5 4.6-.9 8-4.8 8-9.5V6l-8-3.5z"/><path d="M9 12l2 2 4-4"/></svg>
+            </div>
+            <h3>Humano no controle</h3>
+            <p>Quando um atendente responde, a DENIA pausa aquela conversa e retoma do ponto exato em que ele parou.</p>
+          </article>
+          <article class="recurso vidro revelar">
+            <div class="icone">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>
+            </div>
+            <h3>Relatórios e autoavaliação</h3>
+            <p>Resumo diário da operação, casos que precisam de atenção e uma análise dos pontos a melhorar.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="secao" id="aprende">
+      <div class="container aprende-grade">
+        <div class="revelar">
+          <span class="sobretitulo">Inteligência que evolui</span>
+          <h2>Aprende com meses de conversas reais. Você aprova cada lição.</h2>
+          <p class="texto-grande">A DENIA lê o histórico da sua empresa — principalmente como as suas atendentes respondem — e transforma isso em conhecimento: respostas padrão, preços praticados, quem faz cada serviço e o jeito de falar da equipe. Nada entra no atendimento sem a sua aprovação.</p>
+          <ul class="checks">
+            <li>Dados pessoais mascarados antes da análise</li>
+            <li>Sugestões com a evidência de onde apareceram</li>
+            <li>Treinamento versionado: nada se perde</li>
+          </ul>
+        </div>
+        <div class="contadores revelar">
+          <div class="contador-caixa vidro"><strong data-contar="6">0</strong><span>meses de histórico analisados</span></div>
+          <div class="contador-caixa vidro"><strong data-contar="100" data-sufixo="%">0</strong><span>das lições aprovadas por pessoas</span></div>
+          <div class="contador-caixa vidro"><strong data-contar="24" data-sufixo="/7">0</strong><span>atendimento contínuo</span></div>
+          <div class="contador-caixa vidro"><strong data-contar="0">0</strong><span>valores inventados: só preços confirmados</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="secao secao-alt" id="comando">
+      <div class="container">
+        <div class="secao-cabeca revelar">
+          <span class="sobretitulo">Centro de comando</span>
+          <h2>Cada empresa com o seu painel. Cada pessoa com o seu acesso.</h2>
+          <p>Uma plataforma para várias empresas, com dados separados, equipe por perfil e registro de tudo o que é feito.</p>
+        </div>
+        <div class="grade-recursos">
+          <article class="recurso vidro revelar"><h3>Painel por empresa</h3><p>Conversas, atendimentos, profissionais e saúde da IA de cada empresa, separados e protegidos.</p></article>
+          <article class="recurso vidro revelar"><h3>Treine pela plataforma</h3><p>Serviços, preços autorizados, regras e exemplos de conversa, com versões e confirmação antes de apagar.</p></article>
+          <article class="recurso vidro revelar"><h3>Equipe por perfil</h3><p>Proprietário, administrador, atendente e somente leitura. Cada um vê e faz apenas o que deve.</p></article>
+          <article class="recurso vidro revelar"><h3>Assuma qualquer conversa</h3><p>Um clique para a atendente assumir; outro para devolver à IA, que continua de onde parou.</p></article>
+          <article class="recurso vidro revelar"><h3>Seu sistema conectado</h3><p>Importe o cadastro de clientes do sistema que a equipe já usa, por planilha ou integração.</p></article>
+          <article class="recurso vidro revelar"><h3>Auditoria completa</h3><p>Quem mudou o treinamento, quem enviou cada mensagem e quando — tudo registrado.</p></article>
+        </div>
+      </div>
+    </section>
+
+    <section class="secao" id="como-funciona">
+      <div class="container">
+        <div class="secao-cabeca revelar">
+          <span class="sobretitulo">Como funciona</span>
+          <h2>Do primeiro "oi" ao serviço agendado.</h2>
+        </div>
+        <ol class="etapas">
+          <li class="etapa vidro revelar"><span class="etapa-num">01</span><h3>O cliente chama</h3><p>A DENIA entende o pedido, lê o histórico e pergunta apenas o que falta.</p></li>
+          <li class="etapa vidro revelar"><span class="etapa-num">02</span><h3>O especialista é consultado</h3><p>O pedido segue para o profissional da área, com as palavras do próprio cliente.</p></li>
+          <li class="etapa vidro revelar"><span class="etapa-num">03</span><h3>A proposta é confirmada</h3><p>Valor e disponibilidade chegam ao cliente somente depois de confirmados pelo profissional.</p></li>
+          <li class="etapa vidro revelar"><span class="etapa-num">04</span><h3>O serviço é agendado</h3><p>Com a confirmação final do profissional, o caso é registrado e a equipe é avisada.</p></li>
+        </ol>
+      </div>
+    </section>
+
+    <section class="secao secao-alt" id="seguranca">
+      <div class="container seguranca-grade">
+        <div class="secao-cabeca secao-cabeca-esquerda">
+          <span class="sobretitulo">Segurança</span>
+          <h2>Construída para operar com responsabilidade.</h2>
+          <p>A DENIA foi desenhada para agir apenas sobre fatos confirmados. Na dúvida, ela não age: chama a sua equipe.</p>
+        </div>
+        <ul class="lista-seguranca">
+          <li class="vidro"><strong>Ações confirmadas</strong><span>Nenhuma mensagem é dada como enviada sem a confirmação do WhatsApp.</span></li>
+          <li class="vidro"><strong>Dados protegidos</strong><span>Telefones e documentos de clientes e profissionais nunca são repassados automaticamente.</span></li>
+          <li class="vidro"><strong>Travas automáticas</strong><span>Limites de envio por contato e botão de pausa imediata para toda a operação.</span></li>
+          <li class="vidro"><strong>Acesso protegido</strong><span>Sessões criptografadas, bloqueio de tentativas repetidas e conexões sempre seguras.</span></li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="secao" id="planos">
+      <div class="container">
+        <div class="secao-cabeca revelar">
+          <span class="sobretitulo">Planos</span>
+          <h2>Escolha o ritmo da sua operação.</h2>
+          <p>Valores mensais. A implantação é acompanhada pela nossa equipe.</p>
+        </div>
+        <div class="grade-planos">
+          <article class="plano vidro revelar">
+            <h3>Start</h3>
+            <p class="plano-desc">Para começar a atender com IA.</p>
+            <p class="preco"><span>R$</span>690<small>/mês</small></p>
+            <ul>
+              <li>Atendimento com IA no WhatsApp</li>
+              <li>Memória de conversas e clientes</li>
+              <li>Atendimento humano integrado</li>
+              <li>Treinamento da IA</li>
+            </ul>
+          </article>
+          <article class="plano vidro revelar">
+            <h3>Pro</h3>
+            <p class="plano-desc">Para operar com uma rede de profissionais.</p>
+            <p class="preco"><span>R$</span>1.290<small>/mês</small></p>
+            <ul>
+              <li>Tudo do plano Start</li>
+              <li>Consulta a profissionais e orçamentos</li>
+              <li>Agendamento com confirmação</li>
+              <li>Alertas para a equipe</li>
+            </ul>
+          </article>
+          <article class="plano plano-destaque vidro revelar">
+            <span class="selo selo-info plano-selo">Mais escolhido</span>
+            <h3>Growth</h3>
+            <p class="plano-desc">Para crescer com dados e integrações.</p>
+            <p class="preco"><span>R$</span>1.890<small>/mês</small></p>
+            <ul>
+              <li>Tudo do plano Pro</li>
+              <li>Integração com seu sistema de cadastro</li>
+              <li>Relatórios diários com autoavaliação</li>
+              <li>Google Business e redes sociais <em>(em breve)</em></li>
+            </ul>
+          </article>
+          <article class="plano vidro revelar">
+            <h3>Elite</h3>
+            <p class="plano-desc">Para operações com várias frentes.</p>
+            <p class="preco"><span>R$</span>2.990<small>/mês</small></p>
+            <ul>
+              <li>Tudo do plano Growth</li>
+              <li>Várias unidades de negócio</li>
+              <li>Implantação e treinamento assistidos</li>
+              <li>Suporte prioritário</li>
+            </ul>
+          </article>
+        </div>
+        <div class="planos-acao">
+          <a class="btn btn-primario js-contato oculto" href="#planos">Falar com especialista</a>
+        </div>
+      </div>
+    </section>
+
+    <section class="secao secao-alt" id="perguntas">
+      <div class="container estreito">
+        <div class="secao-cabeca revelar">
+          <span class="sobretitulo">Perguntas frequentes</span>
+          <h2>Dúvidas comuns.</h2>
+        </div>
+        <div class="faq">
+          <details class="vidro"><summary>A DENIA substitui a minha equipe?</summary><p>Não. Ela trabalha ao lado da equipe: cuida do volume e das etapas repetitivas e chama um atendente sempre que a situação pede uma pessoa.</p></details>
+          <details class="vidro"><summary>O cliente percebe a troca entre IA e atendente?</summary><p>A conversa continua no mesmo WhatsApp. Quando um atendente responde, a DENIA pausa aquela conversa e retoma do ponto em que ele parou, sem repetir perguntas.</p></details>
+          <details class="vidro"><summary>A DENIA pode informar um valor errado?</summary><p>Ela só repassa valores escritos pelo profissional ou cadastrados no treinamento. Se houver qualquer dúvida, ela pergunta ao profissional ou chama a equipe.</p></details>
+          <details class="vidro"><summary>A DENIA aprende sozinha?</summary><p>Ela estuda o histórico e sugere o que aprender, mas nada passa a valer sem a aprovação de uma pessoa da sua empresa. Você pode editar ou rejeitar cada sugestão.</p></details>
+          <details class="vidro"><summary>Posso usar com mais de uma empresa?</summary><p>Sim. Cada empresa tem o seu painel, a sua equipe, a sua IA e os seus dados, totalmente separados.</p></details>
+          <details class="vidro"><summary>Funciona com o meu número atual?</summary><p>Sim. A DENIA usa a API oficial do WhatsApp Business e pode funcionar junto com o aplicativo que a sua equipe já usa.</p></details>
+        </div>
+      </div>
+    </section>
+
+    <section class="cta">
+      <div class="container">
+        <div class="cta-caixa vidro">
+          <h2>Pronto para colocar a sua operação no piloto inteligente?</h2>
+          <p>Conheça a DENIA funcionando com dados reais da sua empresa.</p>
+          <div class="hero-acoes">
+            <a class="btn btn-primario js-contato oculto" href="#planos">Solicitar demonstração</a>
+            <a class="btn btn-secundario" href="/entrar">Acessar a plataforma</a>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="rodape">
+    <div class="container rodape-linha">
+      <a class="marca" href="/"><img src="/assets/img/logo.svg" alt="" width="28" height="28"><span>DENIA</span></a>
+      <p>© <span id="ano">2026</span> DENIA. Todos os direitos reservados.</p>
+      <nav aria-label="Rodapé"><a href="#plataforma">Plataforma</a><a href="#seguranca">Segurança</a><a href="/entrar">Entrar</a></nav>
+    </div>
+  </footer>
+
+  <script src="/assets/js/site.js" defer></script>
+</body>
+</html>

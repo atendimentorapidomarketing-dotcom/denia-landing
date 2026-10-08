@@ -1,0 +1,7 @@
+{
+  "name": "denia-engine",
+  "version": "30.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "node --no-warnings --test test/cenarios.test.mjs" }
+}

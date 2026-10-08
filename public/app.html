@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Painel — DENIA</title>
+  <meta name="robots" content="noindex">
+  <meta name="theme-color" content="#04060c">
+  <link rel="icon" href="/assets/img/logo.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap">
+  <link rel="stylesheet" href="/assets/css/base.css">
+  <link rel="stylesheet" href="/assets/css/app.css">
+</head>
+<body class="app">
+  <aside class="lateral" id="lateral" aria-label="Menu do painel">
+    <a class="lateral-marca" href="#/painel"><img src="/assets/img/logo.svg" alt="" width="32" height="32"><span>DENIA</span></a>
+
+    <div class="empresa" id="empresa">
+      <span class="empresa-avatar" id="empresa-avatar" aria-hidden="true"></span>
+      <div class="empresa-info">
+        <span class="empresa-rotulo">Empresa</span>
+        <select class="empresa-select" id="empresa-select" aria-label="Escolher empresa"></select>
+      </div>
+    </div>
+
+    <nav class="lateral-nav" id="lateral-nav">
+      <p class="lateral-grupo">Visão geral</p>
+      <a href="#/painel" data-rota="painel"><svg viewBox="0 0 24 24"><path d="M3 13h8V3H3zM13 21h8v-8h-8zM3 21h8v-6H3zM13 11h8V3h-8z"/></svg>Painel</a>
+      <p class="lateral-grupo">Operação</p>
+      <a href="#/conversas" data-rota="conversas"><svg viewBox="0 0 24 24"><path d="M21 12a8.5 8.5 0 0 1-12.6 7.4L3 21l1.6-5.2A8.5 8.5 0 1 1 21 12z"/></svg>Conversas</a>
+      <a href="#/atendimentos" data-rota="atendimentos"><svg viewBox="0 0 24 24"><path d="M4 5h16M4 12h10M4 19h7"/><path d="m15 17 2 2 4-4"/></svg>Atendimentos</a>
+      <a href="#/profissionais" data-rota="profissionais"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 5.5a3 3 0 0 1 0 5.8M18.5 14.5A5.5 5.5 0 0 1 21.5 20"/></svg>Profissionais</a>
+      <p class="lateral-grupo">Inteligência</p>
+      <a href="#/treinamento" data-rota="treinamento"><svg viewBox="0 0 24 24"><path d="M12 3 2 8l10 5 10-5-10-5z"/><path d="M6 10.5V16c0 1.7 2.7 3 6 3s6-1.3 6-3v-5.5"/></svg>Treinar IA</a>
+      <a href="#/aprendizados" data-rota="aprendizados"><svg viewBox="0 0 24 24"><path d="M9.5 3a3.5 3.5 0 0 0-3.4 4.3A3.5 3.5 0 0 0 4 13.6 3.5 3.5 0 0 0 8 19a3 3 0 0 0 4 1.2V4.4A3.5 3.5 0 0 0 9.5 3z"/><path d="M14.5 3a3.5 3.5 0 0 1 3.4 4.3 3.5 3.5 0 0 1 2.1 6.3A3.5 3.5 0 0 1 16 19a3 3 0 0 1-4 1.2"/></svg>Aprendizados<b class="contador oculto" id="contador-sugestoes"></b></a>
+      <a href="#/clientes" data-rota="clientes"><svg viewBox="0 0 24 24"><path d="M4 4h16v16H4z"/><path d="M4 9h16M9 9v11"/></svg>Base de clientes</a>
+      <p class="lateral-grupo">Marketing</p>
+      <a href="#/google" data-rota="google"><svg viewBox="0 0 24 24"><path d="M12 21s-7-6.2-7-11.5a7 7 0 0 1 14 0C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/></svg>Google Business<em>Em breve</em></a>
+      <a href="#/social" data-rota="social"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="5"/><circle cx="12" cy="12" r="4"/><path d="M17.5 6.5h.01"/></svg>Redes sociais<em>Em breve</em></a>
+      <p class="lateral-grupo">Administração</p>
+      <a href="#/integracoes" data-rota="integracoes"><svg viewBox="0 0 24 24"><path d="M9 7H6a4 4 0 0 0 0 8h3M15 7h3a4 4 0 0 1 0 8h-3M8 11h8"/></svg>Integrações</a>
+      <a href="#/equipe" data-rota="equipe" data-minimo="ADMIN"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>Equipe</a>
+      <a href="#/auditoria" data-rota="auditoria" data-minimo="ADMIN"><svg viewBox="0 0 24 24"><path d="M12 8v4l3 2"/><circle cx="12" cy="12" r="9"/></svg>Auditoria</a>
+      <a href="#/empresas" data-rota="empresas" data-super="1" class="oculto"><svg viewBox="0 0 24 24"><path d="M3 21h18M5 21V7l7-4 7 4v14M9 21v-6h6v6"/></svg>Empresas</a>
+      <a href="#/conta" data-rota="conta"><svg viewBox="0 0 24 24"><path d="M12 2.5 4 6v6c0 4.7 3.4 8.6 8 9.5 4.6-.9 8-4.8 8-9.5V6l-8-3.5z"/></svg>Conta e segurança</a>
+    </nav>
+    <div class="lateral-rodape"><span class="ponto"></span><span id="versao">DENIA Platform</span></div>
+  </aside>
+  <div class="veu" id="veu"></div>
+
+  <div class="principal">
+    <header class="barra-topo">
+      <button class="icone-botao" id="abrir-menu" type="button" aria-label="Abrir menu" aria-controls="lateral" aria-expanded="false">
+        <svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+      </button>
+      <h1 id="titulo-pagina">Painel</h1>
+      <div class="barra-topo-direita">
+        <span class="selo" id="status-engine"><span class="ponto"></span>Verificando…</span>
+        <span class="usuario" id="usuario"></span>
+        <button class="btn btn-secundario btn-pequeno" id="sair" type="button">Sair</button>
+      </div>
+    </header>
+    <main class="conteudo" id="conteudo" tabindex="-1"></main>
+  </div>
+
+  <div class="avisos" id="avisos" aria-live="polite"></div>
+  <div class="modal oculto" id="modal" role="dialog" aria-modal="true" aria-labelledby="modal-titulo">
+    <div class="modal-caixa vidro">
+      <h2 id="modal-titulo"></h2>
+      <div id="modal-texto" class="modal-texto"></div>
+      <div class="modal-acoes">
+        <button class="btn btn-secundario" id="modal-cancelar" type="button">Cancelar</button>
+        <button class="btn btn-primario" id="modal-confirmar" type="button">Confirmar</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/assets/js/app.js" defer></script>
+</body>
+</html>
