@@ -206,8 +206,12 @@
     auditoria: { titulo: "Auditoria", render: paginaAuditoria, minimo: "ADMIN" },
     empresas: { titulo: "Empresas", render: paginaEmpresas, superAdmin: true },
     conta: { titulo: "Conta e segurança", render: paginaConta },
-    google: { titulo: "Google Business", render: el => emBreve(el, "Google Business", "Responder avaliações com o tom da sua empresa, publicar novidades e acompanhar a reputação — tudo com aprovação antes de publicar.") },
-    social: { titulo: "Redes sociais", render: el => emBreve(el, "Redes sociais", "Planejamento de publicações, respostas a comentários e mensagens no Instagram e no Facebook, com a mesma inteligência do atendimento.") }
+    whatsapp: { titulo: "WhatsApp", render: paginaWhatsapp },
+    instagram: { titulo: "Instagram", render: el => canalEmBreve(el, CANAIS.instagram) },
+    facebook: { titulo: "Facebook", render: el => canalEmBreve(el, CANAIS.facebook) },
+    google: { titulo: "Google Business", render: el => canalEmBreve(el, CANAIS.google) },
+    social: { titulo: "Instagram", render: el => canalEmBreve(el, CANAIS.instagram) },
+    contatos: { titulo: "Contatos do site", render: paginaContatos, superAdmin: true }
   };
 
   function rotaAtual() {
@@ -968,6 +972,69 @@
         window.location.replace("/entrar");
       }, "btn-perigo")));
     el.appendChild(h("div", { class: "grade grade-2" }, u.trocar_senha ? [senha] : [perfil, senha, sessoes]));
+  }
+
+  // ---------------------------------------------------------------------------
+  // Canais
+  // ---------------------------------------------------------------------------
+
+  async function paginaWhatsapp(el, _p, vivo) {
+    el.appendChild(cabeca("WhatsApp", "O canal principal da IA: atendimento aos clientes e conversa com os profissionais, pela API oficial do WhatsApp Business."));
+    if (!estado.org.conectada) { falha(el, new ErroApi("A IA desta empresa ainda não foi conectada.", 503, { codigo: "ENGINE_NAO_CONFIGURADO" })); return; }
+    const area = h("div", { class: "grade grade-2" }, h("div", { class: "esqueleto" }), h("div", { class: "esqueleto" }));
+    el.appendChild(area);
+    let s;
+    try { s = estado.status || await eng("status"); }
+    catch (e) { if (vivo()) falha(area, e); return; }
+    if (!vivo()) return;
+    const ok = v => v ? selo("Ativo", "ok") : selo("Pendente", "alerta");
+    const recebidas = (s.fila_24h || []).reduce((t, x) => t + Number(x.n || 0), 0);
+    const lim = s.limites_envio || {};
+    area.replaceChildren(
+      h("section", { class: "cartao vidro" }, h("h3", { text: "Conexão" }), h("p", { text: "Situação do número da empresa na API oficial." }),
+        h("ul", { class: "lista-saude" },
+          h("li", {}, "Número conectado (token da Meta)", ok(s.whatsapp_configurado)),
+          h("li", {}, "Assinatura das mensagens verificada", ok(s.assinatura_meta_verificada)),
+          h("li", {}, "Modelo aprovado para falar com profissionais", ok(s.template_prestador_configurado)),
+          h("li", {}, "Atendimento automático", s.pausa_geral ? selo("Pausado", "alerta") : selo("Ligado", "ok")))),
+      h("section", { class: "cartao vidro" }, h("h3", { text: "Movimento e proteções" }), h("p", { text: "Travas que impedem envios em excesso e custos inesperados com a Meta." }),
+        h("ul", { class: "lista-saude" },
+          h("li", {}, "Mensagens recebidas (24 horas)", h("strong", { text: numero(recebidas) })),
+          h("li", {}, "Mensagens seguidas do cliente", h("strong", { text: "uma resposta só" })),
+          lim.porTelefone2min ? h("li", {}, "Limite por contato", h("strong", { text: `${lim.porTelefone2min} a cada 2 min · ${lim.porTelefoneHora} por hora` })) : null,
+          h("li", {}, "Fora da janela de 24 horas", h("strong", { text: "só com modelo aprovado" }))),
+        h("div", { class: "acoes", style: "margin-top:16px" }, h("a", { class: "btn btn-primario btn-pequeno", href: "#/conversas" }, "Abrir conversas"), h("a", { class: "btn btn-secundario btn-pequeno", href: "#/painel" }, "Controle da IA"))));
+  }
+
+  const CANAIS = {
+    instagram: { nome: "Instagram", texto: "A mesma inteligência do WhatsApp respondendo mensagens diretas e comentários, com o tom da sua equipe.", itens: ["Respostas a mensagens diretas (Direct) com IA", "Respostas a comentários das publicações", "Encaminhamento para atendimento no WhatsApp", "Calendário de publicações com aprovação antes de postar"], requisito: "Conta profissional do Instagram ligada a uma página do Facebook." },
+    facebook: { nome: "Facebook", texto: "Mensagens do Messenger e comentários da página atendidos pela IA, com a equipe no controle.", itens: ["Atendimento no Messenger com IA", "Respostas a comentários da página", "Histórico unificado com o WhatsApp", "Relatórios de atendimento por canal"], requisito: "Página do Facebook da empresa e acesso de administrador." },
+    google: { nome: "Google Business", texto: "Reputação no Google cuidada todos os dias: avaliações respondidas e perfil sempre atualizado.", itens: ["Respostas às avaliações com o tom da empresa, com aprovação", "Alertas de avaliações negativas para a equipe", "Publicação de novidades e ofertas", "Acompanhamento de nota e volume de avaliações"], requisito: "Perfil da empresa no Google verificado." }
+  };
+  function canalEmBreve(el, c) {
+    el.appendChild(h("section", { class: "boas-vindas" }, h("div", { class: "orbe" }), selo("Em desenvolvimento", "info"), h("h2", { text: c.nome }), h("p", { text: c.texto })));
+    el.appendChild(h("section", { class: "grade grade-2" },
+      h("div", { class: "cartao vidro" }, h("h3", { text: "O que a DENIA vai fazer" }), h("ul", { class: "lista-saude" }, c.itens.map(t => h("li", {}, t, selo("Em breve", "info"))))),
+      h("div", { class: "cartao vidro" }, h("h3", { text: "Para conectar" }), h("p", { text: c.requisito }),
+        h("p", { class: "nota", text: "Quando este canal for liberado, a conexão será feita aqui mesmo, com um clique, e tudo o que a IA já aprendeu no WhatsApp passa a valer também neste canal." }),
+        h("div", { class: "acoes", style: "margin-top:14px" }, h("button", { class: "btn btn-secundario", type: "button", disabled: true }, "Conectar " + c.nome)))));
+  }
+
+  async function paginaContatos(el, _p, vivo) {
+    el.appendChild(cabeca("Contatos do site", "Mensagens enviadas pela página Fale conosco."));
+    const area = h("div", {}, carregando());
+    el.appendChild(area);
+    let lista;
+    try { lista = (await api("/api/admin/contatos")).contatos || []; }
+    catch (e) { if (vivo()) falha(area, e); return; }
+    if (!vivo()) return;
+    area.replaceChildren(lista.length ? h("div", { class: "grade" }, lista.map(c => h("article", { class: "sugestao vidro" },
+      h("div", { class: "sugestao-topo" }, h("strong", { text: c.nome }), c.lido ? null : selo("Novo", "info"), h("span", { class: "selo", text: c.assunto || "Contato" })),
+      h("p", { style: "margin:0;color:var(--texto-2);white-space:pre-wrap", text: c.mensagem }),
+      h("p", { class: "evidencia", text: [c.email, c.telefone, c.empresa, quando(c.criado_ms)].filter(Boolean).join(" · ") }),
+      h("div", { class: "acoes" }, h("a", { class: "btn btn-secundario btn-pequeno", href: "mailto:" + encodeURIComponent(c.email) }, "Responder por e-mail"),
+        c.telefone && String(c.telefone).replace(/\D/g, "").length >= 10 ? h("a", { class: "btn btn-secundario btn-pequeno", href: "https://wa.me/" + (String(c.telefone).replace(/\D/g, "").length <= 11 ? "55" : "") + String(c.telefone).replace(/\D/g, ""), target: "_blank", rel: "noopener noreferrer" }, "Chamar no WhatsApp") : null))))
+      : h("div", { class: "cartao vidro" }, vazio("Nenhum contato ainda", "As mensagens da página Fale conosco aparecem aqui.")));
   }
 
   function emBreve(el, titulo, texto) {

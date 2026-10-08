@@ -4,3 +4,5 @@ Disallow: /app
 Disallow: /entrar
 Disallow: /cadastro
 Disallow: /api/
+Disallow: /recuperar
+Disallow: /redefinir

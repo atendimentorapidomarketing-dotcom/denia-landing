@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Criar conta — DENIA</title>
+  <title>Recuperar acesso — DENIA</title>
   <meta name="robots" content="noindex">
   <meta name="theme-color" content="#04060c">
   <link rel="icon" href="/assets/img/logo.svg" type="image/svg+xml">
@@ -16,7 +16,7 @@
   <link rel="stylesheet" href="/assets/css/site.css">
   <link rel="stylesheet" href="/assets/css/entrar.css">
 </head>
-<body class="auth" data-tela="cadastro">
+<body class="auth" data-tela="recuperar">
   <canvas class="rede" id="rede" aria-hidden="true"></canvas>
   <div class="luz-cursor" id="luz-cursor" aria-hidden="true"></div>
   <main class="auth-grade">
@@ -36,29 +36,15 @@
     <section class="auth-lado">
       <div class="auth-caixa vidro">
         <a class="entrar-marca auth-marca-movel" href="/"><img src="/assets/img/logo.svg" alt="" width="36" height="36"><span>DENIA</span></a>
-        <h1 id="titulo">Crie a conta da sua empresa</h1>
-        <p class="entrar-sub">Em menos de um minuto você tem o seu próprio centro de comando.</p>
-        <form id="form" class="entrar-form" data-acao="cadastro" novalidate>
-          <div class="linha-dupla">
-            <div class="campo"><label for="nome">Seu nome</label><input class="entrada" id="nome" name="nome" autocomplete="name" maxlength="120" required></div>
-            <div class="campo"><label for="empresa">Empresa</label><input class="entrada" id="empresa" name="empresa" autocomplete="organization" maxlength="120" required></div>
-          </div>
+        <h1 id="titulo">Esqueceu a senha?</h1>
+        <p class="entrar-sub">Informe o e-mail da sua conta. Se ele estiver cadastrado, você recebe as instruções para criar uma senha nova.</p>
+        <form id="form" class="entrar-form" data-acao="recuperar" novalidate>
           <div class="campo"><label for="email">E-mail</label><input class="entrada" id="email" name="email" type="email" autocomplete="email" inputmode="email" required></div>
-        <div class="campo">
-          <div class="campo-linha"><label for="senha">Senha</label></div>
-          <div class="senha-caixa">
-            <input class="entrada" id="senha" name="senha" type="password" autocomplete="new-password" required minlength="10">
-            <button class="senha-ver" type="button" data-ver="senha" aria-label="Mostrar senha" aria-pressed="false">Mostrar</button>
-          </div>
-          <p class="entrar-dica oculto" data-caps="senha">Caps Lock está ativado.</p>
-          <div class="forca" aria-hidden="true"><i id="forca"></i></div><p class="entrar-dica" id="forca-texto">Mínimo de 10 caracteres, com letras e números.</p>
-        </div>
-          <label class="lembrar"><input type="checkbox" id="aceite" name="aceite" required> Li e aceito os <a href="/termos" target="_blank" rel="noopener">Termos de uso</a> e a <a href="/privacidade" target="_blank" rel="noopener">Política de privacidade</a></label>
         <p class="entrar-erro oculto" id="erro" role="alert"></p>
         <p class="entrar-ok oculto" id="ok" role="status"></p>
-          <button class="btn btn-primario" id="botao" type="submit">Criar conta</button>
+          <button class="btn btn-primario" id="botao" type="submit">Enviar instruções</button>
         </form>
-        <p class="entrar-troca">Já tem conta? <a href="/entrar">Entrar</a></p>
+        <p class="entrar-troca">Lembrou? <a href="/entrar">Voltar para entrar</a></p>
       </div>
       <nav class="auth-links" aria-label="Links"><a href="/">Voltar ao site</a><a href="/privacidade">Privacidade</a><a href="/termos">Termos</a><a href="/contato">Ajuda</a></nav>
     </section>

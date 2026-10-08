@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Política de privacidade — DENIA</title>
+  <meta name="description" content="Como a DENIA trata dados pessoais de empresas, equipes e clientes.">
+  <meta name="theme-color" content="#04060c">
+  <link rel="icon" href="/assets/img/logo.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap">
+  <link rel="stylesheet" href="/assets/css/base.css">
+  <link rel="stylesheet" href="/assets/css/site.css">
+  <link rel="stylesheet" href="/assets/css/paginas.css">
+</head>
+<body class="interna">
+  <a class="sr-only" href="#conteudo">Ir para o conteúdo</a>
+  <canvas class="rede" id="rede" aria-hidden="true"></canvas>
+  <div class="luz-cursor" id="luz-cursor" aria-hidden="true"></div>
+
+  <header class="topo" id="topo">
+    <div class="container topo-linha">
+      <a class="marca" href="/" aria-label="DENIA — página inicial">
+        <img src="/assets/img/logo.svg" alt="" width="34" height="34">
+        <span>DENIA</span>
+      </a>
+      <nav class="menu" id="menu" aria-label="Navegação principal">
+        <a href="/#plataforma">Plataforma</a>
+        <a href="/#demonstracao">Demonstração</a>
+        <a href="/#como-funciona">Como funciona</a>
+        <a href="/#seguranca">Segurança</a>
+        <a href="/#planos">Planos</a>
+        <a href="/#perguntas">Perguntas</a>
+        <a href="/contato">Contato</a>
+      </nav>
+      <div class="topo-acoes">
+        <a class="btn btn-secundario btn-pequeno" href="/entrar">Entrar</a>
+        <a class="btn btn-primario btn-pequeno topo-criar" href="/cadastro">Criar conta</a>
+        <a class="btn btn-primario btn-pequeno js-contato oculto" href="/#planos">Falar com especialista</a>
+        <button class="menu-botao" id="menu-botao" type="button" aria-label="Abrir menu" aria-expanded="false" aria-controls="menu">
+          <span></span><span></span><span></span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main id="conteudo" class="pagina">
+    <section class="pagina-topo">
+      <div class="container estreito">
+        <span class="sobretitulo">Privacidade</span>
+        <h1>Política de privacidade</h1>
+        <p>Como tratamos os dados da sua empresa, da sua equipe e dos seus clientes, em linha com a Lei Geral de Proteção de Dados (Lei nº 13.709/2018).</p>
+      </div>
+    </section>
+    <article class="container estreito texto-legal vidro">
+      <h2>1. Quem somos</h2>
+      <p>A DENIA é uma plataforma de inteligência artificial para atendimento e operação de empresas. Nesta política, "nós" é a DENIA e "você" é a empresa cliente e as pessoas que usam a plataforma.</p>
+      <h2>2. Papéis na LGPD</h2>
+      <p>Em relação aos dados dos clientes finais atendidos pela sua empresa, a sua empresa é a controladora e a DENIA atua como operadora, tratando esses dados somente para prestar o serviço contratado. Em relação aos dados de cadastro e de uso da plataforma, a DENIA é a controladora.</p>
+      <h2>3. Dados que tratamos</h2>
+      <ul>
+        <li><strong>Conta:</strong> nome, e-mail, empresa e senha (guardada somente de forma cifrada, que nem nós conseguimos ler).</li>
+        <li><strong>Atendimento:</strong> mensagens trocadas pelo WhatsApp, dados informados pelos clientes finais e histórico dos atendimentos.</li>
+        <li><strong>Uso e segurança:</strong> registros de acesso, endereço IP e ações feitas no painel (auditoria).</li>
+        <li><strong>Contato:</strong> o que você nos envia pelo formulário de contato.</li>
+      </ul>
+      <h2>4. Para que usamos</h2>
+      <ul>
+        <li>Prestar o atendimento automatizado e as funções do painel.</li>
+        <li>Treinar a IA da sua empresa somente com conteúdo aprovado pela própria empresa.</li>
+        <li>Proteger contas, evitar fraudes e cumprir obrigações legais.</li>
+        <li>Responder contatos e oferecer suporte.</li>
+      </ul>
+      <p>Não vendemos dados pessoais. Os dados de uma empresa nunca são usados para atender outra empresa.</p>
+      <h2>5. Com quem compartilhamos</h2>
+      <p>Somente com fornecedores necessários para o serviço funcionar: infraestrutura em nuvem (Cloudflare), mensagens (WhatsApp Business, da Meta) e processamento de linguagem por inteligência artificial. Cada um recebe apenas o mínimo necessário.</p>
+      <h2>6. Segurança</h2>
+      <p>Conexões criptografadas (HTTPS), senhas cifradas, tokens de integração cifrados, controle de acesso por perfil, bloqueio após tentativas erradas e registro de auditoria. Dados de documentos (como CPF) não são repassados automaticamente a terceiros.</p>
+      <h2>7. Por quanto tempo guardamos</h2>
+      <p>Enquanto a conta estiver ativa ou pelo prazo exigido por lei. Ao encerrar o contrato, os dados podem ser exportados e depois excluídos, mediante pedido.</p>
+      <h2>8. Seus direitos</h2>
+      <p>Você pode pedir confirmação, acesso, correção, portabilidade, anonimização ou exclusão de dados, além de informações sobre compartilhamento. Para isso, use a página <a href="/contato">Fale conosco</a>.</p>
+      <h2>9. Atualizações</h2>
+      <p>Esta política pode ser atualizada. A versão em vigor fica sempre nesta página.</p>
+      <p class="texto-legal-data">Última atualização: outubro de 2026.</p>
+    </article>
+  </main>
+
+  <footer class="rodape">
+    <div class="container rodape-grade">
+      <div class="rodape-marca">
+        <a class="marca" href="/"><img src="/assets/img/logo.svg" alt="" width="30" height="30"><span>DENIA</span></a>
+        <p>Inteligência artificial operacional para empresas que atendem pelo WhatsApp.</p>
+      </div>
+      <nav class="rodape-coluna" aria-label="Plataforma"><h3>Plataforma</h3><a href="/#plataforma">Recursos</a><a href="/#demonstracao">Demonstração</a><a href="/#aprende">Aprendizado</a><a href="/#comando">Centro de comando</a></nav>
+      <nav class="rodape-coluna" aria-label="Empresa"><h3>Empresa</h3><a href="/#como-funciona">Como funciona</a><a href="/#planos">Planos</a><a href="/#perguntas">Perguntas frequentes</a></nav>
+      <nav class="rodape-coluna" aria-label="Confiança"><h3>Confiança</h3><a href="/#seguranca">Segurança</a><a href="/privacidade">Privacidade e LGPD</a><a href="/termos">Termos de uso</a><a href="/contato">Fale conosco</a><a href="/entrar">Acessar a plataforma</a></nav>
+    </div>
+    <div class="container rodape-base">
+      <p>© <span id="ano">2026</span> DENIA. Todos os direitos reservados.</p>
+      <p>Português (Brasil)</p>
+    </div>
+  </footer>
+
+  <script src="/assets/js/site.js" defer></script>
+</body>
+</html>
