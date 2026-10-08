@@ -22,7 +22,9 @@
 
 import { apiMarketing, apiAssistente } from "./marketing.js";
 
-const VERSAO = "2.6.0";
+const VERSAO = "2.7.0";
+// WhatsApp da Central de Atendimento (botão flutuante do site).
+const WHATSAPP_CENTRAL = "5521975469162";
 const SCHEMA = "2.4.0-a";
 const COOKIE = "__Host-denia_sessao";
 const SESSAO_MS = 8 * 60 * 60 * 1000;
@@ -582,6 +584,19 @@ async function proxyEngine(request, env, sessao, orgId, papel, caminho) {
   }
 }
 
+// Chave da OpenAI: a colada em Integrações (cifrada no banco) ou o secret OPENAI_API_KEY.
+async function chaveIA(env, orgId) {
+  const salva = (await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave=?").bind("openai_org_" + orgId).first().catch(() => null))?.valor;
+  const daPlataforma = salva ? await decifrar(env, salva) : "";
+  if (daPlataforma) return { chave: daPlataforma, origem: "plataforma" };
+  const doSecret = String(env.OPENAI_API_KEY || "").trim();
+  return { chave: doSecret, origem: doSecret ? "cloudflare" : "" };
+}
+async function comIA(env, orgId) {
+  const { chave } = await chaveIA(env, orgId);
+  return chave ? Object.assign(Object.create(env), { OPENAI_API_KEY: chave }) : env;
+}
+
 // O que a DENIA sabe da empresa quando conversa com a equipe no painel.
 async function contextoAssistente(env, orgId) {
   const o = await env.DB.prepare("SELECT nome FROM plt_organizacoes WHERE id=?").bind(orgId).first();
@@ -589,16 +604,17 @@ async function contextoAssistente(env, orgId) {
   const con = await conexaoDa(env, orgId).catch(() => null);
   if (con?.token) {
     try {
-      const st = (await chamarEngine(con, "GET", "status")).dados || {};
+      const pega = (c, q) => chamarEngine(con, "GET", c, null, q).then(r => r.dados).catch(() => null);
+      const [st0, cv, ap, tr] = await Promise.all([pega("status"), pega("conversations", { limit: "15" }), pega("learning"), pega("training")]);
+      if (!st0) throw new Error("sem status");
+      const st = st0;
       const soma = (l, f) => (l || []).filter(f).reduce((t, x) => t + Number(x.n || 0), 0);
       linhas.push(`IA do WhatsApp: ${st.pausa_geral ? "PAUSADA" : st.ok ? "funcionando" : "com alertas"} (versão ${st.versao || "?"}).`);
       linhas.push(`Mensagens recebidas nas últimas 24 h: ${soma(st.fila_24h, () => true)}.`);
       linhas.push(`Casos (30 dias) por etapa: ${(st.casos_por_etapa || []).map(x => `${x.etapa}=${x.n}`).join(", ") || "nenhum"}.`);
-      const conv = (await chamarEngine(con, "GET", "conversations", null, { limit: "15" })).dados?.conversas || [];
+      const conv = cv?.conversas || [];
       if (conv.length) linhas.push("Conversas mais recentes: " + conv.slice(0, 15).map(c => `${c.nome || "cliente"} (${String(c.ultima_mensagem || "").slice(0, 60)})${c.ia_pausada ? " [com a equipe]" : ""}`).join("; ") + ".");
-      const ap = (await chamarEngine(con, "GET", "learning")).dados;
       if (ap?.sugestoes) linhas.push(`Aprendizados aguardando aprovação: ${ap.sugestoes.PENDENTE || 0}.`);
-      const tr = (await chamarEngine(con, "GET", "training")).dados;
       if (tr?.dados) linhas.push(`TREINAMENTO ATUAL DA IA DO WHATSAPP (versão ${tr.versao}; campos: instrucoes, servicos, regras, precos, procedimentos, informacoes, exemplos):\n` +
         ["instrucoes", "servicos", "regras", "precos", "procedimentos", "informacoes", "exemplos"].map(k => `- ${k}: ${String(tr.dados[k] || "(vazio)").replace(/\s+/g, " ").slice(0, 700)}`).join("\n"));
     } catch (e) { linhas.push("IA do WhatsApp: não respondeu agora."); }
@@ -622,17 +638,48 @@ async function apiOrg(request, env, sessao, orgId, resto) {
   const metodo = request.method;
   if (resto.startsWith("engine/")) return proxyEngine(request, env, sessao, orgId, papel, resto.slice(7));
   const kit = { json, lerCorpo, txt, pode, agora, auditar, sessao };
-  if (resto.startsWith("mk/")) return apiMarketing(request, env, kit, orgId, papel, resto.slice(3));
+  if (resto === "ia/chave" && metodo === "GET") {
+    const k = await chaveIA(env, orgId);
+    return json({ configurada: Boolean(k.chave), origem: k.origem, final: k.chave && pode(papel, "ADMIN") ? k.chave.slice(-4) : "" });
+  }
+  if (resto === "ia/chave" && metodo === "POST") {
+    if (!pode(papel, "ADMIN")) return json({ erro: "Somente administradores podem mudar a chave da IA." }, 403);
+    const { corpo, erro } = await lerCorpo(request);
+    if (erro) return erro;
+    const chave = String(corpo.chave || "").replace(/\s+/g, "");
+    if (corpo.remover) await env.DB.prepare("DELETE FROM plt_meta WHERE chave=?").bind("openai_org_" + orgId).run();
+    else {
+      if (!/^sk-[A-Za-z0-9_\-]{20,300}$/.test(chave)) return json({ erro: "Essa não parece uma chave da OpenAI. Ela começa com sk- (copie em platform.openai.com → API keys)." }, 400);
+      await env.DB.prepare("INSERT OR REPLACE INTO plt_meta(chave,valor) VALUES(?,?)").bind("openai_org_" + orgId, await cifrar(env, chave)).run();
+    }
+    await auditar(env, request, sessao, orgId, "INTEGRACAO", corpo.remover ? "Chave da OpenAI removida" : `Chave da OpenAI salva (final ${chave.slice(-4)})`);
+    return json({ ok: true });
+  }
+  if (resto === "ia/chave/testar" && metodo === "POST") {
+    if (!pode(papel, "ADMIN")) return json({ erro: "Sem permissão." }, 403);
+    const { chave } = await chaveIA(env, orgId);
+    if (!chave) return json({ ok: false, erro: "Nenhuma chave salva ainda." });
+    try {
+      const r = await fetch("https://api.openai.com/v1/models", { headers: { authorization: `Bearer ${chave}` }, signal: AbortSignal.timeout(15000) });
+      if (r.ok) return json({ ok: true });
+      const d = await r.json().catch(() => ({}));
+      const msg = r.status === 401 ? "A OpenAI recusou a chave (inválida ou apagada). Crie outra em platform.openai.com → API keys." :
+        r.status === 429 ? "A chave funciona, mas a conta da OpenAI está sem crédito ou no limite. Adicione crédito em platform.openai.com → Billing." :
+          `A OpenAI respondeu ${r.status}: ${txt(d?.error?.message, 160)}`;
+      return json({ ok: false, erro: msg });
+    } catch (e) { return json({ ok: false, erro: "Não consegui falar com a OpenAI: " + txt(e?.message, 120) }); }
+  }
+  if (resto.startsWith("mk/")) return apiMarketing(request, await comIA(env, orgId), kit, orgId, papel, resto.slice(3));
   if (resto.startsWith("assistente/")) {
     // A DENIA age pelo comando de voz usando as mesmas rotas (e permissões) do painel.
     const interno = (base) => async (metodo, caminho, corpo) => {
       const req = new Request(new URL(`/api/orgs/${orgId}/${base}/${caminho}`, request.url), { method: metodo, headers: { "content-type": "application/json", origin: new URL(request.url).origin }, body: metodo === "POST" ? JSON.stringify(corpo || {}) : undefined });
       const rota = caminho.split("?")[0];
-      const r = base === "mk" ? await apiMarketing(req, env, kit, orgId, papel, rota) : await proxyEngine(req, env, sessao, orgId, papel, rota);
+      const r = base === "mk" ? await apiMarketing(req, await comIA(env, orgId), kit, orgId, papel, rota) : await proxyEngine(req, env, sessao, orgId, papel, rota);
       return { status: r.status, dados: await r.json().catch(() => ({})) };
     };
     const ctx = resto === "assistente/conversa" ? await contextoAssistente(env, orgId) : { empresa: "", dados: "" };
-    return apiAssistente(request, env, kit, orgId, papel, resto, { ...ctx, mk: interno("mk"), engine: interno("engine") });
+    return apiAssistente(request, await comIA(env, orgId), kit, orgId, papel, resto, { ...ctx, mk: interno("mk"), engine: interno("engine") });
   }
 
   if (resto === "membros" && metodo === "GET") {
@@ -775,6 +822,7 @@ async function api(request, env, caminho) {
   if (caminho === "/api/publico" && metodo === "GET") {
     let whatsapp = String(env.CONTATO_WHATSAPP || "").replace(/\D/g, "");
     if (!whatsapp) whatsapp = String((await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave='whatsapp_site'").first().catch(() => null))?.valor || "");
+    if (!whatsapp) whatsapp = WHATSAPP_CENTRAL;
     const email = String(env.CONTATO_EMAIL || "").trim();
     return json({ whatsapp: whatsapp.length >= 10 ? whatsapp : "", email: emailValido(email) ? email : "", versao: VERSAO });
   }

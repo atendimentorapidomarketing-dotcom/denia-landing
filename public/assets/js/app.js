@@ -44,6 +44,7 @@
   };
 
   function aviso(texto, tipo) {
+    if (tipo === "erro" && piloto.ativo) piloto.erros.push(texto);
     const el = h("div", { class: "aviso" + (tipo ? " aviso-" + tipo : ""), role: tipo === "erro" ? "alert" : "status", text: texto });
     $("avisos").appendChild(el);
     setTimeout(() => el.remove(), tipo === "erro" ? 7000 : 4200);
@@ -160,7 +161,23 @@
     if (!r.ok) throw new ErroApi((dados && dados.erro) || "Algo deu errado. Tente novamente.", r.status, dados);
     return dados || {};
   }
-  const eng = (caminho, op) => api(`/api/orgs/${estado.org.id}/engine/${caminho}`, op);
+  // Respostas do Engine guardadas por alguns segundos: voltar a uma tela é instantâneo.
+  const cacheEng = new Map();
+  async function eng(caminho, op) {
+    const url = `/api/orgs/${estado.org.id}/engine/${caminho}`;
+    if (op && op.metodo && op.metodo !== "GET") { cacheEng.clear(); cacheConversa.clear(); return api(url, op); }
+    const c = cacheEng.get(url);
+    if (c && !(op && op.fresco) && Date.now() - c.em < 25000) return c.dados;
+    const d = await api(url, op);
+    cacheEng.set(url, { em: Date.now(), dados: d });
+    if (cacheEng.size > 60) cacheEng.delete(cacheEng.keys().next().value);
+    return d;
+  }
+  // Lista de conversas guardada na aba (some ao fechar o navegador) para abrir na hora.
+  const sessao = {
+    ler(k) { try { return JSON.parse(sessionStorage.getItem(k) || "null"); } catch { return null; } },
+    gravar(k, v) { try { sessionStorage.setItem(k, JSON.stringify(v)); } catch { /* sem espaço ou bloqueado */ } }
+  };
   const org = (caminho, op) => api(`/api/orgs/${estado.org.id}/${caminho}`, op);
   function falha(el, e) {
     const conectar = e && e.dados && e.dados.codigo === "ENGINE_NAO_CONFIGURADO";
@@ -251,6 +268,9 @@
       return;
     }
     el.style.animation = "none"; void el.offsetWidth; el.style.animation = "";
+    if (estado.iaLigada === false && nome !== "integracoes") el.appendChild(h("div", { class: "faixa-ia", role: "alert" },
+      h("span", {}, h("strong", { text: "A inteligência da DENIA está desligada. " }), "Sem ela não dá para criar posts e imagens nem conversar por voz. Falta só colar a chave da OpenAI."),
+      pode("ADMIN") ? h("a", { class: "btn btn-primario btn-pequeno", href: "#/integracoes" }, "Colar a chave agora") : null));
     try { await rota.render(el, param, () => id === estado.render); }
     catch (e) { if (id === estado.render) falha(el, e); }
   }
@@ -315,6 +335,10 @@
     } catch { if (estado.org && estado.org.id === alvo) marcar("IA indisponível", "erro"); }
   }
 
+  async function verificarIa() {
+    if (!estado.org) { estado.iaLigada = null; return; }
+    try { estado.iaLigada = Boolean((await org("ia/chave")).configurada); } catch { estado.iaLigada = null; }
+  }
   async function recarregarEu(manterId) {
     estado.eu = await api("/api/eu");
     escolherEmpresa(manterId || (estado.org && estado.org.id) || armazenamento.ler("denia_empresa"));
@@ -326,10 +350,17 @@
     const u = estado.eu.usuario;
     $("usuario").textContent = u.nome || u.email;
     $("versao").textContent = "DENIA Platform " + estado.eu.versao;
-    $("empresa-select").addEventListener("change", e => { escolherEmpresa(e.target.value); navegar(); });
+    $("empresa-select").addEventListener("change", async e => { escolherEmpresa(e.target.value); await verificarIa(); navegar(); });
     window.addEventListener("hashchange", navegar);
     iniciarAssistente();
+    await verificarIa();
     navegar();
+    // Adianta a lista de conversas enquanto a pessoa olha o painel.
+    setTimeout(() => {
+      if (!estado.org || !estado.org.conectada || (estado.cacheConversas && estado.cacheConversas.org === estado.org.id)) return;
+      const orgId = estado.org.id;
+      eng("conversations?limit=80").then(r => { estado.cacheConversas = { org: orgId, lista: r.conversas || [], em: Date.now() }; sessao.gravar("denia_conversas_" + orgId, estado.cacheConversas); }).catch(() => {});
+    }, 1200);
   }
 
   // ---------------------------------------------------------------------------
@@ -427,12 +458,13 @@
         h("span", { text: quando(c.ultima_mensagem_em) }))) : [vazio("Nenhuma conversa", q ? "Nada encontrado para essa busca." : "As conversas do WhatsApp aparecem aqui.", ICONES.conversa)]));
     };
     const carregarLista = async (forcar) => {
-      const cache = estado.cacheConversas;
-      if (!forcar && cache && cache.org === orgId && Date.now() - cache.em < 120000) { lista = cache.lista; desenhar(); if (Date.now() - cache.em < 20000) return; }
+      const cache = estado.cacheConversas && estado.cacheConversas.org === orgId ? estado.cacheConversas : sessao.ler("denia_conversas_" + orgId);
+      if (!forcar && cache && cache.lista) { lista = cache.lista; desenhar(); if (Date.now() - cache.em < 15000) return; }
       try {
-        const nova = (await eng("conversations?limit=80")).conversas || [];
+        const nova = (await eng("conversations?limit=80", { fresco: true })).conversas || [];
         if (!grade.isConnected) return;
         lista = nova; estado.cacheConversas = { org: orgId, lista: nova, em: Date.now() };
+        sessao.gravar("denia_conversas_" + orgId, estado.cacheConversas);
         desenhar();
       } catch (e) { if (grade.isConnected && !lista.length) falha(itens, e); }
     };
@@ -453,12 +485,26 @@
     if (!vivo()) return;
   }
 
-  async function abrirConversa(painel, id, vivo) {
-    painel.replaceChildren(carregando());
-    let d;
-    try { d = await eng("conversations/" + encodeURIComponent(id)); }
-    catch (e) { if (vivo()) painel.replaceChildren(vazio("Não foi possível abrir", e.message)); return; }
+  const cacheConversa = new Map();
+  async function abrirConversa(painel, id, vivo, jaTem) {
+    // Mostra na hora o que já foi carregado e atualiza por trás.
+    const guardada = !jaTem && cacheConversa.get(estado.org.id + ":" + id);
+    if (guardada) { desenharConversa(painel, id, vivo, guardada); }
+    else if (!jaTem) painel.replaceChildren(carregando());
+    let d = jaTem;
+    if (!d) {
+      try { d = await eng("conversations/" + encodeURIComponent(id), { fresco: true }); }
+      catch (e) { if (vivo() && !guardada) painel.replaceChildren(vazio("Não foi possível abrir", e.message)); return; }
+      cacheConversa.set(estado.org.id + ":" + id, d);
+      if (cacheConversa.size > 40) cacheConversa.delete(cacheConversa.keys().next().value);
+      if (guardada && JSON.stringify(guardada) === JSON.stringify(d)) return;
+    }
     if (!vivo()) return;
+    desenharConversa(painel, id, vivo, d);
+  }
+  function desenharConversa(painel, id, vivo, d) {
+    const rascunho = painel.dataset.conversa === String(id) ? (painel.querySelector(".compor textarea") || {}).value || "" : "";
+    painel.dataset.conversa = String(id);
     const msgs = h("div", { class: "mensagens", "aria-live": "polite" }, (d.mensagens || []).map(m => {
       const saida = String(m.direcao).toUpperCase() === "SAIDA", humano = String(m.origem).toUpperCase() === "HUMANO";
       return h("div", { class: "msg " + (saida ? "msg-saida" + (humano ? " msg-humano" : "") : "msg-entrada") }, m.conteudo || "[sem texto]", h("small", { text: (saida ? (humano ? "Equipe · " : "DENIA · ") : "") + quando(m.criado_em) }));
@@ -487,6 +533,7 @@
           abrirConversa(painel, id, vivo);
         } catch (e) { aviso(e.message, "erro"); }
       }, "btn-primario");
+      if (rascunho) texto.value = rascunho;
       texto.addEventListener("keydown", e => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); enviar.click(); } });
       filhos.push(h("div", { class: "compor" }, texto, enviar));
     }
@@ -843,6 +890,29 @@
           h("li", {}, "Cole o endereço e o mesmo token aqui, salve e clique em Testar conexão."))));
 
     const s = estado.status;
+    // Chave da OpenAI (liga a criação de posts, imagens e a voz da DENIA).
+    let k = { configurada: false };
+    try { k = await org("ia/chave"); } catch { /* segue sem */ }
+    if (!vivo()) return;
+    const chaveIn = h("input", { class: "entrada", type: "password", placeholder: k.configurada ? "Chave guardada · cole aqui para trocar" : "Cole aqui a chave (começa com sk-)", readOnly: !editar, autocomplete: "new-password", spellcheck: "false" });
+    const resIa = h("div", {});
+    const testarIa = async () => {
+      resIa.replaceChildren(carregando("Testando a chave…"));
+      try { const r = await org("ia/chave/testar", { metodo: "POST", corpo: {} }); resIa.replaceChildren(h("p", { class: r.ok ? "nota" : "nota nota-alerta", text: r.ok ? "Chave funcionando. Posts, imagens e a voz da DENIA estão ligados." : r.erro })); }
+      catch (e) { resIa.replaceChildren(h("p", { class: "nota nota-alerta", text: e.message })); }
+    };
+    const ia = h("section", { class: "cartao vidro formulario", id: "cartao-openai" },
+      h("div", { class: "sugestao-topo" }, h("h3", { style: "margin:0;margin-right:auto", text: "Inteligência da DENIA (OpenAI)" }), k.configurada ? selo("Ligada", "ok") : selo("Desligada", "erro")),
+      h("p", { style: "margin:0;color:var(--texto-2);font-size:14px", text: "Liga a criação de posts e imagens, a voz da DENIA e os comandos por voz. A chave fica cifrada e nunca aparece de novo no navegador." }),
+      campo("Chave da OpenAI", chaveIn, "Em platform.openai.com → API keys → Create new secret key. Copie e cole aqui."),
+      k.configurada ? h("p", { class: "nota", text: `Chave em uso${k.final ? ": termina em …" + k.final : ""} · ${k.origem === "plataforma" ? "salva aqui na plataforma" : "secret OPENAI_API_KEY da Cloudflare"}.` }) : null,
+      editar ? h("div", { class: "acoes" },
+        botao("Salvar chave", async () => {
+          try { await org("ia/chave", { metodo: "POST", corpo: { chave: chaveIn.value } }); chaveIn.value = ""; aviso("Chave salva.", "ok"); estado.iaLigada = true; await navegar(); setTimeout(() => { const b = document.querySelector("#cartao-openai .btn-testar-ia"); if (b) b.click(); }, 50); }
+          catch (e) { aviso(e.message, "erro"); }
+        }, "btn-primario"),
+        botao("Testar chave", testarIa, "btn-secundario btn-testar-ia")) : h("p", { class: "nota", text: "Somente administradores podem colar a chave." }),
+      resIa);
     const sistema = h("section", { class: "cartao vidro formulario" },
       h("h3", { style: "margin:0", text: "Sistema das atendentes (cadastro de clientes)" }),
       h("p", { style: "margin:0;color:var(--texto-2);font-size:14px", text: "Existem duas formas de ligar o sistema que a equipe já usa à IA. Elas podem funcionar juntas." }),
@@ -853,7 +923,7 @@
           h("p", { style: "margin:6px 0 10px;color:var(--texto-2);font-size:14px", text: "A IA consulta a ficha do cliente em tempo real e envia os atendimentos para o sistema. Peça ao fornecedor do sistema um endereço de consulta por telefone e um token." }),
           s ? h("div", { style: "display:flex;flex-wrap:wrap;gap:8px" }, s.plataforma_cadastro_consulta ? selo("Consulta de ficha ativa", "ok") : selo("Consulta de ficha não configurada"), s.plataforma_cadastro_envio ? selo("Envio de atendimentos ativo", "ok") : selo("Envio de atendimentos não configurado")) : null)),
       h("p", { class: "nota", text: "Informe o nome do sistema que as atendentes usam ao responsável técnico: se ele tiver API, a conexão automática é configurada no Engine (CRM_CONSULTA_URL e PLATAFORMA_API_URL)." }));
-    area.replaceChildren(engine, sistema);
+    area.replaceChildren(ia, engine, sistema);
   }
 
   // ---------------------------------------------------------------------------
@@ -1048,7 +1118,7 @@
 
   async function paginaContatos(el, _p, vivo) {
     el.appendChild(cabeca("Contatos do site", "Mensagens enviadas pela página Fale conosco."));
-    const zap = h("input", { class: "entrada", placeholder: "Ex.: (21) 99999-9162", inputmode: "tel" });
+    const zap = h("input", { class: "entrada", placeholder: "Ex.: (21) 97546-9162", inputmode: "tel" });
     const cartaoZap = h("section", { class: "cartao vidro formulario" }, h("h3", { style: "margin:0", text: "Botão flutuante de WhatsApp no site" }),
       h("p", { style: "margin:0;color:var(--texto-2);font-size:14px", text: "O número da Central que aparece no botão verde da página inicial. Os visitantes caem direto na conversa para saber mais da DENIA." }),
       campo("WhatsApp da Central (com DDD)", zap),
@@ -1098,7 +1168,7 @@
     return h("select", { class: "entrada", "aria-label": "Marca" }, comTodas ? h("option", { value: "", text: "Todas as marcas" }) : null, lista.map(m => h("option", { value: m.id, selected: String(m.id) === String(valor), text: m.nome })));
   }
   function avisoIa(cfg) {
-    return cfg && !cfg.ia_ligada ? h("p", { class: "nota nota-alerta", text: "A criação com IA está desligada: falta o secret OPENAI_API_KEY no Worker denia-landing da Cloudflare. Todo o resto do Estúdio funciona normalmente." }) : null;
+    return cfg && !cfg.ia_ligada ? h("div", { class: "nota nota-alerta" }, "A criação com IA está desligada: falta colar a chave da OpenAI. ", h("a", { href: "#/integracoes", text: "Colar a chave agora →" })) : null;
   }
   function semMarcas(el) {
     el.appendChild(h("div", { class: "cartao vidro" }, vazio("Cadastre a primeira marca", "Cada marca tem o seu Instagram, Facebook e Google. A Central pode cuidar de várias marcas.", ICONES.foguete),
@@ -1126,18 +1196,20 @@
       progresso.classList.remove("oculto"); progresso.textContent = "A DENIA está planejando a semana e escrevendo as legendas.";
       try {
         const r = await mk("ia/semana", { metodo: "POST", corpo: { marca_id: marcaSemana.value, inicio, quantidade: qtd.value, canais: escolhidos } });
-        let artes = 0;
+        let artes = 0, parado = false;
         if (comArtes.checked) {
           for (const [i, c] of r.criados.entries()) {
+            if (await pontoDoPiloto()) { parado = true; break; }
             b.textContent = `Criando as artes… ${i + 1} de ${r.criados.length}`;
             progresso.textContent = `Criando a arte do post ${i + 1} de ${r.criados.length}. Cada arte leva cerca de 30 segundos.`;
             try { await mk("ia/imagem", { metodo: "POST", corpo: { post_id: c.id } }); artes++; } catch (e) { aviso(e.message, "erro"); break; }
           }
         }
+        estado.resultadoCriador = { criados: r.criados.length, artes, parado };
         aviso(`${r.criados.length} post(s) criados${artes ? ` com ${artes} arte(s)` : ""}${r.modo === "AUTOMATICO" ? ", revisados pela IA" : " — aguardando aprovação"}.`, "ok");
         estado.semanaCalendario = inicio; atualizarAprovacoes();
-        recarregar ? recarregar() : (location.hash = "#/calendario");
-      } catch (e) { aviso(e.message, "erro"); }
+        if (!piloto.ativo) recarregar ? recarregar() : (location.hash = "#/calendario");
+      } catch (e) { estado.resultadoCriador = { erro: e.message }; aviso(e.message, "erro"); }
       finally { b.textContent = "✦ Criar posts da semana com IA"; progresso.classList.add("oculto"); }
     }, "btn-primario");
     const ideia = h("textarea", { class: "entrada", maxlength: "1000", placeholder: "Ex.: técnico sorrindo consertando uma geladeira numa cozinha clara, com o texto \"Orçamento grátis hoje\"", style: "min-height:90px" });
@@ -1555,68 +1627,74 @@
   // Assistente DENIA (texto e voz)
   // ---------------------------------------------------------------------------
 
-  const assistente = { msgs: [], gravador: null, partes: [], audio: null };
+  const assistente = { msgs: [], gravador: null, partes: [], audio: null, continua: false };
+  const ICONE_MIC = '<svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>';
+  function svgDe(marcacao) { const t = document.createElement("template"); t.innerHTML = marcacao; return t.content.firstChild; }
+
   function iniciarAssistente() {
     const painel = $("assistente"), orbe = $("denia-orbe");
     if (!painel || !orbe) return;
-    const abrir = (sim) => { painel.classList.toggle("oculto", !sim); orbe.setAttribute("aria-expanded", sim ? "true" : "false"); orbe.classList.toggle("ativo", sim); if (sim) { $("assistente-texto").focus(); if (!assistente.msgs.length) mostrarMsg("denia", "Oi! Sou a DENIA. Pergunte qualquer coisa ou me dê uma ordem — criar posts e imagens, aprovar, mudar o meu treinamento — por texto ou pelo microfone."); } };
+    const abrir = (sim) => { painel.classList.toggle("oculto", !sim); orbe.setAttribute("aria-expanded", sim ? "true" : "false"); orbe.classList.toggle("ativo", sim); if (sim) { $("assistente-texto").focus(); if (!assistente.msgs.length) mostrarMsg("denia", "Oi! Sou a DENIA. Escreva, grave um áudio para eu transcrever, ou converse comigo por voz. Posso criar posts e imagens, aprovar e mudar o meu treinamento — e você vê tudo acontecendo na tela."); } };
+    assistente.abrirPainel = abrir;
     orbe.addEventListener("click", () => abrir(painel.classList.contains("oculto")));
     $("assistente-fechar").addEventListener("click", () => abrir(false));
     $("assistente-form").addEventListener("submit", e => { e.preventDefault(); const t = $("assistente-texto").value.trim(); if (t) { $("assistente-texto").value = ""; perguntar(t); } });
-    $("assistente-mic").addEventListener("click", alternarGravacao);
+    $("assistente-mic").addEventListener("click", () => alternarGravacao("ditar", $("assistente-texto")));
+    $("assistente-conversar").addEventListener("click", () => alternarGravacao("voz"));
     const topo = $("falar-denia");
     if (topo) topo.addEventListener("click", () => { location.hash = "#/denia"; });
+    iniciarPiloto();
   }
-  function mostrarMsg(papel, texto) {
+  function mostrarMsg(papel, texto, extra) {
     ["assistente-msgs", "voz-msgs"].forEach(id => {
       const caixa = $(id);
       if (!caixa) return;
-      caixa.appendChild(h("div", { class: "a-msg a-" + papel, text: texto }));
+      caixa.appendChild(h("div", { class: "a-msg a-" + papel }, texto, extra ? extra.cloneNode(true) : null));
       caixa.scrollTop = caixa.scrollHeight;
     });
   }
+  function mostrarErro(e) {
+    const semChave = e && e.dados && e.dados.codigo === "SEM_OPENAI";
+    mostrarMsg("erro", semChave ? "A inteligência da DENIA ainda está desligada: falta colar a chave da OpenAI. " : (e && e.message) || String(e),
+      semChave ? h("a", { class: "a-link", href: "#/integracoes", text: "Colar a chave agora →" }) : null);
+  }
   function estadoAssistente(t) {
-    $("assistente-estado").textContent = t || "Pergunte por texto ou por voz";
+    $("assistente-estado").textContent = t || "Escreva, grave ou converse por voz";
     const v = $("voz-estado");
     if (v) v.textContent = t || (assistente.continua ? "Conversa contínua ligada — fale quando quiser" : "Toque no microfone e fale");
     const orbe = $("voz-orbe");
-    if (orbe) orbe.dataset.estado = !t ? "" : /Ouvindo/.test(t) ? "ouvindo" : /Falando/.test(t) ? "falando" : "pensando";
+    if (orbe) orbe.dataset.estado = !t ? "" : /Ouvindo|Gravando/.test(t) ? "ouvindo" : /Falando/.test(t) ? "falando" : "pensando";
   }
   const querVoz = () => ($("voz-pagina") && $("voz-falar") ? $("voz-falar").checked : $("assistente-falar").checked);
-  async function perguntar(texto) {
+
+  async function perguntar(texto, origemVoz) {
     if (!estado.org) return;
     assistente.msgs.push({ papel: "usuario", texto });
     mostrarMsg("usuario", texto);
     estadoAssistente("Pensando…");
+    const naPaginaVoz = Boolean($("voz-pagina"));
+    let plano = [];
     try {
-      const r = await api(`/api/orgs/${estado.org.id}/assistente/conversa`, { metodo: "POST", corpo: { mensagens: assistente.msgs.slice(-20) } });
+      const r = await api(`/api/orgs/${estado.org.id}/assistente/conversa`, { metodo: "POST", corpo: { mensagens: assistente.msgs.slice(-20), assistido: true } });
       assistente.msgs.push({ papel: "denia", texto: r.resposta });
       mostrarMsg("denia", r.resposta);
-      const fala = querVoz() ? falar(r.resposta) : Promise.resolve();
-      const acoes = r.acoes || [];
-      for (const a of acoes) {
-        mostrarMsg(a.ok ? "acao" : "erro", (a.ok ? "✓ " : "✕ ") + a.resumo);
-        assistente.msgs.push({ papel: "denia", texto: (a.ok ? "[feito] " : "[não feito] ") + a.resumo });
-      }
-      await fala;
-      // Posts criados por comando de voz: a DENIA cria as artes em seguida.
-      const comArte = acoes.filter(a => a.ok && a.artes && a.posts && a.posts.length).flatMap(a => a.posts);
-      for (const [i, id] of comArte.entries()) {
-        estadoAssistente(`Criando as artes… ${i + 1} de ${comArte.length}`);
-        try { await mk("ia/imagem", { metodo: "POST", corpo: { post_id: id } }); }
-        catch (e) { mostrarMsg("erro", "Arte não criada: " + e.message); break; }
-      }
-      if (comArte.length) mostrarMsg("acao", `✓ ${comArte.length} arte(s) criadas. Veja no Calendário ou em Aprovações.`);
-      if (acoes.some(a => a.ok)) {
-        atualizarAprovacoes(); cacheMarcas = null;
-        const destino = (acoes.find(a => a.ok && a.abrir) || {}).abrir;
-        if (destino && !$("voz-pagina")) mostrarMsg("acao", "Abra " + ({ "#/calendario": "Calendário", "#/aprovacoes": "Aprovações", "#/treinamento": "Treinar IA" }[destino] || "o painel") + " para ver.");
-      }
-    } catch (e) { mostrarMsg("erro", e.message); assistente.continua = false; marcarContinua(); }
+      plano = r.plano || [];
+      const fala = querVoz() || origemVoz ? falar(r.resposta) : Promise.resolve();
+      if (plano.length) {
+        const resultados = await executarPlano(plano);
+        await fala;
+        const feitos = resultados.filter(x => x.ok).map(x => x.resumo), falhas = resultados.filter(x => !x.ok).map(x => x.resumo);
+        const final = [feitos.length ? "Pronto. " + feitos.join(" ") : "", falhas.length ? "Não consegui: " + falhas.join(" ") : ""].filter(Boolean).join(" ");
+        if (final) { assistente.msgs.push({ papel: "denia", texto: final }); if (querVoz() || origemVoz) await falar(final); }
+        if (naPaginaVoz && !$("voz-pagina")) location.hash = "#/denia";
+      } else await fala;
+    } catch (e) { mostrarErro(e); assistente.continua = false; marcarContinua(); }
     finally { estadoAssistente(); }
     // Conversa contínua: depois de responder, a DENIA volta a ouvir sozinha.
-    if (assistente.continua && $("voz-pagina")) alternarGravacao();
+    if (assistente.continua && naPaginaVoz) { await esperarSimples(400); if ($("voz-pagina")) alternarGravacao("voz"); }
   }
+  const esperarSimples = ms => new Promise(r => setTimeout(r, ms));
+
   // Fala e só termina quando o áudio acaba.
   async function falar(texto) {
     estadoAssistente("Falando…");
@@ -1643,14 +1721,16 @@
     const b = $("voz-continua");
     if (b) { b.classList.toggle("ativo", assistente.continua); b.textContent = assistente.continua ? "Parar conversa contínua" : "Conversa contínua (mãos livres)"; }
   }
-  async function alternarGravacao() {
-    const mics = () => document.querySelectorAll(".mic-denia");
+
+  // Grava o microfone. modo "voz": envia e a DENIA responde falando. modo "ditar": só transcreve para a caixa de texto.
+  async function alternarGravacao(modo = "voz", caixa) {
+    const botoes = () => document.querySelectorAll(modo === "ditar" ? ".mic-ditar" : ".mic-denia");
     if (assistente.gravador && assistente.gravador.state === "recording") { assistente.gravador.stop(); return; }
     pararFala();
-    if (!navigator.mediaDevices || !window.MediaRecorder) { aviso("Este navegador não permite gravar áudio. Digite a pergunta.", "erro"); return; }
+    if (!navigator.mediaDevices || !window.MediaRecorder) { aviso("Este navegador não permite gravar áudio. Digite a mensagem.", "erro"); return; }
     let fluxo;
     try { fluxo = await navigator.mediaDevices.getUserMedia({ audio: true }); }
-    catch { aviso("Permita o uso do microfone para falar com a DENIA.", "erro"); assistente.continua = false; marcarContinua(); return; }
+    catch { aviso("Permita o uso do microfone para falar com a DENIA (no cadeado ao lado do endereço do site).", "erro"); assistente.continua = false; marcarContinua(); return; }
     assistente.partes = [];
     const g = new MediaRecorder(fluxo);
     assistente.gravador = g;
@@ -1659,22 +1739,27 @@
     g.onstop = async () => {
       fluxo.getTracks().forEach(t => t.stop());
       if (ctx) ctx.close().catch(() => {});
-      mics().forEach(m => m.classList.remove("gravando"));
+      botoes().forEach(m => m.classList.remove("gravando"));
       const blob = new Blob(assistente.partes, { type: g.mimeType || "audio/webm" });
       if (blob.size < 1200) { estadoAssistente(); return; }
-      estadoAssistente("Entendendo…");
+      estadoAssistente("Transcrevendo…");
       try {
         const r = await fetch(`/api/orgs/${estado.org.id}/assistente/transcrever`, { method: "POST", credentials: "same-origin", headers: { "content-type": blob.type, "x-denia": "1" }, body: blob });
         const d = await r.json().catch(() => ({}));
-        if (!r.ok) throw new Error(d.erro || "Não consegui entender o áudio.");
-        if (d.texto) await perguntar(d.texto); else { estadoAssistente(); if (assistente.continua && $("voz-pagina")) alternarGravacao(); }
-      } catch (e) { mostrarMsg("erro", e.message); estadoAssistente(); assistente.continua = false; marcarContinua(); }
+        if (!r.ok) throw Object.assign(new Error(d.erro || "Não consegui entender o áudio."), { dados: d });
+        if (!d.texto) { estadoAssistente(); if (modo === "voz" && assistente.continua && $("voz-pagina")) alternarGravacao("voz"); return; }
+        if (modo === "ditar") {
+          const alvo = caixa && caixa.isConnected ? caixa : $("assistente-texto");
+          alvo.value = (alvo.value.trim() ? alvo.value.trimEnd() + " " : "") + d.texto;
+          alvo.focus(); estadoAssistente();
+        } else await perguntar(d.texto, true);
+      } catch (e) { mostrarErro(e); estadoAssistente(); assistente.continua = false; marcarContinua(); }
     };
     g.start();
-    mics().forEach(m => m.classList.add("gravando"));
-    estadoAssistente(assistente.continua ? "Ouvindo… pode falar" : "Ouvindo… toque no microfone para enviar");
+    botoes().forEach(m => m.classList.add("gravando"));
+    estadoAssistente(modo === "ditar" ? "Gravando… toque de novo para transcrever" : assistente.continua ? "Ouvindo… pode falar" : "Ouvindo… toque no microfone para enviar");
     // Mãos livres: envia sozinho depois de 1,6 s de silêncio após a fala.
-    if (assistente.continua && (window.AudioContext || window.webkitAudioContext)) {
+    if (modo === "voz" && assistente.continua && (window.AudioContext || window.webkitAudioContext)) {
       try {
         ctx = new (window.AudioContext || window.webkitAudioContext)();
         const an = ctx.createAnalyser(); an.fftSize = 1024;
@@ -1694,37 +1779,304 @@
         requestAnimationFrame(medir);
       } catch { /* sem detecção de silêncio: toque no microfone para enviar */ }
     }
-    setTimeout(() => { if (g.state === "recording") g.stop(); }, 90000);
+    setTimeout(() => { if (g.state === "recording") g.stop(); }, 120000);
   }
+
+  // ---------------------------------------------------------------------------
+  // Piloto: a DENIA executa as ações na tela, à vista, e pode ser pausada ou parada.
+  // ---------------------------------------------------------------------------
+
+  const piloto = { ativo: false, pausado: false, parar: false, erros: [], soltar: null };
+  class PilotoParado extends Error {}
+  function iniciarPiloto() {
+    const barra = h("div", { class: "piloto oculto", id: "piloto", role: "status", "aria-live": "polite" },
+      h("span", { class: "piloto-orbe" }),
+      h("div", { class: "piloto-texto" }, h("strong", { text: "DENIA está trabalhando" }), h("span", { id: "piloto-passo", text: "" })),
+      h("div", { class: "piloto-acoes" },
+        h("button", { class: "btn btn-secundario btn-pequeno", type: "button", id: "piloto-pausar", onclick: () => pausarPiloto(!piloto.pausado) }, "Pausar"),
+        h("button", { class: "btn btn-perigo btn-pequeno", type: "button", id: "piloto-parar", onclick: pararPiloto }, "Parar")));
+    const cursor = h("div", { class: "cursor-denia oculto", id: "cursor-denia", "aria-hidden": "true" }, h("span", { class: "cursor-rotulo", text: "DENIA" }));
+    cursor.prepend(svgDe('<svg viewBox="0 0 24 24"><path d="M4 2l15 9-6.5 1.6L9 19z"/></svg>'));
+    document.body.append(barra, cursor);
+  }
+  function pausarPiloto(sim) {
+    piloto.pausado = sim;
+    $("piloto-pausar").textContent = sim ? "Retomar" : "Pausar";
+    $("piloto").classList.toggle("pausado", sim);
+    if (sim) $("piloto-passo").dataset.antes = $("piloto-passo").textContent, $("piloto-passo").textContent = "Pausada — toque em Retomar para continuar";
+    else { $("piloto-passo").textContent = $("piloto-passo").dataset.antes || ""; if (piloto.soltar) { piloto.soltar(); piloto.soltar = null; } }
+  }
+  function pararPiloto() { piloto.parar = true; if (piloto.pausado) pausarPiloto(false); }
+  // Todo passo passa por aqui: respeita a pausa e a parada.
+  async function checar() {
+    if (piloto.parar) throw new PilotoParado("Parado por você.");
+    while (piloto.pausado) await new Promise(r => { piloto.soltar = r; });
+    if (piloto.parar) throw new PilotoParado("Parado por você.");
+  }
+  async function espera(ms) { const fim = Date.now() + ms; while (Date.now() < fim) { await checar(); await esperarSimples(Math.min(80, fim - Date.now())); } await checar(); }
+  async function passo(texto) { await checar(); if (!piloto.pausado) $("piloto-passo").textContent = texto; estadoAssistente(texto); }
+  function visivel(el) { if (!el || !el.isConnected) return false; const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0 && r.right > 0 && r.left < innerWidth; }
+  async function esperarEl(achar, ms = 20000) {
+    const fim = Date.now() + ms;
+    while (Date.now() < fim) { await checar(); const el = achar(); if (el && el.isConnected) return el; await esperarSimples(120); }
+    throw new Error("A tela demorou para responder.");
+  }
+  const porTexto = (raiz, seletor, texto) => [...(raiz || document).querySelectorAll(seletor)].find(b => (b.textContent || "").includes(texto) && visivel(b));
+  async function moverPara(el) {
+    await checar();
+    el.scrollIntoView({ block: "center", behavior: "smooth" });
+    await espera(380);
+    const r = el.getBoundingClientRect(), c = $("cursor-denia");
+    c.classList.remove("oculto");
+    c.style.transform = `translate(${Math.round(r.left + Math.min(r.width / 2, 60))}px, ${Math.round(r.top + r.height / 2)}px)`;
+    await espera(650);
+  }
+  async function clicar(el) {
+    await moverPara(el);
+    const c = $("cursor-denia");
+    c.classList.add("clicando"); el.classList.add("piloto-alvo");
+    await espera(240);
+    c.classList.remove("clicando");
+    el.click();
+    setTimeout(() => el.classList.remove("piloto-alvo"), 700);
+    await espera(250);
+  }
+  async function escolher(sel, valor) {
+    if (String(sel.value) === String(valor)) return;
+    await moverPara(sel); sel.classList.add("piloto-alvo");
+    await espera(300);
+    sel.value = String(valor); sel.dispatchEvent(new Event("change", { bubbles: true }));
+    await espera(300); sel.classList.remove("piloto-alvo");
+  }
+  async function digitar(el, texto) {
+    await moverPara(el); el.focus(); el.classList.add("piloto-alvo");
+    const passoChars = Math.max(1, Math.ceil(texto.length / 160)); // no máximo uns 5 segundos
+    for (let i = 0; i < texto.length; i += passoChars) {
+      await checar();
+      el.value += texto.slice(i, i + passoChars);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      if (el.tagName === "TEXTAREA") el.scrollTop = el.scrollHeight;
+      await esperarSimples(28);
+    }
+    el.classList.remove("piloto-alvo");
+  }
+  async function esperarPagina(rota, ms = 25000) {
+    await espera(250);
+    await esperarEl(() => rotaAtual().nome === rota && !$("conteudo").querySelector(".carregando, .esqueleto") && $("conteudo").firstChild ? $("conteudo") : null, ms);
+    await espera(350);
+  }
+  async function abrirMenu(rota) {
+    const link = document.querySelector(`#lateral-nav a[data-rota="${rota}"]`);
+    if (!link) { location.hash = "#/" + rota; return esperarPagina(rota); }
+    if (!visivel(link)) { const b = $("abrir-menu"); if (visivel(b)) { await clicar(b); await espera(350); } }
+    if (rotaAtual().nome === rota) { await moverPara(link); navegar(); }
+    else await clicar(link);
+    await esperarPagina(rota);
+  }
+  async function esperarBotaoLivre(b, ms = 240000) {
+    const fim = Date.now() + ms;
+    await esperarSimples(300);
+    while (Date.now() < fim && b.isConnected && b.disabled) { await esperarSimples(400); if (!piloto.pausado && !piloto.parar) $("piloto-passo").textContent = b.textContent; }
+  }
+  // Ponto de pausa dentro de processos longos (ex.: as artes de cada post).
+  async function pontoDoPiloto() {
+    if (!piloto.ativo) return false;
+    try { await checar(); return false; } catch { return true; }
+  }
+
+  async function executarPlano(plano) {
+    const resultados = [];
+    piloto.ativo = true; piloto.parar = false; piloto.pausado = false; piloto.erros = [];
+    $("piloto").classList.remove("oculto", "pausado"); $("piloto-pausar").textContent = "Pausar";
+    document.body.classList.add("pilotando");
+    const painelAberto = !$("assistente").classList.contains("oculto");
+    if (painelAberto && innerWidth < 1200) assistente.abrirPainel(false);
+    try {
+      for (const a of plano) {
+        if (a.erro) { resultados.push({ ok: false, resumo: a.erro }); mostrarMsg("erro", "✕ " + a.erro); continue; }
+        piloto.erros = [];
+        let r;
+        try { r = await (ROTEIROS[a.tipo] || roteiroServidor)(a); }
+        catch (e) {
+          if (e instanceof PilotoParado) { r = { ok: false, resumo: "Parei onde estava, como você pediu." }; resultados.push(r); mostrarMsg("erro", "■ " + r.resumo); break; }
+          r = { ok: false, resumo: e.message || "Não consegui terminar." };
+        }
+        if (r.ok && piloto.erros.length) r = { ok: false, resumo: piloto.erros[0] };
+        resultados.push(r);
+        mostrarMsg(r.ok ? "acao" : "erro", (r.ok ? "✓ " : "✕ ") + r.resumo);
+      }
+    } finally {
+      piloto.ativo = false; piloto.parar = false;
+      document.body.classList.remove("pilotando");
+      $("piloto").classList.add("oculto"); $("cursor-denia").classList.add("oculto");
+      document.querySelectorAll(".piloto-alvo").forEach(x => x.classList.remove("piloto-alvo"));
+      if (painelAberto && $("assistente").classList.contains("oculto")) assistente.abrirPainel(true);
+      atualizarAprovacoes();
+    }
+    return resultados;
+  }
+  async function roteiroServidor(a) {
+    return api(`/api/orgs/${estado.org.id}/assistente/executar`, { metodo: "POST", corpo: { acao: a } });
+  }
+  const paginaDoCanal = canais => canais.length === 1 ? (canais[0] === "google" ? "google" : canais[0]) : "estudio";
+  async function prepararCriador(a, comArtes) {
+    const pagina = paginaDoCanal(a.canais);
+    await passo(`Abrindo ${({ estudio: "o Estúdio de Marketing", instagram: "o Instagram", facebook: "o Facebook", google: "o Google Meu Negócio" })[pagina]}`);
+    await abrirMenu(pagina);
+    const cartao = await esperarEl(() => document.querySelector(".criador .criador-cartao"));
+    const [selMarca, selSemana] = cartao.querySelectorAll("select");
+    await passo(`Escolhendo a marca ${a.marca}`);
+    await escolher(selMarca, a.marca_id);
+    return { cartao, selSemana, comArtes };
+  }
+  const ROTEIROS = {
+    async treinar(a) {
+      if (!pode("ADMIN")) return { ok: false, resumo: "Seu perfil não pode mudar o treinamento. Peça a um administrador." };
+      await passo("Abrindo Treinar IA");
+      await abrirMenu("treinamento");
+      const aba = await esperarEl(() => document.querySelector(`.aba[data-campo="${a.campo}"]`));
+      await passo(`Abrindo a aba ${a.rotulo}`);
+      await clicar(aba);
+      const ta = await esperarEl(() => $("treino-" + a.campo));
+      if (a.modo === "substituir") {
+        await passo(`Reescrevendo ${a.rotulo}`);
+        await moverPara(ta); ta.select(); await espera(500);
+        ta.value = ""; ta.dispatchEvent(new Event("input", { bubbles: true }));
+      } else {
+        await passo(`Escrevendo em ${a.rotulo}`);
+        if (ta.value.trim()) { ta.value = ta.value.trimEnd() + "\n\n"; ta.dispatchEvent(new Event("input", { bubbles: true })); }
+      }
+      await digitar(ta, a.texto);
+      await passo("Salvando o treinamento");
+      const salvar = await esperarEl(() => porTexto(document, "button", "Salvar treinamento"));
+      await clicar(salvar);
+      await esperarEl(() => !salvar.isConnected ? document.body : null, 30000).catch(() => null);
+      await esperarPagina("treinamento");
+      const t = await eng("training", { fresco: true }).catch(() => null);
+      const ok = t && String((t.dados || {})[a.campo] || "").includes(a.texto.slice(0, 60));
+      return ok ? { ok: true, resumo: `Treinamento atualizado em ${a.rotulo} (versão ${t.versao}).` } : { ok: false, resumo: "O treinamento não foi salvo." };
+    },
+    async criar_semana(a) {
+      const { cartao, selSemana } = await prepararCriador(a);
+      await passo("Escolhendo a semana");
+      await escolher(selSemana, a.semana === "esta" ? "0" : "7");
+      const qtd = cartao.querySelector('input[type="number"]');
+      await passo(`Quantidade: ${a.quantidade} posts`);
+      await moverPara(qtd); qtd.value = ""; await digitar(qtd, String(a.quantidade));
+      await passo("Marcando os canais");
+      for (const ch of cartao.querySelectorAll(".checks-linha input")) if (ch.checked !== a.canais.includes(ch.value)) await clicar(ch);
+      const artes = cartao.querySelector(".check-linha input");
+      if (artes.checked !== a.com_artes) await clicar(artes);
+      const b = porTexto(cartao, "button", "Criar posts da semana");
+      estado.resultadoCriador = null;
+      await passo("Criando os posts da semana");
+      await clicar(b);
+      await esperarBotaoLivre(b);
+      const r = estado.resultadoCriador;
+      if (!r || r.erro) return { ok: false, resumo: (r && r.erro) || "Os posts não foram criados." };
+      await passo("Abrindo o calendário");
+      await abrirMenu("calendario");
+      await espera(900);
+      return { ok: true, resumo: `${r.criados} post(s) da semana criados para ${a.marca}${r.artes ? `, com ${r.artes} imagem(ns)` : ""}${r.parado ? " (parei as imagens no meio)" : ""}.` };
+    },
+    async criar_post(a) {
+      const { cartao } = await prepararCriador(a);
+      await passo("Abrindo um novo post");
+      await clicar(porTexto(cartao, "button", "Novo post"));
+      const gav = await esperarEl(() => !$("gaveta").classList.contains("oculto") ? $("gaveta") : null);
+      await espera(400);
+      await passo("Pedindo o texto à IA");
+      const escrever = await esperarEl(() => porTexto(gav, "button", "Escrever com IA"));
+      await clicar(escrever);
+      const tema = await esperarEl(() => !$("modal").classList.contains("oculto") ? $("modal-texto").querySelector("input") : null);
+      tema.value = "";
+      await digitar(tema, a.tema || "post da marca");
+      await clicar($("modal-confirmar"));
+      await esperarBotaoLivre(escrever, 90000);
+      if (piloto.erros.length) return { ok: false, resumo: piloto.erros[0] };
+      const formato = gav.querySelectorAll("select")[1];
+      if (formato && a.formato) { await passo("Escolhendo o formato"); await escolher(formato, a.formato); }
+      if (a.data) { const d = gav.querySelector('input[type="date"]'); await passo("Marcando a data"); await moverPara(d); d.value = a.data; d.dispatchEvent(new Event("input", { bubbles: true })); await espera(300); }
+      if (a.hora) { const t = gav.querySelector('input[type="time"]'); await moverPara(t); t.value = a.hora; t.dispatchEvent(new Event("input", { bubbles: true })); await espera(300); }
+      if (a.com_arte) {
+        await passo("Criando a imagem com IA (até 1 minuto)");
+        const arte = porTexto(gav, "button", "Criar arte com IA");
+        await clicar(arte);
+        await esperarBotaoLivre(arte, 150000);
+        if (piloto.erros.length) return { ok: false, resumo: piloto.erros[0] };
+        await espera(800);
+      }
+      await passo("Enviando para aprovação");
+      const enviar = await esperarEl(() => porTexto(gav, "button", "Enviar para aprovação"));
+      await clicar(enviar);
+      await esperarEl(() => $("gaveta").classList.contains("oculto") ? $("gaveta") : null, 30000);
+      return { ok: true, resumo: `Post sobre "${a.tema}" criado para ${a.marca} e enviado para aprovação.` };
+    },
+    async aprovar_posts(a) {
+      if (!pode("ADMIN")) return { ok: false, resumo: "Seu perfil não pode aprovar posts." };
+      await passo("Abrindo Aprovações");
+      await abrirMenu("aprovacoes");
+      let n = 0;
+      for (let i = 0; i < 40; i++) {
+        const cartao = [...document.querySelectorAll(".aprovacao")].find(c => !a.marca || (c.textContent || "").includes(a.marca + " · "));
+        const b = cartao && porTexto(cartao, "button", "Aprovar");
+        if (!b) break;
+        await passo(`Aprovando: ${(cartao.querySelector("strong") || {}).textContent || "post"}`);
+        await clicar(b);
+        await esperarEl(() => !cartao.isConnected ? document.body : null, 30000);
+        await esperarPagina("aprovacoes");
+        if (piloto.erros.length) break;
+        n++;
+      }
+      return { ok: true, resumo: n ? `${n} post(s) aprovados${a.marca ? " de " + a.marca : ""}.` : "Não havia posts esperando aprovação." };
+    },
+    async publicar_post(a) {
+      await passo("Abrindo o calendário");
+      await abrirMenu("calendario");
+      await passo(`Deixando o post #${a.post_id} pronto`);
+      const r = await roteiroServidor(a);
+      navegar();
+      return r;
+    },
+    async pausar_ia(a) {
+      await passo("Abrindo o painel");
+      await abrirMenu("painel");
+      await moverPara($("status-engine"));
+      await passo(a.pausar ? "Pausando a IA do WhatsApp" : "Retomando a IA do WhatsApp");
+      const r = await roteiroServidor(a);
+      cacheEng.clear(); estado.status = null; atualizarStatus(); navegar();
+      return r;
+    }
+  };
 
   async function paginaDenia(el, _p, vivo) {
     const msgs = h("div", { class: "assistente-msgs voz-msgs", id: "voz-msgs", "aria-live": "polite" });
-    const texto = h("input", { class: "entrada", placeholder: "Ou digite aqui…", maxlength: "2000", autocomplete: "off" });
+    const texto = h("textarea", { class: "entrada voz-texto", placeholder: "Escreva aqui, ou toque no microfone ao lado para gravar e transcrever…", maxlength: "2000", rows: "2" });
     const falarChk = h("input", { type: "checkbox", id: "voz-falar", checked: true });
+    const micGrande = h("button", { class: "voz-mic mic-denia", type: "button", "aria-label": "Conversar por voz", onclick: () => alternarGravacao("voz") });
+    micGrande.appendChild(svgDe(ICONE_MIC));
+    const ditar = h("button", { class: "assistente-mic mic-ditar", type: "button", title: "Gravar e transcrever (sem enviar)", "aria-label": "Gravar e transcrever", onclick: () => alternarGravacao("ditar", texto) });
+    ditar.appendChild(svgDe(ICONE_MIC));
     el.appendChild(h("section", { class: "voz-pagina vidro", id: "voz-pagina" },
       h("div", { class: "voz-orbe", id: "voz-orbe" }, h("span"), h("i"), h("i")),
       h("h2", { text: "Converse com a DENIA" }),
       h("p", { class: "voz-estado", id: "voz-estado", text: "Toque no microfone e fale" }),
-      h("div", { class: "acoes voz-acoes" },
-        h("button", { class: "voz-mic mic-denia", type: "button", "aria-label": "Falar com a DENIA", onclick: () => alternarGravacao() }),
-        botao("Conversa contínua (mãos livres)", () => { assistente.continua = !assistente.continua; marcarContinua(); estadoAssistente(); if (assistente.continua && !(assistente.gravador && assistente.gravador.state === "recording")) alternarGravacao(); }, "btn-secundario", { id: "voz-continua" }),
+      h("div", { class: "acoes voz-acoes" }, micGrande,
+        botao("Conversa contínua (mãos livres)", () => { assistente.continua = !assistente.continua; marcarContinua(); estadoAssistente(); if (assistente.continua && !(assistente.gravador && assistente.gravador.state === "recording")) alternarGravacao("voz"); }, "btn-secundario", { id: "voz-continua" }),
         botao("Parar de falar", () => pararFala(), "btn-secundario")),
       h("label", { class: "assistente-voz" }, falarChk, " Responder em voz"),
-      h("p", { class: "nota", text: "Peça qualquer coisa: \"Crie os posts da próxima semana da Clínica Sol para o Instagram\" · \"Aprove os posts que estão esperando\" · \"A partir de hoje, sempre peça o bairro do cliente antes do orçamento\" · \"Quantas conversas estão com a equipe?\"" })));
+      h("p", { class: "nota", text: "Peça qualquer coisa: \"Crie os posts da próxima semana da Clínica Sol para o Instagram\" · \"Aprove os posts que estão esperando\" · \"A partir de hoje, sempre peça o bairro do cliente antes do orçamento\". Você vê a DENIA fazendo na tela e pode pausar ou parar." })));
+    const enviar = () => { const t = texto.value.trim(); if (t) { texto.value = ""; perguntar(t); } };
+    texto.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); enviar(); } });
     el.appendChild(h("section", { class: "cartao vidro voz-historico" }, msgs,
-      h("form", { class: "assistente-form", onsubmit: e => { e.preventDefault(); const t = texto.value.trim(); if (t) { texto.value = ""; perguntar(t); } } }, texto, h("button", { class: "btn btn-primario", type: "submit" }, "Enviar"))));
-    // Ícone do microfone (SVG precisa do namespace certo).
-    const ns = "http://www.w3.org/2000/svg", s = document.createElementNS(ns, "svg"); s.setAttribute("viewBox", "0 0 24 24");
-    const r = document.createElementNS(ns, "rect"); [["x", 9], ["y", 3], ["width", 6], ["height", 11], ["rx", 3]].forEach(([k, v]) => r.setAttribute(k, v));
-    const pth = document.createElementNS(ns, "path"); pth.setAttribute("d", "M5 11a7 7 0 0 0 14 0M12 18v3");
-    s.append(r, pth); el.querySelector(".voz-mic").appendChild(s);
+      h("form", { class: "assistente-form", onsubmit: e => { e.preventDefault(); enviar(); } }, ditar, texto, h("button", { class: "btn btn-primario", type: "submit" }, "Enviar"))));
     assistente.msgs.forEach(m => msgs.appendChild(h("div", { class: "a-msg a-" + m.papel, text: m.texto })));
-    if (!assistente.msgs.length) msgs.appendChild(h("div", { class: "a-msg a-denia", text: "Oi! Sou a DENIA. Toque no microfone e fale comigo, ou ligue a conversa contínua para conversar sem tocar em nada." }));
+    if (!assistente.msgs.length) msgs.appendChild(h("div", { class: "a-msg a-denia", text: "Oi! Sou a DENIA. Toque no microfone grande e fale comigo, ligue a conversa contínua para conversar sem tocar em nada, ou escreva abaixo — o microfone pequeno grava e transcreve para você revisar antes de enviar." }));
     marcarContinua();
     estadoAssistente();
-    // Saiu da página: desliga a conversa contínua e o microfone.
+    // Saiu da página: desliga a conversa contínua e o microfone (menos quando é a própria DENIA navegando).
     const aoSair = () => setTimeout(() => {
-      if (vivo()) return;
+      if (vivo() || piloto.ativo) return;
       window.removeEventListener("hashchange", aoSair);
       assistente.continua = false;
       if (assistente.gravador && assistente.gravador.state === "recording") assistente.gravador.stop();

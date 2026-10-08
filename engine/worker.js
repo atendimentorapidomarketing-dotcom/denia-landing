@@ -35,7 +35,7 @@
 //       relatório diário. Nunca inicia conversa nova por conta própria.
 // ============================================================================
 
-const VERSAO = "30.4.0";
+const VERSAO = "30.5.0";
 const SCHEMA_VERSAO = "30.3.0-a";
 const EMPRESA_ID = 1;
 const PHONE_ID_PADRAO = "473474732510163";
@@ -2148,8 +2148,9 @@ async function platformApi(request, env, caminho, metodo) {
     const r = await c.db.prepare(`SELECT p.id pessoa_id, p.nome, p.telefone, p.tipo, m.conteudo ultima_mensagem, m.criado_em ultima_mensagem_em, m.direcao ultima_direcao, m.origem ultima_origem
       FROM (SELECT pessoa_id, MAX(id) mid FROM mensagens WHERE empresa_id=? AND id > (SELECT COALESCE(MAX(id),0) FROM mensagens) - 1500 GROUP BY pessoa_id) u
       JOIN mensagens m ON m.id=u.mid JOIN pessoas p ON p.id=u.pessoa_id ORDER BY u.mid DESC LIMIT ?`).bind(EMPRESA_ID, lim).all();
-    const conversas = [];
-    for (const x of r?.results || []) conversas.push({ ...x, ia_pausada: await estaPausado(c, x.telefone) });
+    // Uma consulta só para as pausas (antes era uma por conversa, o que deixava a lista lenta).
+    const pausas = new Set(((await c.db.prepare("SELECT telefone FROM d30_pausas WHERE ate_ms > ?").bind(c.agora()).all())?.results || []).map(x => digitos(x.telefone)));
+    const conversas = (r?.results || []).map(x => ({ ...x, ia_pausada: variantesTel(x.telefone).some(v => pausas.has(v)) }));
     return json({ sucesso: true, conversas });
   }
   if ((m = caminho.match(/^\/platform\/conversations\/(\d+)$/)) && metodo === "GET") {
