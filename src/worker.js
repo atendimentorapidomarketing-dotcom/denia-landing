@@ -20,7 +20,9 @@
 //   CONTATO_WHATSAPP, CONTATO_EMAIL  (opcionais) botões de contato do site
 // ============================================================================
 
-const VERSAO = "2.0.0";
+import { apiMarketing, apiAssistente } from "./marketing.js";
+
+const VERSAO = "2.5.0";
 const SCHEMA = "2.4.0-a";
 const COOKIE = "__Host-denia_sessao";
 const SESSAO_MS = 8 * 60 * 60 * 1000;
@@ -580,11 +582,40 @@ async function proxyEngine(request, env, sessao, orgId, papel, caminho) {
   }
 }
 
+// O que a DENIA sabe da empresa quando conversa com a equipe no painel.
+async function contextoAssistente(env, orgId) {
+  const o = await env.DB.prepare("SELECT nome FROM plt_organizacoes WHERE id=?").bind(orgId).first();
+  const linhas = [];
+  const con = await conexaoDa(env, orgId).catch(() => null);
+  if (con?.token) {
+    try {
+      const st = (await chamarEngine(con, "GET", "status")).dados || {};
+      const soma = (l, f) => (l || []).filter(f).reduce((t, x) => t + Number(x.n || 0), 0);
+      linhas.push(`IA do WhatsApp: ${st.pausa_geral ? "PAUSADA" : st.ok ? "funcionando" : "com alertas"} (versão ${st.versao || "?"}).`);
+      linhas.push(`Mensagens recebidas nas últimas 24 h: ${soma(st.fila_24h, () => true)}.`);
+      linhas.push(`Casos (30 dias) por etapa: ${(st.casos_por_etapa || []).map(x => `${x.etapa}=${x.n}`).join(", ") || "nenhum"}.`);
+      const conv = (await chamarEngine(con, "GET", "conversations", null, { limit: "15" })).dados?.conversas || [];
+      if (conv.length) linhas.push("Conversas mais recentes: " + conv.slice(0, 15).map(c => `${c.nome || "cliente"} (${String(c.ultima_mensagem || "").slice(0, 60)})${c.ia_pausada ? " [com a equipe]" : ""}`).join("; ") + ".");
+      const ap = (await chamarEngine(con, "GET", "learning")).dados;
+      if (ap?.sugestoes) linhas.push(`Aprendizados aguardando aprovação: ${ap.sugestoes.PENDENTE || 0}.`);
+    } catch (e) { linhas.push("IA do WhatsApp: não respondeu agora."); }
+  } else linhas.push("IA do WhatsApp: ainda não conectada a esta empresa.");
+  try {
+    const q = async (sql) => Number((await env.DB.prepare(sql).bind(orgId).first())?.n || 0);
+    linhas.push(`Estúdio de Marketing: ${await q("SELECT COUNT(*) n FROM plt_mk_marcas WHERE org_id=? AND ativa=1")} marca(s), ${await q("SELECT COUNT(*) n FROM plt_mk_posts WHERE org_id=? AND status='AGUARDANDO'")} post(s) aguardando aprovação, ${await q("SELECT COUNT(*) n FROM plt_mk_posts WHERE org_id=? AND status='APROVADO'")} aprovado(s) prontos para publicar, ${await q("SELECT COUNT(*) n FROM plt_mk_avaliacoes WHERE org_id=? AND status='PENDENTE'")} avaliação(ões) do Google sem resposta.`);
+  } catch { /* tabelas ainda não criadas */ }
+  linhas.push(`Data de hoje: ${new Date().toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" })}.`);
+  return { empresa: o?.nome || "empresa", dados: linhas.join("\n") };
+}
+
 async function apiOrg(request, env, sessao, orgId, resto) {
   const papel = await papelNa(env, sessao.usuario, orgId);
   if (!papel) return json({ erro: "Empresa não encontrada." }, 404);
   const metodo = request.method;
   if (resto.startsWith("engine/")) return proxyEngine(request, env, sessao, orgId, papel, resto.slice(7));
+  const kit = { json, lerCorpo, txt, pode, agora, auditar, sessao };
+  if (resto.startsWith("mk/")) return apiMarketing(request, env, kit, orgId, papel, resto.slice(3));
+  if (resto.startsWith("assistente/")) return apiAssistente(request, env, kit, orgId, papel, resto, await contextoAssistente(env, orgId));
 
   if (resto === "membros" && metodo === "GET") {
     if (!pode(papel, "ADMIN")) return json({ erro: "Sem permissão." }, 403);
@@ -822,14 +853,14 @@ function comSeguranca(resposta, request) {
   const h = new Headers(resposta.headers);
   h.set("content-security-policy", [
     "default-src 'self'", "script-src 'self'", "style-src 'self' https://fonts.googleapis.com",
-    "font-src 'self' https://fonts.gstatic.com", "img-src 'self' data:", "connect-src 'self'",
+    "font-src 'self' https://fonts.gstatic.com", "img-src 'self' data: blob:", "media-src 'self' blob:", "connect-src 'self'",
     "manifest-src 'self'", "frame-ancestors 'none'", "base-uri 'none'", "form-action 'self'", "object-src 'none'"
   ].join("; "));
   h.set("strict-transport-security", "max-age=31536000; includeSubDomains");
   h.set("x-content-type-options", "nosniff");
   h.set("x-frame-options", "DENY");
   h.set("referrer-policy", "strict-origin-when-cross-origin");
-  h.set("permissions-policy", "camera=(), microphone=(), geolocation=(), payment=()");
+  h.set("permissions-policy", "camera=(), microphone=(self), geolocation=(), payment=()");
   h.set("cross-origin-opener-policy", "same-origin");
   const caminho = new URL(request.url).pathname;
   if (caminho.startsWith("/api/") || caminho.startsWith("/app") || caminho.startsWith("/entrar") || caminho.startsWith("/cadastro") || caminho.startsWith("/recuperar") || caminho.startsWith("/redefinir")) h.set("cache-control", "no-store");

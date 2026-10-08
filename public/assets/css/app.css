@@ -238,3 +238,91 @@ select.entrada option { background: #0b1020; }
   .msg { max-width: 90%; }
   #status-engine { display: none; }
 }
+
+/* ---------- Estúdio de Marketing ---------- */
+.opcoes-modo { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.opcao-modo { display: grid; gap: 4px; padding: 14px; border-radius: 14px; border: 1px solid var(--borda); background: rgba(255, 255, 255, 0.02); cursor: pointer; transition: border-color 0.2s ease, background 0.2s ease; }
+.opcao-modo input { position: absolute; opacity: 0; pointer-events: none; }
+.opcao-modo strong { font-size: 14.5px; }
+.opcao-modo span { font-size: 13px; color: var(--texto-3); }
+.opcao-modo.ativo { border-color: rgba(79, 140, 255, 0.6); background: rgba(79, 140, 255, 0.1); }
+.semana-titulo { font-size: 14px; padding: 0 6px; white-space: nowrap; }
+.semana { display: grid; grid-template-columns: repeat(7, minmax(150px, 1fr)); gap: 12px; overflow-x: auto; padding-bottom: 6px; }
+.dia { padding: 12px; border-radius: 16px; display: flex; flex-direction: column; gap: 10px; min-height: 280px; }
+.dia.hoje { border-color: rgba(79, 140, 255, 0.55); box-shadow: 0 0 0 1px rgba(79, 140, 255, 0.25) inset; }
+.dia-cabeca { display: flex; justify-content: space-between; font-size: 13px; font-weight: 700; color: var(--texto-2); }
+.dia-cabeca b { color: var(--texto-3); font-weight: 600; }
+.dia-novo { margin-top: auto; border: 1px dashed var(--borda-forte); background: transparent; color: var(--texto-3); border-radius: 12px; padding: 9px; cursor: pointer; font-size: 13px; }
+.dia-novo:hover { color: var(--texto); border-color: rgba(79, 140, 255, 0.6); }
+.post-cartao { display: grid; gap: 6px; text-align: left; padding: 10px; border-radius: 12px; border: 1px solid var(--borda); background: rgba(4, 6, 12, 0.55); cursor: pointer; color: var(--texto); transition: border-color 0.2s ease, transform 0.2s ease; }
+.post-cartao:hover { border-color: rgba(79, 140, 255, 0.55); transform: translateY(-1px); }
+.post-cartao strong { font-size: 13.5px; line-height: 1.3; }
+.post-cartao .selo { width: fit-content; font-size: 11px; padding: 2px 8px; }
+.post-img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 8px; }
+.post-meta { font-size: 11.5px; color: var(--texto-3); }
+.post-canais { display: flex; flex-wrap: wrap; gap: 4px; }
+.post-canais i { font-style: normal; font-size: 10.5px; padding: 1px 6px; border-radius: 6px; border: 1px solid var(--borda); color: var(--texto-2); }
+.canal-instagram { border-color: rgba(236, 72, 153, 0.45) !important; }
+.canal-facebook { border-color: rgba(59, 130, 246, 0.5) !important; }
+.canal-google { border-color: rgba(34, 197, 94, 0.45) !important; }
+.lista-posts { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; margin-top: 12px; }
+.checks-linha { display: flex; flex-wrap: wrap; gap: 8px 18px; }
+.checks-linha label { display: flex; gap: 6px; align-items: center; font-size: 14px; }
+.ia-acoes .btn { background: linear-gradient(135deg, rgba(34, 211, 238, 0.14), rgba(139, 92, 246, 0.18)); border-color: rgba(139, 92, 246, 0.45); }
+.editor-grade { display: grid; grid-template-columns: 1.4fr 1fr; gap: 20px; align-items: start; }
+.post-arte { display: grid; place-items: center; min-height: 240px; border-radius: 14px; border: 1px dashed var(--borda-forte); color: var(--texto-3); overflow: hidden; background: rgba(255, 255, 255, 0.02); }
+.post-arte-img { width: 100%; height: auto; display: block; }
+.aprovacoes { display: grid; gap: 14px; }
+.aprovacao { display: grid; grid-template-columns: 180px 1fr; gap: 18px; padding: 16px; border-radius: 18px; }
+.aprovacao-img { width: 180px; height: 180px; object-fit: cover; border-radius: 12px; }
+.aprovacao-sem { display: grid; place-items: center; border: 1px dashed var(--borda-forte); color: var(--texto-3); font-size: 13px; }
+.aprovacao-corpo { display: grid; gap: 10px; align-content: start; min-width: 0; }
+.aprovacao-legenda { margin: 0; white-space: pre-wrap; color: var(--texto-2); font-size: 14px; max-height: 120px; overflow: auto; }
+.marca-topo { display: flex; gap: 12px; align-items: center; margin-bottom: 14px; }
+.marca-cartao .sub { display: block; color: var(--texto-3); font-size: 13px; }
+.lista-saude .sub { display: block; color: var(--texto-3); font-size: 12.5px; }
+.estrelas { color: #fbbf24; letter-spacing: 1px; }
+.pos-entrada { width: 72px; min-height: 34px; padding: 4px 8px; display: inline-block; }
+.sobe { color: var(--verde); font-weight: 700; font-size: 12.5px; }
+.desce { color: var(--vermelho); font-weight: 700; font-size: 12.5px; }
+
+/* Gaveta lateral */
+.gaveta { position: fixed; inset: 0; z-index: 65; display: flex; justify-content: flex-end; background: rgba(2, 4, 10, 0.6); backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); }
+.gaveta-caixa { width: min(980px, 100%); height: 100%; overflow-y: auto; background: #070b16; border-left: 1px solid var(--borda); animation: deslizarGaveta 0.25s ease both; }
+@keyframes deslizarGaveta { from { transform: translateX(30px); opacity: 0; } to { transform: none; opacity: 1; } }
+.gaveta-topo { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 22px; background: rgba(7, 11, 22, 0.95); border-bottom: 1px solid var(--borda); }
+.gaveta-topo h2 { margin: 0; font-size: 18px; }
+.gaveta-topo .icone-botao, .assistente-fechar { display: grid; }
+.gaveta-corpo { padding: 22px; display: grid; gap: 16px; }
+
+/* Assistente DENIA */
+.denia-orbe { position: fixed; right: 22px; bottom: 22px; z-index: 55; display: flex; align-items: center; gap: 10px; padding: 10px 18px 10px 10px; border-radius: 999px; border: 1px solid rgba(139, 92, 246, 0.5); background: rgba(10, 14, 30, 0.92); color: var(--texto); font-weight: 800; letter-spacing: 0.12em; font-size: 13px; cursor: pointer; box-shadow: 0 18px 40px -16px rgba(79, 140, 255, 0.8); }
+.denia-orbe span { width: 30px; height: 30px; border-radius: 50%; background: radial-gradient(circle at 35% 35%, #e6faff, #4f8cff 45%, #8b5cf6 80%); box-shadow: 0 0 18px rgba(79, 140, 255, 0.9); animation: pulsarOrbe 2.4s ease-in-out infinite; }
+@keyframes pulsarOrbe { 0%, 100% { transform: scale(0.92); } 50% { transform: scale(1.06); } }
+.denia-orbe.ativo { border-color: rgba(34, 211, 238, 0.7); }
+.assistente { position: fixed; right: 22px; bottom: 84px; z-index: 56; width: min(400px, calc(100vw - 32px)); height: min(560px, calc(100vh - 120px)); display: flex; flex-direction: column; border-radius: 20px; border: 1px solid var(--borda-forte); background: rgba(8, 11, 24, 0.97); box-shadow: var(--sombra); overflow: hidden; animation: surgir 0.25s ease both; }
+.assistente-topo { display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--borda); }
+.assistente-topo div { display: grid; margin-right: auto; }
+.assistente-topo span { font-size: 12px; color: var(--texto-3); }
+.assistente-voz { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--texto-2); white-space: nowrap; }
+.assistente-voz input { accent-color: #4f8cff; }
+.assistente-fechar { width: 34px; height: 34px; }
+.assistente-msgs { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 8px; }
+.a-msg { max-width: 88%; padding: 9px 12px; border-radius: 14px; font-size: 14px; line-height: 1.45; white-space: pre-wrap; }
+.a-usuario { align-self: flex-end; background: linear-gradient(135deg, rgba(79, 140, 255, 0.32), rgba(139, 92, 246, 0.26)); border: 1px solid rgba(79, 140, 255, 0.35); }
+.a-denia { align-self: flex-start; background: rgba(255, 255, 255, 0.06); border: 1px solid var(--borda); }
+.a-erro { align-self: flex-start; color: #fecdd3; background: rgba(244, 63, 94, 0.12); border: 1px solid rgba(244, 63, 94, 0.4); }
+.assistente-form { display: flex; gap: 8px; padding: 12px; border-top: 1px solid var(--borda); }
+.assistente-form .entrada { min-height: 40px; }
+.assistente-mic { flex: 0 0 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; border: 1px solid var(--borda-forte); background: var(--painel-forte); cursor: pointer; color: var(--texto); }
+.assistente-mic svg { width: 18px; height: 18px; }
+.assistente-mic.gravando { background: rgba(244, 63, 94, 0.25); border-color: rgba(244, 63, 94, 0.7); animation: pulsarOrbe 1s ease-in-out infinite; }
+
+@media (max-width: 960px) {
+  .editor-grade, .opcoes-modo { grid-template-columns: 1fr; }
+  .aprovacao { grid-template-columns: 1fr; }
+  .aprovacao-img { width: 100%; height: auto; aspect-ratio: 1; }
+  .denia-orbe { right: 14px; bottom: 14px; }
+  .assistente { right: 12px; bottom: 74px; }
+}
+.pagina-cabeca .acoes select.entrada { width: auto; min-width: 190px; max-width: 260px; min-height: 36px; padding-top: 4px; padding-bottom: 4px; }
