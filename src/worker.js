@@ -22,7 +22,7 @@
 
 import { apiMarketing, apiAssistente } from "./marketing.js";
 
-const VERSAO = "2.5.0";
+const VERSAO = "2.6.0";
 const SCHEMA = "2.4.0-a";
 const COOKIE = "__Host-denia_sessao";
 const SESSAO_MS = 8 * 60 * 60 * 1000;
@@ -598,11 +598,19 @@ async function contextoAssistente(env, orgId) {
       if (conv.length) linhas.push("Conversas mais recentes: " + conv.slice(0, 15).map(c => `${c.nome || "cliente"} (${String(c.ultima_mensagem || "").slice(0, 60)})${c.ia_pausada ? " [com a equipe]" : ""}`).join("; ") + ".");
       const ap = (await chamarEngine(con, "GET", "learning")).dados;
       if (ap?.sugestoes) linhas.push(`Aprendizados aguardando aprovação: ${ap.sugestoes.PENDENTE || 0}.`);
+      const tr = (await chamarEngine(con, "GET", "training")).dados;
+      if (tr?.dados) linhas.push(`TREINAMENTO ATUAL DA IA DO WHATSAPP (versão ${tr.versao}; campos: instrucoes, servicos, regras, precos, procedimentos, informacoes, exemplos):\n` +
+        ["instrucoes", "servicos", "regras", "precos", "procedimentos", "informacoes", "exemplos"].map(k => `- ${k}: ${String(tr.dados[k] || "(vazio)").replace(/\s+/g, " ").slice(0, 700)}`).join("\n"));
     } catch (e) { linhas.push("IA do WhatsApp: não respondeu agora."); }
   } else linhas.push("IA do WhatsApp: ainda não conectada a esta empresa.");
   try {
     const q = async (sql) => Number((await env.DB.prepare(sql).bind(orgId).first())?.n || 0);
     linhas.push(`Estúdio de Marketing: ${await q("SELECT COUNT(*) n FROM plt_mk_marcas WHERE org_id=? AND ativa=1")} marca(s), ${await q("SELECT COUNT(*) n FROM plt_mk_posts WHERE org_id=? AND status='AGUARDANDO'")} post(s) aguardando aprovação, ${await q("SELECT COUNT(*) n FROM plt_mk_posts WHERE org_id=? AND status='APROVADO'")} aprovado(s) prontos para publicar, ${await q("SELECT COUNT(*) n FROM plt_mk_avaliacoes WHERE org_id=? AND status='PENDENTE'")} avaliação(ões) do Google sem resposta.`);
+    const marcas = (await env.DB.prepare("SELECT nome, segmento, cidade, instagram, facebook, google, whatsapp FROM plt_mk_marcas WHERE org_id=? AND ativa=1 ORDER BY nome LIMIT 40").bind(orgId).all())?.results || [];
+    if (marcas.length) linhas.push("MARCAS E PERFIS (a publicação e as respostas automáticas no Instagram, Facebook e Google começam depois da conexão oficial com a Meta e o Google, que ainda não foi feita; até lá os posts aprovados são baixados e publicados pela equipe):\n" +
+      marcas.map(m => `- ${m.nome}${m.segmento ? " (" + m.segmento + ")" : ""}${m.cidade ? ", " + m.cidade : ""}: Instagram ${m.instagram ? "@" + m.instagram : "não informado"}; Facebook ${m.facebook || "não informado"}; Google ${m.google || "não informado"}; WhatsApp ${m.whatsapp || "não informado"}`).join("\n"));
+    const prox = (await env.DB.prepare("SELECT p.id, p.data, p.hora, p.titulo, p.status, p.canais, m.nome marca FROM plt_mk_posts p JOIN plt_mk_marcas m ON m.id=p.marca_id WHERE p.org_id=? AND p.status IN ('AGUARDANDO','APROVADO','RASCUNHO') ORDER BY p.data, p.hora LIMIT 25").bind(orgId).all())?.results || [];
+    if (prox.length) linhas.push("PRÓXIMOS POSTS: " + prox.map(x => `#${x.id} ${x.marca} ${x.data || "sem data"} ${x.hora || ""} "${x.titulo || ""}" [${x.status}] ${x.canais}`).join("; ") + ".");
   } catch { /* tabelas ainda não criadas */ }
   linhas.push(`Data de hoje: ${new Date().toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" })}.`);
   return { empresa: o?.nome || "empresa", dados: linhas.join("\n") };
@@ -615,7 +623,17 @@ async function apiOrg(request, env, sessao, orgId, resto) {
   if (resto.startsWith("engine/")) return proxyEngine(request, env, sessao, orgId, papel, resto.slice(7));
   const kit = { json, lerCorpo, txt, pode, agora, auditar, sessao };
   if (resto.startsWith("mk/")) return apiMarketing(request, env, kit, orgId, papel, resto.slice(3));
-  if (resto.startsWith("assistente/")) return apiAssistente(request, env, kit, orgId, papel, resto, await contextoAssistente(env, orgId));
+  if (resto.startsWith("assistente/")) {
+    // A DENIA age pelo comando de voz usando as mesmas rotas (e permissões) do painel.
+    const interno = (base) => async (metodo, caminho, corpo) => {
+      const req = new Request(new URL(`/api/orgs/${orgId}/${base}/${caminho}`, request.url), { method: metodo, headers: { "content-type": "application/json", origin: new URL(request.url).origin }, body: metodo === "POST" ? JSON.stringify(corpo || {}) : undefined });
+      const rota = caminho.split("?")[0];
+      const r = base === "mk" ? await apiMarketing(req, env, kit, orgId, papel, rota) : await proxyEngine(req, env, sessao, orgId, papel, rota);
+      return { status: r.status, dados: await r.json().catch(() => ({})) };
+    };
+    const ctx = resto === "assistente/conversa" ? await contextoAssistente(env, orgId) : { empresa: "", dados: "" };
+    return apiAssistente(request, env, kit, orgId, papel, resto, { ...ctx, mk: interno("mk"), engine: interno("engine") });
+  }
 
   if (resto === "membros" && metodo === "GET") {
     if (!pode(papel, "ADMIN")) return json({ erro: "Sem permissão." }, 403);
@@ -755,7 +773,8 @@ async function apiAdminOrgs(request, env, sessao, resto) {
 async function api(request, env, caminho) {
   const metodo = request.method;
   if (caminho === "/api/publico" && metodo === "GET") {
-    const whatsapp = String(env.CONTATO_WHATSAPP || "").replace(/\D/g, "");
+    let whatsapp = String(env.CONTATO_WHATSAPP || "").replace(/\D/g, "");
+    if (!whatsapp) whatsapp = String((await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave='whatsapp_site'").first().catch(() => null))?.valor || "");
     const email = String(env.CONTATO_EMAIL || "").trim();
     return json({ whatsapp: whatsapp.length >= 10 ? whatsapp : "", email: emailValido(email) ? email : "", versao: VERSAO });
   }
@@ -815,6 +834,20 @@ async function api(request, env, caminho) {
     const r = await env.DB.prepare("SELECT * FROM plt_contatos ORDER BY id DESC LIMIT 300").all();
     await env.DB.prepare("UPDATE plt_contatos SET lido=1 WHERE lido=0").run();
     return json({ contatos: r?.results || [] });
+  }
+  if (caminho === "/api/admin/site") {
+    if (!u.super_admin) return json({ erro: "Sem permissão." }, 403);
+    if (metodo === "POST") {
+      const { corpo, erro } = await lerCorpo(request);
+      if (erro) return erro;
+      let w = String(corpo.whatsapp || "").replace(/\D/g, "");
+      if (w && w.length <= 11) w = "55" + w;
+      if (w && (w.length < 12 || w.length > 13)) return json({ erro: "Informe o WhatsApp com DDD, por exemplo (21) 99999-9162." }, 400);
+      await env.DB.prepare("INSERT OR REPLACE INTO plt_meta(chave,valor) VALUES('whatsapp_site',?)").bind(w).run();
+      await auditar(env, request, sessao, null, "SITE", w ? `WhatsApp do site: final ${w.slice(-4)}` : "WhatsApp do site removido");
+    }
+    const w = (await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave='whatsapp_site'").first())?.valor || "";
+    return json({ whatsapp: w, pelo_secret: Boolean(String(env.CONTATO_WHATSAPP || "").trim()) });
   }
   if ((m = caminho.match(/^\/api\/admin\/organizacoes(?:\/(\d{1,12}))?$/)) && metodo === "POST") return apiAdminOrgs(request, env, sessao, m[1] || "");
   if ((m = caminho.match(/^\/api\/orgs\/(\d{1,12})\/(.+)$/))) return apiOrg(request, env, sessao, Number(m[1]), m[2]);

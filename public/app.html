@@ -30,6 +30,7 @@
     <nav class="lateral-nav" id="lateral-nav">
       <p class="lateral-grupo">Visão geral</p>
       <a href="#/painel" data-rota="painel"><svg viewBox="0 0 24 24"><path d="M3 13h8V3H3zM13 21h8v-8h-8zM3 21h8v-6H3zM13 11h8V3h-8z"/></svg>Painel</a>
+      <a href="#/denia" data-rota="denia"><svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>DENIA por voz</a>
       <p class="lateral-grupo">Operação</p>
       <a href="#/conversas" data-rota="conversas"><svg viewBox="0 0 24 24"><path d="M21 12a8.5 8.5 0 0 1-12.6 7.4L3 21l1.6-5.2A8.5 8.5 0 1 1 21 12z"/></svg>Conversas</a>
       <a href="#/atendimentos" data-rota="atendimentos"><svg viewBox="0 0 24 24"><path d="M4 5h16M4 12h10M4 19h7"/><path d="m15 17 2 2 4-4"/></svg>Atendimentos</a>
@@ -67,6 +68,7 @@
       </button>
       <h1 id="titulo-pagina">Painel</h1>
       <div class="barra-topo-direita">
+        <button class="btn btn-voz" id="falar-denia" type="button"><svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg><span>Falar com a DENIA</span></button>
         <span class="selo" id="status-engine"><span class="ponto"></span>Verificando…</span>
         <span class="usuario" id="usuario"></span>
         <button class="btn btn-secundario btn-pequeno" id="sair" type="button">Sair</button>
@@ -82,7 +84,7 @@
       <button class="icone-botao assistente-fechar" id="assistente-fechar" type="button" aria-label="Fechar"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button></header>
     <div class="assistente-msgs" id="assistente-msgs" aria-live="polite"></div>
     <form class="assistente-form" id="assistente-form">
-      <button class="assistente-mic" id="assistente-mic" type="button" aria-label="Falar"><svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button>
+      <button class="assistente-mic mic-denia" id="assistente-mic" type="button" aria-label="Falar"><svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button>
       <input class="entrada" id="assistente-texto" placeholder="Pergunte à DENIA…" autocomplete="off" maxlength="2000">
       <button class="btn btn-primario btn-pequeno" type="submit">Enviar</button>
     </form>
