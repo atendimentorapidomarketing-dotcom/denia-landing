@@ -768,35 +768,41 @@
     catch (e) { if (vivo()) falha(area, e); return; }
     if (!vivo()) return;
     const editar = pode("ADMIN");
-    const url = h("input", { class: "entrada", type: "url", value: i.engine_url, placeholder: "https://denia.seu-usuario.workers.dev", readOnly: !editar, autocomplete: "off", spellcheck: "false" });
-    const token = h("input", { class: "entrada", type: "password", placeholder: i.token_configurado ? "Token guardado com segurança · digite para trocar" : "Cole aqui o DENIA_PLATFORM_SERVICE_TOKEN", readOnly: !editar, autocomplete: "new-password", spellcheck: "false" });
+    const direta = i.origem === "direta";
+    const url = h("input", { class: "entrada", type: "url", value: direta ? "" : i.engine_url, placeholder: "https://denia.seu-usuario.workers.dev", readOnly: !editar, autocomplete: "off", spellcheck: "false" });
+    const token = h("input", { class: "entrada", type: "password", placeholder: i.token_configurado ? "Token guardado · cole aqui para trocar" : "Cole aqui o DENIA_PLATFORM_SERVICE_TOKEN do Worker \"denia\"", readOnly: !editar, autocomplete: "new-password", spellcheck: "false" });
     const resultado = h("div", {});
+    const testar = async () => {
+      resultado.replaceChildren(carregando("Testando…"));
+      try {
+        const r = await org("integracao/testar", { metodo: "POST", corpo: {} });
+        resultado.replaceChildren(r.ok ? h("p", { class: "nota", text: `Conexão funcionando · DENIA Engine ${r.versao}${r.saude && r.saude.ok ? " · tudo operacional" : " · há itens pendentes no Painel"}.` }) : h("p", { class: "nota nota-alerta", text: r.erro }));
+        if (r.ok) { estado.status = null; atualizarStatus(); }
+      } catch (e) { resultado.replaceChildren(h("p", { class: "nota nota-alerta", text: e.message })); }
+    };
+    const origemToken = { plataforma: "salvo aqui na plataforma", cloudflare: "secret DENIA_PLATFORM_SERVICE_TOKEN do Worker denia-landing" }[i.token_origem] || "";
     const engine = h("section", { class: "cartao vidro formulario" },
-      h("div", { class: "sugestao-topo" }, h("h3", { style: "margin:0;margin-right:auto", text: "DENIA Engine (a IA do WhatsApp)" }), i.token_configurado && i.engine_url ? selo("Conectado", "ok") : selo("Não conectado", "alerta")),
-      h("p", { style: "margin:0;color:var(--texto-2);font-size:14px", text: "É o Worker da Cloudflare que atende o WhatsApp desta empresa. A plataforma conversa com ele de servidor para servidor; o token fica cifrado e nunca aparece no navegador." }),
-      campo("Endereço do Engine", url), campo("Token de serviço", token),
-      i.origem === "direta" ? h("p", { class: "nota", text: "A Central está ligada direto ao Worker \"denia\" da Cloudflare, sem passar pela internet. Não é preciso fazer nada aqui: basta o token DENIA_PLATFORM_SERVICE_TOKEN ser o mesmo nos dois Workers." }) : null,
-      i.origem === "cloudflare" ? h("p", { class: "nota", text: "Conectado pelas variáveis DENIA_ENGINE_URL e DENIA_PLATFORM_SERVICE_TOKEN que já estavam na Cloudflare. Não é preciso fazer nada. Se salvar outro endereço e token aqui, passa a valer o daqui." }) : null,
+      h("div", { class: "sugestao-topo" }, h("h3", { style: "margin:0;margin-right:auto", text: "DENIA Engine (a IA do WhatsApp)" }), direta || (i.token_configurado && i.engine_url) ? selo(direta ? "Ligação direta" : "Conectado", "ok") : selo("Não conectado", "alerta")),
+      h("p", { style: "margin:0;color:var(--texto-2);font-size:14px", text: direta ? "A Central está ligada direto ao Worker \"denia\" da Cloudflare, por dentro da Cloudflare. Só falta o token: ele precisa ser exatamente o mesmo DENIA_PLATFORM_SERVICE_TOKEN que está no Worker \"denia\"." : "É o Worker da Cloudflare que atende o WhatsApp desta empresa. A plataforma conversa com ele de servidor para servidor; o token fica cifrado e nunca aparece no navegador." }),
+      direta ? null : campo("Endereço do Engine", url),
+      campo("Token de serviço", token, direta ? "Copie o valor do secret DENIA_PLATFORM_SERVICE_TOKEN do Worker \"denia\" (Settings → Variables and Secrets) e cole aqui." : ""),
+      direta && i.token_configurado ? h("p", { class: "nota", text: `Token em uso: termina em …${i.token_final} (${i.token_tamanho} caracteres) · ${origemToken}.` }) : null,
+      direta && !i.token_configurado ? h("p", { class: "nota nota-alerta", text: "Nenhum token configurado ainda." }) : null,
       i.atualizado_ms ? h("p", { style: "margin:0;font-size:13px;color:var(--texto-3)", text: `Atualizado ${quandoFrase(i.atualizado_ms)}${i.atualizado_por ? " por " + i.atualizado_por : ""}` }) : null,
       editar ? h("div", { class: "acoes" },
         botao("Salvar", async () => {
           try {
-            await org("integracao", { metodo: "POST", corpo: { engine_url: url.value.trim(), token: token.value.trim() } });
+            await org("integracao", { metodo: "POST", corpo: { engine_url: direta ? "" : url.value.trim(), token: token.value.trim() } });
             token.value = "";
             aviso("Integração salva.", "ok");
             await recarregarEu(estado.org.id);
-            navegar();
+            await navegar();
+            if (direta) aviso("Agora clique em Testar conexão.");
           } catch (e) { aviso(e.message, "erro"); }
         }, "btn-primario"),
-        botao("Testar conexão", async () => {
-          resultado.replaceChildren(carregando("Testando…"));
-          try {
-            const r = await org("integracao/testar", { metodo: "POST", corpo: {} });
-            resultado.replaceChildren(r.ok ? h("p", { class: "nota", text: `Conexão funcionando · DENIA Engine ${r.versao}${r.saude && r.saude.ok ? " · tudo operacional" : " · há itens pendentes no Painel"}.` }) : h("p", { class: "nota nota-alerta", text: r.erro }));
-          } catch (e) { resultado.replaceChildren(h("p", { class: "nota nota-alerta", text: e.message })); }
-        })) : h("p", { class: "nota", text: "Somente administradores podem alterar a integração." }),
+        botao("Testar conexão", testar)) : h("p", { class: "nota", text: "Somente administradores podem alterar a integração." }),
       resultado,
-      h("details", {}, h("summary", { style: "cursor:pointer;font-weight:600;font-size:14px", text: "Como conectar (passo a passo)" }),
+      direta ? null : h("details", {}, h("summary", { style: "cursor:pointer;font-weight:600;font-size:14px", text: "Como conectar (passo a passo)" }),
         h("ol", { class: "passos", style: "margin-top:12px" },
           h("li", {}, "Na Cloudflare, abra o Worker da DENIA → Settings → Variables and Secrets."),
           h("li", {}, "Crie o secret ", h("span", { class: "codigo", text: "DENIA_PLATFORM_SERVICE_TOKEN" }), " com uma senha longa (40 caracteres ou mais) e salve."),

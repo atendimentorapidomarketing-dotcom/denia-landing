@@ -463,7 +463,7 @@ async function organizacoesDo(env, usuario) {
     : `SELECT o.*, m.papel, (SELECT 1 FROM plt_integracoes i WHERE i.org_id=o.id AND i.token_cifrado IS NOT NULL) conectada FROM plt_membros m JOIN plt_organizacoes o ON o.id=m.org_id WHERE m.usuario_id=? AND o.status='ATIVA' ORDER BY o.id`;
   const st = env.DB.prepare(sql);
   const r = await (usuario.super_admin ? st : st.bind(usuario.id)).all();
-  const primeira = conexaoCloudflare(env) ? await primeiraEmpresa(env) : 0;
+  const primeira = conexaoCloudflare(env) || (env.ENGINE && typeof env.ENGINE.fetch === "function") ? await primeiraEmpresa(env) : 0;
   return (r?.results || []).map(o => ({ id: o.id, nome: o.nome, slug: o.slug, segmento: o.segmento || "", cor: o.cor || "#4f8cff", status: o.status, papel: o.papel, conectada: Boolean(o.conectada) || o.id === primeira }));
 }
 async function papelNa(env, usuario, orgId) {
@@ -505,10 +505,14 @@ async function primeiraEmpresa(env) {
   return Number((await env.DB.prepare("SELECT MIN(id) id FROM plt_organizacoes").first())?.id || 0);
 }
 async function conexaoDa(env, orgId) {
-  // Na Central (primeira empresa), a ligação direta com o Worker "denia" sempre tem prioridade.
-  const direta = conexaoCloudflare(env);
-  if (direta?.binding && orgId === await primeiraEmpresa(env)) return direta;
   const i = await env.DB.prepare("SELECT * FROM plt_integracoes WHERE org_id=?").bind(orgId).first();
+  // Na Central (primeira empresa), a ligação direta com o Worker "denia" sempre tem prioridade.
+  // O token pode vir da plataforma (Integrações) ou do secret DENIA_PLATFORM_SERVICE_TOKEN.
+  if (env.ENGINE && typeof env.ENGINE.fetch === "function" && orgId === await primeiraEmpresa(env)) {
+    const salvo = i?.token_cifrado ? await decifrar(env, i.token_cifrado) : "";
+    const token = (salvo || String(env.DENIA_PLATFORM_SERVICE_TOKEN || env.DENIA_ENGINE_SERVICE_TOKEN || "")).trim();
+    return { url: "https://denia-engine.interno", token, binding: env.ENGINE, origemToken: salvo ? "plataforma" : token ? "cloudflare" : "" };
+  }
   if (!i?.engine_url || !i?.token_cifrado) {
     const cf = conexaoCloudflare(env);
     return cf && orgId === await primeiraEmpresa(env) ? cf : null;
@@ -555,7 +559,7 @@ async function proxyEngine(request, env, sessao, orgId, papel, caminho) {
   try {
     const r = await chamarEngine(con, request.method, caminho, corpo, params);
     if (!r.dados) return json({ erro: explicarFalha(r), status: r.status }, 502);
-    if (r.status === 401) return json({ erro: "A IA recusou o token. Confira o token em Integrações.", codigo: "ENGINE_TOKEN" }, 502);
+    if (r.status === 401) return json({ erro: con.token ? `A IA recusou o token (o que termina em …${con.token.slice(-4)}). Vá em Integrações e cole o mesmo DENIA_PLATFORM_SERVICE_TOKEN que está no Worker "denia".` : "Falta o token da IA. Vá em Integrações e cole o DENIA_PLATFORM_SERVICE_TOKEN do Worker \"denia\".", codigo: "ENGINE_TOKEN" }, 502);
     if (rota[3] && r.status < 300) {
       const detalhe = caminho === "import/clients" ? `${r.dados.importadas ?? 0} cliente(s) importado(s)` :
         caminho === "pause" ? (corpo.ativa ? "IA pausada" : "IA retomada") :
@@ -647,6 +651,10 @@ async function apiOrg(request, env, sessao, orgId, resto) {
 
   if (resto === "integracao" && metodo === "GET") {
     const i = await env.DB.prepare("SELECT engine_url, token_cifrado, atualizado_ms, atualizado_por FROM plt_integracoes WHERE org_id=?").bind(orgId).first();
+    if (env.ENGINE && typeof env.ENGINE.fetch === "function" && orgId === await primeiraEmpresa(env)) {
+      const con = await conexaoDa(env, orgId);
+      return json({ engine_url: "Worker \"denia\" (ligação direta na Cloudflare)", origem: "direta", token_configurado: Boolean(con.token), token_origem: con.origemToken, token_final: con.token ? con.token.slice(-4) : "", token_tamanho: con.token.length, atualizado_ms: i?.atualizado_ms || null, atualizado_por: pode(papel, "ADMIN") ? i?.atualizado_por || null : null });
+    }
     const cfBruto = orgId === await primeiraEmpresa(env) ? conexaoCloudflare(env) : null;
     const cf = cfBruto && (cfBruto.binding || !(i?.engine_url && i?.token_cifrado)) ? cfBruto : null;
     if (cf) return json({ engine_url: cf.binding ? "Worker \"denia\" (ligação direta na Cloudflare)" : cf.url, token_configurado: true, origem: cf.binding ? "direta" : "cloudflare", atualizado_ms: null, atualizado_por: null });
@@ -670,9 +678,10 @@ async function apiOrg(request, env, sessao, orgId, resto) {
     if (!pode(papel, "ADMIN")) return json({ erro: "Sem permissão." }, 403);
     const con = await conexaoDa(env, orgId);
     if (!con) return json({ ok: false, erro: "Informe o endereço e o token e salve antes de testar." }, 400);
+    if (con.binding && !con.token) return json({ ok: false, erro: "Falta o token: cole aqui o DENIA_PLATFORM_SERVICE_TOKEN do Worker \"denia\" e salve." });
     try {
       const r = await chamarEngine(con, "GET", "status");
-      if (r.status === 401) return json({ ok: false, erro: "O Engine recusou o token. Confira se é igual ao DENIA_PLATFORM_SERVICE_TOKEN." });
+      if (r.status === 401) return json({ ok: false, erro: con.token ? `O Worker "denia" recusou o token que termina em …${con.token.slice(-4)} (${con.token.length} caracteres). O DENIA_PLATFORM_SERVICE_TOKEN do Worker "denia" precisa ser exatamente igual (sem espaços) e ter pelo menos 16 caracteres. Depois de salvar o secret lá, clique em Deploy.` : "Falta o token: cole aqui o DENIA_PLATFORM_SERVICE_TOKEN do Worker \"denia\" e salve." });
       if (!r.dados) return json({ ok: false, erro: explicarFalha(r) });
       return json({ ok: true, versao: r.dados.versao || "", saude: r.dados, direta: Boolean(con.binding) });
     } catch (e) { return json({ ok: false, erro: "Não consegui acessar o endereço: " + txt(e?.message, 120) }); }
