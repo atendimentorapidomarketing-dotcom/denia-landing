@@ -36,28 +36,15 @@
   var ano = document.getElementById("ano");
   if (ano) ano.textContent = String(new Date().getFullYear());
 
-  // ---------- Experiência: rede neural, rastro de luz (mouse e dedo) ----------
+  // ---------- Constelação viva no fundo + brilho suave que acompanha o mouse/dedo ----------
   var toque = window.matchMedia && window.matchMedia("(hover: none)").matches;
   var luz = document.getElementById("luz-cursor");
-  var ponteiro = { x: window.innerWidth * 0.5, y: window.innerHeight * 0.35, ativo: false, ultimo: 0 };
-  var rastro = [];
-  function moverPonteiro(x, y) {
-    // Se o dedo/mouse "pulou" para outro ponto, o rastro recomeça ali.
-    if (Math.abs(x - ponteiro.x) + Math.abs(y - ponteiro.y) > 140) rastro = [];
-    ponteiro.x = x; ponteiro.y = y; ponteiro.ativo = true; ponteiro.ultimo = Date.now();
-    rastro.push({ x: x, y: y, t: performance.now() });
-    if (rastro.length > 40) rastro.shift();
-    if (luz) { luz.style.transform = "translate(" + x + "px," + y + "px)"; luz.classList.add("ativa"); }
-  }
+  var ponteiro = { x: window.innerWidth * 0.5, y: window.innerHeight * 0.35, ultimo: 0 };
+  var alvoLuz = { x: ponteiro.x, y: ponteiro.y }, posLuz = { x: ponteiro.x, y: ponteiro.y };
+  function moverPonteiro(x, y) { ponteiro.x = x; ponteiro.y = y; ponteiro.ultimo = Date.now(); alvoLuz.x = x; alvoLuz.y = y; if (luz) luz.classList.add("ativa"); }
   window.addEventListener("pointermove", function (e) { moverPonteiro(e.clientX, e.clientY); }, { passive: true });
-  window.addEventListener("pointerdown", function (e) { moverPonteiro(e.clientX, e.clientY); pulso(e.clientX, e.clientY); }, { passive: true });
-  // No celular o navegador cancela o "pointer" ao rolar; o toque continua informando a posição.
-  window.addEventListener("touchstart", function (e) { var t = e.touches[0]; if (t) { moverPonteiro(t.clientX, t.clientY); pulso(t.clientX, t.clientY); } }, { passive: true });
+  window.addEventListener("touchstart", function (e) { var t = e.touches[0]; if (t) moverPonteiro(t.clientX, t.clientY); }, { passive: true });
   window.addEventListener("touchmove", function (e) { var t = e.touches[0]; if (t) moverPonteiro(t.clientX, t.clientY); }, { passive: true });
-  document.addEventListener("pointerleave", function () { ponteiro.ativo = false; if (luz) luz.classList.remove("ativa"); });
-
-  var ondas = [];
-  function pulso(x, y) { if (!semMovimento) ondas.push({ x: x, y: y, t: performance.now() }); }
 
   var tela = document.getElementById("rede");
   if (tela && tela.getContext && !semMovimento) {
@@ -68,69 +55,41 @@
       largura = window.innerWidth; altura = window.innerHeight;
       tela.width = largura * dpr; tela.height = altura * dpr;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      var n = Math.round(Math.max(28, Math.min(95, (largura * altura) / (toque ? 11000 : 15000))));
+      var n = Math.round(Math.max(28, Math.min(90, (largura * altura) / (toque ? 11000 : 15000))));
       pontos = [];
-      for (var i = 0; i < n; i++) pontos.push({ x: Math.random() * largura, y: Math.random() * altura, vx: (Math.random() - 0.5) * 0.3, vy: (Math.random() - 0.5) * 0.3, r: Math.random() * 1.6 + 0.7 });
+      for (var i = 0; i < n; i++) pontos.push({ x: Math.random() * largura, y: Math.random() * altura, vx: (Math.random() - 0.5) * 0.3, vy: (Math.random() - 0.5) * 0.3, r: Math.random() * 1.5 + 0.6 });
     };
     var desenhar = function (agora) {
       ctx.clearRect(0, 0, largura, altura);
-      // Sem mouse por 2,5 s (ou no celular parado), a luz passeia sozinha pela tela.
+      // Sem mouse por alguns segundos (ou no celular parado), a luz passeia sozinha.
       if (Date.now() - ponteiro.ultimo > 2500) {
         var s = agora / 1000;
-        var ax = largura * (0.5 + 0.34 * Math.sin(s * 0.45)), ay = altura * (0.42 + 0.26 * Math.sin(s * 0.71 + 1));
-        ponteiro.x += (ax - ponteiro.x) * 0.03; ponteiro.y += (ay - ponteiro.y) * 0.03;
-        if (luz) { luz.style.transform = "translate(" + ponteiro.x + "px," + ponteiro.y + "px)"; luz.classList.add("ativa", "suave"); }
-        rastro.push({ x: ponteiro.x, y: ponteiro.y, t: agora });
-        if (rastro.length > 40) rastro.shift();
-      } else if (luz) luz.classList.remove("suave");
-      var raio = toque ? 150 : 190, raio2 = raio * raio;
+        alvoLuz.x = largura * (0.5 + 0.32 * Math.sin(s * 0.35));
+        alvoLuz.y = altura * (0.42 + 0.24 * Math.sin(s * 0.55 + 1));
+        if (luz) luz.classList.add("ativa");
+      }
+      // A luz desliza até o alvo (movimento macio, sem "pular").
+      posLuz.x += (alvoLuz.x - posLuz.x) * 0.12; posLuz.y += (alvoLuz.y - posLuz.y) * 0.12;
+      if (luz) luz.style.transform = "translate(" + posLuz.x.toFixed(1) + "px," + posLuz.y.toFixed(1) + "px)";
+      var raio2 = 170 * 170;
       for (var i = 0; i < pontos.length; i++) {
         var p = pontos[i];
         p.x += p.vx; p.y += p.vy;
         if (p.x < 0 || p.x > largura) p.vx *= -1;
         if (p.y < 0 || p.y > altura) p.vy *= -1;
-        var mx = p.x - ponteiro.x, my = p.y - ponteiro.y, dm = mx * mx + my * my;
+        var mx = p.x - posLuz.x, my = p.y - posLuz.y, dm = mx * mx + my * my;
         var perto = dm < raio2 ? 1 - dm / raio2 : 0;
-        // Os pontos são levemente atraídos pela luz.
-        if (perto) { p.x -= mx * 0.006 * perto; p.y -= my * 0.006 * perto; }
         for (var j = i + 1; j < pontos.length; j++) {
           var q = pontos[j], dx = p.x - q.x, dy = p.y - q.y, d = dx * dx + dy * dy;
           if (d < 17000) {
-            ctx.strokeStyle = "rgba(110,160,255," + ((0.14 + perto * 0.5) * (1 - d / 17000)).toFixed(3) + ")";
+            ctx.strokeStyle = "rgba(110,160,255," + ((0.13 + perto * 0.3) * (1 - d / 17000)).toFixed(3) + ")";
             ctx.lineWidth = 1;
             ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(q.x, q.y); ctx.stroke();
           }
         }
-        if (perto) {
-          ctx.strokeStyle = "rgba(125,235,255," + (0.75 * perto).toFixed(3) + ")";
-          ctx.lineWidth = 1.2;
-          ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(ponteiro.x, ponteiro.y); ctx.stroke();
-        }
-        ctx.fillStyle = perto ? "rgba(230,250,255," + (0.6 + perto * 0.4).toFixed(3) + ")" : "rgba(186,230,253,0.7)";
-        ctx.beginPath(); ctx.arc(p.x, p.y, p.r + perto * 1.8, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = "rgba(186,230,253," + (0.6 + perto * 0.4).toFixed(3) + ")";
+        ctx.beginPath(); ctx.arc(p.x, p.y, p.r + perto, 0, Math.PI * 2); ctx.fill();
       }
-      // Rastro de luz.
-      var vivos = rastro.filter(function (r) { return agora - r.t < 650; });
-      rastro = vivos;
-      if (vivos.length > 1) {
-        ctx.lineCap = "round"; ctx.lineJoin = "round";
-        for (var k = 1; k < vivos.length; k++) {
-          var a = vivos[k - 1], b = vivos[k], vida = 1 - (agora - b.t) / 650;
-          ctx.strokeStyle = "rgba(140,220,255," + (0.85 * vida).toFixed(3) + ")";
-          ctx.shadowColor = "rgba(79,140,255,0.9)"; ctx.shadowBlur = 16 * vida;
-          ctx.lineWidth = 1 + vida * 5;
-          ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
-        }
-        ctx.shadowBlur = 0;
-      }
-      // Ondas de toque/clique.
-      ondas = ondas.filter(function (o) { return agora - o.t < 900; });
-      ondas.forEach(function (o) {
-        var v = (agora - o.t) / 900;
-        ctx.strokeStyle = "rgba(125,235,255," + (0.6 * (1 - v)).toFixed(3) + ")";
-        ctx.lineWidth = 2 * (1 - v) + 0.5;
-        ctx.beginPath(); ctx.arc(o.x, o.y, 12 + v * 110, 0, Math.PI * 2); ctx.stroke();
-      });
       quadro = visivel ? window.requestAnimationFrame(desenhar) : 0;
     };
     dimensionar();
@@ -143,26 +102,15 @@
     });
   }
 
-  // ---------- Cartões com brilho e inclinação 3D ----------
-  var cartoes = Array.prototype.slice.call(document.querySelectorAll(".recurso, .plano, .contador-caixa, .etapa, .lista-seguranca li"));
-  function brilho(cartao, x, y, inclinar) {
-    var r = cartao.getBoundingClientRect();
-    var px = (x - r.left) / r.width, py = (y - r.top) / r.height;
-    cartao.style.setProperty("--mx", (x - r.left) + "px");
-    cartao.style.setProperty("--my", (y - r.top) + "px");
-    if (inclinar) cartao.style.transform = "perspective(900px) rotateX(" + ((0.5 - py) * 7).toFixed(2) + "deg) rotateY(" + ((px - 0.5) * 9).toFixed(2) + "deg) translateY(-4px)";
-  }
+  // ---------- Brilho discreto nos cartões ----------
   if (!semMovimento) {
-    cartoes.forEach(function (c) {
+    document.querySelectorAll(".recurso, .plano, .contador-caixa, .etapa, .lista-seguranca li").forEach(function (c) {
       c.classList.add("interativo");
-      c.addEventListener("pointermove", function (e) { brilho(c, e.clientX, e.clientY, e.pointerType === "mouse"); });
-      c.addEventListener("pointerleave", function () { c.style.transform = ""; });
-      c.addEventListener("touchstart", function (e) { var t = e.touches[0]; if (t) { brilho(c, t.clientX, t.clientY, false); c.classList.add("tocado"); setTimeout(function () { c.classList.remove("tocado"); }, 900); } }, { passive: true });
-    });
-    // Botões principais "magnéticos" (só com mouse).
-    if (!toque) document.querySelectorAll(".btn-primario").forEach(function (b) {
-      b.addEventListener("pointermove", function (e) { var r = b.getBoundingClientRect(); b.style.transform = "translate(" + ((e.clientX - r.left - r.width / 2) * 0.18).toFixed(1) + "px," + ((e.clientY - r.top - r.height / 2) * 0.28).toFixed(1) + "px)"; });
-      b.addEventListener("pointerleave", function () { b.style.transform = ""; });
+      c.addEventListener("pointermove", function (e) {
+        var r = c.getBoundingClientRect();
+        c.style.setProperty("--mx", (e.clientX - r.left) + "px");
+        c.style.setProperty("--my", (e.clientY - r.top) + "px");
+      });
     });
   }
 
@@ -176,31 +124,6 @@
   };
   window.addEventListener("scroll", marcarProgresso, { passive: true });
   marcarProgresso();
-
-  // ---------- Títulos que se "decodificam" ao aparecer ----------
-  if (!semMovimento && "IntersectionObserver" in window) {
-    var simbolos = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789#%&*+<>/";
-    var decodificar = function (el) {
-      var final = el.textContent, inicio = performance.now(), dur = Math.min(1100, 300 + final.length * 18);
-      el.setAttribute("aria-label", final);
-      var passo = function (t) {
-        var x = Math.min(1, (t - inicio) / dur), fixos = Math.floor(final.length * x), s = "";
-        for (var i = 0; i < final.length; i++) {
-          var c = final[i];
-          if (i < fixos || /[\s.,!?]/.test(c)) { s += c; continue; }
-          var r = simbolos[(Math.random() * simbolos.length) | 0];
-          s += c === c.toLowerCase() ? r.toLowerCase() : r;
-        }
-        el.textContent = s;
-        if (x < 1) requestAnimationFrame(passo); else { el.textContent = final; el.removeAttribute("aria-label"); }
-      };
-      requestAnimationFrame(passo);
-    };
-    var obsTitulos = new IntersectionObserver(function (es) {
-      es.forEach(function (e) { if (e.isIntersecting) { obsTitulos.unobserve(e.target); decodificar(e.target); } });
-    }, { threshold: 0.6 });
-    document.querySelectorAll(".secao-cabeca h2, .cta-caixa h2").forEach(function (h) { if (!h.children.length) obsTitulos.observe(h); });
-  }
 
   // ---------- Abertura: a inteligência "liga" (uma vez por visita) ----------
   var jaViu = false;

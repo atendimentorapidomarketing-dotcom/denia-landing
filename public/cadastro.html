@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Entrar — DENIA</title>
+  <title>Criar conta — DENIA</title>
   <meta name="robots" content="noindex">
   <meta name="theme-color" content="#04060c">
   <link rel="icon" href="/assets/img/logo.svg" type="image/svg+xml">
@@ -19,25 +19,34 @@
   <main class="entrar">
     <section class="entrar-caixa vidro" aria-labelledby="titulo">
       <a class="entrar-marca" href="/"><img src="/assets/img/logo.svg" alt="" width="40" height="40"><span>DENIA</span></a>
-      <h1 id="titulo">Acesse o centro de comando</h1>
-      <p class="entrar-sub">Entre com o seu e-mail e a sua senha.</p>
-      <form id="form-entrar" class="entrar-form" novalidate>
+      <h1 id="titulo">Crie a conta da sua empresa</h1>
+      <p class="entrar-sub">Em menos de um minuto você tem o seu próprio centro de comando.</p>
+      <form id="form-cadastro" class="entrar-form" novalidate>
+        <div class="campo">
+          <label for="nome">Seu nome</label>
+          <input class="entrada" id="nome" name="nome" autocomplete="name" maxlength="120" required>
+        </div>
+        <div class="campo">
+          <label for="empresa">Nome da empresa</label>
+          <input class="entrada" id="empresa" name="empresa" autocomplete="organization" maxlength="120" required>
+        </div>
         <div class="campo">
           <label for="email">E-mail</label>
-          <input class="entrada" id="email" name="email" type="email" autocomplete="username" required>
+          <input class="entrada" id="email" name="email" type="email" autocomplete="email" required>
         </div>
         <div class="campo">
           <label for="senha">Senha</label>
-          <input class="entrada" id="senha" name="senha" type="password" autocomplete="current-password" required>
+          <input class="entrada" id="senha" name="senha" type="password" autocomplete="new-password" minlength="10" required>
+          <p class="entrar-dica">Mínimo de 10 caracteres, com letras e números.</p>
         </div>
         <p class="entrar-erro oculto" id="erro" role="alert"></p>
-        <button class="btn btn-primario" id="botao" type="submit">Entrar</button>
+        <button class="btn btn-primario" id="botao" type="submit">Criar conta</button>
       </form>
-      <p class="entrar-troca">Ainda não tem conta? <a href="/cadastro">Criar conta</a></p>
+      <p class="entrar-troca">Já tem conta? <a href="/entrar">Entrar</a></p>
       <p class="entrar-rodape"><span class="ponto"></span> Conexão protegida · sessão válida por 8 horas</p>
     </section>
     <a class="entrar-voltar" href="/">← Voltar ao site</a>
   </main>
-  <script src="/assets/js/entrar.js" defer></script>
+  <script src="/assets/js/cadastro.js" defer></script>
 </body>
 </html>
