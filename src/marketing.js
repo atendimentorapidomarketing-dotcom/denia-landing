@@ -536,7 +536,8 @@ async function executarAcao(a, { marcasOrg, contexto, txt }) {
 
 export async function apiAssistente(request, env, k, orgId, papel, resto, contexto) {
   const { json, lerCorpo, txt } = k;
-  if (!chave(env)) { const s = semChave(); return json(s.corpo, s.status); }
+  // Preparar, executar e ler o painel não usam a OpenAI.
+  if (!chave(env) && !["assistente/preparar", "assistente/executar", "assistente/contexto"].includes(resto)) { const s = semChave(); return json(s.corpo, s.status); }
   try {
     if (resto === "assistente/transcrever" && request.method === "POST") {
       const tipo = request.headers.get("content-type") || "audio/webm";
@@ -598,6 +599,63 @@ ${contexto.dados}`, msgs, 1600);
       const resposta = txt(r?.resposta, 3000) || (feitas.length ? "Pronto." : "Desculpe, não consegui responder agora. Pode repetir?");
       return json({ resposta, acoes: feitas });
     }
+    // Conversa de voz ao vivo (como o modo de voz do ChatGPT): o navegador fala direto com a voz em tempo real
+    // da OpenAI usando uma chave temporária de 1 minuto; a chave de verdade nunca sai do servidor.
+    if (resto === "assistente/ao-vivo" && request.method === "POST") {
+      await garantir(env);
+      const marcasOrg = (await env.DB.prepare("SELECT id, nome FROM plt_mk_marcas WHERE org_id=? AND ativa=1 ORDER BY nome").bind(orgId).all())?.results || [];
+      const modelo = String(env.OPENAI_REALTIME_MODEL || "gpt-realtime").trim();
+      const instructions = `Você é a DENIA, a superinteligência da plataforma DENIA, numa conversa de VOZ AO VIVO com a equipe da empresa "${contexto.empresa}" (não com clientes). O perfil de quem fala é ${papel}.
+Fale como uma colega brilhante ao telefone: português do Brasil natural, caloroso e direto; frases curtas; nada de listas, símbolos ou markdown. Se for interrompida, pare e escute.
+Use os DADOS DO PAINEL para responder sobre conversas do WhatsApp, atendimentos, profissionais, treinamento, aprendizados, marcas e perfis de Instagram, Facebook e Google, posts e aprovações. Nunca invente números ou fatos que não estão nos dados; se precisar de dados mais novos, use a ferramenta dados_do_painel.
+Para assuntos de fora (notícias, concorrentes, tendências, preços de mercado, qualquer dúvida do mundo), use a ferramenta pesquisar_web e conte o resultado de forma curta, citando de onde veio.
+Quando a pessoa pedir claramente uma ação, use a ferramenta certa (criar_semana, criar_post, aprovar_posts, publicar_post, treinar, pausar_ia). Antes, diga numa frase curta o que vai fazer ("Vou abrir o treinamento e acrescentar isso"); a pessoa vê você fazendo na tela e pode pausar ou parar. Quando a ferramenta devolver o resultado, conte em uma frase. Se faltar algo essencial (por exemplo qual marca, havendo mais de uma), pergunte antes.
+Treinamento: prefira acrescentar; substituir só se pedirem para trocar tudo daquele campo (aí o texto é o campo inteiro já reescrito). Escreva o texto do treinamento como instrução clara para a IA que atende os clientes no WhatsApp.
+Publicar: a publicação automática no Instagram, Facebook e Google começa depois da conexão oficial com a Meta e o Google; até lá o post fica aprovado e a equipe publica. Diga isso com honestidade.
+Marcas existentes: ${marcasOrg.map(m => m.nome).join(", ") || "nenhuma cadastrada"}.
+DADOS DO PAINEL (no início da conversa):
+${contexto.dados}`;
+      const marca = { type: "string", description: "Nome da marca" };
+      const canais = { type: "array", items: { type: "string", enum: ["instagram", "facebook", "google"] } };
+      const tools = [
+        { type: "function", name: "criar_semana", description: "Planeja e cria os posts da semana de uma marca (legendas, hashtags e imagens).", parameters: { type: "object", properties: { marca, canais, quantidade: { type: "integer", minimum: 1, maximum: 14 }, semana: { type: "string", enum: ["esta", "proxima"] }, com_artes: { type: "boolean" } }, required: ["marca"] } },
+        { type: "function", name: "criar_post", description: "Cria um post com texto e imagem e envia para aprovação.", parameters: { type: "object", properties: { marca, canais, tema: { type: "string" }, formato: { type: "string", enum: ["post", "carrossel", "story", "reels"] }, data: { type: "string", description: "AAAA-MM-DD" }, hora: { type: "string", description: "HH:MM" }, com_arte: { type: "boolean" } }, required: ["marca", "tema"] } },
+        { type: "function", name: "aprovar_posts", description: "Aprova os posts que aguardam aprovação (de uma marca ou de todas).", parameters: { type: "object", properties: { marca } } },
+        { type: "function", name: "publicar_post", description: "Deixa um post aprovado e pronto para publicar.", parameters: { type: "object", properties: { post_id: { type: "integer" } }, required: ["post_id"] } },
+        { type: "function", name: "treinar", description: "Muda o treinamento da IA que atende os clientes no WhatsApp.", parameters: { type: "object", properties: { campo: { type: "string", enum: ["instrucoes", "servicos", "regras", "precos", "procedimentos", "informacoes", "exemplos"] }, modo: { type: "string", enum: ["acrescentar", "substituir"] }, texto: { type: "string" } }, required: ["campo", "texto"] } },
+        { type: "function", name: "pausar_ia", description: "Pausa (pausar=true) ou retoma (pausar=false) a IA do WhatsApp para todos os clientes.", parameters: { type: "object", properties: { pausar: { type: "boolean" } }, required: ["pausar"] } },
+        { type: "function", name: "pesquisar_web", description: "Pesquisa na internet, ao vivo, e devolve um resumo com as fontes.", parameters: { type: "object", properties: { pergunta: { type: "string" } }, required: ["pergunta"] } },
+        { type: "function", name: "dados_do_painel", description: "Busca os dados mais recentes do painel (conversas, atendimentos, posts, treinamento).", parameters: { type: "object", properties: {} } }
+      ];
+      const voz = String(env.OPENAI_REALTIME_VOZ || "marin");
+      const sessao = { type: "realtime", model: modelo, instructions, tools, tool_choice: "auto",
+        audio: { input: { transcription: { model: String(env.OPENAI_TRANSCRIPTION_MODEL || "gpt-4o-mini-transcribe"), language: "pt" }, turn_detection: { type: "semantic_vad", eagerness: "high" }, noise_reduction: { type: "near_field" } }, output: { voice: voz } } };
+      const d = await openai(env, "realtime/client_secrets", { expires_after: { anchor: "created_at", seconds: 120 }, session: sessao }, { timeout: 20000 });
+      const chaveTemp = d?.value || d?.client_secret?.value;
+      if (!chaveTemp) return json({ erro: "A voz ao vivo não respondeu. Tente de novo." }, 502);
+      return json({ chave: chaveTemp, url: "https://api.openai.com/v1/realtime/calls", modelo });
+    }
+    if (resto === "assistente/preparar" && request.method === "POST") {
+      const l = await lerCorpo(request, 20000);
+      if (l.erro) return l.erro;
+      await garantir(env);
+      const marcasOrg = (await env.DB.prepare("SELECT id, nome FROM plt_mk_marcas WHERE org_id=? AND ativa=1 ORDER BY nome").bind(orgId).all())?.results || [];
+      try { return json(prepararAcao(l.corpo.acao || {}, marcasOrg, txt)); }
+      catch (e) { return json({ tipo: String(l.corpo.acao?.tipo || "acao"), erro: e?.message || "Não foi possível preparar." }); }
+    }
+    if (resto === "assistente/pesquisar" && request.method === "POST") {
+      const l = await lerCorpo(request, 4000);
+      if (l.erro) return l.erro;
+      const pergunta = txt(l.corpo.pergunta, 600);
+      if (!pergunta) return json({ erro: "Faltou a pergunta." }, 400);
+      const d = await openai(env, "responses", {
+        model: String(env.OPENAI_MODEL || MODELO_TEXTO).trim(), tools: [{ type: "web_search" }],
+        instructions: "Pesquise na internet e responda em português do Brasil, em até 6 frases objetivas, com números e datas quando houver. No fim, cite as fontes pelo nome do site.",
+        input: [{ role: "user", content: [{ type: "input_text", text: pergunta }] }], max_output_tokens: 900, store: false
+      }, { timeout: 60000 });
+      return json({ resultado: textoDaResposta(d).trim() || "Não encontrei nada confiável sobre isso." });
+    }
+    if (resto === "assistente/contexto" && request.method === "POST") return json({ dados: contexto.dados });
     if (resto === "assistente/executar" && request.method === "POST") {
       const l = await lerCorpo(request, 20000);
       if (l.erro) return l.erro;

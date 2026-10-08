@@ -22,7 +22,7 @@
 
 import { apiMarketing, apiAssistente } from "./marketing.js";
 
-const VERSAO = "2.7.0";
+const VERSAO = "2.8.0";
 // WhatsApp da Central de Atendimento (botão flutuante do site).
 const WHATSAPP_CENTRAL = "5521975469162";
 const SCHEMA = "2.4.0-a";
@@ -589,6 +589,13 @@ async function chaveIA(env, orgId) {
   const salva = (await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave=?").bind("openai_org_" + orgId).first().catch(() => null))?.valor;
   const daPlataforma = salva ? await decifrar(env, salva) : "";
   if (daPlataforma) return { chave: daPlataforma, origem: "plataforma" };
+  // Colada uma vez na Central, vale para todas as empresas que não tiverem a própria.
+  const central = await primeiraEmpresa(env);
+  if (central && central !== orgId) {
+    const daCentral = (await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave=?").bind("openai_org_" + central).first().catch(() => null))?.valor;
+    const c = daCentral ? await decifrar(env, daCentral) : "";
+    if (c) return { chave: c, origem: "central" };
+  }
   const doSecret = String(env.OPENAI_API_KEY || "").trim();
   return { chave: doSecret, origem: doSecret ? "cloudflare" : "" };
 }
@@ -678,7 +685,7 @@ async function apiOrg(request, env, sessao, orgId, resto) {
       const r = base === "mk" ? await apiMarketing(req, await comIA(env, orgId), kit, orgId, papel, rota) : await proxyEngine(req, env, sessao, orgId, papel, rota);
       return { status: r.status, dados: await r.json().catch(() => ({})) };
     };
-    const ctx = resto === "assistente/conversa" ? await contextoAssistente(env, orgId) : { empresa: "", dados: "" };
+    const ctx = ["assistente/conversa", "assistente/ao-vivo", "assistente/contexto"].includes(resto) ? await contextoAssistente(env, orgId) : { empresa: "", dados: "" };
     return apiAssistente(request, await comIA(env, orgId), kit, orgId, papel, resto, { ...ctx, mk: interno("mk"), engine: interno("engine") });
   }
 
@@ -934,7 +941,7 @@ function comSeguranca(resposta, request) {
   const h = new Headers(resposta.headers);
   h.set("content-security-policy", [
     "default-src 'self'", "script-src 'self'", "style-src 'self' https://fonts.googleapis.com",
-    "font-src 'self' https://fonts.gstatic.com", "img-src 'self' data: blob:", "media-src 'self' blob:", "connect-src 'self'",
+    "font-src 'self' https://fonts.gstatic.com", "img-src 'self' data: blob:", "media-src 'self' blob:", "connect-src 'self' https://api.openai.com",
     "manifest-src 'self'", "frame-ancestors 'none'", "base-uri 'none'", "form-action 'self'", "object-src 'none'"
   ].join("; "));
   h.set("strict-transport-security", "max-age=31536000; includeSubDomains");
