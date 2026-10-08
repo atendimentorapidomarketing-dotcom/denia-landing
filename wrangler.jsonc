@@ -3,6 +3,8 @@
   "name": "denia-landing",
   "main": "src/worker.js",
   "compatibility_date": "2026-09-01",
+  // Permite chamar endereços *.workers.dev da mesma conta (evita o erro 1042 da Cloudflare).
+  "compatibility_flags": ["global_fetch_strictly_public"],
   "assets": {
     "directory": "./public",
     "binding": "ASSETS",
@@ -14,6 +16,10 @@
   // As tabelas novas usam o prefixo plt_ e não mexem nas antigas.
   "d1_databases": [
     { "binding": "DB", "database_name": "denia-saas", "database_id": "01bd6b23-af41-461d-8b86-7ad1f4c9d4f9" }
+  ],
+  // Ligação direta com a IA do WhatsApp (Worker "denia"), sem passar pela internet.
+  "services": [
+    { "binding": "ENGINE", "service": "denia" }
   ],
   "observability": { "enabled": true }
 }

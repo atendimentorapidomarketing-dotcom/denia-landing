@@ -775,6 +775,7 @@
       h("div", { class: "sugestao-topo" }, h("h3", { style: "margin:0;margin-right:auto", text: "DENIA Engine (a IA do WhatsApp)" }), i.token_configurado && i.engine_url ? selo("Conectado", "ok") : selo("Não conectado", "alerta")),
       h("p", { style: "margin:0;color:var(--texto-2);font-size:14px", text: "É o Worker da Cloudflare que atende o WhatsApp desta empresa. A plataforma conversa com ele de servidor para servidor; o token fica cifrado e nunca aparece no navegador." }),
       campo("Endereço do Engine", url), campo("Token de serviço", token),
+      i.origem === "direta" ? h("p", { class: "nota", text: "A Central está ligada direto ao Worker \"denia\" da Cloudflare, sem passar pela internet. Não é preciso fazer nada aqui: basta o token DENIA_PLATFORM_SERVICE_TOKEN ser o mesmo nos dois Workers." }) : null,
       i.origem === "cloudflare" ? h("p", { class: "nota", text: "Conectado pelas variáveis DENIA_ENGINE_URL e DENIA_PLATFORM_SERVICE_TOKEN que já estavam na Cloudflare. Não é preciso fazer nada. Se salvar outro endereço e token aqui, passa a valer o daqui." }) : null,
       i.atualizado_ms ? h("p", { style: "margin:0;font-size:13px;color:var(--texto-3)", text: `Atualizado ${quandoFrase(i.atualizado_ms)}${i.atualizado_por ? " por " + i.atualizado_por : ""}` }) : null,
       editar ? h("div", { class: "acoes" },

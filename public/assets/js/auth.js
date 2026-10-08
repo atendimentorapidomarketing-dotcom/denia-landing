@@ -56,6 +56,29 @@
     mostrar(erro, "Link inválido. Peça um novo em “Esqueceu a senha?”.");
     botao.disabled = true;
   }
+  // Já conectado? Mostra a opção de continuar, sem pular o login.
+  if (acao === "entrar") {
+    fetch("/api/eu", { headers: { accept: "application/json" }, credentials: "same-origin" })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (d) {
+        if (!d || !d.usuario) return;
+        var aviso = document.createElement("div");
+        aviso.className = "ja-conectado";
+        var texto = document.createElement("p");
+        texto.textContent = "Você já está conectado como " + (d.usuario.nome || d.usuario.email) + ".";
+        var continuar = document.createElement("a");
+        continuar.className = "btn btn-secundario btn-pequeno"; continuar.href = "/app"; continuar.textContent = "Continuar";
+        var outra = document.createElement("button");
+        outra.type = "button"; outra.className = "btn btn-secundario btn-pequeno"; outra.textContent = "Sair e entrar com outra conta";
+        outra.addEventListener("click", function () {
+          fetch("/api/sair", { method: "POST", headers: { "x-denia": "1", "content-type": "application/json" }, body: "{}" }).finally(function () { aviso.remove(); });
+        });
+        var acoes = document.createElement("div"); acoes.className = "ja-conectado-acoes"; acoes.appendChild(continuar); acoes.appendChild(outra);
+        aviso.appendChild(texto); aviso.appendChild(acoes);
+        form.parentNode.insertBefore(aviso, form);
+      })
+      .catch(function () { /* sem sessão */ });
+  }
   var lembrado = null;
   try { lembrado = localStorage.getItem("denia_email"); } catch (e) { lembrado = null; }
   if (acao === "entrar" && lembrado && form.email && !form.email.value) { form.email.value = lembrado; if (form.lembrar) form.lembrar.checked = true; }

@@ -210,7 +210,7 @@ async function criarCookie(env, usuario, duracao = SESSAO_MS) {
   const dados = b64url(enc.encode(JSON.stringify({ u: usuario.id, sv: usuario.sessao_versao, exp: agora(env) + duracao, v: 2 })));
   return `${dados}.${await hmac(await segredo(env), dados)}`;
 }
-function cookieSessao(valor, maxAge) { return `${COOKIE}=${valor}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${maxAge}`; }
+function cookieSessao(valor, maxAge) { return `${COOKIE}=${valor}; Path=/; HttpOnly; Secure; SameSite=Strict${maxAge === null ? "" : `; Max-Age=${maxAge}`}`; }
 async function lerSessao(request, env) {
   const chave = await segredo(env);
   const m = String(request.headers.get("cookie") || "").match(new RegExp(`(?:^|;\\s*)${COOKIE}=([A-Za-z0-9_-]+)\\.([A-Za-z0-9_-]+)`));
@@ -314,7 +314,7 @@ async function entrar(request, env) {
   ]);
   await auditar(env, request, { usuario }, null, "LOGIN", "");
   const duracao = corpo.lembrar === true ? SESSAO_LONGA_MS : SESSAO_MS;
-  return json({ ok: true, trocar_senha: Boolean(usuario.trocar_senha) }, 200, { "set-cookie": cookieSessao(await criarCookie(env, usuario, duracao), duracao / 1000) });
+  return json({ ok: true, trocar_senha: Boolean(usuario.trocar_senha) }, 200, { "set-cookie": cookieSessao(await criarCookie(env, usuario, duracao), corpo.lembrar === true ? duracao / 1000 : null) });
 }
 
 async function criarEmpresa(env, nome, legadoId = null) {
@@ -491,6 +491,9 @@ async function validarEngineUrl(env, valor) {
 // DENIA_PLATFORM_SERVICE_TOKEN. Elas continuam valendo para a primeira empresa.
 function conexaoCloudflare(env) {
   const token = String(env.DENIA_PLATFORM_SERVICE_TOKEN || env.DENIA_ENGINE_SERVICE_TOKEN || "");
+  // Ligação direta com o Worker "denia" (service binding ENGINE): não passa pela internet e
+  // não sofre o bloqueio da Cloudflare a chamadas entre Workers da mesma conta (erro 1042).
+  if (env.ENGINE && typeof env.ENGINE.fetch === "function" && token.trim()) return { url: "https://denia-engine.interno", token: token.trim(), binding: env.ENGINE };
   let url = "";
   try {
     const u = new URL(String(env.DENIA_ENGINE_URL || env.DENIA_ENGINE_BASE_URL || "").trim());
@@ -502,6 +505,9 @@ async function primeiraEmpresa(env) {
   return Number((await env.DB.prepare("SELECT MIN(id) id FROM plt_organizacoes").first())?.id || 0);
 }
 async function conexaoDa(env, orgId) {
+  // Na Central (primeira empresa), a ligação direta com o Worker "denia" sempre tem prioridade.
+  const direta = conexaoCloudflare(env);
+  if (direta?.binding && orgId === await primeiraEmpresa(env)) return direta;
   const i = await env.DB.prepare("SELECT * FROM plt_integracoes WHERE org_id=?").bind(orgId).first();
   if (!i?.engine_url || !i?.token_cifrado) {
     const cf = conexaoCloudflare(env);
@@ -510,16 +516,23 @@ async function conexaoDa(env, orgId) {
   const token = await decifrar(env, i.token_cifrado);
   return token.length >= 16 ? { url: i.engine_url, token } : null;
 }
+function explicarFalha(r) {
+  const t = String(r.trecho || "");
+  if (/1042/.test(t)) return "A Cloudflare bloqueou a chamada entre os dois Workers (erro 1042). A ligação direta com o Worker \"denia\" resolve isso.";
+  if (r.status === 404) return `A IA não reconheceu o pedido (HTTP 404). Confira se o código mais recente da DENIA está no Worker "denia". ${t ? "Resposta: " + t : ""}`.trim();
+  if (r.status >= 300 && r.status < 400) return `O endereço da IA redirecionou (HTTP ${r.status}). Use o endereço https:// do Worker "denia".`;
+  return `A IA respondeu de forma inesperada (HTTP ${r.status}).${t ? " Resposta: " + t : ""}`;
+}
 async function chamarEngine(con, metodo, caminho, corpo, params) {
   const destino = new URL(`${con.url}/platform/${caminho}`);
   for (const [k, v] of Object.entries(params || {})) destino.searchParams.set(k, v);
   const init = { method: metodo, headers: { authorization: `Bearer ${con.token}`, accept: "application/json" }, signal: AbortSignal.timeout(25000), redirect: "manual" };
   if (metodo === "POST") { init.body = JSON.stringify(corpo || {}); init.headers["content-type"] = "application/json"; }
-  const r = await fetch(destino.toString(), init);
+  const r = con.binding ? await con.binding.fetch(new Request(destino.toString(), init)) : await fetch(destino.toString(), init);
   const texto = await r.text();
   let dados;
   try { dados = JSON.parse(texto); } catch { dados = null; }
-  return { status: r.status, dados };
+  return { status: r.status, dados, trecho: dados ? "" : txt(texto.replace(/<[^>]+>/g, " ").replace(/\s+/g, " "), 160) };
 }
 
 async function proxyEngine(request, env, sessao, orgId, papel, caminho) {
@@ -541,7 +554,7 @@ async function proxyEngine(request, env, sessao, orgId, papel, caminho) {
   for (const [k, re] of Object.entries(PARAMS_ENGINE)) if (q.get(k) && re.test(q.get(k))) params[k] = q.get(k);
   try {
     const r = await chamarEngine(con, request.method, caminho, corpo, params);
-    if (!r.dados) return json({ erro: "A IA respondeu de forma inesperada. Confira o endereço em Integrações.", status: r.status }, 502);
+    if (!r.dados) return json({ erro: explicarFalha(r), status: r.status }, 502);
     if (r.status === 401) return json({ erro: "A IA recusou o token. Confira o token em Integrações.", codigo: "ENGINE_TOKEN" }, 502);
     if (rota[3] && r.status < 300) {
       const detalhe = caminho === "import/clients" ? `${r.dados.importadas ?? 0} cliente(s) importado(s)` :
@@ -634,8 +647,9 @@ async function apiOrg(request, env, sessao, orgId, resto) {
 
   if (resto === "integracao" && metodo === "GET") {
     const i = await env.DB.prepare("SELECT engine_url, token_cifrado, atualizado_ms, atualizado_por FROM plt_integracoes WHERE org_id=?").bind(orgId).first();
-    const cf = !(i?.engine_url && i?.token_cifrado) && orgId === await primeiraEmpresa(env) ? conexaoCloudflare(env) : null;
-    if (cf) return json({ engine_url: cf.url, token_configurado: true, origem: "cloudflare", atualizado_ms: null, atualizado_por: null });
+    const cfBruto = orgId === await primeiraEmpresa(env) ? conexaoCloudflare(env) : null;
+    const cf = cfBruto && (cfBruto.binding || !(i?.engine_url && i?.token_cifrado)) ? cfBruto : null;
+    if (cf) return json({ engine_url: cf.binding ? "Worker \"denia\" (ligação direta na Cloudflare)" : cf.url, token_configurado: true, origem: cf.binding ? "direta" : "cloudflare", atualizado_ms: null, atualizado_por: null });
     return json({ engine_url: i?.engine_url || "", token_configurado: Boolean(i?.token_cifrado), atualizado_ms: i?.atualizado_ms || null, atualizado_por: pode(papel, "ADMIN") ? i?.atualizado_por || null : null });
   }
   if (resto === "integracao" && metodo === "POST") {
@@ -659,8 +673,8 @@ async function apiOrg(request, env, sessao, orgId, resto) {
     try {
       const r = await chamarEngine(con, "GET", "status");
       if (r.status === 401) return json({ ok: false, erro: "O Engine recusou o token. Confira se é igual ao DENIA_PLATFORM_SERVICE_TOKEN." });
-      if (!r.dados) return json({ ok: false, erro: `O endereço respondeu, mas não parece ser o DENIA Engine (HTTP ${r.status}).` });
-      return json({ ok: true, versao: r.dados.versao || "", saude: r.dados });
+      if (!r.dados) return json({ ok: false, erro: explicarFalha(r) });
+      return json({ ok: true, versao: r.dados.versao || "", saude: r.dados, direta: Boolean(con.binding) });
     } catch (e) { return json({ ok: false, erro: "Não consegui acessar o endereço: " + txt(e?.message, 120) }); }
   }
   if (resto === "auditoria" && metodo === "GET") {
@@ -787,7 +801,7 @@ async function rotear(request, env) {
     if (!sessao) return redirecionar("/entrar");
     return env.ASSETS.fetch(new Request(new URL("/app", url).toString(), { headers: request.headers }));
   }
-  if ((caminho === "/entrar" || caminho === "/entrar.html" || caminho === "/cadastro") && sessao) return redirecionar("/app");
+  if (caminho === "/cadastro" && sessao) return redirecionar("/app");
   return env.ASSETS.fetch(request);
 }
 
