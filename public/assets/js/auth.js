@@ -79,6 +79,15 @@
       })
       .catch(function () { /* sem sessão */ });
   }
+  // Plano escolhido na página inicial (teste grátis).
+  var NOMES_PLANO = { start: "Start", pro: "Pro", growth: "Growth", elite: "Elite" };
+  var plano = (new URLSearchParams(location.search).get("plano") || "").toLowerCase();
+  if (acao === "cadastro" && NOMES_PLANO[plano]) {
+    var faixa = document.createElement("p");
+    faixa.className = "plano-escolhido";
+    faixa.textContent = "Plano " + NOMES_PLANO[plano] + " · teste grátis. Você pode mudar de plano quando quiser.";
+    form.parentNode.insertBefore(faixa, form);
+  }
   var lembrado = null;
   try { lembrado = localStorage.getItem("denia_email"); } catch (e) { lembrado = null; }
   if (acao === "entrar" && lembrado && form.email && !form.email.value) { form.email.value = lembrado; if (form.lembrar) form.lembrar.checked = true; }
@@ -107,7 +116,7 @@
     } else if (acao === "cadastro") {
       if (!form.nome.value.trim() || !form.empresa.value.trim() || !email || !form.senha.value) { mostrar(erro, "Preencha todos os campos."); return; }
       if (!form.aceite.checked) { mostrar(erro, "Para criar a conta, aceite os Termos de uso e a Política de privacidade."); return; }
-      enviar("/api/cadastro", { nome: form.nome.value.trim(), empresa: form.empresa.value.trim(), email: email, senha: form.senha.value }, function () { location.replace("/app"); });
+      enviar("/api/cadastro", { nome: form.nome.value.trim(), empresa: form.empresa.value.trim(), email: email, senha: form.senha.value, plano: NOMES_PLANO[plano] ? plano : "" }, function () { location.replace("/app"); });
     } else if (acao === "recuperar") {
       if (!email) { mostrar(erro, "Informe o seu e-mail."); return; }
       enviar("/api/senha/esqueci", { email: email }, function (d) {

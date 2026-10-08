@@ -56,3 +56,4 @@
 .ja-conectado { margin: 0 0 20px; padding: 14px; border-radius: 12px; border: 1px solid rgba(34, 211, 238, 0.35); background: rgba(34, 211, 238, 0.07); display: grid; gap: 10px; }
 .ja-conectado p { margin: 0; font-size: 14px; color: var(--texto-2); }
 .ja-conectado-acoes { display: flex; flex-wrap: wrap; gap: 8px; }
+.plano-escolhido { margin: -8px 0 20px; padding: 10px 12px; border-radius: 10px; font-size: 13.5px; color: #bae6fd; background: rgba(34, 211, 238, 0.08); border: 1px solid rgba(34, 211, 238, 0.35); }

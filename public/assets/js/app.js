@@ -224,6 +224,13 @@
     let { nome, param } = rotaAtual();
     if (estado.eu.usuario.trocar_senha) nome = "conta";
     const rota = ROTAS[nome];
+    // Dentro de Conversas, abrir outra conversa não recarrega a página inteira.
+    const viva = estado.paginaViva;
+    if (viva && viva.nome === nome && viva.org === (estado.org && estado.org.id) && viva.el.isConnected && viva.trocar) {
+      viva.trocar(param);
+      return;
+    }
+    estado.paginaViva = null;
     const id = ++estado.render;
     document.querySelectorAll("#lateral-nav a").forEach(a => a.classList.toggle("ativo", a.dataset.rota === nome));
     $("titulo-pagina").replaceChildren(estado.org ? h("span", { class: "migalha", text: estado.org.nome + " / " }) : "", rota.titulo);
@@ -400,25 +407,43 @@
     const busca = h("input", { class: "entrada", type: "search", placeholder: "Buscar por nome ou telefone", "aria-label": "Buscar conversa" });
     const itens = h("div", { class: "conversas-itens" }, carregando());
     const painel = h("section", { class: "conversa-painel vidro" }, vazio("Escolha uma conversa", "As mensagens aparecem aqui.", ICONES.conversa));
-    grade.append(h("section", { class: "conversas-lista vidro" }, h("div", { class: "conversas-busca", style: "display:flex;gap:8px" }, busca, botao("Atualizar", () => navegar(), "btn-secundario btn-pequeno")), itens), painel);
-    el.appendChild(grade);
-    let lista = [];
-    try { lista = (await eng("conversations?limit=150")).conversas || []; }
-    catch (e) { if (vivo()) falha(el, e); return; }
-    if (!vivo()) return;
+    const orgId = estado.org.id;
+    let lista = [], aberta = param || "";
     const desenhar = () => {
       const q = busca.value.trim().toLowerCase().replace(/[()\s-]/g, "");
       const filtradas = lista.filter(c => !q || String(c.nome || "").toLowerCase().includes(q) || String(c.telefone || "").includes(q));
       itens.replaceChildren(...(filtradas.length ? filtradas.map(c => h("button", {
-        class: "conversa-item" + (String(c.pessoa_id) === param ? " ativo" : ""), type: "button",
+        class: "conversa-item" + (String(c.pessoa_id) === aberta ? " ativo" : ""), type: "button", "data-id": c.pessoa_id,
         onclick: () => { location.hash = "#/conversas/" + c.pessoa_id; }
       }, h("strong", {}, c.nome || telefone(c.telefone), c.ia_pausada ? selo("Humano", "alerta") : null, String(c.tipo || "").toUpperCase() === "TECNICO" ? selo("Profissional", "info") : null),
         h("span", { text: (String(c.ultima_direcao).toUpperCase() === "SAIDA" ? (String(c.ultima_origem).toUpperCase() === "HUMANO" ? "Equipe: " : "DENIA: ") : "") + (c.ultima_mensagem || "") }),
         h("span", { text: quando(c.ultima_mensagem_em) }))) : [vazio("Nenhuma conversa", q ? "Nada encontrado para essa busca." : "As conversas do WhatsApp aparecem aqui.", ICONES.conversa)]));
     };
+    const carregarLista = async (forcar) => {
+      const cache = estado.cacheConversas;
+      if (!forcar && cache && cache.org === orgId && Date.now() - cache.em < 120000) { lista = cache.lista; desenhar(); if (Date.now() - cache.em < 20000) return; }
+      try {
+        const nova = (await eng("conversations?limit=80")).conversas || [];
+        if (!grade.isConnected) return;
+        lista = nova; estado.cacheConversas = { org: orgId, lista: nova, em: Date.now() };
+        desenhar();
+      } catch (e) { if (grade.isConnected && !lista.length) falha(itens, e); }
+    };
+    const trocar = (id) => {
+      aberta = id || "";
+      grade.classList.toggle("com-aberta", Boolean(aberta));
+      itens.querySelectorAll(".conversa-item").forEach(b => b.classList.toggle("ativo", b.getAttribute("data-id") === aberta));
+      document.querySelectorAll("#lateral-nav a").forEach(a => a.classList.toggle("ativo", a.dataset.rota === "conversas"));
+      if (aberta) abrirConversa(painel, aberta, () => grade.isConnected && aberta === id);
+      else painel.replaceChildren(vazio("Escolha uma conversa", "As mensagens aparecem aqui.", ICONES.conversa));
+    };
+    grade.append(h("section", { class: "conversas-lista vidro" }, h("div", { class: "conversas-busca" }, busca, botao("Atualizar", () => carregarLista(true), "btn-secundario btn-pequeno")), itens), painel);
+    el.appendChild(grade);
+    estado.paginaViva = { nome: "conversas", org: orgId, el: grade, trocar };
     busca.addEventListener("input", desenhar);
-    desenhar();
-    if (param) abrirConversa(painel, param, vivo);
+    if (aberta) trocar(aberta);
+    await carregarLista(false);
+    if (!vivo()) return;
   }
 
   async function abrirConversa(painel, id, vivo) {
@@ -451,6 +476,7 @@
           await eng(`conversations/${id}/send`, { metodo: "POST", corpo: { mensagem: t } });
           texto.value = "";
           aviso("Mensagem enviada. A IA fica em pausa nesta conversa.", "ok");
+          estado.cacheConversas = null;
           abrirConversa(painel, id, vivo);
         } catch (e) { aviso(e.message, "erro"); }
       }, "btn-primario");

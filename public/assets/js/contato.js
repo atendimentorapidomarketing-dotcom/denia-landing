@@ -3,6 +3,13 @@
   "use strict";
   var form = document.getElementById("form-contato");
   if (!form) return;
+  var q = new URLSearchParams(location.search);
+  var planos = { start: "Start", pro: "Pro", growth: "Growth", elite: "Elite" };
+  if (q.get("assunto") === "planos") {
+    form.assunto.value = "Planos e valores";
+    var pl = planos[(q.get("plano") || "").toLowerCase()];
+    if (pl && !form.mensagem.value) form.mensagem.value = "Olá! Quero assinar o plano " + pl + " da DENIA.";
+  }
   var botao = document.getElementById("c-botao"), erro = document.getElementById("c-erro"), ok = document.getElementById("c-ok");
   form.addEventListener("submit", function (e) {
     e.preventDefault();

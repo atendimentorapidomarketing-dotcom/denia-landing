@@ -21,7 +21,7 @@
 // ============================================================================
 
 const VERSAO = "2.0.0";
-const SCHEMA = "2.3.0-a";
+const SCHEMA = "2.4.0-a";
 const COOKIE = "__Host-denia_sessao";
 const SESSAO_MS = 8 * 60 * 60 * 1000;
 const MAX_TENTATIVAS = 5;
@@ -147,6 +147,8 @@ async function garantirSchema(env) {
   if (v?.valor !== SCHEMA) {
     await env.DB.batch(DDL.map(s => env.DB.prepare(s)));
     await env.DB.prepare("ALTER TABLE plt_organizacoes ADD COLUMN legado_id TEXT").run().catch(() => { }); // já existe
+    await env.DB.prepare("ALTER TABLE plt_organizacoes ADD COLUMN plano TEXT").run().catch(() => { });
+    await env.DB.prepare("ALTER TABLE plt_organizacoes ADD COLUMN plano_status TEXT").run().catch(() => { });
     // A primeira empresa da plataforma.
     const n = await env.DB.prepare("SELECT COUNT(*) n FROM plt_organizacoes").first();
     if (!Number(n?.n)) {
@@ -344,6 +346,8 @@ async function cadastrar(request, env) {
   const h = await hashSenha(senha, null, PBKDF2_ITER);
   const u = await env.DB.prepare("INSERT INTO plt_usuarios(email,nome,senha_hash,senha_salt,senha_iter,super_admin,ativo,origem,criado_ms) VALUES(?,?,?,?,?,0,1,'CADASTRO',?) RETURNING *").bind(email, nome, h.hash, h.salt, h.iter, agora(env)).first();
   const o = await criarEmpresa(env, empresa);
+  const plano = ["start", "pro", "growth", "elite"].includes(String(corpo.plano || "")) ? String(corpo.plano) : "start";
+  await env.DB.prepare("UPDATE plt_organizacoes SET plano=?, plano_status='TESTE' WHERE id=?").bind(plano, o.id).run();
   await env.DB.prepare("INSERT INTO plt_membros(org_id,usuario_id,papel,criado_ms) VALUES(?,?,'OWNER',?)").bind(o.id, u.id, agora(env)).run();
   await auditar(env, request, { usuario: u }, o.id, "EMPRESA", `Conta criada: ${empresa}`);
   return json({ ok: true }, 200, { "set-cookie": cookieSessao(await criarCookie(env, u), SESSAO_MS / 1000) });
@@ -464,7 +468,7 @@ async function organizacoesDo(env, usuario) {
   const st = env.DB.prepare(sql);
   const r = await (usuario.super_admin ? st : st.bind(usuario.id)).all();
   const primeira = conexaoCloudflare(env) || (env.ENGINE && typeof env.ENGINE.fetch === "function") ? await primeiraEmpresa(env) : 0;
-  return (r?.results || []).map(o => ({ id: o.id, nome: o.nome, slug: o.slug, segmento: o.segmento || "", cor: o.cor || "#4f8cff", status: o.status, papel: o.papel, conectada: Boolean(o.conectada) || o.id === primeira }));
+  return (r?.results || []).map(o => ({ id: o.id, nome: o.nome, slug: o.slug, segmento: o.segmento || "", cor: o.cor || "#4f8cff", status: o.status, papel: o.papel, conectada: Boolean(o.conectada) || o.id === primeira, plano: o.plano || (o.id === primeira ? "elite" : "start"), plano_status: o.plano_status || (o.id === primeira ? "ATIVO" : "TESTE") }));
 }
 async function papelNa(env, usuario, orgId) {
   if (usuario.super_admin) {
