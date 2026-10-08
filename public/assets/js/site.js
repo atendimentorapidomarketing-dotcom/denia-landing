@@ -35,6 +35,7 @@
   }
   var ano = document.getElementById("ano");
   if (ano) ano.textContent = String(new Date().getFullYear());
+  document.querySelectorAll(".js-ano").forEach(function (n) { n.textContent = String(new Date().getFullYear()); });
 
   // ---------- Constelação viva no fundo + brilho suave que acompanha o mouse/dedo ----------
   var toque = window.matchMedia && window.matchMedia("(hover: none)").matches;
@@ -49,7 +50,7 @@
   var tela = document.getElementById("rede");
   if (tela && tela.getContext && !semMovimento) {
     var ctx = tela.getContext("2d");
-    var pontos = [], largura = 0, altura = 0, dpr = 1, quadro = 0, visivel = true;
+    var pontos = [], largura = 0, altura = 0, dpr = 1, quadro = 0, visivel = true, estrela = [], cadentes = [], proximaCadente = 0;
     var dimensionar = function () {
       dpr = Math.min(window.devicePixelRatio || 1, 2);
       largura = window.innerWidth; altura = window.innerHeight;
@@ -61,13 +62,14 @@
     };
     var desenhar = function (agora) {
       ctx.clearRect(0, 0, largura, altura);
-      // Sem mouse por alguns segundos (ou no celular parado), a luz passeia sozinha.
-      if (Date.now() - ponteiro.ultimo > 2500) {
-        var s = agora / 1000;
-        alvoLuz.x = largura * (0.5 + 0.32 * Math.sin(s * 0.35));
-        alvoLuz.y = altura * (0.42 + 0.24 * Math.sin(s * 0.55 + 1));
-        if (luz) luz.classList.add("ativa");
-      }
+      // A estrela viaja sozinha por toda a tela, inclusive pelos cantos.
+      var s = agora / 1000;
+      var ex = largura * (0.5 + 0.30 * Math.sin(s * 0.23) + 0.17 * Math.sin(s * 0.61 + 1));
+      var ey = altura * (0.5 + 0.28 * Math.sin(s * 0.17 + 2) + 0.18 * Math.cos(s * 0.47));
+      estrela.push({ x: ex, y: ey });
+      if (estrela.length > 70) estrela.shift();
+      // Sem mouse por alguns segundos (ou no celular parado), o brilho acompanha a estrela.
+      if (Date.now() - ponteiro.ultimo > 2500) { alvoLuz.x = ex; alvoLuz.y = ey; if (luz) luz.classList.add("ativa"); }
       // A luz desliza até o alvo (movimento macio, sem "pular").
       posLuz.x += (alvoLuz.x - posLuz.x) * 0.12; posLuz.y += (alvoLuz.y - posLuz.y) * 0.12;
       if (luz) luz.style.transform = "translate(" + posLuz.x.toFixed(1) + "px," + posLuz.y.toFixed(1) + "px)";
@@ -87,9 +89,44 @@
             ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(q.x, q.y); ctx.stroke();
           }
         }
-        ctx.fillStyle = "rgba(186,230,253," + (0.6 + perto * 0.4).toFixed(3) + ")";
-        ctx.beginPath(); ctx.arc(p.x, p.y, p.r + perto, 0, Math.PI * 2); ctx.fill();
+        // Pontos perto da estrela se acendem e se ligam a ela.
+        var sx = p.x - ex, sy = p.y - ey, ds = sx * sx + sy * sy, brilho = ds < 48000 ? 1 - ds / 48000 : 0;
+        if (brilho) {
+          ctx.strokeStyle = "rgba(140,225,255," + (0.55 * brilho).toFixed(3) + ")";
+          ctx.lineWidth = 1;
+          ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(ex, ey); ctx.stroke();
+        }
+        ctx.fillStyle = "rgba(200,238,255," + Math.min(1, 0.6 + perto * 0.4 + brilho * 0.4).toFixed(3) + ")";
+        ctx.beginPath(); ctx.arc(p.x, p.y, p.r + perto + brilho * 1.6, 0, Math.PI * 2); ctx.fill();
       }
+      // Rastro da estrela.
+      ctx.lineCap = "round";
+      for (var k = 1; k < estrela.length; k++) {
+        var v = k / estrela.length;
+        ctx.strokeStyle = "rgba(150,215,255," + (0.5 * v * v).toFixed(3) + ")";
+        ctx.lineWidth = 0.6 + v * 2.6;
+        ctx.beginPath(); ctx.moveTo(estrela[k - 1].x, estrela[k - 1].y); ctx.lineTo(estrela[k].x, estrela[k].y); ctx.stroke();
+      }
+      // Núcleo brilhante da estrela.
+      var g = ctx.createRadialGradient(ex, ey, 0, ex, ey, 26);
+      g.addColorStop(0, "rgba(255,255,255,0.95)"); g.addColorStop(0.18, "rgba(170,230,255,0.75)"); g.addColorStop(0.5, "rgba(90,140,255,0.22)"); g.addColorStop(1, "rgba(90,140,255,0)");
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(ex, ey, 26, 0, Math.PI * 2); ctx.fill();
+      // Estrelas cadentes de vez em quando.
+      if (agora > proximaCadente) {
+        proximaCadente = agora + 3500 + Math.random() * 5000;
+        var ang = (20 + Math.random() * 20) * Math.PI / 180;
+        cadentes.push({ x: Math.random() * largura * 0.8, y: Math.random() * altura * 0.35, vx: Math.cos(ang) * (9 + Math.random() * 5), vy: Math.sin(ang) * (9 + Math.random() * 5), t: agora });
+      }
+      cadentes = cadentes.filter(function (c) { return agora - c.t < 1100; });
+      cadentes.forEach(function (c) {
+        c.x += c.vx; c.y += c.vy;
+        var vida = 1 - (agora - c.t) / 1100;
+        var cauda = ctx.createLinearGradient(c.x, c.y, c.x - c.vx * 12, c.y - c.vy * 12);
+        cauda.addColorStop(0, "rgba(235,248,255," + (0.9 * vida).toFixed(3) + ")"); cauda.addColorStop(1, "rgba(120,170,255,0)");
+        ctx.strokeStyle = cauda; ctx.lineWidth = 1.6;
+        ctx.beginPath(); ctx.moveTo(c.x, c.y); ctx.lineTo(c.x - c.vx * 12, c.y - c.vy * 12); ctx.stroke();
+      });
       quadro = visivel ? window.requestAnimationFrame(desenhar) : 0;
     };
     dimensionar();
@@ -115,8 +152,11 @@
   }
 
   // ---------- Barra de progresso da leitura ----------
+  var paginaAcesso = document.body.classList.contains("auth");
   var barra = document.createElement("div");
-  barra.className = "progresso-leitura"; barra.setAttribute("aria-hidden", "true");
+  if (paginaAcesso) barra.className = "oculto";
+  if (!paginaAcesso) barra.className = "progresso-leitura";
+  barra.setAttribute("aria-hidden", "true");
   document.body.appendChild(barra);
   var marcarProgresso = function () {
     var total = document.documentElement.scrollHeight - window.innerHeight;
@@ -128,7 +168,7 @@
   // ---------- Abertura: a inteligência "liga" (uma vez por visita) ----------
   var jaViu = false;
   try { jaViu = sessionStorage.getItem("denia_abertura") === "1"; sessionStorage.setItem("denia_abertura", "1"); } catch (e) { jaViu = false; }
-  if (!semMovimento && !jaViu) {
+  if (!semMovimento && !jaViu && !paginaAcesso) {
     var abertura = document.createElement("div");
     abertura.className = "abertura"; abertura.setAttribute("aria-hidden", "true");
     var nucleo = document.createElement("div"); nucleo.className = "abertura-nucleo";

@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Fale conosco — DENIA</title>
+  <meta name="description" content="Fale com a equipe DENIA: demonstração, planos, implantação e suporte.">
+  <meta name="theme-color" content="#04060c">
+  <link rel="icon" href="/assets/img/logo.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap">
+  <link rel="stylesheet" href="/assets/css/base.css">
+  <link rel="stylesheet" href="/assets/css/site.css">
+  <link rel="stylesheet" href="/assets/css/paginas.css">
+</head>
+<body class="interna">
+  <a class="sr-only" href="#conteudo">Ir para o conteúdo</a>
+  <canvas class="rede" id="rede" aria-hidden="true"></canvas>
+  <div class="luz-cursor" id="luz-cursor" aria-hidden="true"></div>
+
+  <header class="topo" id="topo">
+    <div class="container topo-linha">
+      <a class="marca" href="/" aria-label="DENIA — página inicial">
+        <img src="/assets/img/logo.svg" alt="" width="34" height="34">
+        <span>DENIA</span>
+      </a>
+      <nav class="menu" id="menu" aria-label="Navegação principal">
+        <a href="/#plataforma">Plataforma</a>
+        <a href="/#demonstracao">Demonstração</a>
+        <a href="/#como-funciona">Como funciona</a>
+        <a href="/#seguranca">Segurança</a>
+        <a href="/#planos">Planos</a>
+        <a href="/#perguntas">Perguntas</a>
+        <a href="/contato">Contato</a>
+      </nav>
+      <div class="topo-acoes">
+        <a class="btn btn-secundario btn-pequeno" href="/entrar">Entrar</a>
+        <a class="btn btn-primario btn-pequeno topo-criar" href="/cadastro">Criar conta</a>
+        <a class="btn btn-primario btn-pequeno js-contato oculto" href="/#planos">Falar com especialista</a>
+        <button class="menu-botao" id="menu-botao" type="button" aria-label="Abrir menu" aria-expanded="false" aria-controls="menu">
+          <span></span><span></span><span></span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main id="conteudo" class="pagina">
+    <section class="pagina-topo">
+      <div class="container estreito">
+        <span class="sobretitulo">Contato</span>
+        <h1>Vamos conversar sobre a sua operação.</h1>
+        <p>Conte um pouco sobre a sua empresa. A nossa equipe responde em até um dia útil.</p>
+      </div>
+    </section>
+    <section class="container contato-grade">
+      <form class="vidro contato-form" id="form-contato" novalidate>
+        <div class="linha-dupla">
+          <div class="campo"><label for="c-nome">Nome</label><input class="entrada" id="c-nome" name="nome" autocomplete="name" maxlength="120" required></div>
+          <div class="campo"><label for="c-empresa">Empresa</label><input class="entrada" id="c-empresa" name="empresa" autocomplete="organization" maxlength="120"></div>
+        </div>
+        <div class="linha-dupla">
+          <div class="campo"><label for="c-email">E-mail</label><input class="entrada" id="c-email" name="email" type="email" autocomplete="email" required></div>
+          <div class="campo"><label for="c-telefone">WhatsApp</label><input class="entrada" id="c-telefone" name="telefone" type="tel" autocomplete="tel" maxlength="40"></div>
+        </div>
+        <div class="campo"><label for="c-assunto">Assunto</label>
+          <select class="entrada" id="c-assunto" name="assunto">
+            <option>Quero uma demonstração</option><option>Planos e valores</option><option>Implantação</option><option>Suporte</option><option>Parcerias</option><option>Outro assunto</option>
+          </select>
+        </div>
+        <div class="campo"><label for="c-mensagem">Mensagem</label><textarea class="entrada" id="c-mensagem" name="mensagem" maxlength="3000" required></textarea></div>
+        <input class="isca" type="text" name="site" tabindex="-1" autocomplete="off" aria-hidden="true">
+        <p class="entrar-erro oculto" id="c-erro" role="alert"></p>
+        <p class="entrar-ok oculto" id="c-ok" role="status"></p>
+        <button class="btn btn-primario" id="c-botao" type="submit">Enviar mensagem</button>
+        <p class="contato-nota">Ao enviar, você concorda com a nossa <a href="/privacidade">Política de privacidade</a>.</p>
+      </form>
+      <aside class="contato-lado">
+        <div class="vidro contato-cartao"><h3>Demonstração guiada</h3><p>Mostramos a DENIA funcionando com o fluxo real da sua empresa: atendimento, profissionais e agenda.</p></div>
+        <div class="vidro contato-cartao"><h3>Implantação acompanhada</h3><p>Treinamos a IA com os seus serviços, preços e o jeito de falar da sua equipe.</p></div>
+        <div class="vidro contato-cartao"><h3>Já é cliente?</h3><p>Entre no centro de comando para falar com o suporte e acompanhar a sua operação.</p><a class="btn btn-secundario btn-pequeno" href="/entrar">Acessar a plataforma</a></div>
+      </aside>
+    </section>
+  </main>
+
+  <footer class="rodape">
+    <div class="container rodape-grade">
+      <div class="rodape-marca">
+        <a class="marca" href="/"><img src="/assets/img/logo.svg" alt="" width="30" height="30"><span>DENIA</span></a>
+        <p>Inteligência artificial operacional para empresas que atendem pelo WhatsApp.</p>
+      </div>
+      <nav class="rodape-coluna" aria-label="Plataforma"><h3>Plataforma</h3><a href="/#plataforma">Recursos</a><a href="/#demonstracao">Demonstração</a><a href="/#aprende">Aprendizado</a><a href="/#comando">Centro de comando</a></nav>
+      <nav class="rodape-coluna" aria-label="Empresa"><h3>Empresa</h3><a href="/#como-funciona">Como funciona</a><a href="/#planos">Planos</a><a href="/#perguntas">Perguntas frequentes</a></nav>
+      <nav class="rodape-coluna" aria-label="Confiança"><h3>Confiança</h3><a href="/#seguranca">Segurança</a><a href="/privacidade">Privacidade e LGPD</a><a href="/termos">Termos de uso</a><a href="/contato">Fale conosco</a><a href="/entrar">Acessar a plataforma</a></nav>
+    </div>
+    <div class="container rodape-base">
+      <p>© <span id="ano">2026</span> DENIA. Todos os direitos reservados.</p>
+      <p>Português (Brasil)</p>
+    </div>
+  </footer>
+
+  <script src="/assets/js/site.js" defer></script>
+  <script src="/assets/js/contato.js" defer></script>
+</body>
+</html>

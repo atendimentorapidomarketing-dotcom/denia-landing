@@ -13,31 +13,56 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap">
   <link rel="stylesheet" href="/assets/css/base.css">
+  <link rel="stylesheet" href="/assets/css/site.css">
   <link rel="stylesheet" href="/assets/css/entrar.css">
 </head>
-<body>
-  <main class="entrar">
-    <section class="entrar-caixa vidro" aria-labelledby="titulo">
-      <a class="entrar-marca" href="/"><img src="/assets/img/logo.svg" alt="" width="40" height="40"><span>DENIA</span></a>
-      <h1 id="titulo">Acesse o centro de comando</h1>
-      <p class="entrar-sub">Entre com o seu e-mail e a sua senha.</p>
-      <form id="form-entrar" class="entrar-form" novalidate>
-        <div class="campo">
-          <label for="email">E-mail</label>
-          <input class="entrada" id="email" name="email" type="email" autocomplete="username" required>
-        </div>
-        <div class="campo">
-          <label for="senha">Senha</label>
-          <input class="entrada" id="senha" name="senha" type="password" autocomplete="current-password" required>
-        </div>
-        <p class="entrar-erro oculto" id="erro" role="alert"></p>
-        <button class="btn btn-primario" id="botao" type="submit">Entrar</button>
-      </form>
-      <p class="entrar-troca">Ainda não tem conta? <a href="/cadastro">Criar conta</a></p>
-      <p class="entrar-rodape"><span class="ponto"></span> Conexão protegida · sessão válida por 8 horas</p>
+<body class="auth" data-tela="entrar">
+  <canvas class="rede" id="rede" aria-hidden="true"></canvas>
+  <div class="luz-cursor" id="luz-cursor" aria-hidden="true"></div>
+  <main class="auth-grade">
+    <section class="auth-arte" aria-hidden="true">
+      <a class="marca" href="/"><img src="/assets/img/logo.svg" alt="" width="36" height="36"><span>DENIA</span></a>
+      <div class="auth-arte-texto">
+        <span class="selo selo-info"><span class="ponto"></span> Centro de comando</span>
+        <h2>Toda a operação da sua empresa, guiada por uma única inteligência.</h2>
+        <ul class="checks">
+          <li>Conversas do WhatsApp com IA e equipe juntas</li>
+          <li>Treinamento e aprendizados aprovados por você</li>
+          <li>Dados de cada empresa separados e protegidos</li>
+        </ul>
+      </div>
+      <p class="auth-arte-rodape">© <span class="js-ano">2026</span> DENIA</p>
     </section>
-    <a class="entrar-voltar" href="/">← Voltar ao site</a>
+    <section class="auth-lado">
+      <div class="auth-caixa vidro">
+        <a class="entrar-marca auth-marca-movel" href="/"><img src="/assets/img/logo.svg" alt="" width="36" height="36"><span>DENIA</span></a>
+        <h1 id="titulo">Bem-vindo de volta</h1>
+        <p class="entrar-sub">Entre para acessar o centro de comando da sua empresa.</p>
+        <form id="form" class="entrar-form" data-acao="entrar" novalidate>
+          <div class="campo">
+            <label for="email">E-mail</label>
+            <input class="entrada" id="email" name="email" type="email" autocomplete="username" inputmode="email" required>
+          </div>
+        <div class="campo">
+          <div class="campo-linha"><label for="senha">Senha</label><a class="campo-link" href="/recuperar">Esqueceu a senha?</a></div>
+          <div class="senha-caixa">
+            <input class="entrada" id="senha" name="senha" type="password" autocomplete="current-password" required>
+            <button class="senha-ver" type="button" data-ver="senha" aria-label="Mostrar senha" aria-pressed="false">Mostrar</button>
+          </div>
+          <p class="entrar-dica oculto" data-caps="senha">Caps Lock está ativado.</p>
+        </div>
+          <label class="lembrar"><input type="checkbox" id="lembrar" name="lembrar"> Manter conectado por 30 dias</label>
+        <p class="entrar-erro oculto" id="erro" role="alert"></p>
+        <p class="entrar-ok oculto" id="ok" role="status"></p>
+          <button class="btn btn-primario" id="botao" type="submit">Entrar</button>
+        </form>
+        <p class="entrar-troca">Ainda não tem conta? <a href="/cadastro">Criar conta</a></p>
+        <p class="entrar-rodape"><span class="ponto"></span> Conexão criptografada · bloqueio automático após tentativas erradas</p>
+      </div>
+      <nav class="auth-links" aria-label="Links"><a href="/">Voltar ao site</a><a href="/privacidade">Privacidade</a><a href="/termos">Termos</a><a href="/contato">Ajuda</a></nav>
+    </section>
   </main>
-  <script src="/assets/js/entrar.js" defer></script>
+  <script src="/assets/js/site.js" defer></script>
+  <script src="/assets/js/auth.js" defer></script>
 </body>
 </html>

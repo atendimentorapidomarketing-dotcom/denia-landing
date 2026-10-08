@@ -12,8 +12,9 @@ async function criarPlataforma(extra = {}) {
   const mod = await import(new URL("../src/worker.js?t=" + (++n), import.meta.url).href);
   const engine = await criarAmbiente({ env: { DENIA_PLATFORM_SERVICE_TOKEN: TOKEN_ENGINE } });
   const fetchMock = globalThis.fetch;
-  const chamadasEngine = [];
+  const chamadasEngine = [], emails = [];
   globalThis.fetch = async (url, op = {}) => {
+    if (String(url) === "https://api.resend.com/emails") { emails.push(JSON.parse(op.body)); return new Response(JSON.stringify({ id: "e1" }), { status: 200 }); }
     if (String(url).startsWith("https://engine.test/")) {
       chamadasEngine.push({ url: String(url), headers: op.headers, corpo: op.body ? JSON.parse(op.body) : null });
       const pend = [];
@@ -28,7 +29,7 @@ async function criarPlataforma(extra = {}) {
     __semEspera: true, ASSETS: { fetch: async req => new Response("asset:" + new URL(req.url).pathname, { status: 200, headers: { "content-type": "text/html" } }) },
     ...extra
   };
-  const p = { env, engine, chamadasEngine, cookies: {} };
+  const p = { env, engine, chamadasEngine, emails, cookies: {} };
   p.req = async (caminho, { metodo = "GET", corpo, quem, cabecalhos = {} } = {}) => {
     const headers = { "x-denia": "1", origin: "https://plataforma.test", ...cabecalhos };
     if (quem && p.cookies[quem]) headers.cookie = p.cookies[quem];
@@ -283,4 +284,66 @@ test("Plataforma — criar conta: empresa própria, sem configuração e sem ace
   await p.entrar("admin", ADMIN, SENHA_ADMIN);
   const st = await p.req("/api/orgs/1/engine/status", { quem: "admin" });
   assert.equal(st.status, 200, "a conta principal vê a Central configurada");
+});
+
+test("Plataforma — conta antiga da empresa principal volta para a Central, mesmo se tinha sido separada", async () => {
+  const p = await criarPlataforma({ DENIA_ENGINE_URL: "https://engine.test", DENIA_PLATFORM_SERVICE_TOKEN: TOKEN_ENGINE });
+  const { pbkdf2Sync } = await import("node:crypto");
+  const salt = "00112233445566778899aabbccddeeff", hash = pbkdf2Sync("SenhaAntiga2026", Buffer.from(salt, "hex"), 30000, 32, "sha256").toString("hex");
+  p.env.DB.db.exec("CREATE TABLE organizations(id TEXT PRIMARY KEY,name TEXT NOT NULL); CREATE TABLE users(id TEXT PRIMARY KEY,organization_id TEXT NOT NULL,name TEXT NOT NULL,email TEXT NOT NULL UNIQUE,password_hash TEXT NOT NULL,password_salt TEXT NOT NULL,role TEXT NOT NULL,created_at TEXT)");
+  p.env.DB.db.prepare("INSERT INTO organizations VALUES('o1','DENIA Operação Principal'),('o2','Outra Loja')").run();
+  p.env.DB.db.prepare("INSERT INTO users VALUES('u1','o1','Dono','dono@central.test',?,?,'OWNER','2026-01-01'),('u2','o2','Beto','beto@loja.test',?,?,'OWNER','2026-02-01')").run(hash, salt, hash, salt);
+  await p.entrar("dono", "dono@central.test", "SenhaAntiga2026");
+  const eu = await p.req("/api/eu", { quem: "dono" });
+  assert.deepEqual(eu.dados.organizacoes.map(o => [o.id, o.nome, o.conectada]), [[1, "Central de Atendimento", true]], "a primeira conta antiga abre a Central já conectada");
+  assert.equal((await p.req("/api/orgs/1/engine/training", { quem: "dono" })).status, 200, "treinamento da Central aparece");
+  await p.entrar("beto", "beto@loja.test", "SenhaAntiga2026");
+  const beto = await p.req("/api/eu", { quem: "beto" });
+  assert.equal(beto.dados.organizacoes[0].nome, "Outra Loja");
+  assert.equal(beto.dados.organizacoes[0].conectada, false);
+
+  // Simula o estado deixado pela versão anterior: o dono separado numa "Empresa de Dono".
+  const uid = p.env.DB.q("SELECT id FROM plt_usuarios WHERE email='dono@central.test'")[0].id;
+  p.env.DB.db.prepare("DELETE FROM plt_membros WHERE usuario_id=?").run(uid);
+  p.env.DB.db.prepare("INSERT INTO plt_organizacoes(nome,slug,cor,status,criado_ms) VALUES('Empresa de Dono','empresa-9-x','#4f8cff','ATIVA',1)").run();
+  const oid = p.env.DB.q("SELECT id FROM plt_organizacoes WHERE slug='empresa-9-x'")[0].id;
+  p.env.DB.db.prepare("INSERT INTO plt_membros VALUES(?,?,'OWNER',1)").run(oid, uid);
+  p.env.DB.db.prepare("UPDATE plt_meta SET valor='2.2.0-a' WHERE chave='schema'").run();
+  const p2mod = await import(new URL("../src/worker.js?r=" + Math.random(), import.meta.url).href);
+  const r = await p2mod.default.fetch(new Request("https://plataforma.test/api/eu", { headers: { cookie: p.cookies.dono } }), p.env);
+  const d = await r.json();
+  assert.deepEqual(d.organizacoes.map(o => o.nome), ["Central de Atendimento"], "conta corrigida de volta para a Central");
+  assert.equal(p.env.DB.q("SELECT COUNT(*) n FROM plt_organizacoes WHERE slug='empresa-9-x'")[0].n, 0, "empresa criada por engano foi removida");
+});
+
+test("Plataforma — esqueceu a senha: link por e-mail, uso único, e não revela quem tem conta", async () => {
+  const p = await criarPlataforma({ RESEND_API_KEY: "re_teste", EMAIL_REMETENTE: "DENIA <nao-responda@denia.test>" });
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  const add = await p.req("/api/orgs/1/membros", { metodo: "POST", quem: "admin", corpo: { nome: "Lia", email: "lia@central.test", papel: "AGENTE" } });
+  assert.ok(add.dados.senha_temporaria);
+  const desconhecido = await p.req("/api/senha/esqueci", { metodo: "POST", corpo: { email: "ninguem@x.test" } });
+  const conhecido = await p.req("/api/senha/esqueci", { metodo: "POST", corpo: { email: "lia@central.test" } });
+  assert.deepEqual(desconhecido.dados, conhecido.dados, "mesma resposta para quem tem e quem não tem conta");
+  assert.equal(p.emails.length, 1);
+  assert.equal(p.emails[0].to[0], "lia@central.test");
+  const token = p.emails[0].text.match(/redefinir\?t=([A-Za-z0-9_-]+)/)[1];
+  const fraca = await p.req("/api/senha/redefinir", { metodo: "POST", corpo: { token, nova: "curta" } });
+  assert.equal(fraca.status, 400);
+  const ok = await p.req("/api/senha/redefinir", { metodo: "POST", corpo: { token, nova: "NovaSenhaDaLia2026" } });
+  assert.equal(ok.status, 200);
+  assert.equal((await p.req("/api/senha/redefinir", { metodo: "POST", corpo: { token, nova: "OutraSenha2026x" } })).status, 400, "link vale uma vez só");
+  const login = await p.entrar("lia", "lia@central.test", "NovaSenhaDaLia2026");
+  assert.equal(login.dados.trocar_senha, false);
+});
+
+test("Plataforma — lembrar de mim, formulário de contato e páginas antigas", async () => {
+  const p = await criarPlataforma();
+  const r = await p.req("/api/entrar", { metodo: "POST", quem: "a", corpo: { email: ADMIN, senha: SENHA_ADMIN, lembrar: true } });
+  assert.match(r.r.headers.get("set-cookie"), /Max-Age=2592000/, "30 dias");
+  const robo = await p.req("/api/contato", { metodo: "POST", corpo: { nome: "Bot", email: "b@x.test", mensagem: "spam spam", site: "http://spam" } });
+  assert.equal(robo.status, 200);
+  const c = await p.req("/api/contato", { metodo: "POST", corpo: { nome: "Paula", email: "paula@x.test", telefone: "21 99999-0000", assunto: "Planos e valores", mensagem: "Quero uma demonstração" } });
+  assert.equal(c.status, 200);
+  const lista = await p.req("/api/admin/contatos", { quem: "a" });
+  assert.deepEqual(lista.dados.contatos.map(x => x.nome), ["Paula"], "robô ignorado, contato real guardado");
 });

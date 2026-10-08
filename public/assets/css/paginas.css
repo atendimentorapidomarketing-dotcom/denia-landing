@@ -1,0 +1,33 @@
+/* DENIA — páginas institucionais (contato, privacidade, termos) */
+.pagina { padding-bottom: 80px; }
+.pagina-topo { padding: 72px 0 36px; text-align: center; }
+.pagina-topo h1 { margin: 10px 0 14px; font-size: clamp(32px, 4.4vw, 52px); line-height: 1.08; letter-spacing: -0.025em; font-weight: 800; }
+.pagina-topo p { margin: 0 auto; max-width: 640px; color: var(--texto-2); font-size: 17px; }
+.contato-grade { display: grid; grid-template-columns: 1.3fr 0.7fr; gap: 20px; align-items: start; }
+.contato-form { padding: 30px; display: grid; gap: 16px; }
+.contato-form textarea { min-height: 150px; }
+.contato-form .btn { width: fit-content; min-width: 200px; }
+.linha-dupla { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.contato-nota { margin: 0; font-size: 13px; color: var(--texto-3); }
+.contato-nota a { color: var(--ciano); }
+.contato-lado { display: grid; gap: 16px; }
+.contato-cartao { padding: 22px; display: grid; gap: 8px; }
+.contato-cartao h3 { margin: 0; font-size: 16px; }
+.contato-cartao p { margin: 0; color: var(--texto-2); font-size: 14.5px; }
+.contato-cartao .btn { width: fit-content; margin-top: 6px; }
+.isca { position: absolute; left: -9999px; width: 1px; height: 1px; opacity: 0; }
+.entrar-erro, .entrar-ok { margin: 0; padding: 11px 13px; border-radius: 10px; font-size: 14px; }
+.entrar-erro { color: #fecdd3; background: rgba(244, 63, 94, 0.12); border: 1px solid rgba(244, 63, 94, 0.4); }
+.entrar-ok { color: #bbf7d0; background: rgba(34, 197, 94, 0.1); border: 1px solid rgba(34, 197, 94, 0.4); }
+.texto-legal { padding: 36px 40px; line-height: 1.7; }
+.texto-legal h2 { margin: 28px 0 8px; font-size: 19px; letter-spacing: -0.01em; }
+.texto-legal h2:first-child { margin-top: 0; }
+.texto-legal p, .texto-legal li { color: var(--texto-2); }
+.texto-legal ul { padding-left: 20px; }
+.texto-legal a { color: var(--ciano); }
+.texto-legal-data { margin-top: 28px; font-size: 13.5px; color: var(--texto-3) !important; }
+@media (max-width: 900px) {
+  .contato-grade { grid-template-columns: 1fr; }
+  .linha-dupla { grid-template-columns: 1fr; }
+  .texto-legal { padding: 26px 20px; }
+}

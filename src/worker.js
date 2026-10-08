@@ -21,7 +21,7 @@
 // ============================================================================
 
 const VERSAO = "2.0.0";
-const SCHEMA = "2.2.0-a";
+const SCHEMA = "2.3.0-a";
 const COOKIE = "__Host-denia_sessao";
 const SESSAO_MS = 8 * 60 * 60 * 1000;
 const MAX_TENTATIVAS = 5;
@@ -113,21 +113,31 @@ const DDL = [
   `CREATE TABLE IF NOT EXISTS plt_integracoes (org_id INTEGER PRIMARY KEY, engine_url TEXT, token_cifrado TEXT, atualizado_ms INTEGER, atualizado_por TEXT)`,
   `CREATE TABLE IF NOT EXISTS plt_auditoria (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER, usuario_id INTEGER, email TEXT, acao TEXT NOT NULL, detalhe TEXT, ip TEXT, criado_ms INTEGER NOT NULL)`,
   `CREATE INDEX IF NOT EXISTS plt_idx_auditoria_org ON plt_auditoria(org_id, id)`,
-  `CREATE TABLE IF NOT EXISTS plt_tentativas (chave TEXT PRIMARY KEY, n INTEGER NOT NULL, ate INTEGER NOT NULL)`
+  `CREATE TABLE IF NOT EXISTS plt_tentativas (chave TEXT PRIMARY KEY, n INTEGER NOT NULL, ate INTEGER NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS plt_redefinicoes (token_hash TEXT PRIMARY KEY, usuario_id INTEGER NOT NULL, expira_ms INTEGER NOT NULL, usado INTEGER NOT NULL DEFAULT 0, criado_ms INTEGER NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS plt_contatos (id INTEGER PRIMARY KEY AUTOINCREMENT, nome TEXT, email TEXT, empresa TEXT, telefone TEXT, assunto TEXT, mensagem TEXT, ip TEXT, lido INTEGER NOT NULL DEFAULT 0, criado_ms INTEGER NOT NULL)`
 ];
 let schemaPronto = false;
-// Cada conta antiga (que não é a administradora geral) fica na sua própria empresa,
-// nunca dentro da Central de Atendimento.
-async function separarContasLegadas(env) {
+// Empresa principal do site antigo = Central de Atendimento (a primeira empresa da plataforma).
+// É a que tem "central" no nome ou, se nenhuma tiver, a da primeira conta criada.
+async function legadoPrincipal(env) {
+  const r = await env.DB.prepare(`SELECT u.organization_id id FROM users u LEFT JOIN organizations o ON o.id=u.organization_id
+    ORDER BY (lower(COALESCE(o.name,'')) LIKE '%central%') DESC, u.created_at ASC, u.rowid ASC LIMIT 1`).first().catch(() => null);
+  return r?.id != null ? String(r.id) : null;
+}
+// As contas antigas da empresa principal ficam na Central; as demais, cada uma na sua empresa.
+async function reconciliarContasLegadas(env) {
   const primeira = Number((await env.DB.prepare("SELECT MIN(id) id FROM plt_organizacoes").first())?.id || 0);
-  if (!primeira) return;
-  const r = await env.DB.prepare("SELECT m.usuario_id, m.papel, u.nome FROM plt_membros m JOIN plt_usuarios u ON u.id=m.usuario_id WHERE m.org_id=? AND u.origem='LEGADO' AND u.super_admin=0").bind(primeira).all().catch(() => null);
+  const principal = await legadoPrincipal(env);
+  if (!primeira || principal == null) return;
+  await env.DB.prepare("UPDATE plt_organizacoes SET legado_id=? WHERE id=? AND legado_id IS NULL").bind(principal, primeira).run();
+  const r = await env.DB.prepare("SELECT p.id, p.email, l.organization_id org, upper(COALESCE(l.role,'')) papel FROM plt_usuarios p JOIN users l ON lower(l.email)=p.email WHERE p.origem='LEGADO' AND p.super_admin=0").all().catch(() => null);
   for (const x of r?.results || []) {
-    const o = await env.DB.prepare("INSERT INTO plt_organizacoes(nome,slug,cor,status,criado_ms) VALUES(?,?,'#4f8cff','ATIVA',?) RETURNING id").bind(`Empresa de ${x.nome || "usuário"}`, `empresa-${x.usuario_id}-${Date.now().toString(36)}`, agora(env)).first();
-    await env.DB.batch([
-      env.DB.prepare("DELETE FROM plt_membros WHERE org_id=? AND usuario_id=?").bind(primeira, x.usuario_id),
-      env.DB.prepare("INSERT INTO plt_membros(org_id,usuario_id,papel,criado_ms) VALUES(?,?,'OWNER',?)").bind(o.id, x.usuario_id, agora(env))
-    ]);
+    if (String(x.org) !== principal) continue;
+    const proprias = (await env.DB.prepare("SELECT m.org_id FROM plt_membros m JOIN plt_organizacoes o ON o.id=m.org_id WHERE m.usuario_id=? AND m.org_id<>? AND o.slug LIKE 'empresa-%' AND (SELECT COUNT(*) FROM plt_membros m2 WHERE m2.org_id=m.org_id)=1").bind(x.id, primeira).all())?.results || [];
+    const st = [env.DB.prepare("INSERT OR IGNORE INTO plt_membros(org_id,usuario_id,papel,criado_ms) VALUES(?,?,?,?)").bind(primeira, x.id, x.papel === "OWNER" ? "OWNER" : "ADMIN", agora(env))];
+    for (const o of proprias) st.push(env.DB.prepare("DELETE FROM plt_membros WHERE org_id=?").bind(o.org_id), env.DB.prepare("DELETE FROM plt_organizacoes WHERE id=? AND NOT EXISTS (SELECT 1 FROM plt_integracoes WHERE org_id=?)").bind(o.org_id, o.org_id));
+    await env.DB.batch(st);
   }
 }
 async function garantirSchema(env) {
@@ -137,13 +147,13 @@ async function garantirSchema(env) {
   if (v?.valor !== SCHEMA) {
     await env.DB.batch(DDL.map(s => env.DB.prepare(s)));
     await env.DB.prepare("ALTER TABLE plt_organizacoes ADD COLUMN legado_id TEXT").run().catch(() => { }); // já existe
-    await separarContasLegadas(env);
     // A primeira empresa da plataforma.
     const n = await env.DB.prepare("SELECT COUNT(*) n FROM plt_organizacoes").first();
     if (!Number(n?.n)) {
       await env.DB.prepare("INSERT INTO plt_organizacoes(nome,slug,segmento,cor,status,criado_ms) VALUES(?,?,?,?, 'ATIVA', ?)")
         .bind("Central de Atendimento", "central-de-atendimento", "Serviços residenciais e assistência técnica", "#4f8cff", agora(env)).run();
     }
+    await reconciliarContasLegadas(env).catch(e => console.error("contas antigas", e?.message));
     await env.DB.prepare("INSERT OR REPLACE INTO plt_meta(chave,valor) VALUES('schema',?)").bind(SCHEMA).run();
   }
   schemaPronto = true;
@@ -195,8 +205,9 @@ function configAdmin(env) {
   const senha = String(env.PLATFORM_ADMIN_PASSWORD || "");
   return emailValido(email) && senha.length >= 12 ? { email, senha } : null;
 }
-async function criarCookie(env, usuario) {
-  const dados = b64url(enc.encode(JSON.stringify({ u: usuario.id, sv: usuario.sessao_versao, exp: agora(env) + SESSAO_MS, v: 2 })));
+const SESSAO_LONGA_MS = 30 * 24 * 60 * 60 * 1000;
+async function criarCookie(env, usuario, duracao = SESSAO_MS) {
+  const dados = b64url(enc.encode(JSON.stringify({ u: usuario.id, sv: usuario.sessao_versao, exp: agora(env) + duracao, v: 2 })));
   return `${dados}.${await hmac(await segredo(env), dados)}`;
 }
 function cookieSessao(valor, maxAge) { return `${COOKIE}=${valor}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${maxAge}`; }
@@ -302,7 +313,8 @@ async function entrar(request, env) {
     env.DB.prepare("UPDATE plt_usuarios SET ultimo_acesso_ms=? WHERE id=?").bind(agora(env), usuario.id)
   ]);
   await auditar(env, request, { usuario }, null, "LOGIN", "");
-  return json({ ok: true, trocar_senha: Boolean(usuario.trocar_senha) }, 200, { "set-cookie": cookieSessao(await criarCookie(env, usuario), SESSAO_MS / 1000) });
+  const duracao = corpo.lembrar === true ? SESSAO_LONGA_MS : SESSAO_MS;
+  return json({ ok: true, trocar_senha: Boolean(usuario.trocar_senha) }, 200, { "set-cookie": cookieSessao(await criarCookie(env, usuario, duracao), duracao / 1000) });
 }
 
 async function criarEmpresa(env, nome, legadoId = null) {
@@ -337,6 +349,82 @@ async function cadastrar(request, env) {
   return json({ ok: true }, 200, { "set-cookie": cookieSessao(await criarCookie(env, u), SESSAO_MS / 1000) });
 }
 
+// ---------------------------------------------------------------------------
+// E-mail (opcional): com RESEND_API_KEY e EMAIL_REMETENTE, a plataforma envia e-mails
+// (redefinição de senha e avisos de contato). Sem eles, nada é enviado.
+// ---------------------------------------------------------------------------
+function emailConfigurado(env) { return Boolean(String(env.RESEND_API_KEY || "").trim() && emailValido(String(env.EMAIL_REMETENTE || "").replace(/^.*<|>$/g, ""))); }
+async function enviarEmail(env, para, assunto, texto) {
+  if (!emailConfigurado(env)) return false;
+  try {
+    const r = await fetch("https://api.resend.com/emails", {
+      method: "POST", headers: { authorization: `Bearer ${String(env.RESEND_API_KEY).trim()}`, "content-type": "application/json" },
+      body: JSON.stringify({ from: String(env.EMAIL_REMETENTE).trim(), to: [para], subject: assunto, text: texto }), signal: AbortSignal.timeout(15000)
+    });
+    return r.ok;
+  } catch (e) { console.error("e-mail", e?.message); return false; }
+}
+async function sha256(texto) { return b64url(new Uint8Array(await crypto.subtle.digest("SHA-256", enc.encode(texto)))); }
+async function limitar(env, chave, max, janelaMs) {
+  const t = await env.DB.prepare("SELECT n, ate FROM plt_tentativas WHERE chave=?").bind(chave).first();
+  if (t && t.n >= max && agora(env) < t.ate) return false;
+  await env.DB.prepare(`INSERT INTO plt_tentativas(chave,n,ate) VALUES(?,1,?) ON CONFLICT(chave) DO UPDATE SET n = CASE WHEN plt_tentativas.ate < ? THEN 1 ELSE plt_tentativas.n + 1 END, ate = excluded.ate`).bind(chave, agora(env) + janelaMs, agora(env)).run();
+  return true;
+}
+
+// "Esqueceu a senha?": a resposta é sempre a mesma, exista ou não a conta (ninguém descobre e-mails cadastrados).
+async function esqueciSenha(request, env) {
+  const { corpo, erro } = await lerCorpo(request, 2000);
+  if (erro) return erro;
+  const email = normEmail(corpo.email);
+  if (!emailValido(email)) return json({ erro: "Informe um e-mail válido." }, 400);
+  if (!(await limitar(env, "esq:" + ipDe(request), 5, 3600000)) || !(await limitar(env, "esq:" + email, 3, 3600000))) return json({ erro: "Muitos pedidos. Tente novamente em uma hora." }, 429);
+  const porEmail = emailConfigurado(env);
+  const u = await env.DB.prepare("SELECT id, email, nome, super_admin, senha_hash FROM plt_usuarios WHERE email=? AND ativo=1").bind(email).first();
+  if (u && u.senha_hash) {
+    if (porEmail) {
+      const token = b64url(crypto.getRandomValues(new Uint8Array(32)));
+      await env.DB.prepare("INSERT INTO plt_redefinicoes(token_hash,usuario_id,expira_ms,criado_ms) VALUES(?,?,?,?)").bind(await sha256(token), u.id, agora(env) + 30 * 60000, agora(env)).run();
+      const link = `${new URL(request.url).origin}/redefinir?t=${token}`;
+      await enviarEmail(env, u.email, "DENIA — redefinir a sua senha", `Olá${u.nome ? ", " + u.nome : ""}!\n\nRecebemos um pedido para redefinir a sua senha da DENIA. Para criar uma senha nova, abra o link abaixo (vale por 30 minutos):\n\n${link}\n\nSe não foi você, ignore este e-mail: a sua senha continua a mesma.\n\nEquipe DENIA`);
+    }
+    const orgs = (await env.DB.prepare("SELECT org_id FROM plt_membros WHERE usuario_id=?").bind(u.id).all())?.results || [];
+    for (const o of orgs) await auditar(env, request, { usuario: u }, o.org_id, "SENHA", `Pediu para redefinir a senha (${porEmail ? "link enviado por e-mail" : "envio de e-mail desativado"})`);
+  }
+  return json({ ok: true, por_email: porEmail });
+}
+async function redefinirSenha(request, env) {
+  const { corpo, erro } = await lerCorpo(request, 2000);
+  if (erro) return erro;
+  if (!(await limitar(env, "red:" + ipDe(request), 10, 3600000))) return json({ erro: "Muitas tentativas. Tente novamente em uma hora." }, 429);
+  const token = String(corpo.token || "");
+  const r = token.length >= 20 ? await env.DB.prepare("SELECT * FROM plt_redefinicoes WHERE token_hash=?").bind(await sha256(token)).first() : null;
+  if (!r || r.usado || agora(env) > r.expira_ms) return json({ erro: "Este link expirou ou já foi usado. Peça um novo em \"Esqueceu a senha?\"." }, 400);
+  const fraca = senhaForte(corpo.nova);
+  if (fraca) return json({ erro: fraca }, 400);
+  const h = await hashSenha(String(corpo.nova), null, PBKDF2_ITER);
+  await env.DB.batch([
+    env.DB.prepare("UPDATE plt_usuarios SET senha_hash=?, senha_salt=?, senha_iter=?, trocar_senha=0, sessao_versao=sessao_versao+1 WHERE id=?").bind(h.hash, h.salt, h.iter, r.usuario_id),
+    env.DB.prepare("UPDATE plt_redefinicoes SET usado=1 WHERE usuario_id=?").bind(r.usuario_id)
+  ]);
+  return json({ ok: true });
+}
+
+// Formulário de contato do site: fica guardado e aparece para o administrador geral no painel.
+async function receberContato(request, env) {
+  const { corpo, erro } = await lerCorpo(request, 8000);
+  if (erro) return erro;
+  if (String(corpo.site || "")) return json({ ok: true }); // campo invisível: robôs preenchem, pessoas não
+  const nome = txt(corpo.nome, 120), email = normEmail(corpo.email), mensagem = txt(corpo.mensagem, 3000);
+  if (nome.length < 2 || !emailValido(email) || mensagem.length < 5) return json({ erro: "Preencha nome, e-mail e mensagem." }, 400);
+  if (!(await limitar(env, "contato:" + ipDe(request), 5, 3600000))) return json({ erro: "Recebemos várias mensagens desta conexão. Tente novamente mais tarde." }, 429);
+  const dados = { empresa: txt(corpo.empresa, 120), telefone: txt(corpo.telefone, 40), assunto: txt(corpo.assunto, 80) };
+  await env.DB.prepare("INSERT INTO plt_contatos(nome,email,empresa,telefone,assunto,mensagem,ip,criado_ms) VALUES(?,?,?,?,?,?,?,?)").bind(nome, email, dados.empresa, dados.telefone, dados.assunto, mensagem, ipDe(request), agora(env)).run();
+  const destino = String(env.CONTATO_EMAIL || "").trim();
+  if (emailValido(destino)) await enviarEmail(env, destino, `DENIA — novo contato: ${nome}`, `Nome: ${nome}\nE-mail: ${email}\nEmpresa: ${dados.empresa || "-"}\nTelefone: ${dados.telefone || "-"}\nAssunto: ${dados.assunto || "-"}\n\n${mensagem}`);
+  return json({ ok: true });
+}
+
 // Contas da versão anterior do site (tabela "users"): o mesmo e-mail e a mesma senha
 // continuam valendo. No primeiro acesso, a conta passa para o formato novo.
 async function loginLegado(env, email, senha) {
@@ -356,7 +444,9 @@ async function loginLegado(env, email, senha) {
   if (papel !== "SUPER_ADMIN") {
     // A empresa da conta antiga vira uma empresa própria na plataforma (sem configuração da IA).
     const nomeOrg = (await env.DB.prepare("SELECT name FROM organizations WHERE id=?").bind(l.organization_id).first().catch(() => null))?.name || "Minha empresa";
-    let o = await env.DB.prepare("SELECT id FROM plt_organizacoes WHERE legado_id=?").bind(String(l.organization_id)).first();
+    // A empresa principal do site antigo é a Central (a primeira); as outras viram empresas próprias.
+    let o = String(l.organization_id) === await legadoPrincipal(env) ? { id: await primeiraEmpresa(env) } : null;
+    if (!o) o = await env.DB.prepare("SELECT id FROM plt_organizacoes WHERE legado_id=?").bind(String(l.organization_id)).first();
     if (!o) o = await criarEmpresa(env, nomeOrg, String(l.organization_id));
     await env.DB.prepare("INSERT OR IGNORE INTO plt_membros(org_id,usuario_id,papel,criado_ms) VALUES(?,?,?,?)").bind(o.id, u.id, papel === "OWNER" ? "OWNER" : "ADMIN", agora(env)).run();
   }
@@ -402,8 +492,11 @@ async function validarEngineUrl(env, valor) {
 function conexaoCloudflare(env) {
   const token = String(env.DENIA_PLATFORM_SERVICE_TOKEN || env.DENIA_ENGINE_SERVICE_TOKEN || "");
   let url = "";
-  try { const u = new URL(String(env.DENIA_ENGINE_URL || env.DENIA_ENGINE_BASE_URL || "").trim()); if (u.protocol === "https:") url = u.origin; } catch { url = ""; }
-  return url && token.length >= 16 ? { url, token } : null;
+  try {
+    const u = new URL(String(env.DENIA_ENGINE_URL || env.DENIA_ENGINE_BASE_URL || "").trim());
+    if (u.protocol === "https:" || u.protocol === "http:") url = (u.origin + u.pathname).replace(/\/+$/, "");
+  } catch { url = ""; }
+  return url && token.trim() ? { url, token: token.trim() } : null;
 }
 async function primeiraEmpresa(env) {
   return Number((await env.DB.prepare("SELECT MIN(id) id FROM plt_organizacoes").first())?.id || 0);
@@ -434,7 +527,7 @@ async function proxyEngine(request, env, sessao, orgId, papel, caminho) {
   if (!rota) return json({ erro: "Operação não permitida." }, 404);
   if (!pode(papel, rota[2])) return json({ erro: "Seu perfil não tem permissão para esta ação." }, 403);
   const con = await conexaoDa(env, orgId);
-  if (!con) return json({ erro: "A IA desta empresa ainda não foi conectada. Vá em Integrações.", codigo: "ENGINE_NAO_CONFIGURADO" }, 503);
+  if (!con) return json({ erro: "A IA desta empresa ainda não foi conectada. Vá em Integrações e informe o endereço e o token da IA.", codigo: "ENGINE_NAO_CONFIGURADO" }, 503);
   let corpo;
   if (request.method === "POST") {
     const lido = await lerCorpo(request, caminho === "import/clients" ? 600000 : 200000);
@@ -617,6 +710,9 @@ async function api(request, env, caminho) {
   }
   if (caminho === "/api/entrar" && metodo === "POST") return entrar(request, env);
   if (caminho === "/api/cadastro" && metodo === "POST") return cadastrar(request, env);
+  if (caminho === "/api/senha/esqueci" && metodo === "POST") return esqueciSenha(request, env);
+  if (caminho === "/api/senha/redefinir" && metodo === "POST") return redefinirSenha(request, env);
+  if (caminho === "/api/contato" && metodo === "POST") return receberContato(request, env);
   if (caminho === "/api/sair" && metodo === "POST") return json({ ok: true }, 200, { "set-cookie": cookieSessao("", 0) });
 
   const sessao = await lerSessao(request, env);
@@ -656,6 +752,12 @@ async function api(request, env, caminho) {
   if (u.trocar_senha) return json({ erro: "Troque a senha temporária para continuar.", codigo: "TROCAR_SENHA" }, 403);
 
   let m;
+  if (caminho === "/api/admin/contatos" && metodo === "GET") {
+    if (!u.super_admin) return json({ erro: "Sem permissão." }, 403);
+    const r = await env.DB.prepare("SELECT * FROM plt_contatos ORDER BY id DESC LIMIT 300").all();
+    await env.DB.prepare("UPDATE plt_contatos SET lido=1 WHERE lido=0").run();
+    return json({ contatos: r?.results || [] });
+  }
   if ((m = caminho.match(/^\/api\/admin\/organizacoes(?:\/(\d{1,12}))?$/)) && metodo === "POST") return apiAdminOrgs(request, env, sessao, m[1] || "");
   if ((m = caminho.match(/^\/api\/orgs\/(\d{1,12})\/(.+)$/))) return apiOrg(request, env, sessao, Number(m[1]), m[2]);
   return json({ erro: "Rota não encontrada." }, 404);
@@ -703,7 +805,7 @@ function comSeguranca(resposta, request) {
   h.set("permissions-policy", "camera=(), microphone=(), geolocation=(), payment=()");
   h.set("cross-origin-opener-policy", "same-origin");
   const caminho = new URL(request.url).pathname;
-  if (caminho.startsWith("/api/") || caminho.startsWith("/app") || caminho.startsWith("/entrar") || caminho.startsWith("/cadastro")) h.set("cache-control", "no-store");
+  if (caminho.startsWith("/api/") || caminho.startsWith("/app") || caminho.startsWith("/entrar") || caminho.startsWith("/cadastro") || caminho.startsWith("/recuperar") || caminho.startsWith("/redefinir")) h.set("cache-control", "no-store");
   return new Response(resposta.body, { status: resposta.status, statusText: resposta.statusText, headers: h });
 }
 
