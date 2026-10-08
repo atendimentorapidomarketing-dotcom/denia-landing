@@ -1,15 +1,19 @@
 {
-  "$schema":"node_modules/wrangler/config-schema.json",
-  "name":"denia-landing",
-  "main":"./worker.js",
-  "compatibility_date":"2026-10-04",
-  "assets":{"directory":"./dist","binding":"ASSETS"},
-  "d1_databases":[
-    {
-      "binding":"DB",
-      "database_name":"denia-saas",
-      "database_id":"01bd6b23-af41-461d-8b86-7ad1f4c9d4f9"
-    }
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "denia-platform",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-09-01",
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": true,
+    "not_found_handling": "404-page",
+    "html_handling": "drop-trailing-slash"
+  },
+  // Banco da plataforma (empresas, usuários, permissões, auditoria).
+  // Na primeira publicação a Cloudflare cria o banco sozinha.
+  "d1_databases": [
+    { "binding": "DB", "database_name": "denia-platform" }
   ],
-  "observability":{"enabled":true}
+  "observability": { "enabled": true }
 }
