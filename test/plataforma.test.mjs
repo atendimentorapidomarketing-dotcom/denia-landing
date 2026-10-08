@@ -592,3 +592,35 @@ test("Assistente DENIA — modo assistido devolve o plano para a tela executar �
   assert.equal(pausa.dados.ok, true);
   assert.equal((await p.req("/api/orgs/1/engine/status", { quem: "admin" })).dados.pausa_geral, true);
 });
+
+test("Voz ao vivo — chave temporária com ferramentas, pesquisa na internet, e a chave da Central vale para as outras empresas", async () => {
+  const p = await criarPlataforma({ DENIA_PLATFORM_SERVICE_TOKEN: TOKEN_ENGINE });
+  p.env.ENGINE = { fetch: async (req) => p.engine.worker.fetch(req, p.engine.env, { waitUntil() { } }) };
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  await p.req("/api/orgs/1/mk/marcas", { metodo: "POST", quem: "admin", corpo: { nome: "Clínica Sol" } });
+  const sem = await p.req("/api/orgs/1/assistente/ao-vivo", { metodo: "POST", quem: "admin", corpo: {} });
+  assert.equal(sem.dados.codigo, "SEM_OPENAI");
+  await p.req("/api/orgs/1/ia/chave", { metodo: "POST", quem: "admin", corpo: { chave: "sk-proj-" + "b".repeat(40) } });
+  let sessao = null;
+  p.openai = (url, corpo) => {
+    if (url.endsWith("realtime/client_secrets")) { sessao = corpo.session; return { value: "ek_temporaria", expires_at: 1 }; }
+    if (corpo && corpo.tools && corpo.tools[0].type === "web_search") return { output: [{ content: [{ type: "output_text", text: "Tendência: vídeos curtos. Fonte: Exemplo." }] }] };
+    return {};
+  };
+  const r = await p.req("/api/orgs/1/assistente/ao-vivo", { metodo: "POST", quem: "admin", corpo: {} });
+  assert.deepEqual([r.dados.chave, r.dados.url], ["ek_temporaria", "https://api.openai.com/v1/realtime/calls"], "o navegador recebe só uma chave temporária");
+  assert.ok(!JSON.stringify(r.dados).includes("sk-proj"), "a chave de verdade nunca vai para o navegador");
+  assert.equal(sessao.audio.input.turn_detection.type, "semantic_vad", "detecta sozinho quando a pessoa terminou de falar");
+  assert.deepEqual(sessao.tools.map(t => t.name), ["criar_semana", "criar_post", "aprovar_posts", "publicar_post", "treinar", "pausar_ia", "pesquisar_web", "dados_do_painel"]);
+  assert.match(sessao.instructions, /Clínica Sol/);
+  assert.match(sessao.instructions, /IA do WhatsApp/);
+  const busca = await p.req("/api/orgs/1/assistente/pesquisar", { metodo: "POST", quem: "admin", corpo: { pergunta: "tendências" } });
+  assert.match(busca.dados.resultado, /vídeos curtos/);
+  const prep = await p.req("/api/orgs/1/assistente/preparar", { metodo: "POST", quem: "admin", corpo: { acao: { tipo: "criar_post", marca: "clinica", tema: "clareamento" } } });
+  assert.deepEqual([prep.dados.tipo, prep.dados.marca, prep.dados.canais], ["criar_post", "Clínica Sol", ["instagram"]]);
+
+  // Outra empresa sem chave própria usa a da Central (colada uma vez só).
+  const nova = await p.req("/api/admin/organizacoes", { metodo: "POST", quem: "admin", corpo: { nome: "Outra Empresa" } });
+  const k = (await p.req(`/api/orgs/${nova.dados.id}/ia/chave`, { quem: "admin" })).dados;
+  assert.deepEqual([k.configurada, k.origem], [true, "central"]);
+});

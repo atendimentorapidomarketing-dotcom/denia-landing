@@ -268,9 +268,14 @@
       return;
     }
     el.style.animation = "none"; void el.offsetWidth; el.style.animation = "";
-    if (estado.iaLigada === false && nome !== "integracoes") el.appendChild(h("div", { class: "faixa-ia", role: "alert" },
-      h("span", {}, h("strong", { text: "A inteligência da DENIA está desligada. " }), "Sem ela não dá para criar posts e imagens nem conversar por voz. Falta só colar a chave da OpenAI."),
-      pode("ADMIN") ? h("a", { class: "btn btn-primario btn-pequeno", href: "#/integracoes" }, "Colar a chave agora") : null));
+    // Aviso da chave: só no Painel, e some de vez depois de colar a chave uma vez (ou ao tocar em "Agora não").
+    if (estado.iaLigada === false && nome === "painel" && !sessao.ler("denia_faixa_ia")) {
+      const faixa = h("div", { class: "faixa-ia", role: "status" },
+        h("span", {}, h("strong", { text: "Falta um passo para ligar a inteligência da DENIA. " }), "Cole a chave da OpenAI uma única vez em Integrações e pronto: vale para sempre e para todas as empresas."),
+        pode("ADMIN") ? h("a", { class: "btn btn-primario btn-pequeno", href: "#/integracoes" }, "Colar a chave") : null,
+        h("button", { class: "btn btn-secundario btn-pequeno", type: "button", onclick: () => { sessao.gravar("denia_faixa_ia", 1); faixa.remove(); } }, "Agora não"));
+      el.appendChild(faixa);
+    }
     try { await rota.render(el, param, () => id === estado.render); }
     catch (e) { if (id === estado.render) falha(el, e); }
   }
@@ -903,9 +908,9 @@
     };
     const ia = h("section", { class: "cartao vidro formulario", id: "cartao-openai" },
       h("div", { class: "sugestao-topo" }, h("h3", { style: "margin:0;margin-right:auto", text: "Inteligência da DENIA (OpenAI)" }), k.configurada ? selo("Ligada", "ok") : selo("Desligada", "erro")),
-      h("p", { style: "margin:0;color:var(--texto-2);font-size:14px", text: "Liga a criação de posts e imagens, a voz da DENIA e os comandos por voz. A chave fica cifrada e nunca aparece de novo no navegador." }),
+      h("p", { style: "margin:0;color:var(--texto-2);font-size:14px", text: "Cole uma única vez: liga a criação de posts e imagens, a conversa por voz ao vivo e os comandos da DENIA. Fica guardada para sempre (cifrada) e vale também para as outras empresas da plataforma." }),
       campo("Chave da OpenAI", chaveIn, "Em platform.openai.com → API keys → Create new secret key. Copie e cole aqui."),
-      k.configurada ? h("p", { class: "nota", text: `Chave em uso${k.final ? ": termina em …" + k.final : ""} · ${k.origem === "plataforma" ? "salva aqui na plataforma" : "secret OPENAI_API_KEY da Cloudflare"}.` }) : null,
+      k.configurada ? h("p", { class: "nota", text: `Chave em uso${k.final ? ": termina em …" + k.final : ""} · ${({ plataforma: "salva aqui na plataforma, vale para sempre", central: "a mesma da Central de Atendimento", cloudflare: "secret OPENAI_API_KEY da Cloudflare" })[k.origem] || ""}.` }) : null,
       editar ? h("div", { class: "acoes" },
         botao("Salvar chave", async () => {
           try { await org("ia/chave", { metodo: "POST", corpo: { chave: chaveIn.value } }); chaveIn.value = ""; aviso("Chave salva.", "ok"); estado.iaLigada = true; await navegar(); setTimeout(() => { const b = document.querySelector("#cartao-openai .btn-testar-ia"); if (b) b.click(); }, 50); }
@@ -1640,9 +1645,10 @@
     $("assistente-fechar").addEventListener("click", () => abrir(false));
     $("assistente-form").addEventListener("submit", e => { e.preventDefault(); const t = $("assistente-texto").value.trim(); if (t) { $("assistente-texto").value = ""; perguntar(t); } });
     $("assistente-mic").addEventListener("click", () => alternarGravacao("ditar", $("assistente-texto")));
-    $("assistente-conversar").addEventListener("click", () => alternarGravacao("voz"));
+    $("assistente-conversar").addEventListener("click", () => alternarAoVivo());
     const topo = $("falar-denia");
-    if (topo) topo.addEventListener("click", () => { location.hash = "#/denia"; });
+    // Um toque: abre a página da DENIA e já começa a conversa ao vivo.
+    if (topo) topo.addEventListener("click", () => { const ligado = aoVivo.ativo || aoVivo.conectando || assistente.continua; if (!ligado && rotaAtual().nome !== "denia") location.hash = "#/denia"; alternarAoVivo(); });
     iniciarPiloto();
   }
   function mostrarMsg(papel, texto, extra) {
@@ -1661,7 +1667,7 @@
   function estadoAssistente(t) {
     $("assistente-estado").textContent = t || "Escreva, grave ou converse por voz";
     const v = $("voz-estado");
-    if (v) v.textContent = t || (assistente.continua ? "Conversa contínua ligada — fale quando quiser" : "Toque no microfone e fale");
+    if (v) v.textContent = t || (aoVivo.ativo ? "Ao vivo — pode falar" : assistente.continua ? "Mãos livres ligado — fale quando quiser" : "Toque no microfone e fale");
     const orbe = $("voz-orbe");
     if (orbe) orbe.dataset.estado = !t ? "" : /Ouvindo|Gravando/.test(t) ? "ouvindo" : /Falando/.test(t) ? "falando" : "pensando";
   }
@@ -1669,13 +1675,14 @@
 
   async function perguntar(texto, origemVoz) {
     if (!estado.org) return;
+    if (aoVivo.ativo) { falarAoVivo(texto); return; }
     assistente.msgs.push({ papel: "usuario", texto });
     mostrarMsg("usuario", texto);
     estadoAssistente("Pensando…");
     const naPaginaVoz = Boolean($("voz-pagina"));
     let plano = [];
     try {
-      const r = await api(`/api/orgs/${estado.org.id}/assistente/conversa`, { metodo: "POST", corpo: { mensagens: assistente.msgs.slice(-20), assistido: true } });
+      const r = await api(`/api/orgs/${estado.org.id}/assistente/conversa`, { metodo: "POST", corpo: { mensagens: assistente.msgs.filter(m => m.papel === "usuario" || m.papel === "denia").slice(-20), assistido: true } });
       assistente.msgs.push({ papel: "denia", texto: r.resposta });
       mostrarMsg("denia", r.resposta);
       plano = r.plano || [];
@@ -1691,7 +1698,7 @@
     } catch (e) { mostrarErro(e); assistente.continua = false; marcarContinua(); }
     finally { estadoAssistente(); }
     // Conversa contínua: depois de responder, a DENIA volta a ouvir sozinha.
-    if (assistente.continua && naPaginaVoz) { await esperarSimples(400); if ($("voz-pagina")) alternarGravacao("voz"); }
+    if (assistente.continua) { await esperarSimples(400); if (assistente.continua) alternarGravacao("voz"); }
   }
   const esperarSimples = ms => new Promise(r => setTimeout(r, ms));
 
@@ -1718,10 +1725,8 @@
     if (window.speechSynthesis) window.speechSynthesis.cancel();
   }
   function marcarContinua() {
-    const b = $("voz-continua");
-    if (b) { b.classList.toggle("ativo", assistente.continua); b.textContent = assistente.continua ? "Parar conversa contínua" : "Conversa contínua (mãos livres)"; }
+    document.querySelectorAll(".mic-denia").forEach(b => b.classList.toggle("gravando", assistente.continua || aoVivo.ativo || aoVivo.conectando));
   }
-
   // Grava o microfone. modo "voz": envia e a DENIA responde falando. modo "ditar": só transcreve para a caixa de texto.
   async function alternarGravacao(modo = "voz", caixa) {
     const botoes = () => document.querySelectorAll(modo === "ditar" ? ".mic-ditar" : ".mic-denia");
@@ -1747,7 +1752,7 @@
         const r = await fetch(`/api/orgs/${estado.org.id}/assistente/transcrever`, { method: "POST", credentials: "same-origin", headers: { "content-type": blob.type, "x-denia": "1" }, body: blob });
         const d = await r.json().catch(() => ({}));
         if (!r.ok) throw Object.assign(new Error(d.erro || "Não consegui entender o áudio."), { dados: d });
-        if (!d.texto) { estadoAssistente(); if (modo === "voz" && assistente.continua && $("voz-pagina")) alternarGravacao("voz"); return; }
+        if (!d.texto) { estadoAssistente(); if (modo === "voz" && assistente.continua) alternarGravacao("voz"); return; }
         if (modo === "ditar") {
           const alvo = caixa && caixa.isConnected ? caixa : $("assistente-texto");
           alvo.value = (alvo.value.trim() ? alvo.value.trimEnd() + " " : "") + d.texto;
@@ -1780,6 +1785,123 @@
       } catch { /* sem detecção de silêncio: toque no microfone para enviar */ }
     }
     setTimeout(() => { if (g.state === "recording") g.stop(); }, 120000);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Conversa ao vivo (voz em tempo real): toca uma vez e conversa, como no ChatGPT.
+  // A DENIA ouve, responde falando, pode ser interrompida, pesquisa e age na tela.
+  // ---------------------------------------------------------------------------
+
+  const aoVivo = { ativo: false, conectando: false, pc: null, dc: null, fluxo: null, audio: null, ultimoUsuario: "" };
+  function marcarAoVivo() {
+    const ligado = aoVivo.ativo || aoVivo.conectando;
+    document.body.classList.toggle("ao-vivo", aoVivo.ativo);
+    document.querySelectorAll(".mic-denia").forEach(b => { b.classList.toggle("gravando", ligado); b.setAttribute("aria-label", ligado ? "Encerrar a conversa ao vivo" : "Conversar ao vivo"); });
+    const rot = $("voz-rotulo");
+    if (rot) rot.textContent = aoVivo.conectando ? "Conectando…" : aoVivo.ativo ? "Toque para encerrar" : "Toque para conversar ao vivo";
+    const topo = $("falar-denia");
+    if (topo) { topo.classList.toggle("ativo", ligado); const sp = topo.querySelector("span"); if (sp) sp.textContent = ligado ? "Encerrar conversa" : "Falar com a DENIA"; }
+  }
+  async function alternarAoVivo() {
+    if (aoVivo.ativo || aoVivo.conectando || assistente.continua) { pararAoVivo(); return; }
+    if (!estado.org) return;
+    if (!window.RTCPeerConnection || !navigator.mediaDevices) { iniciarMaosLivres(); return; }
+    pararFala();
+    aoVivo.conectando = true; marcarAoVivo(); estadoAssistente("Conectando a voz ao vivo…");
+    try {
+      const fluxo = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } })
+        .catch(() => { throw new Error("Permita o uso do microfone para conversar com a DENIA (no cadeado ao lado do endereço do site)."); });
+      aoVivo.fluxo = fluxo;
+      const s = await api(`/api/orgs/${estado.org.id}/assistente/ao-vivo`, { metodo: "POST", corpo: {} });
+      if (!aoVivo.conectando) { fluxo.getTracks().forEach(t => t.stop()); return; }
+      const pc = new RTCPeerConnection();
+      aoVivo.pc = pc;
+      const audio = new Audio(); audio.autoplay = true; aoVivo.audio = audio;
+      pc.ontrack = e => { audio.srcObject = e.streams[0]; };
+      pc.addTrack(fluxo.getTracks()[0], fluxo);
+      const dc = pc.createDataChannel("oai-events");
+      aoVivo.dc = dc;
+      dc.onmessage = e => { try { eventoAoVivo(JSON.parse(e.data)); } catch { /* evento desconhecido */ } };
+      dc.onopen = () => {
+        // A DENIA começa cumprimentando, como numa ligação.
+        enviarAoVivo({ type: "response.create", response: { instructions: "Cumprimente em uma frase curta e pergunte como pode ajudar." } });
+      };
+      pc.onconnectionstatechange = () => { if (["failed", "closed", "disconnected"].includes(pc.connectionState) && aoVivo.ativo) { mostrarMsg("erro", "A conversa ao vivo caiu. Toque no microfone para voltar."); pararAoVivo(); } };
+      const oferta = await pc.createOffer();
+      await pc.setLocalDescription(oferta);
+      const r = await fetch(s.url, { method: "POST", body: oferta.sdp, headers: { authorization: "Bearer " + s.chave, "content-type": "application/sdp" } });
+      if (!r.ok) throw new Error("A voz ao vivo da OpenAI não aceitou a conexão (" + r.status + ").");
+      await pc.setRemoteDescription({ type: "answer", sdp: await r.text() });
+      aoVivo.conectando = false; aoVivo.ativo = true; marcarAoVivo();
+      estadoAssistente("Ao vivo — pode falar");
+    } catch (e) {
+      const semChave = e && e.dados && e.dados.codigo === "SEM_OPENAI";
+      pararAoVivo();
+      if (semChave) { mostrarErro(e); return; }
+      // Sem a voz em tempo real, conversa mãos livres: ouve, envia sozinho no silêncio e responde falando.
+      mostrarMsg("erro", (e && e.message ? e.message + " " : "") + "Vou conversar no modo mãos livres: fale normalmente, eu envio sozinha quando você parar de falar.");
+      iniciarMaosLivres();
+    }
+  }
+  function pararAoVivo() {
+    aoVivo.ativo = false; aoVivo.conectando = false;
+    try { if (aoVivo.dc) aoVivo.dc.close(); } catch { /* já fechado */ }
+    try { if (aoVivo.pc) aoVivo.pc.close(); } catch { /* já fechado */ }
+    if (aoVivo.fluxo) aoVivo.fluxo.getTracks().forEach(t => t.stop());
+    if (aoVivo.audio) { aoVivo.audio.srcObject = null; }
+    aoVivo.pc = aoVivo.dc = aoVivo.fluxo = aoVivo.audio = null;
+    if (assistente.continua) { assistente.continua = false; if (assistente.gravador && assistente.gravador.state === "recording") assistente.gravador.stop(); }
+    marcarAoVivo(); estadoAssistente();
+  }
+  function iniciarMaosLivres() {
+    assistente.continua = true; marcarAoVivo();
+    document.querySelectorAll(".mic-denia").forEach(b => b.classList.add("gravando"));
+    alternarGravacao("voz");
+  }
+  function enviarAoVivo(ev) { if (aoVivo.dc && aoVivo.dc.readyState === "open") aoVivo.dc.send(JSON.stringify(ev)); }
+  // Texto digitado durante a conversa ao vivo entra na mesma conversa.
+  function falarAoVivo(texto) {
+    assistente.msgs.push({ papel: "usuario", texto }); mostrarMsg("usuario", texto);
+    enviarAoVivo({ type: "conversation.item.create", item: { type: "message", role: "user", content: [{ type: "input_text", text: texto }] } });
+    enviarAoVivo({ type: "response.create" });
+  }
+  function eventoAoVivo(ev) {
+    const t = ev.type || "";
+    if (t === "input_audio_buffer.speech_started") { estadoAssistente("Ouvindo…"); return; }
+    if (t === "input_audio_buffer.speech_stopped") { estadoAssistente("Pensando…"); return; }
+    if (t === "output_audio_buffer.started") { estadoAssistente("Falando… (pode interromper)"); return; }
+    if (t === "output_audio_buffer.stopped" || t === "response.done") { if (!piloto.ativo) estadoAssistente(aoVivo.ativo ? "Ao vivo — pode falar" : ""); if (t === "output_audio_buffer.stopped") return; }
+    if (t === "conversation.item.input_audio_transcription.completed" && ev.transcript && ev.transcript.trim()) {
+      const texto = ev.transcript.trim();
+      assistente.msgs.push({ papel: "usuario", texto }); mostrarMsg("usuario", texto); return;
+    }
+    if ((t === "response.output_audio_transcript.done" || t === "response.audio_transcript.done") && ev.transcript) {
+      assistente.msgs.push({ papel: "denia", texto: ev.transcript }); mostrarMsg("denia", ev.transcript); return;
+    }
+    if (t === "response.function_call_arguments.done") { ferramentaAoVivo(ev); return; }
+    if (t === "error" && ev.error) { console.warn("ao vivo", ev.error); if (!/cancel/i.test(ev.error.code || "")) mostrarMsg("erro", ev.error.message || "Erro na conversa ao vivo."); }
+  }
+  async function ferramentaAoVivo(ev) {
+    let saida;
+    try {
+      const args = JSON.parse(ev.arguments || "{}");
+      if (ev.name === "pesquisar_web") {
+        estadoAssistente("Pesquisando na internet…");
+        mostrarMsg("acao", "🔎 Pesquisando: " + (args.pergunta || ""));
+        saida = await api(`/api/orgs/${estado.org.id}/assistente/pesquisar`, { metodo: "POST", corpo: { pergunta: args.pergunta } });
+      } else if (ev.name === "dados_do_painel") {
+        estadoAssistente("Olhando o painel…");
+        saida = await api(`/api/orgs/${estado.org.id}/assistente/contexto`, { metodo: "POST", corpo: {} });
+      } else {
+        const prep = await api(`/api/orgs/${estado.org.id}/assistente/preparar`, { metodo: "POST", corpo: { acao: { tipo: ev.name, ...args } } });
+        const naPaginaVoz = Boolean($("voz-pagina"));
+        const [r] = await executarPlano([prep]);
+        saida = r || { ok: false, resumo: "Não consegui." };
+        if (naPaginaVoz && !$("voz-pagina")) setTimeout(() => { location.hash = "#/denia"; }, 1800);
+      }
+    } catch (e) { saida = { ok: false, erro: e.message }; }
+    enviarAoVivo({ type: "conversation.item.create", item: { type: "function_call_output", call_id: ev.call_id, output: JSON.stringify(saida).slice(0, 12000) } });
+    enviarAoVivo({ type: "response.create" });
   }
 
   // ---------------------------------------------------------------------------
@@ -1904,6 +2026,7 @@
         if (r.ok && piloto.erros.length) r = { ok: false, resumo: piloto.erros[0] };
         resultados.push(r);
         mostrarMsg(r.ok ? "acao" : "erro", (r.ok ? "✓ " : "✕ ") + r.resumo);
+        assistente.msgs.push({ papel: r.ok ? "acao" : "erro", texto: (r.ok ? "✓ " : "✕ ") + r.resumo });
       }
     } finally {
       piloto.ativo = false; piloto.parar = false;
@@ -2053,7 +2176,7 @@
     const msgs = h("div", { class: "assistente-msgs voz-msgs", id: "voz-msgs", "aria-live": "polite" });
     const texto = h("textarea", { class: "entrada voz-texto", placeholder: "Escreva aqui, ou toque no microfone ao lado para gravar e transcrever…", maxlength: "2000", rows: "2" });
     const falarChk = h("input", { type: "checkbox", id: "voz-falar", checked: true });
-    const micGrande = h("button", { class: "voz-mic mic-denia", type: "button", "aria-label": "Conversar por voz", onclick: () => alternarGravacao("voz") });
+    const micGrande = h("button", { class: "voz-mic mic-denia", type: "button", "aria-label": "Conversar ao vivo", onclick: () => alternarAoVivo() });
     micGrande.appendChild(svgDe(ICONE_MIC));
     const ditar = h("button", { class: "assistente-mic mic-ditar", type: "button", title: "Gravar e transcrever (sem enviar)", "aria-label": "Gravar e transcrever", onclick: () => alternarGravacao("ditar", texto) });
     ditar.appendChild(svgDe(ICONE_MIC));
@@ -2061,27 +2184,18 @@
       h("div", { class: "voz-orbe", id: "voz-orbe" }, h("span"), h("i"), h("i")),
       h("h2", { text: "Converse com a DENIA" }),
       h("p", { class: "voz-estado", id: "voz-estado", text: "Toque no microfone e fale" }),
-      h("div", { class: "acoes voz-acoes" }, micGrande,
-        botao("Conversa contínua (mãos livres)", () => { assistente.continua = !assistente.continua; marcarContinua(); estadoAssistente(); if (assistente.continua && !(assistente.gravador && assistente.gravador.state === "recording")) alternarGravacao("voz"); }, "btn-secundario", { id: "voz-continua" }),
-        botao("Parar de falar", () => pararFala(), "btn-secundario")),
-      h("label", { class: "assistente-voz" }, falarChk, " Responder em voz"),
-      h("p", { class: "nota", text: "Peça qualquer coisa: \"Crie os posts da próxima semana da Clínica Sol para o Instagram\" · \"Aprove os posts que estão esperando\" · \"A partir de hoje, sempre peça o bairro do cliente antes do orçamento\". Você vê a DENIA fazendo na tela e pode pausar ou parar." })));
+      h("div", { class: "voz-acoes" }, micGrande, h("span", { class: "voz-rotulo", id: "voz-rotulo", text: "Toque para conversar ao vivo" })),
+      h("label", { class: "assistente-voz" }, falarChk, " Responder em voz também quando eu escrever"),
+      h("p", { class: "nota", text: "Peça qualquer coisa: \"Crie os posts da próxima semana da Clínica Sol para o Instagram\" · \"Aprove os posts que estão esperando\" · \"A partir de hoje, sempre peça o bairro do cliente antes do orçamento\" · \"Pesquise as tendências de marketing para clínicas este mês\". Você vê a DENIA fazendo na tela e pode pausar ou parar." })));
     const enviar = () => { const t = texto.value.trim(); if (t) { texto.value = ""; perguntar(t); } };
     texto.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); enviar(); } });
     el.appendChild(h("section", { class: "cartao vidro voz-historico" }, msgs,
       h("form", { class: "assistente-form", onsubmit: e => { e.preventDefault(); enviar(); } }, ditar, texto, h("button", { class: "btn btn-primario", type: "submit" }, "Enviar"))));
     assistente.msgs.forEach(m => msgs.appendChild(h("div", { class: "a-msg a-" + m.papel, text: m.texto })));
-    if (!assistente.msgs.length) msgs.appendChild(h("div", { class: "a-msg a-denia", text: "Oi! Sou a DENIA. Toque no microfone grande e fale comigo, ligue a conversa contínua para conversar sem tocar em nada, ou escreva abaixo — o microfone pequeno grava e transcreve para você revisar antes de enviar." }));
-    marcarContinua();
-    estadoAssistente();
-    // Saiu da página: desliga a conversa contínua e o microfone (menos quando é a própria DENIA navegando).
-    const aoSair = () => setTimeout(() => {
-      if (vivo() || piloto.ativo) return;
-      window.removeEventListener("hashchange", aoSair);
-      assistente.continua = false;
-      if (assistente.gravador && assistente.gravador.state === "recording") assistente.gravador.stop();
-    }, 0);
-    window.addEventListener("hashchange", aoSair);
+    if (!assistente.msgs.length) msgs.appendChild(h("div", { class: "a-msg a-denia", text: "Oi! Sou a DENIA. Toque no microfone grande uma vez e converse comigo ao vivo, como numa ligação — pode me interromper quando quiser. Também dá para escrever abaixo; o microfone pequeno grava e transcreve para você revisar antes de enviar." }));
+    marcarAoVivo();
+    estadoAssistente(aoVivo.ativo ? "Ao vivo — pode falar" : "");
+    // A conversa ao vivo continua em qualquer tela: o painel flutuante mostra o que é dito.
   }
 
   function emBreve(el, titulo, texto) {
