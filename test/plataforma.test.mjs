@@ -256,9 +256,31 @@ test("Plataforma — funciona sem configurar nada: contas antigas, chave automá
 
   await p.entrar("ana", "ana@central.test", "SenhaAntiga2026");
   const euAna = await p.req("/api/eu", { quem: "ana" });
-  assert.deepEqual(euAna.dados.organizacoes.map(o => [o.nome, o.papel]), [["Central de Atendimento", "OWNER"]]);
+  assert.equal(euAna.dados.organizacoes.length, 1);
+  assert.notEqual(euAna.dados.organizacoes[0].id, 1, "outra conta nunca entra na Central de Atendimento");
+  assert.equal(euAna.dados.organizacoes[0].papel, "OWNER");
+  assert.equal(euAna.dados.organizacoes[0].conectada, false, "empresa própria, sem a IA configurada");
+  assert.equal((await p.req("/api/orgs/1/engine/status", { quem: "ana" })).status, 404);
 
   const antigo = await p.req("/login.html");
   assert.equal(antigo.status, 302);
   assert.equal(antigo.r.headers.get("location"), "/entrar");
+});
+
+test("Plataforma — criar conta: empresa própria, sem configuração e sem acesso à Central", async () => {
+  const p = await criarPlataforma({ DENIA_ENGINE_URL: "https://engine.test", DENIA_PLATFORM_SERVICE_TOKEN: TOKEN_ENGINE });
+  const fraca = await p.req("/api/cadastro", { metodo: "POST", quem: "novo", corpo: { nome: "Rafa", empresa: "Clínica Sol", email: "rafa@sol.test", senha: "123" } });
+  assert.equal(fraca.status, 400);
+  const r = await p.req("/api/cadastro", { metodo: "POST", quem: "novo", corpo: { nome: "Rafa", empresa: "Clínica Sol", email: "Rafa@Sol.test", senha: "SenhaDaRafa2026" } });
+  assert.equal(r.status, 200);
+  const eu = await p.req("/api/eu", { quem: "novo" });
+  assert.deepEqual(eu.dados.organizacoes.map(o => [o.nome, o.papel, o.conectada]), [["Clínica Sol", "OWNER", false]]);
+  const id = eu.dados.organizacoes[0].id;
+  assert.equal((await p.req(`/api/orgs/${id}/engine/training`, { quem: "novo" })).dados.codigo, "ENGINE_NAO_CONFIGURADO");
+  assert.equal((await p.req("/api/orgs/1/engine/training", { quem: "novo" })).status, 404, "não vê a IA da Central");
+  const repetido = await p.req("/api/cadastro", { metodo: "POST", corpo: { nome: "Xavier", empresa: "Ypsilon", email: "rafa@sol.test", senha: "SenhaDaRafa2026" } });
+  assert.equal(repetido.status, 409);
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  const st = await p.req("/api/orgs/1/engine/status", { quem: "admin" });
+  assert.equal(st.status, 200, "a conta principal vê a Central configurada");
 });

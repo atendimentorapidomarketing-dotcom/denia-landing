@@ -21,7 +21,7 @@
 // ============================================================================
 
 const VERSAO = "2.0.0";
-const SCHEMA = "2.1.0-a";
+const SCHEMA = "2.2.0-a";
 const COOKIE = "__Host-denia_sessao";
 const SESSAO_MS = 8 * 60 * 60 * 1000;
 const MAX_TENTATIVAS = 5;
@@ -116,12 +116,28 @@ const DDL = [
   `CREATE TABLE IF NOT EXISTS plt_tentativas (chave TEXT PRIMARY KEY, n INTEGER NOT NULL, ate INTEGER NOT NULL)`
 ];
 let schemaPronto = false;
+// Cada conta antiga (que não é a administradora geral) fica na sua própria empresa,
+// nunca dentro da Central de Atendimento.
+async function separarContasLegadas(env) {
+  const primeira = Number((await env.DB.prepare("SELECT MIN(id) id FROM plt_organizacoes").first())?.id || 0);
+  if (!primeira) return;
+  const r = await env.DB.prepare("SELECT m.usuario_id, m.papel, u.nome FROM plt_membros m JOIN plt_usuarios u ON u.id=m.usuario_id WHERE m.org_id=? AND u.origem='LEGADO' AND u.super_admin=0").bind(primeira).all().catch(() => null);
+  for (const x of r?.results || []) {
+    const o = await env.DB.prepare("INSERT INTO plt_organizacoes(nome,slug,cor,status,criado_ms) VALUES(?,?,'#4f8cff','ATIVA',?) RETURNING id").bind(`Empresa de ${x.nome || "usuário"}`, `empresa-${x.usuario_id}-${Date.now().toString(36)}`, agora(env)).first();
+    await env.DB.batch([
+      env.DB.prepare("DELETE FROM plt_membros WHERE org_id=? AND usuario_id=?").bind(primeira, x.usuario_id),
+      env.DB.prepare("INSERT INTO plt_membros(org_id,usuario_id,papel,criado_ms) VALUES(?,?,'OWNER',?)").bind(o.id, x.usuario_id, agora(env))
+    ]);
+  }
+}
 async function garantirSchema(env) {
   if (schemaPronto) return;
   if (!env.DB) throw Object.assign(new Error("D1 ausente"), { codigo: "SEM_BANCO" });
   const v = await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave='schema'").first().catch(() => null);
   if (v?.valor !== SCHEMA) {
     await env.DB.batch(DDL.map(s => env.DB.prepare(s)));
+    await env.DB.prepare("ALTER TABLE plt_organizacoes ADD COLUMN legado_id TEXT").run().catch(() => { }); // já existe
+    await separarContasLegadas(env);
     // A primeira empresa da plataforma.
     const n = await env.DB.prepare("SELECT COUNT(*) n FROM plt_organizacoes").first();
     if (!Number(n?.n)) {
@@ -289,6 +305,38 @@ async function entrar(request, env) {
   return json({ ok: true, trocar_senha: Boolean(usuario.trocar_senha) }, 200, { "set-cookie": cookieSessao(await criarCookie(env, usuario), SESSAO_MS / 1000) });
 }
 
+async function criarEmpresa(env, nome, legadoId = null) {
+  let sl = slug(nome), n = 1;
+  while (await env.DB.prepare("SELECT 1 FROM plt_organizacoes WHERE slug=?").bind(sl).first()) sl = `${slug(nome)}-${++n}`;
+  return env.DB.prepare("INSERT INTO plt_organizacoes(nome,slug,cor,status,legado_id,criado_ms) VALUES(?,?,'#4f8cff','ATIVA',?,?) RETURNING id").bind(txt(nome, 120), sl, legadoId, agora(env)).first();
+}
+
+// Criar conta: cada pessoa nova ganha a sua própria empresa, ainda sem a IA configurada.
+async function cadastrar(request, env) {
+  if (String(env.CADASTRO_FECHADO || "") === "1") return json({ erro: "O cadastro está fechado no momento. Fale com a equipe DENIA." }, 403);
+  const { corpo, erro } = await lerCorpo(request, 4000);
+  if (erro) return erro;
+  const nome = txt(corpo.nome, 120), empresa = txt(corpo.empresa, 120), email = normEmail(corpo.email), senha = String(corpo.senha || "");
+  if (nome.length < 2 || empresa.length < 2) return json({ erro: "Informe o seu nome e o nome da empresa." }, 400);
+  if (!emailValido(email)) return json({ erro: "Informe um e-mail válido." }, 400);
+  const fraca = senhaForte(senha);
+  if (fraca) return json({ erro: fraca }, 400);
+  const chave = "cad:" + ipDe(request);
+  const t = await env.DB.prepare("SELECT n, ate FROM plt_tentativas WHERE chave=?").bind(chave).first();
+  if (t && t.n >= 5 && agora(env) < t.ate) return json({ erro: "Muitos cadastros a partir desta conexão. Tente novamente mais tarde." }, 429);
+  const admin = configAdmin(env);
+  const existe = await env.DB.prepare("SELECT 1 FROM plt_usuarios WHERE email=?").bind(email).first()
+    || await env.DB.prepare("SELECT 1 FROM users WHERE lower(email)=?").bind(email).first().catch(() => null);
+  if (existe || (admin && admin.email === email)) return json({ erro: "Já existe uma conta com este e-mail. Use a opção Entrar." }, 409);
+  await env.DB.prepare(`INSERT INTO plt_tentativas(chave,n,ate) VALUES(?,1,?) ON CONFLICT(chave) DO UPDATE SET n = CASE WHEN plt_tentativas.ate < ? THEN 1 ELSE plt_tentativas.n + 1 END, ate = excluded.ate`).bind(chave, agora(env) + 3600000, agora(env)).run();
+  const h = await hashSenha(senha, null, PBKDF2_ITER);
+  const u = await env.DB.prepare("INSERT INTO plt_usuarios(email,nome,senha_hash,senha_salt,senha_iter,super_admin,ativo,origem,criado_ms) VALUES(?,?,?,?,?,0,1,'CADASTRO',?) RETURNING *").bind(email, nome, h.hash, h.salt, h.iter, agora(env)).first();
+  const o = await criarEmpresa(env, empresa);
+  await env.DB.prepare("INSERT INTO plt_membros(org_id,usuario_id,papel,criado_ms) VALUES(?,?,'OWNER',?)").bind(o.id, u.id, agora(env)).run();
+  await auditar(env, request, { usuario: u }, o.id, "EMPRESA", `Conta criada: ${empresa}`);
+  return json({ ok: true }, 200, { "set-cookie": cookieSessao(await criarCookie(env, u), SESSAO_MS / 1000) });
+}
+
 // Contas da versão anterior do site (tabela "users"): o mesmo e-mail e a mesma senha
 // continuam valendo. No primeiro acesso, a conta passa para o formato novo.
 async function loginLegado(env, email, senha) {
@@ -306,13 +354,10 @@ async function loginLegado(env, email, senha) {
   const u = await env.DB.prepare("INSERT INTO plt_usuarios(email,nome,senha_hash,senha_salt,senha_iter,super_admin,ativo,origem,criado_ms) VALUES(?,?,?,?,?,?,1,'LEGADO',?) RETURNING *")
     .bind(email, txt(l.name, 120) || null, h.hash, h.salt, h.iter, papel === "SUPER_ADMIN" ? 1 : 0, agora(env)).first();
   if (papel !== "SUPER_ADMIN") {
+    // A empresa da conta antiga vira uma empresa própria na plataforma (sem configuração da IA).
     const nomeOrg = (await env.DB.prepare("SELECT name FROM organizations WHERE id=?").bind(l.organization_id).first().catch(() => null))?.name || "Minha empresa";
-    let o = await env.DB.prepare("SELECT id FROM plt_organizacoes WHERE lower(nome)=lower(?)").bind(nomeOrg).first();
-    if (!o) {
-      let sl = slug(nomeOrg), n = 1;
-      while (await env.DB.prepare("SELECT 1 FROM plt_organizacoes WHERE slug=?").bind(sl).first()) sl = `${slug(nomeOrg)}-${++n}`;
-      o = await env.DB.prepare("INSERT INTO plt_organizacoes(nome,slug,cor,status,criado_ms) VALUES(?,?,'#4f8cff','ATIVA',?) RETURNING id").bind(txt(nomeOrg, 120), sl, agora(env)).first();
-    }
+    let o = await env.DB.prepare("SELECT id FROM plt_organizacoes WHERE legado_id=?").bind(String(l.organization_id)).first();
+    if (!o) o = await criarEmpresa(env, nomeOrg, String(l.organization_id));
     await env.DB.prepare("INSERT OR IGNORE INTO plt_membros(org_id,usuario_id,papel,criado_ms) VALUES(?,?,?,?)").bind(o.id, u.id, papel === "OWNER" ? "OWNER" : "ADMIN", agora(env)).run();
   }
   return u;
@@ -571,6 +616,7 @@ async function api(request, env, caminho) {
     return json({ erro: e?.codigo === "SEM_BANCO" ? "A plataforma ainda não foi configurada: falta o banco D1 (binding DB)." : "O banco de dados da plataforma está indisponível. Tente novamente em instantes.", codigo: "SEM_BANCO" }, 503);
   }
   if (caminho === "/api/entrar" && metodo === "POST") return entrar(request, env);
+  if (caminho === "/api/cadastro" && metodo === "POST") return cadastrar(request, env);
   if (caminho === "/api/sair" && metodo === "POST") return json({ ok: true }, 200, { "set-cookie": cookieSessao("", 0) });
 
   const sessao = await lerSessao(request, env);
@@ -622,7 +668,7 @@ async function api(request, env, caminho) {
 // Endereços da versão anterior do site levam às páginas novas.
 const ANTIGOS = {
   "/login": "/entrar", "/login-en": "/entrar", "/login-es": "/entrar",
-  "/cadastro": "/entrar", "/cadastro-en": "/entrar", "/cadastro-es": "/entrar",
+  "/cadastro-en": "/cadastro", "/cadastro-es": "/cadastro", "/criar-conta": "/cadastro",
   "/index": "/", "/index-en": "/", "/index-es": "/", "/app-en": "/app", "/app-es": "/app"
 };
 async function rotear(request, env) {
@@ -634,12 +680,12 @@ async function rotear(request, env) {
   const antigo = ANTIGOS[caminho.replace(/\.html$/, "")];
   if (antigo) return redirecionar(antigo);
   const ehPainel = caminho === "/app" || caminho === "/app.html" || caminho.startsWith("/app/");
-  const sessao = ehPainel || caminho === "/entrar" || caminho === "/entrar.html" ? await lerSessao(request, env).catch(() => null) : null;
+  const sessao = ehPainel || caminho === "/entrar" || caminho === "/entrar.html" || caminho === "/cadastro" ? await lerSessao(request, env).catch(() => null) : null;
   if (ehPainel) {
     if (!sessao) return redirecionar("/entrar");
     return env.ASSETS.fetch(new Request(new URL("/app", url).toString(), { headers: request.headers }));
   }
-  if ((caminho === "/entrar" || caminho === "/entrar.html") && sessao) return redirecionar("/app");
+  if ((caminho === "/entrar" || caminho === "/entrar.html" || caminho === "/cadastro") && sessao) return redirecionar("/app");
   return env.ASSETS.fetch(request);
 }
 
@@ -657,7 +703,7 @@ function comSeguranca(resposta, request) {
   h.set("permissions-policy", "camera=(), microphone=(), geolocation=(), payment=()");
   h.set("cross-origin-opener-policy", "same-origin");
   const caminho = new URL(request.url).pathname;
-  if (caminho.startsWith("/api/") || caminho.startsWith("/app") || caminho.startsWith("/entrar")) h.set("cache-control", "no-store");
+  if (caminho.startsWith("/api/") || caminho.startsWith("/app") || caminho.startsWith("/entrar") || caminho.startsWith("/cadastro")) h.set("cache-control", "no-store");
   return new Response(resposta.body, { status: resposta.status, statusText: resposta.statusText, headers: h });
 }
 

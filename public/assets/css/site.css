@@ -106,8 +106,6 @@
 .rodape { border-top: 1px solid var(--borda); padding: 28px 0; color: var(--texto-3); font-size: 14px; }
 .rodape-linha { display: flex; align-items: center; gap: 24px; flex-wrap: wrap; }
 .rodape p { margin: 0; }
-.rodape nav { margin-left: auto; display: flex; gap: 20px; }
-.rodape nav a:hover { color: var(--texto); }
 
 @media (max-width: 1080px) {
   .grade-planos { grid-template-columns: repeat(2, 1fr); }
@@ -132,7 +130,6 @@
   .grade-recursos, .etapas, .grade-planos, .lista-seguranca { grid-template-columns: 1fr; }
   .hero-provas { gap: 20px; }
   .hero-acoes .btn { width: 100%; }
-  .rodape nav { margin-left: 0; }
   .cartao-flutuante { position: static; margin-top: 12px; animation: none; }
   .hero-visual { display: grid; }
 }
@@ -140,16 +137,12 @@
 /* ---------- Experiência ---------- */
 .rede { position: fixed; inset: 0; width: 100%; height: 100%; z-index: -1; pointer-events: none; opacity: 0.85; }
 .luz-cursor {
-  position: fixed; left: 0; top: 0; width: 640px; height: 640px; margin: -320px 0 0 -320px; border-radius: 50%;
-  pointer-events: none; z-index: 60; opacity: 0; transition: opacity 0.4s ease; mix-blend-mode: screen;
-  background: radial-gradient(circle, rgba(190, 235, 255, 0.55) 0%, rgba(110, 170, 255, 0.30) 12%, rgba(139, 92, 246, 0.14) 32%, transparent 64%);
-}
-.luz-cursor::after {
-  content: ""; position: absolute; left: 50%; top: 50%; width: 14px; height: 14px; margin: -7px 0 0 -7px; border-radius: 50%;
-  background: #e6faff; box-shadow: 0 0 18px 6px rgba(125, 235, 255, 0.9), 0 0 60px 20px rgba(79, 140, 255, 0.55);
+  position: fixed; left: 0; top: 0; width: 560px; height: 560px; margin: -280px 0 0 -280px; border-radius: 50%;
+  pointer-events: none; z-index: -1; opacity: 0; transition: opacity 0.6s ease; will-change: transform;
+  background: radial-gradient(circle, rgba(120, 175, 255, 0.34) 0%, rgba(110, 120, 255, 0.18) 30%, rgba(139, 92, 246, 0.08) 52%, transparent 70%);
+  filter: blur(36px);
 }
 .luz-cursor.ativa { opacity: 1; }
-.luz-cursor.suave { opacity: 0.7; }
 .recurso, .contador-caixa { position: relative; }
 .recurso::after, .plano::after, .contador-caixa::after {
   content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; opacity: 0; transition: opacity 0.3s ease;
@@ -206,7 +199,7 @@
 @media (max-width: 900px) {
   .demo-grade, .aprende-grade { grid-template-columns: 1fr; }
   .demo-mensagens { min-height: 340px; }
-  .luz-cursor { width: 440px; height: 440px; margin: -220px 0 0 -220px; }
+  .luz-cursor { width: 380px; height: 380px; margin: -190px 0 0 -190px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .js .revelar { opacity: 1; transform: none; }
@@ -220,14 +213,14 @@
 .mock-corpo { min-height: 404px; align-content: start; }
 
 /* ---------- Experiência v2 ---------- */
-.interativo { transition: transform 0.25s ease, border-color 0.25s ease, box-shadow 0.25s ease; will-change: transform; }
-.interativo:hover, .interativo.tocado { border-color: rgba(125, 200, 255, 0.45); box-shadow: 0 24px 60px -24px rgba(79, 140, 255, 0.55); }
+.interativo { transition: border-color 0.3s ease, box-shadow 0.3s ease; }
+.interativo:hover { border-color: rgba(125, 200, 255, 0.45); box-shadow: 0 24px 60px -24px rgba(79, 140, 255, 0.55); }
 .etapa, .lista-seguranca li { position: relative; }
 .etapa::after, .lista-seguranca li::after {
   content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; opacity: 0; transition: opacity 0.3s ease;
   background: radial-gradient(360px circle at var(--mx, 50%) var(--my, 50%), rgba(79, 140, 255, 0.16), transparent 45%);
 }
-.etapa:hover::after, .lista-seguranca li:hover::after, .tocado::after { opacity: 1; }
+.etapa:hover::after, .lista-seguranca li:hover::after { opacity: 1; }
 .btn-primario { transition: transform 0.2s ease, box-shadow 0.2s ease; }
 
 .progresso-leitura { position: fixed; left: 0; top: 0; right: 0; height: 3px; z-index: 80; transform-origin: 0 50%; transform: scaleX(0); background: var(--gradiente); box-shadow: 0 0 14px rgba(79, 140, 255, 0.9); pointer-events: none; }
@@ -261,3 +254,25 @@
 
 html, body { overflow-x: clip; }
 .hero { overflow-x: clip; }
+
+/* ---------- Acabamento corporativo ---------- */
+.confianca { padding: 8px 0 34px; }
+.confianca-grade { display: grid; gap: 18px; justify-items: center; }
+.confianca-titulo { margin: 0; font-size: 12.5px; font-weight: 700; letter-spacing: 0.18em; text-transform: uppercase; color: var(--texto-3); }
+.confianca ul { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; width: 100%; border: 1px solid var(--borda); border-radius: 18px; overflow: hidden; background: var(--borda); }
+.confianca li { display: grid; gap: 2px; text-align: center; padding: 18px 12px; background: rgba(6, 9, 18, 0.92); }
+.confianca strong { font-size: 16px; letter-spacing: -0.01em; }
+.confianca span { font-size: 13px; color: var(--texto-3); }
+.rodape { padding: 56px 0 28px; }
+.rodape-grade { display: grid; grid-template-columns: 1.6fr repeat(3, 1fr); gap: 32px; }
+.rodape-marca p { margin: 14px 0 0; max-width: 320px; color: var(--texto-3); }
+.rodape-coluna { display: grid; gap: 10px; align-content: start; }
+.rodape-coluna h3 { margin: 0 0 4px; font-size: 13px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--texto-2); }
+.rodape-coluna a:hover { color: var(--texto); }
+.rodape-base { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; margin-top: 40px; padding-top: 22px; border-top: 1px solid var(--borda); }
+.rodape-base p { margin: 0; }
+@media (max-width: 900px) {
+  .confianca ul { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .rodape-grade { grid-template-columns: 1fr 1fr; }
+  .rodape-marca { grid-column: 1 / -1; }
+}

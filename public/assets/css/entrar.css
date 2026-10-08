@@ -11,3 +11,6 @@
 .entrar-rodape .ponto { color: var(--verde); }
 .entrar-voltar { color: var(--texto-3); font-size: 14px; }
 .entrar-voltar:hover { color: var(--texto); }
+.entrar-troca { margin: 18px 0 0; font-size: 14px; color: var(--texto-2); }
+.entrar-troca a { color: var(--ciano); font-weight: 600; }
+.entrar-dica { margin: 0; font-size: 12.5px; color: var(--texto-3); }

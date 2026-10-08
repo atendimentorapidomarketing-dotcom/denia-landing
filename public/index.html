@@ -36,6 +36,7 @@
       </nav>
       <div class="topo-acoes">
         <a class="btn btn-secundario btn-pequeno" href="/entrar">Entrar</a>
+        <a class="btn btn-primario btn-pequeno topo-criar" href="/cadastro">Criar conta</a>
         <a class="btn btn-primario btn-pequeno js-contato oculto" href="#planos">Falar com especialista</a>
         <button class="menu-botao" id="menu-botao" type="button" aria-label="Abrir menu" aria-expanded="false" aria-controls="menu">
           <span></span><span></span><span></span>
@@ -85,6 +86,18 @@
             <strong>IA em pausa por 10 min</strong>
           </div>
         </div>
+      </div>
+    </section>
+
+    <section class="confianca" aria-label="Infraestrutura">
+      <div class="container confianca-grade">
+        <p class="confianca-titulo">Construída sobre infraestrutura de nível mundial</p>
+        <ul>
+          <li><strong>Cloudflare</strong><span>rede global de servidores</span></li>
+          <li><strong>WhatsApp Business</strong><span>API oficial da Meta</span></li>
+          <li><strong>HTTPS</strong><span>todas as conexões criptografadas</span></li>
+          <li><strong>LGPD</strong><span>privacidade por padrão</span></li>
+        </ul>
       </div>
     </section>
 
@@ -331,6 +344,7 @@
           <p>Conheça a DENIA funcionando com dados reais da sua empresa.</p>
           <div class="hero-acoes">
             <a class="btn btn-primario js-contato oculto" href="#planos">Solicitar demonstração</a>
+            <a class="btn btn-primario" href="/cadastro">Criar conta</a>
             <a class="btn btn-secundario" href="/entrar">Acessar a plataforma</a>
           </div>
         </div>
@@ -339,10 +353,18 @@
   </main>
 
   <footer class="rodape">
-    <div class="container rodape-linha">
-      <a class="marca" href="/"><img src="/assets/img/logo.svg" alt="" width="28" height="28"><span>DENIA</span></a>
+    <div class="container rodape-grade">
+      <div class="rodape-marca">
+        <a class="marca" href="/"><img src="/assets/img/logo.svg" alt="" width="30" height="30"><span>DENIA</span></a>
+        <p>Inteligência artificial operacional para empresas que atendem pelo WhatsApp.</p>
+      </div>
+      <nav class="rodape-coluna" aria-label="Plataforma"><h3>Plataforma</h3><a href="#plataforma">Recursos</a><a href="#demonstracao">Demonstração</a><a href="#aprende">Aprendizado</a><a href="#comando">Centro de comando</a></nav>
+      <nav class="rodape-coluna" aria-label="Empresa"><h3>Empresa</h3><a href="#como-funciona">Como funciona</a><a href="#planos">Planos</a><a href="#perguntas">Perguntas frequentes</a></nav>
+      <nav class="rodape-coluna" aria-label="Confiança"><h3>Confiança</h3><a href="#seguranca">Segurança</a><a href="#seguranca">Privacidade e LGPD</a><a href="/entrar">Acessar a plataforma</a></nav>
+    </div>
+    <div class="container rodape-base">
       <p>© <span id="ano">2026</span> DENIA. Todos os direitos reservados.</p>
-      <nav aria-label="Rodapé"><a href="#plataforma">Plataforma</a><a href="#seguranca">Segurança</a><a href="/entrar">Entrar</a></nav>
+      <p>Português (Brasil)</p>
     </div>
   </footer>
 
