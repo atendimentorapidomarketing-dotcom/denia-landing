@@ -354,13 +354,22 @@ test("Plataforma — Central ligada direto ao Worker denia (service binding), co
   const pedidos = [];
   p.env.ENGINE = { fetch: async (req) => { pedidos.push(req.url); return p.engine.worker.fetch(req, p.engine.env, { waitUntil() { } }); } };
   await p.entrar("admin", ADMIN, SENHA_ADMIN);
-  // Mesmo com um endereço errado salvo antes, a Central usa a ligação direta.
+  // Mesmo com um endereço salvo antes, a Central usa a ligação direta; o token salvo na plataforma vale.
   await p.req("/api/orgs/1/integracao", { metodo: "POST", quem: "admin", corpo: { engine_url: "https://errado.test", token: "token-qualquer-errado-123" } });
+  const errado = await p.req("/api/orgs/1/engine/training", { quem: "admin" });
+  assert.equal(errado.status, 502);
+  assert.match(errado.dados.erro, /termina em …-123/);
+  const teste401 = await p.req("/api/orgs/1/integracao/testar", { metodo: "POST", quem: "admin", corpo: {} });
+  assert.match(teste401.dados.erro, /25 caracteres/);
+  await p.req("/api/orgs/1/integracao", { metodo: "POST", quem: "admin", corpo: { engine_url: "", token: TOKEN_ENGINE } });
   const t = await p.req("/api/orgs/1/engine/training", { quem: "admin" });
-  assert.equal(t.status, 200);
+  assert.equal(t.status, 200, "com o token certo colado no painel, funciona");
   assert.ok(pedidos.length >= 1 && pedidos.every(u => u.includes("/platform/")));
   const integ = await p.req("/api/orgs/1/integracao", { quem: "admin" });
   assert.equal(integ.dados.origem, "direta");
+  assert.equal(integ.dados.token_origem, "plataforma");
+  assert.equal(integ.dados.token_final, TOKEN_ENGINE.slice(-4));
+  assert.doesNotMatch(JSON.stringify(integ.dados), new RegExp(TOKEN_ENGINE), "o token inteiro nunca volta ao navegador");
   const teste = await p.req("/api/orgs/1/integracao/testar", { metodo: "POST", quem: "admin", corpo: {} });
   assert.equal(teste.dados.direta, true);
 });
