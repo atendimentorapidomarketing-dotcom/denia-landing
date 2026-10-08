@@ -70,7 +70,8 @@ test("Plataforma — login do administrador geral, primeira empresa criada e cab
   assert.equal(app.r.headers.get("x-frame-options"), "DENY");
   assert.equal(app.r.headers.get("cache-control"), "no-store");
   const entrar = await p.req("/entrar", { quem: "admin" });
-  assert.equal(entrar.status, 302, "quem já entrou vai direto ao painel");
+  assert.equal(entrar.status, 200, "a página de login sempre aparece, mesmo já conectado");
+  assert.doesNotMatch(r.r.headers.get("set-cookie"), /Max-Age/, "sem 'manter conectado', a sessão termina ao fechar o navegador");
 });
 
 test("Plataforma — bloqueia requisição forjada e tentativas repetidas", async () => {
@@ -346,4 +347,29 @@ test("Plataforma — lembrar de mim, formulário de contato e páginas antigas",
   assert.equal(c.status, 200);
   const lista = await p.req("/api/admin/contatos", { quem: "a" });
   assert.deepEqual(lista.dados.contatos.map(x => x.nome), ["Paula"], "robô ignorado, contato real guardado");
+});
+
+test("Plataforma — Central ligada direto ao Worker denia (service binding), com prioridade", async () => {
+  const p = await criarPlataforma({ DENIA_PLATFORM_SERVICE_TOKEN: TOKEN_ENGINE });
+  const pedidos = [];
+  p.env.ENGINE = { fetch: async (req) => { pedidos.push(req.url); return p.engine.worker.fetch(req, p.engine.env, { waitUntil() { } }); } };
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  // Mesmo com um endereço errado salvo antes, a Central usa a ligação direta.
+  await p.req("/api/orgs/1/integracao", { metodo: "POST", quem: "admin", corpo: { engine_url: "https://errado.test", token: "token-qualquer-errado-123" } });
+  const t = await p.req("/api/orgs/1/engine/training", { quem: "admin" });
+  assert.equal(t.status, 200);
+  assert.ok(pedidos.length >= 1 && pedidos.every(u => u.includes("/platform/")));
+  const integ = await p.req("/api/orgs/1/integracao", { quem: "admin" });
+  assert.equal(integ.dados.origem, "direta");
+  const teste = await p.req("/api/orgs/1/integracao/testar", { metodo: "POST", quem: "admin", corpo: {} });
+  assert.equal(teste.dados.direta, true);
+});
+
+test("Plataforma — resposta que não é da IA vira uma explicação clara", async () => {
+  const p = await criarPlataforma({ DENIA_PLATFORM_SERVICE_TOKEN: TOKEN_ENGINE });
+  p.env.ENGINE = { fetch: async () => new Response("<html><body>error code: 1042</body></html>", { status: 403, headers: { "content-type": "text/html" } }) };
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  const r = await p.req("/api/orgs/1/engine/conversations", { quem: "admin" });
+  assert.equal(r.status, 502);
+  assert.match(r.dados.erro, /1042/);
 });
