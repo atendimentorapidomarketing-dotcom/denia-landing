@@ -326,3 +326,38 @@ select.entrada option { background: #0b1020; }
   .assistente { right: 12px; bottom: 74px; }
 }
 .pagina-cabeca .acoes select.entrada { width: auto; min-width: 190px; max-width: 260px; min-height: 36px; padding-top: 4px; padding-bottom: 4px; }
+
+/* Criar com IA (Estúdio, Instagram, Facebook, Google) */
+.criador-cartao { border-color: rgba(139, 92, 246, 0.35); }
+.check-linha { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--texto-2); }
+.check-linha input { accent-color: #4f8cff; width: 16px; height: 16px; }
+.criador-resultado { display: grid; gap: 10px; }
+.criador-resultado:empty { display: none; }
+.criador-resultado img { max-width: 100%; max-height: 420px; width: auto; border-radius: 14px; }
+
+/* Botão de voz no topo */
+.btn-voz { display: inline-flex; align-items: center; gap: 8px; min-height: 36px; padding: 6px 14px; border-radius: 999px; border: 1px solid rgba(34, 211, 238, 0.55); background: linear-gradient(135deg, rgba(79, 140, 255, 0.28), rgba(139, 92, 246, 0.28)); color: var(--texto); font-weight: 700; font-size: 13px; cursor: pointer; box-shadow: 0 0 22px -6px rgba(79, 140, 255, 0.8); }
+.btn-voz svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+.btn-voz:hover { border-color: rgba(34, 211, 238, 0.9); }
+@media (max-width: 720px) { .btn-voz span { display: none; } .btn-voz { padding: 6px 10px; } }
+
+/* Página DENIA por voz */
+.voz-pagina { display: grid; justify-items: center; gap: 14px; padding: 40px 20px 28px; border-radius: 24px; text-align: center; margin-bottom: 18px; }
+.voz-pagina h2 { margin: 0; font-size: clamp(22px, 3vw, 30px); }
+.voz-estado { margin: 0; color: var(--texto-2); min-height: 22px; }
+.voz-orbe { position: relative; width: 150px; height: 150px; display: grid; place-items: center; }
+.voz-orbe span { width: 110px; height: 110px; border-radius: 50%; background: radial-gradient(circle at 35% 35%, #e6faff, #4f8cff 45%, #8b5cf6 80%); box-shadow: 0 0 50px rgba(79, 140, 255, 0.8); animation: pulsarOrbe 3s ease-in-out infinite; }
+.voz-orbe i { position: absolute; inset: 0; border-radius: 50%; border: 1px solid rgba(79, 140, 255, 0.45); opacity: 0; }
+.voz-orbe[data-estado="ouvindo"] i { animation: ondaVoz 1.6s ease-out infinite; border-color: rgba(244, 63, 94, 0.6); }
+.voz-orbe[data-estado="falando"] i { animation: ondaVoz 1.2s ease-out infinite; border-color: rgba(34, 211, 238, 0.7); }
+.voz-orbe i + i { animation-delay: 0.6s !important; }
+.voz-orbe[data-estado="pensando"] span { animation: pulsarOrbe 0.8s ease-in-out infinite; }
+@keyframes ondaVoz { from { transform: scale(0.7); opacity: 0.9; } to { transform: scale(1.35); opacity: 0; } }
+.voz-acoes { justify-content: center; align-items: center; flex-wrap: wrap; }
+.voz-mic { width: 74px; height: 74px; border-radius: 50%; display: grid; place-items: center; border: 1px solid rgba(34, 211, 238, 0.6); background: linear-gradient(135deg, #4f8cff, #8b5cf6); color: #fff; cursor: pointer; box-shadow: 0 14px 34px -10px rgba(79, 140, 255, 0.9); }
+.voz-mic svg { width: 30px; height: 30px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+.voz-mic.gravando { background: linear-gradient(135deg, #f43f5e, #fb7185); animation: pulsarOrbe 1s ease-in-out infinite; }
+#voz-continua.ativo { border-color: rgba(34, 211, 238, 0.8); color: #a5f3fc; }
+.voz-historico { padding: 0; overflow: hidden; }
+.voz-msgs { height: min(420px, 50vh); }
+.a-acao { align-self: flex-start; color: #bbf7d0; background: rgba(34, 197, 94, 0.12); border: 1px solid rgba(34, 197, 94, 0.4); font-size: 13px; }

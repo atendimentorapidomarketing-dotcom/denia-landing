@@ -207,6 +207,11 @@ export async function apiMarketing(request, env, k, orgId, papel, resto) {
       }
       const n = await env.DB.prepare(`INSERT INTO plt_mk_posts(org_id,marca_id,canais,formato,data,hora,titulo,legenda,hashtags,chamada,ideia_imagem,status,criado_por,criado_ms,atualizado_ms)
         VALUES(?,?,?,?,?,?,?,?,?,?,?,'RASCUNHO',?,?,?) RETURNING id`).bind(orgId, marca.id, v.canais, v.formato, v.data, v.hora, v.titulo, v.legenda, v.hashtags, v.chamada, v.ideia_imagem, autor, agora(env), agora(env)).first();
+      // Imagem criada antes, fora de um post (Criar imagem com IA): passa a ser a arte do novo post.
+      if (c.midia_id) {
+        const md = await env.DB.prepare("SELECT id FROM plt_mk_midias WHERE id=? AND org_id=?").bind(Number(c.midia_id), orgId).first();
+        if (md) await env.DB.prepare("UPDATE plt_mk_posts SET midia_id=? WHERE id=?").bind(md.id, n.id).run();
+      }
       return json({ ok: true, id: n.id });
     }
     if ((m = resto.match(/^posts\/(\d{1,12})\/acao$/)) && metodo === "POST") {
@@ -303,7 +308,8 @@ Responda em JSON: {"titulo":"","legenda":"","hashtags":"","chamada":"","ideia_im
         const ideia = txt(c.ideia || p?.ideia_imagem || p?.titulo, 1000);
         if (!ideia) return json({ erro: "Descreva a imagem que a IA deve criar." }, 400);
         const prompt = `Arte profissional para redes sociais da marca "${marca.nome}" (${marca.segmento || "serviços"}${marca.cidade ? ", " + marca.cidade : ""}). ${marca.cores ? "Cores da marca: " + marca.cores + ". " : ""}${ideia}. Visual moderno, limpo, de agência de alto padrão, boa iluminação, composição equilibrada; se houver texto na arte, em português do Brasil, curto e sem erros.`;
-        const formato = p?.formato === "story" || p?.formato === "reels" ? "1024x1536" : "1024x1024";
+        const vertical = p ? p.formato === "story" || p.formato === "reels" : c.formato === "story" || c.formato === "reels" || c.formato === "vertical";
+        const formato = vertical ? "1024x1536" : "1024x1024";
         const d = await openai(env, "images/generations", { model: String(env.OPENAI_IMAGE_MODEL || "gpt-image-1").trim(), prompt, size: formato, quality: "medium", output_format: "jpeg", output_compression: 82, n: 1 }, { timeout: 120000 });
         const b64 = d?.data?.[0]?.b64_json;
         if (!b64) return json({ erro: "A IA não devolveu a imagem. Tente de novo." }, 502);
@@ -425,6 +431,82 @@ Responda em JSON: {"resposta":""}`, `${resumoMarca(marca)}\n\nAvaliação de ${a
 // Assistente DENIA (texto e voz)
 // ---------------------------------------------------------------------------
 
+// Conversa com saída em JSON (resposta + ações).
+async function iaJSONConversa(env, instrucoes, mensagens, maxTokens = 1600) {
+  const d = await openai(env, "responses", {
+    model: String(env.OPENAI_MODEL || MODELO_TEXTO).trim(), instructions: instrucoes,
+    input: mensagens.map(m => ({ role: m.papel === "denia" ? "assistant" : "user", content: [{ type: m.papel === "denia" ? "output_text" : "input_text", text: m.texto }] })),
+    text: { format: { type: "json_object" } }, max_output_tokens: maxTokens, store: false
+  });
+  const t = textoDaResposta(d).trim();
+  try { return JSON.parse(t); } catch { return { resposta: t, acoes: [] }; }
+}
+
+const CAMPOS_TREINO = ["instrucoes", "servicos", "regras", "precos", "procedimentos", "informacoes", "exemplos"];
+const ROTULO_TREINO = { instrucoes: "Instruções", servicos: "Serviços", regras: "Regras", precos: "Preços", procedimentos: "Procedimentos", informacoes: "Informações", exemplos: "Exemplos" };
+
+// Executa uma ação pedida por voz usando as rotas normais do painel (com as mesmas permissões e auditoria).
+async function executarAcao(a, { orgId, marcasOrg, contexto, txt }) {
+  const tipo = String(a?.tipo || "");
+  const sem = s => String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().trim();
+  const acharMarca = (nome, obrigatoria = true) => {
+    if (!nome && marcasOrg.length === 1) return marcasOrg[0];
+    const n = sem(nome);
+    const m = n ? marcasOrg.find(x => sem(x.nome) === n) || marcasOrg.find(x => sem(x.nome).includes(n) || n.includes(sem(x.nome))) : null;
+    if (!m && obrigatoria) throw new Error(marcasOrg.length ? `Não encontrei a marca "${nome || ""}". Diga qual: ${marcasOrg.map(x => x.nome).join(", ")}.` : "Cadastre uma marca primeiro, em Marketing → Marcas.");
+    return m;
+  };
+  const falhou = r => r.status >= 400 ? (r.dados?.erro || "Não foi possível fazer agora.") : "";
+  const canais = Array.isArray(a.canais) && a.canais.length ? a.canais : undefined;
+  if (tipo === "criar_semana") {
+    const marca = acharMarca(a.marca);
+    const hoje = new Date(); const seg = new Date(hoje); seg.setUTCDate(hoje.getUTCDate() - ((hoje.getUTCDay() + 6) % 7) + (a.semana === "esta" ? 0 : 7));
+    const r = await contexto.mk("POST", "ia/semana", { marca_id: marca.id, inicio: seg.toISOString().slice(0, 10), quantidade: a.quantidade, canais });
+    if (falhou(r)) return { tipo, ok: false, resumo: falhou(r) };
+    return { tipo, ok: true, resumo: `${r.dados.criados.length} post(s) criados para ${marca.nome}.`, posts: r.dados.criados.map(c => c.id), artes: a.com_artes !== false, abrir: "#/calendario" };
+  }
+  if (tipo === "criar_post") {
+    const marca = acharMarca(a.marca);
+    const leg = await contexto.mk("POST", "ia/legenda", { marca_id: marca.id, tema: txt(a.tema, 600), formato: a.formato, canal: (canais || ["instagram"])[0] });
+    if (falhou(leg)) return { tipo, ok: false, resumo: falhou(leg) };
+    const s = leg.dados.sugestao;
+    const novo = await contexto.mk("POST", "posts", { marca_id: marca.id, canais: canais || ["instagram"], formato: a.formato, data: a.data || new Date().toISOString().slice(0, 10), hora: a.hora || "18:00", ...s });
+    if (falhou(novo)) return { tipo, ok: false, resumo: falhou(novo) };
+    await contexto.mk("POST", `posts/${novo.dados.id}/acao`, { acao: "enviar" });
+    return { tipo, ok: true, resumo: `Post "${s.titulo}" criado para ${marca.nome} e enviado para aprovação.`, posts: [novo.dados.id], artes: a.com_arte !== false, abrir: "#/aprovacoes" };
+  }
+  if (tipo === "aprovar_posts") {
+    const marca = a.marca ? acharMarca(a.marca) : null;
+    const l = await contexto.mk("GET", `posts?status=AGUARDANDO${marca ? "&marca=" + marca.id : ""}`);
+    let n = 0, erro = "";
+    for (const p of (l.dados.posts || []).slice(0, 40)) { const r = await contexto.mk("POST", `posts/${p.id}/acao`, { acao: "aprovar" }); if (falhou(r)) { erro = falhou(r); break; } n++; }
+    return { tipo, ok: !erro, resumo: erro || `${n} post(s) aprovados${marca ? " de " + marca.nome : ""}.`, abrir: "#/calendario" };
+  }
+  if (tipo === "publicar_post") {
+    const r = await contexto.mk("POST", `posts/${Number(a.post_id)}/acao`, { acao: "aprovar" });
+    if (falhou(r)) return { tipo, ok: false, resumo: falhou(r) };
+    return { tipo, ok: true, resumo: `Post #${Number(a.post_id)} aprovado e pronto. A publicação automática começa depois da conexão oficial com a Meta e o Google; até lá, baixe a arte e publique.`, abrir: "#/calendario" };
+  }
+  if (tipo === "treinar") {
+    const campo = CAMPOS_TREINO.includes(a.campo) ? a.campo : "instrucoes";
+    const texto = txt(a.texto, 8000);
+    if (!texto) return { tipo, ok: false, resumo: "Faltou dizer o que a IA deve aprender." };
+    const atual = await contexto.engine("GET", "training");
+    if (falhou(atual)) return { tipo, ok: false, resumo: falhou(atual) };
+    const antes = String(atual.dados?.dados?.[campo] || "");
+    const novoTexto = a.modo === "substituir" ? texto : (antes.trim() ? antes.trimEnd() + "\n\n" + texto : texto);
+    const r = await contexto.engine("POST", "training", { treinamento: { [campo]: novoTexto } });
+    if (falhou(r)) return { tipo, ok: false, resumo: falhou(r) };
+    return { tipo, ok: true, resumo: `Treinamento atualizado (${ROTULO_TREINO[campo]}, versão ${r.dados?.versao ?? "nova"}): ${texto.slice(0, 160)}${texto.length > 160 ? "…" : ""}`, abrir: "#/treinamento" };
+  }
+  if (tipo === "pausar_ia") {
+    const r = await contexto.engine("POST", "pause", { ativa: a.pausar !== false });
+    if (falhou(r)) return { tipo, ok: false, resumo: falhou(r) };
+    return { tipo, ok: true, resumo: a.pausar !== false ? "IA do WhatsApp pausada para todos os clientes." : "IA do WhatsApp retomada." };
+  }
+  return { tipo: tipo || "acao", ok: false, resumo: "Ação desconhecida." };
+}
+
 export async function apiAssistente(request, env, k, orgId, papel, resto, contexto) {
   const { json, lerCorpo, txt } = k;
   if (!chave(env)) { const s = semChave(); return json(s.corpo, s.status); }
@@ -455,12 +537,30 @@ export async function apiAssistente(request, env, k, orgId, papel, resto, contex
       const msgs = (Array.isArray(l.corpo.mensagens) ? l.corpo.mensagens : []).slice(-16)
         .map(x => ({ papel: x.papel === "denia" ? "denia" : "usuario", texto: txt(x.texto, 3000) })).filter(x => x.texto);
       if (!msgs.length) return json({ erro: "Escreva ou fale alguma coisa." }, 400);
-      const resposta = await iaTexto(env, `Você é a DENIA, a inteligência artificial da plataforma DENIA, conversando com a equipe da empresa "${contexto.empresa}" dentro do painel (não com clientes).
-Seja uma colega brilhante: direta, calorosa, prática, em português do Brasil impecável. Respostas curtas (até 5 frases), a não ser que peçam detalhes; se a resposta for ser falada em voz, evite listas longas e símbolos.
-Use os DADOS DO PAINEL abaixo para responder sobre a operação. Quando a pessoa quiser fazer algo, diga exatamente onde clicar no painel (Conversas, Atendimentos, Treinar IA, Aprendizados, Estúdio de Marketing, Calendário, Aprovações, Marcas, Google Meu Negócio, Integrações). Nunca invente números, conversas, clientes ou resultados que não estão nos dados. Você ainda não executa ações sozinha por esta conversa: oriente e, se for criação de conteúdo, ofereça um texto pronto.
+      await garantir(env);
+      const marcasOrg = (await env.DB.prepare("SELECT id, nome FROM plt_mk_marcas WHERE org_id=? AND ativa=1 ORDER BY nome").bind(orgId).all())?.results || [];
+      const r = await iaJSONConversa(env, `Você é a DENIA, a superinteligência da plataforma DENIA, conversando com a equipe da empresa "${contexto.empresa}" dentro do painel (não com clientes). O perfil de quem fala é ${papel}.
+Seja uma colega brilhante: direta, calorosa, prática, em português do Brasil impecável. A resposta normalmente é falada em voz: frases curtas e naturais (até 5), sem listas longas, sem símbolos, sem markdown.
+Você responde sobre tudo do painel usando os DADOS DO PAINEL: WhatsApp (conversas, atendimentos, profissionais), treinamento da IA, aprendizados, marcas e perfis de Instagram, Facebook e Google, posts e aprovações. Nunca invente números, conversas, clientes ou resultados que não estão nos dados.
+Você também EXECUTA ações quando a pessoa pede claramente. Ações disponíveis (campo "acoes"):
+- {"tipo":"criar_semana","marca":"nome da marca","canais":["instagram","facebook","google"],"quantidade":3,"semana":"esta"|"proxima","com_artes":true} — planeja e cria os posts da semana (legendas, hashtags e as imagens).
+- {"tipo":"criar_post","marca":"nome","canais":["instagram"],"tema":"sobre o que é","formato":"post"|"carrossel"|"story"|"reels","data":"AAAA-MM-DD","hora":"HH:MM","com_arte":true} — cria um post com texto e imagem.
+- {"tipo":"aprovar_posts","marca":"nome ou vazio para todas"} — aprova os posts que aguardam aprovação (perfil ADMIN ou OWNER).
+- {"tipo":"publicar_post","post_id":123} — deixa o post pronto para publicar. Explique com honestidade: a publicação automática no Instagram, Facebook e Google começa depois da conexão oficial com a Meta e o Google; até lá a equipe baixa a arte e publica.
+- {"tipo":"treinar","campo":"instrucoes"|"servicos"|"regras"|"precos"|"procedimentos"|"informacoes"|"exemplos","modo":"acrescentar"|"substituir","texto":"o texto do treinamento, bem escrito, na voz de instrução para a IA do WhatsApp"} — muda o treinamento da IA que atende os clientes no WhatsApp (perfil ADMIN ou OWNER). Prefira "acrescentar". Use "substituir" só se a pessoa pedir para trocar tudo daquele campo; nesse caso o texto deve ser o campo completo, já reescrito. Cada mudança vira uma nova versão (dá para voltar).
+- {"tipo":"pausar_ia","pausar":true|false} — pausa ou retoma a IA do WhatsApp para todos os clientes (perfil ADMIN ou OWNER).
+Regras: só inclua uma ação quando o pedido for claro; se faltar algo essencial (por exemplo a marca, havendo mais de uma), pergunte em vez de agir. Marcas existentes: ${marcasOrg.map(m => m.nome).join(", ") || "nenhuma cadastrada"}. Na "resposta", diga em poucas palavras o que você está fazendo (no futuro imediato: "Vou criar..."), porque o resultado aparece logo depois.
+Responda SEMPRE em JSON: {"resposta":"texto para falar","acoes":[]}
 DADOS DO PAINEL (agora):
-${contexto.dados}`, msgs, 900);
-      return json({ resposta: resposta || "Desculpe, não consegui responder agora. Pode repetir?" });
+${contexto.dados}`, msgs, 1600);
+      const acoes = (Array.isArray(r?.acoes) ? r.acoes : []).slice(0, 4);
+      const feitas = [];
+      for (const a of acoes) {
+        try { feitas.push(await executarAcao(a, { env, orgId, papel, marcasOrg, contexto, txt })); }
+        catch (e) { feitas.push({ tipo: String(a?.tipo || "acao"), ok: false, resumo: e?.message || "Não foi possível fazer agora." }); }
+      }
+      const resposta = txt(r?.resposta, 3000) || (feitas.length ? "Pronto." : "Desculpe, não consegui responder agora. Pode repetir?");
+      return json({ resposta, acoes: feitas });
     }
     return json({ erro: "Rota não encontrada." }, 404);
   } catch (e) {

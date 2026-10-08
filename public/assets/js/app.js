@@ -195,6 +195,7 @@
 
   const ROTAS = {
     painel: { titulo: "Painel", render: paginaPainel },
+    denia: { titulo: "DENIA por voz", render: paginaDenia },
     conversas: { titulo: "Conversas", render: paginaConversas },
     atendimentos: { titulo: "Atendimentos", render: paginaAtendimentos },
     profissionais: { titulo: "Profissionais", render: paginaProfissionais },
@@ -1047,6 +1048,16 @@
 
   async function paginaContatos(el, _p, vivo) {
     el.appendChild(cabeca("Contatos do site", "Mensagens enviadas pela página Fale conosco."));
+    const zap = h("input", { class: "entrada", placeholder: "Ex.: (21) 99999-9162", inputmode: "tel" });
+    const cartaoZap = h("section", { class: "cartao vidro formulario" }, h("h3", { style: "margin:0", text: "Botão flutuante de WhatsApp no site" }),
+      h("p", { style: "margin:0;color:var(--texto-2);font-size:14px", text: "O número da Central que aparece no botão verde da página inicial. Os visitantes caem direto na conversa para saber mais da DENIA." }),
+      campo("WhatsApp da Central (com DDD)", zap),
+      h("div", { class: "acoes" }, botao("Salvar número", async () => {
+        try { const r = await api("/api/admin/site", { metodo: "POST", corpo: { whatsapp: zap.value } }); zap.value = r.whatsapp; aviso(r.whatsapp ? "Número salvo. O botão já aparece no site." : "Número removido.", "ok"); }
+        catch (e) { aviso(e.message, "erro"); }
+      }, "btn-primario"), h("a", { class: "btn btn-secundario", href: "/", target: "_blank", rel: "noopener" }, "Ver o site")));
+    el.appendChild(cartaoZap);
+    api("/api/admin/site").then(r => { zap.value = r.whatsapp || ""; }).catch(() => {});
     const area = h("div", {}, carregando());
     el.appendChild(area);
     let lista;
@@ -1094,6 +1105,76 @@
       h("div", { class: "acoes", style: "justify-content:center" }, h("a", { class: "btn btn-primario", href: "#/marcas" }, "Cadastrar marca"))));
   }
 
+  // Painel "Criar com IA": posts da semana (com as artes) e imagens avulsas.
+  // Aparece no Estúdio, no Instagram, no Facebook e no Google.
+  function criadorIA(lista, cfg, canalFixo, recarregar) {
+    if (!pode("AGENTE") || !lista.length) return null;
+    const canaisPadrao = canalFixo ? [canalFixo] : ["instagram", "facebook"];
+    const marcaSemana = seletorMarca(lista, estado.marcaCriador || (lista[0] && lista[0].id));
+    const marcaImg = seletorMarca(lista, estado.marcaCriador || (lista[0] && lista[0].id));
+    [marcaSemana, marcaImg].forEach(sel => sel.addEventListener("change", () => { estado.marcaCriador = sel.value; }));
+    const semana = h("select", { class: "entrada" }, h("option", { value: "0", text: "Esta semana" }), h("option", { value: "7", text: "Próxima semana", selected: true }), h("option", { value: "14", text: "Daqui a 2 semanas" }));
+    const qtd = h("input", { class: "entrada", type: "number", min: "1", max: "14", value: (cfg && cfg.posts_semana) || 3 });
+    const canais = h("div", { class: "checks-linha" }, ["instagram", "facebook", "google"].map(c => h("label", {}, h("input", { type: "checkbox", value: c, checked: canaisPadrao.includes(c) }), NOME_CANAL[c])));
+    const comArtes = h("input", { type: "checkbox", checked: true });
+    const progresso = h("p", { class: "nota oculto" });
+    const criarSemana = botao("✦ Criar posts da semana com IA", async (_e, b) => {
+      const escolhidos = [...canais.querySelectorAll("input:checked")].map(i => i.value);
+      if (!escolhidos.length) { aviso("Marque pelo menos um canal.", "erro"); return; }
+      const inicio = isoLocal(somarDias(segundaDe(new Date()), Number(semana.value)));
+      b.textContent = "Criando os posts… (até 1 minuto)";
+      progresso.classList.remove("oculto"); progresso.textContent = "A DENIA está planejando a semana e escrevendo as legendas.";
+      try {
+        const r = await mk("ia/semana", { metodo: "POST", corpo: { marca_id: marcaSemana.value, inicio, quantidade: qtd.value, canais: escolhidos } });
+        let artes = 0;
+        if (comArtes.checked) {
+          for (const [i, c] of r.criados.entries()) {
+            b.textContent = `Criando as artes… ${i + 1} de ${r.criados.length}`;
+            progresso.textContent = `Criando a arte do post ${i + 1} de ${r.criados.length}. Cada arte leva cerca de 30 segundos.`;
+            try { await mk("ia/imagem", { metodo: "POST", corpo: { post_id: c.id } }); artes++; } catch (e) { aviso(e.message, "erro"); break; }
+          }
+        }
+        aviso(`${r.criados.length} post(s) criados${artes ? ` com ${artes} arte(s)` : ""}${r.modo === "AUTOMATICO" ? ", revisados pela IA" : " — aguardando aprovação"}.`, "ok");
+        estado.semanaCalendario = inicio; atualizarAprovacoes();
+        recarregar ? recarregar() : (location.hash = "#/calendario");
+      } catch (e) { aviso(e.message, "erro"); }
+      finally { b.textContent = "✦ Criar posts da semana com IA"; progresso.classList.add("oculto"); }
+    }, "btn-primario");
+    const ideia = h("textarea", { class: "entrada", maxlength: "1000", placeholder: "Ex.: técnico sorrindo consertando uma geladeira numa cozinha clara, com o texto \"Orçamento grátis hoje\"", style: "min-height:90px" });
+    const formatoImg = h("select", { class: "entrada" }, h("option", { value: "post", text: "Quadrada (feed e Google)" }), h("option", { value: "story", text: "Vertical (story e reels)" }));
+    const resultado = h("div", { class: "criador-resultado" });
+    const criarImagem = botao("✦ Criar imagem com IA", async (_e, b) => {
+      if (!ideia.value.trim()) { aviso("Descreva a imagem que a DENIA deve criar.", "erro"); ideia.focus(); return; }
+      b.textContent = "Criando a imagem… (até 1 minuto)";
+      try {
+        const r = await mk("ia/imagem", { metodo: "POST", corpo: { marca_id: marcaImg.value, ideia: ideia.value, formato: formatoImg.value } });
+        const url = `/api/orgs/${estado.org.id}/mk/midias/${r.midia_id}`;
+        resultado.replaceChildren(h("img", { class: "post-arte-img", src: url, alt: "Imagem criada pela DENIA" }),
+          h("div", { class: "acoes" }, h("a", { class: "btn btn-secundario btn-pequeno", href: url, download: `denia-imagem-${r.midia_id}.jpg` }, "Baixar imagem"),
+            botao("Usar num novo post", async () => {
+              const corpo = { marca_id: marcaImg.value, canais: canaisPadrao, formato: formatoImg.value, data: isoLocal(new Date()), hora: "18:00", ideia_imagem: ideia.value, midia_id: r.midia_id };
+              try { const n = await mk("posts", { metodo: "POST", corpo }); editorPost({ ...corpo, id: n.id, status: "RASCUNHO" }, lista, recarregar || (() => navegar())); } catch (e) { aviso(e.message, "erro"); }
+            }, "btn-primario btn-pequeno")));
+        aviso("Imagem criada.", "ok");
+      } catch (e) { aviso(e.message, "erro"); } finally { b.textContent = "✦ Criar imagem com IA"; }
+    }, "btn-primario");
+    const novo = botao("+ Novo post", () => editorPost({ data: isoLocal(new Date()), marca_id: marcaSemana.value, canais: canaisPadrao, formato: canalFixo === "google" ? "google" : "post", hora: "18:00" }, lista, recarregar || (() => navegar())), "btn-secundario");
+    const nomeCanal = canalFixo ? NOME_CANAL[canalFixo] : "as redes sociais";
+    return h("section", { class: "grade grade-2 criador" },
+      h("div", { class: "cartao vidro formulario criador-cartao" }, h("h3", { style: "margin:0", text: `Posts da semana para ${nomeCanal}` }),
+        h("p", { style: "margin:0;color:var(--texto-2);font-size:14px", text: "A DENIA planeja a semana, escreve legendas e hashtags e cria a arte de cada post. Tudo vai para Aprovações (ou é aprovado sozinho, no modo automático)." }),
+        avisoIa(cfg),
+        h("div", { class: "linha-form" }, campo("Marca", marcaSemana), campo("Semana", semana), campo("Quantidade", qtd)),
+        h("div", { class: "campo" }, h("label", { text: "Canais" }), canais),
+        h("label", { class: "check-linha" }, comArtes, "Criar também as imagens (artes) de cada post"),
+        progresso, h("div", { class: "acoes" }, criarSemana, novo)),
+      h("div", { class: "cartao vidro formulario criador-cartao" }, h("h3", { style: "margin:0", text: "Criar imagem com IA" }),
+        h("p", { style: "margin:0;color:var(--texto-2);font-size:14px", text: "Descreva a arte e a DENIA cria a imagem com as cores da marca, pronta para baixar ou virar um post." }),
+        h("div", { class: "linha-form" }, campo("Marca", marcaImg), campo("Formato", formatoImg)),
+        campo("O que a imagem deve mostrar", ideia),
+        h("div", { class: "acoes" }, criarImagem), resultado));
+  }
+
   // Gaveta lateral (editor de post, formulários longos).
   let fecharGaveta = null;
   function gaveta(titulo, conteudo) {
@@ -1130,7 +1211,6 @@
     modo.addEventListener("change", () => modo.querySelectorAll(".opcao-modo").forEach(l => l.classList.toggle("ativo", l.querySelector("input").checked)));
     const qtd = h("input", { class: "entrada", type: "number", min: "1", max: "14", value: cfg.posts_semana, readOnly: !pode("ADMIN") });
     const nota = h("input", { class: "entrada", type: "number", min: "5", max: "10", value: cfg.nota_minima, readOnly: !pode("ADMIN") });
-    const marcaSel = seletorMarca(lista, lista[0] && lista[0].id);
     baixo.replaceChildren(
       h("section", { class: "cartao vidro formulario" }, h("h3", { style: "margin:0", text: "Aprovação das artes" }), modo,
         h("div", { class: "linha-form" }, campo("Posts por semana, por marca", qtd), campo("Nota mínima para aprovar sozinha (0 a 10)", nota)),
@@ -1138,18 +1218,10 @@
           try { await mk("config", { metodo: "POST", corpo: { modo: modo.querySelector("input:checked").value, posts_semana: qtd.value, nota_minima: nota.value } }); aviso("Configuração salva.", "ok"); }
           catch (e) { aviso(e.message, "erro"); }
         }, "btn-primario")) : null),
-      h("section", { class: "cartao vidro formulario" }, h("h3", { style: "margin:0", text: "Criar a semana com IA" }),
-        h("p", { style: "margin:0;color:var(--texto-2);font-size:14px", text: "A DENIA monta o calendário da semana para a marca escolhida: temas variados, legendas prontas, hashtags locais e a ideia de cada arte." }),
-        avisoIa(cfg),
-        lista.length ? [campo("Marca", marcaSel), h("div", { class: "acoes" }, botao("Criar a próxima semana", async (_e, b) => {
-          b.textContent = "Criando… (até 1 minuto)";
-          try {
-            const prox = isoLocal(somarDias(segundaDe(new Date()), 7));
-            const res = await mk("ia/semana", { metodo: "POST", corpo: { marca_id: marcaSel.value, inicio: prox } });
-            aviso(`${res.criados.length} post(s) criados${res.modo === "AUTOMATICO" ? ", revisados pela IA" : " — aguardando aprovação"}.`, "ok");
-            estado.semanaCalendario = prox; location.hash = "#/calendario";
-          } catch (e) { aviso(e.message, "erro"); } finally { b.textContent = "Criar a próxima semana"; }
-        }, "btn-primario"))] : h("a", { class: "btn btn-secundario", href: "#/marcas" }, "Cadastrar a primeira marca")));
+      h("section", { class: "cartao vidro formulario" }, h("h3", { style: "margin:0", text: "Falar com a DENIA" }),
+        h("p", { style: "margin:0;color:var(--texto-2);font-size:14px", text: "Peça por voz: \"DENIA, quantos posts estão esperando aprovação?\" ou \"Me dá ideias de posts para esta semana\"." }),
+        h("div", { class: "acoes" }, h("a", { class: "btn btn-primario", href: "#/denia" }, "🎙 Conversar por voz"))));
+    el.appendChild(criadorIA(lista, cfg, null, null) || h("span"));
     el.appendChild(h("section", { class: "grade grade-3" },
       passoInicial("01", "Marcas", "Cadastre cada marca com o tom de voz, o público e as contas de Instagram, Facebook e Google.", "#/marcas"),
       passoInicial("02", "Calendário", "Veja a semana de cada marca, crie posts e gere as artes com IA.", "#/calendario"),
@@ -1341,6 +1413,10 @@
     if (!vivo()) return;
     el.appendChild(cabeca(nome, `Contas de ${nome} de cada marca, publicações programadas e o que a DENIA vai fazer quando a conta for conectada.`));
     if (!lista.length) { semMarcas(el); return; }
+    const cfg = await mk("config").catch(() => null);
+    if (!vivo()) return;
+    const criador = criadorIA(lista, cfg, canal, () => navegar());
+    if (criador) el.appendChild(criador);
     const hoje = isoLocal(new Date());
     let posts = [];
     try { posts = (await mk(`posts?canal=${canal}&de=${hoje}&ate=${isoLocal(somarDias(new Date(), 30))}`)).posts || []; } catch (e) { aviso(e.message, "erro"); }
@@ -1359,7 +1435,7 @@
           h("li", {}, "Chamar o profissional no WhatsApp sobre o atendimento", selo("Após a conexão", "info")),
           h("li", {}, "Relatório de alcance, seguidores e engajamento", selo("Após a conexão", "info"))))));
     el.appendChild(h("section", { class: "cartao vidro" }, h("h3", { text: "Próximas publicações (30 dias)" }),
-      posts.length ? h("div", { class: "lista-posts" }, posts.map(p => cartaoPost(p, lista, () => navegar()))) : vazio("Nenhuma publicação programada", "Crie a semana com IA no Calendário.", ICONES.caixa)));
+      posts.length ? h("div", { class: "lista-posts" }, posts.map(p => cartaoPost(p, lista, () => navegar()))) : vazio("Nenhuma publicação programada", "Use \"Criar posts da semana com IA\" acima.", ICONES.caixa)));
     el.appendChild(h("section", { class: "cartao vidro" }, h("h3", { text: "Como conectar" }),
       h("ol", { class: "passos" },
         canal === "instagram" ? h("li", {}, "Cada Instagram precisa ser uma conta profissional (Empresa ou Criador) ligada a uma página do Facebook.") : h("li", {}, "Cada marca precisa de uma página do Facebook com você como administrador."),
@@ -1374,8 +1450,8 @@
     if (!vivo()) return;
     el.appendChild(cabeca("Google Meu Negócio", "Reputação, posição nas buscas e desempenho de cada perfil, acompanhados semana a semana."));
     if (!lista.length) { semMarcas(el); return; }
-    const abas = [["avaliacoes", "Avaliações"], ["palavras", "Palavras-chave"], ["desempenho", "Desempenho"], ["publicacoes", "Publicações"], ["conexao", "Conexão"]];
-    const atual = abas.some(a => a[0] === aba) ? aba : "avaliacoes";
+    const abas = [["publicacoes", "Posts e imagens"], ["avaliacoes", "Avaliações"], ["palavras", "Palavras-chave"], ["desempenho", "Desempenho"], ["conexao", "Conexão"]];
+    const atual = abas.some(a => a[0] === aba) ? aba : "publicacoes";
     const sel = seletorMarca(lista, estado.marcaGoogle || lista[0].id);
     sel.addEventListener("change", () => { estado.marcaGoogle = sel.value; navegar(); });
     el.appendChild(h("div", { class: "pagina-cabeca" }, h("div", { class: "abas", role: "tablist" }, abas.map(([k, n]) => h("a", { class: "aba" + (k === atual ? " ativo" : ""), href: "#/google/" + k, role: "tab" }, n))), h("div", { style: "min-width:220px" }, sel)));
@@ -1387,8 +1463,9 @@
       else if (atual === "palavras") await abaPalavras(area, marcaId, lista.find(m => String(m.id) === String(marcaId)));
       else if (atual === "desempenho") await abaDesempenho(area, marcaId);
       else if (atual === "publicacoes") {
-        const posts = (await mk(`posts?canal=google&marca=${marcaId}`)).posts || [];
-        area.replaceChildren(h("div", { class: "cartao vidro" }, h("h3", { text: "Publicações no perfil do Google" }), h("p", { text: "Novidades, ofertas e eventos aparecem no perfil e nas buscas. Crie no Calendário marcando o canal Google." }),
+        const [posts, cfg] = await Promise.all([mk(`posts?canal=google&marca=${marcaId}`).then(r => r.posts || []), mk("config").catch(() => null)]);
+        estado.marcaCriador = marcaId;
+        area.replaceChildren(criadorIA(lista, cfg, "google", () => navegar()) || "", h("div", { class: "cartao vidro" }, h("h3", { text: "Publicações no perfil do Google" }), h("p", { text: "Novidades, ofertas e eventos aparecem no perfil e nas buscas. A DENIA cria o texto e a imagem; depois da conexão, publica sozinha." }),
           posts.length ? h("div", { class: "lista-posts" }, posts.map(p => cartaoPost(p, lista, () => navegar()))) : vazio("Nenhuma publicação para o Google", "", ICONES.caixa)));
       } else {
         area.replaceChildren(h("div", { class: "cartao vidro" }, h("h3", { text: "Conectar o perfil" }),
@@ -1482,61 +1559,107 @@
   function iniciarAssistente() {
     const painel = $("assistente"), orbe = $("denia-orbe");
     if (!painel || !orbe) return;
-    const abrir = (sim) => { painel.classList.toggle("oculto", !sim); orbe.setAttribute("aria-expanded", sim ? "true" : "false"); orbe.classList.toggle("ativo", sim); if (sim) { $("assistente-texto").focus(); if (!assistente.msgs.length) mostrarMsg("denia", "Oi! Sou a DENIA. Pergunte sobre conversas, atendimentos, treinamento ou marketing — por texto ou pelo microfone."); } };
+    const abrir = (sim) => { painel.classList.toggle("oculto", !sim); orbe.setAttribute("aria-expanded", sim ? "true" : "false"); orbe.classList.toggle("ativo", sim); if (sim) { $("assistente-texto").focus(); if (!assistente.msgs.length) mostrarMsg("denia", "Oi! Sou a DENIA. Pergunte qualquer coisa ou me dê uma ordem — criar posts e imagens, aprovar, mudar o meu treinamento — por texto ou pelo microfone."); } };
     orbe.addEventListener("click", () => abrir(painel.classList.contains("oculto")));
     $("assistente-fechar").addEventListener("click", () => abrir(false));
     $("assistente-form").addEventListener("submit", e => { e.preventDefault(); const t = $("assistente-texto").value.trim(); if (t) { $("assistente-texto").value = ""; perguntar(t); } });
     $("assistente-mic").addEventListener("click", alternarGravacao);
+    const topo = $("falar-denia");
+    if (topo) topo.addEventListener("click", () => { location.hash = "#/denia"; });
   }
   function mostrarMsg(papel, texto) {
-    const caixa = $("assistente-msgs");
-    caixa.appendChild(h("div", { class: "a-msg a-" + papel, text: texto }));
-    caixa.scrollTop = caixa.scrollHeight;
+    ["assistente-msgs", "voz-msgs"].forEach(id => {
+      const caixa = $(id);
+      if (!caixa) return;
+      caixa.appendChild(h("div", { class: "a-msg a-" + papel, text: texto }));
+      caixa.scrollTop = caixa.scrollHeight;
+    });
   }
-  function estadoAssistente(t) { $("assistente-estado").textContent = t || "Pergunte por texto ou por voz"; }
+  function estadoAssistente(t) {
+    $("assistente-estado").textContent = t || "Pergunte por texto ou por voz";
+    const v = $("voz-estado");
+    if (v) v.textContent = t || (assistente.continua ? "Conversa contínua ligada — fale quando quiser" : "Toque no microfone e fale");
+    const orbe = $("voz-orbe");
+    if (orbe) orbe.dataset.estado = !t ? "" : /Ouvindo/.test(t) ? "ouvindo" : /Falando/.test(t) ? "falando" : "pensando";
+  }
+  const querVoz = () => ($("voz-pagina") && $("voz-falar") ? $("voz-falar").checked : $("assistente-falar").checked);
   async function perguntar(texto) {
     if (!estado.org) return;
     assistente.msgs.push({ papel: "usuario", texto });
     mostrarMsg("usuario", texto);
     estadoAssistente("Pensando…");
     try {
-      const r = await api(`/api/orgs/${estado.org.id}/assistente/conversa`, { metodo: "POST", corpo: { mensagens: assistente.msgs } });
+      const r = await api(`/api/orgs/${estado.org.id}/assistente/conversa`, { metodo: "POST", corpo: { mensagens: assistente.msgs.slice(-20) } });
       assistente.msgs.push({ papel: "denia", texto: r.resposta });
       mostrarMsg("denia", r.resposta);
-      if ($("assistente-falar").checked) await falar(r.resposta);
-    } catch (e) { mostrarMsg("erro", e.message); }
+      const fala = querVoz() ? falar(r.resposta) : Promise.resolve();
+      const acoes = r.acoes || [];
+      for (const a of acoes) {
+        mostrarMsg(a.ok ? "acao" : "erro", (a.ok ? "✓ " : "✕ ") + a.resumo);
+        assistente.msgs.push({ papel: "denia", texto: (a.ok ? "[feito] " : "[não feito] ") + a.resumo });
+      }
+      await fala;
+      // Posts criados por comando de voz: a DENIA cria as artes em seguida.
+      const comArte = acoes.filter(a => a.ok && a.artes && a.posts && a.posts.length).flatMap(a => a.posts);
+      for (const [i, id] of comArte.entries()) {
+        estadoAssistente(`Criando as artes… ${i + 1} de ${comArte.length}`);
+        try { await mk("ia/imagem", { metodo: "POST", corpo: { post_id: id } }); }
+        catch (e) { mostrarMsg("erro", "Arte não criada: " + e.message); break; }
+      }
+      if (comArte.length) mostrarMsg("acao", `✓ ${comArte.length} arte(s) criadas. Veja no Calendário ou em Aprovações.`);
+      if (acoes.some(a => a.ok)) {
+        atualizarAprovacoes(); cacheMarcas = null;
+        const destino = (acoes.find(a => a.ok && a.abrir) || {}).abrir;
+        if (destino && !$("voz-pagina")) mostrarMsg("acao", "Abra " + ({ "#/calendario": "Calendário", "#/aprovacoes": "Aprovações", "#/treinamento": "Treinar IA" }[destino] || "o painel") + " para ver.");
+      }
+    } catch (e) { mostrarMsg("erro", e.message); assistente.continua = false; marcarContinua(); }
     finally { estadoAssistente(); }
+    // Conversa contínua: depois de responder, a DENIA volta a ouvir sozinha.
+    if (assistente.continua && $("voz-pagina")) alternarGravacao();
   }
+  // Fala e só termina quando o áudio acaba.
   async function falar(texto) {
+    estadoAssistente("Falando…");
     try {
-      estadoAssistente("Falando…");
       const r = await fetch(`/api/orgs/${estado.org.id}/assistente/falar`, { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json", "x-denia": "1" }, body: JSON.stringify({ texto: texto.slice(0, 1500) }) });
       if (!r.ok) throw new Error("voz indisponível");
       const url = URL.createObjectURL(await r.blob());
       if (assistente.audio) assistente.audio.pause();
-      assistente.audio = new Audio(url);
-      assistente.audio.onended = () => { URL.revokeObjectURL(url); estadoAssistente(); };
-      await assistente.audio.play();
+      const audio = new Audio(url);
+      assistente.audio = audio;
+      await new Promise(fim => { audio.onended = audio.onerror = audio.onpause = fim; audio.play().catch(fim); });
+      URL.revokeObjectURL(url);
     } catch {
       // Sem a voz da OpenAI, usa a voz do próprio aparelho.
-      if (window.speechSynthesis) { const u = new SpeechSynthesisUtterance(texto); u.lang = "pt-BR"; window.speechSynthesis.speak(u); }
-      estadoAssistente();
+      if (window.speechSynthesis) await new Promise(fim => { const u = new SpeechSynthesisUtterance(texto); u.lang = "pt-BR"; u.onend = u.onerror = fim; window.speechSynthesis.speak(u); setTimeout(fim, 60000); });
     }
+    estadoAssistente();
+  }
+  function pararFala() {
+    if (assistente.audio) assistente.audio.pause();
+    if (window.speechSynthesis) window.speechSynthesis.cancel();
+  }
+  function marcarContinua() {
+    const b = $("voz-continua");
+    if (b) { b.classList.toggle("ativo", assistente.continua); b.textContent = assistente.continua ? "Parar conversa contínua" : "Conversa contínua (mãos livres)"; }
   }
   async function alternarGravacao() {
-    const mic = $("assistente-mic");
+    const mics = () => document.querySelectorAll(".mic-denia");
     if (assistente.gravador && assistente.gravador.state === "recording") { assistente.gravador.stop(); return; }
+    pararFala();
     if (!navigator.mediaDevices || !window.MediaRecorder) { aviso("Este navegador não permite gravar áudio. Digite a pergunta.", "erro"); return; }
     let fluxo;
     try { fluxo = await navigator.mediaDevices.getUserMedia({ audio: true }); }
-    catch { aviso("Permita o uso do microfone para falar com a DENIA.", "erro"); return; }
+    catch { aviso("Permita o uso do microfone para falar com a DENIA.", "erro"); assistente.continua = false; marcarContinua(); return; }
     assistente.partes = [];
     const g = new MediaRecorder(fluxo);
     assistente.gravador = g;
+    let ctx = null;
     g.ondataavailable = e => { if (e.data.size) assistente.partes.push(e.data); };
     g.onstop = async () => {
       fluxo.getTracks().forEach(t => t.stop());
-      mic.classList.remove("gravando");
+      if (ctx) ctx.close().catch(() => {});
+      mics().forEach(m => m.classList.remove("gravando"));
       const blob = new Blob(assistente.partes, { type: g.mimeType || "audio/webm" });
       if (blob.size < 1200) { estadoAssistente(); return; }
       estadoAssistente("Entendendo…");
@@ -1544,13 +1667,69 @@
         const r = await fetch(`/api/orgs/${estado.org.id}/assistente/transcrever`, { method: "POST", credentials: "same-origin", headers: { "content-type": blob.type, "x-denia": "1" }, body: blob });
         const d = await r.json().catch(() => ({}));
         if (!r.ok) throw new Error(d.erro || "Não consegui entender o áudio.");
-        if (d.texto) await perguntar(d.texto); else estadoAssistente();
-      } catch (e) { mostrarMsg("erro", e.message); estadoAssistente(); }
+        if (d.texto) await perguntar(d.texto); else { estadoAssistente(); if (assistente.continua && $("voz-pagina")) alternarGravacao(); }
+      } catch (e) { mostrarMsg("erro", e.message); estadoAssistente(); assistente.continua = false; marcarContinua(); }
     };
     g.start();
-    mic.classList.add("gravando");
-    estadoAssistente("Ouvindo… toque no microfone para enviar");
+    mics().forEach(m => m.classList.add("gravando"));
+    estadoAssistente(assistente.continua ? "Ouvindo… pode falar" : "Ouvindo… toque no microfone para enviar");
+    // Mãos livres: envia sozinho depois de 1,6 s de silêncio após a fala.
+    if (assistente.continua && (window.AudioContext || window.webkitAudioContext)) {
+      try {
+        ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const an = ctx.createAnalyser(); an.fftSize = 1024;
+        ctx.createMediaStreamSource(fluxo).connect(an);
+        const buf = new Uint8Array(an.fftSize);
+        let falou = false, silencio = 0, ultimo = performance.now();
+        const medir = () => {
+          if (g.state !== "recording") return;
+          an.getByteTimeDomainData(buf);
+          let soma = 0; for (const v of buf) soma += (v - 128) * (v - 128);
+          const nivel = Math.sqrt(soma / buf.length);
+          const agora = performance.now(), dt = agora - ultimo; ultimo = agora;
+          if (nivel > 6) { falou = true; silencio = 0; } else if (falou) silencio += dt;
+          if (falou && silencio > 1600) { g.stop(); return; }
+          requestAnimationFrame(medir);
+        };
+        requestAnimationFrame(medir);
+      } catch { /* sem detecção de silêncio: toque no microfone para enviar */ }
+    }
     setTimeout(() => { if (g.state === "recording") g.stop(); }, 90000);
+  }
+
+  async function paginaDenia(el, _p, vivo) {
+    const msgs = h("div", { class: "assistente-msgs voz-msgs", id: "voz-msgs", "aria-live": "polite" });
+    const texto = h("input", { class: "entrada", placeholder: "Ou digite aqui…", maxlength: "2000", autocomplete: "off" });
+    const falarChk = h("input", { type: "checkbox", id: "voz-falar", checked: true });
+    el.appendChild(h("section", { class: "voz-pagina vidro", id: "voz-pagina" },
+      h("div", { class: "voz-orbe", id: "voz-orbe" }, h("span"), h("i"), h("i")),
+      h("h2", { text: "Converse com a DENIA" }),
+      h("p", { class: "voz-estado", id: "voz-estado", text: "Toque no microfone e fale" }),
+      h("div", { class: "acoes voz-acoes" },
+        h("button", { class: "voz-mic mic-denia", type: "button", "aria-label": "Falar com a DENIA", onclick: () => alternarGravacao() }),
+        botao("Conversa contínua (mãos livres)", () => { assistente.continua = !assistente.continua; marcarContinua(); estadoAssistente(); if (assistente.continua && !(assistente.gravador && assistente.gravador.state === "recording")) alternarGravacao(); }, "btn-secundario", { id: "voz-continua" }),
+        botao("Parar de falar", () => pararFala(), "btn-secundario")),
+      h("label", { class: "assistente-voz" }, falarChk, " Responder em voz"),
+      h("p", { class: "nota", text: "Peça qualquer coisa: \"Crie os posts da próxima semana da Clínica Sol para o Instagram\" · \"Aprove os posts que estão esperando\" · \"A partir de hoje, sempre peça o bairro do cliente antes do orçamento\" · \"Quantas conversas estão com a equipe?\"" })));
+    el.appendChild(h("section", { class: "cartao vidro voz-historico" }, msgs,
+      h("form", { class: "assistente-form", onsubmit: e => { e.preventDefault(); const t = texto.value.trim(); if (t) { texto.value = ""; perguntar(t); } } }, texto, h("button", { class: "btn btn-primario", type: "submit" }, "Enviar"))));
+    // Ícone do microfone (SVG precisa do namespace certo).
+    const ns = "http://www.w3.org/2000/svg", s = document.createElementNS(ns, "svg"); s.setAttribute("viewBox", "0 0 24 24");
+    const r = document.createElementNS(ns, "rect"); [["x", 9], ["y", 3], ["width", 6], ["height", 11], ["rx", 3]].forEach(([k, v]) => r.setAttribute(k, v));
+    const pth = document.createElementNS(ns, "path"); pth.setAttribute("d", "M5 11a7 7 0 0 0 14 0M12 18v3");
+    s.append(r, pth); el.querySelector(".voz-mic").appendChild(s);
+    assistente.msgs.forEach(m => msgs.appendChild(h("div", { class: "a-msg a-" + m.papel, text: m.texto })));
+    if (!assistente.msgs.length) msgs.appendChild(h("div", { class: "a-msg a-denia", text: "Oi! Sou a DENIA. Toque no microfone e fale comigo, ou ligue a conversa contínua para conversar sem tocar em nada." }));
+    marcarContinua();
+    estadoAssistente();
+    // Saiu da página: desliga a conversa contínua e o microfone.
+    const aoSair = () => setTimeout(() => {
+      if (vivo()) return;
+      window.removeEventListener("hashchange", aoSair);
+      assistente.continua = false;
+      if (assistente.gravador && assistente.gravador.state === "recording") assistente.gravador.stop();
+    }, 0);
+    window.addEventListener("hashchange", aoSair);
   }
 
   function emBreve(el, titulo, texto) {

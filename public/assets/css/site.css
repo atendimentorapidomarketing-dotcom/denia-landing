@@ -286,3 +286,11 @@ html, body { overflow-x: clip; }
 .planos-acao a { color: var(--ciano); font-weight: 600; }
 
 
+
+/* Botão flutuante do WhatsApp */
+.whats-flutuante { position: fixed; right: 20px; bottom: 20px; z-index: 80; display: inline-flex; align-items: center; gap: 10px; padding: 12px 18px 12px 12px; border-radius: 999px; background: #25d366; color: #fff; font-weight: 700; font-size: 15px; text-decoration: none; box-shadow: 0 14px 34px -10px rgba(37, 211, 102, 0.8), 0 0 0 0 rgba(37, 211, 102, 0.6); animation: pulsoZap 2.8s ease-out infinite; transition: transform 0.2s ease; }
+.whats-flutuante:hover { transform: translateY(-2px) scale(1.03); }
+.whats-flutuante svg { width: 30px; height: 30px; fill: #fff; flex: 0 0 30px; }
+@keyframes pulsoZap { 0% { box-shadow: 0 14px 34px -10px rgba(37, 211, 102, 0.8), 0 0 0 0 rgba(37, 211, 102, 0.55); } 70%, 100% { box-shadow: 0 14px 34px -10px rgba(37, 211, 102, 0.8), 0 0 0 16px rgba(37, 211, 102, 0); } }
+@media (max-width: 640px) { .whats-flutuante { right: 14px; bottom: 14px; padding: 14px; } .whats-flutuante span { display: none; } }
+@media (prefers-reduced-motion: reduce) { .whats-flutuante { animation: none; } }

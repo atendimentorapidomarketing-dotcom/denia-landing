@@ -432,6 +432,14 @@ test("Estúdio — marcas, semana criada pela IA, aprovação humana e imagem", 
   const outra = await p.req(`/api/orgs/1/mk/midias/${img.dados.midia_id}`, { quem: "x" });
   assert.equal(outra.status, 401, "imagem só para quem está logado na empresa");
   assert.ok(m2.dados.id);
+
+  // Imagem avulsa (botão "Criar imagem com IA" do Instagram/Facebook/Google), vertical, depois usada num post.
+  const avulsa = await p.req("/api/orgs/1/mk/ia/imagem", { metodo: "POST", quem: "admin", corpo: { marca_id: m2.dados.id, ideia: "Cachorro feliz no banho", formato: "story" } });
+  assert.equal(avulsa.status, 200);
+  assert.equal(p.openaiChamadas.at(-1).corpo.size, "1024x1536", "story sai na vertical");
+  const novo = await p.req("/api/orgs/1/mk/posts", { metodo: "POST", quem: "admin", corpo: { marca_id: m2.dados.id, canais: ["instagram"], titulo: "Banho", midia_id: avulsa.dados.midia_id } });
+  const doPost = (await p.req("/api/orgs/1/mk/posts?marca=" + m2.dados.id, { quem: "admin" })).dados.posts.find(x => x.id === novo.dados.id);
+  assert.equal(doPost.midia_id, avulsa.dados.midia_id, "a imagem criada vira a arte do novo post");
 });
 
 test("Estúdio — aprovação automática: a IA revisa e só aprova o que passa da nota mínima", async () => {
@@ -486,4 +494,54 @@ test("Assistente DENIA — conversa com os dados do painel e fala em voz", async
   const voz = await p.req("/api/orgs/1/assistente/falar", { metodo: "POST", quem: "admin", corpo: { texto: "Olá" } });
   assert.equal(voz.r.headers.get("content-type"), "audio/mpeg");
   assert.match(voz.r.headers.get("permissions-policy"), /microphone=\(self\)/);
+});
+
+test("Assistente DENIA — executa comandos de voz: cria post, muda o treinamento e respeita o perfil", async () => {
+  const p = await criarPlataforma({ OPENAI_API_KEY: "sk-teste", DENIA_PLATFORM_SERVICE_TOKEN: TOKEN_ENGINE });
+  p.env.ENGINE = { fetch: async (req) => p.engine.worker.fetch(req, p.engine.env, { waitUntil() { } }) };
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  await p.req("/api/orgs/1/mk/marcas", { metodo: "POST", quem: "admin", corpo: { nome: "Clínica Sol", instagram: "@clinicasol", facebook: "Clínica Sol Niterói" } });
+  let instrucoes = "";
+  p.openai = (url, corpo) => {
+    if (/superinteligência/.test(corpo.instructions)) {
+      instrucoes = corpo.instructions;
+      return { output: [{ content: [{ type: "output_text", text: JSON.stringify({ resposta: "Vou criar o post e ajustar o atendimento.", acoes: [
+        { tipo: "criar_post", marca: "clinica sol", canais: ["instagram"], tema: "clareamento", data: "2026-10-20", hora: "19:00", com_arte: true },
+        { tipo: "treinar", campo: "regras", modo: "acrescentar", texto: "Sempre pergunte o bairro do cliente antes de passar orçamento." }
+      ] }) }] }] };
+    }
+    return { output: [{ content: [{ type: "output_text", text: JSON.stringify({ titulo: "Clareamento seguro", legenda: "Sorria!", hashtags: "#niteroi", chamada: "Chame", ideia_imagem: "Sorriso" }) }] }] };
+  };
+  const r = await p.req("/api/orgs/1/assistente/conversa", { metodo: "POST", quem: "admin", corpo: { mensagens: [{ papel: "usuario", texto: "Cria um post de clareamento e passa a pedir o bairro" }] } });
+  assert.equal(r.status, 200);
+  assert.match(instrucoes, /Clínica Sol[\s\S]*@clinicasol/, "a DENIA conhece as marcas e os perfis");
+  assert.match(instrucoes, /TREINAMENTO ATUAL/, "e o próprio treinamento");
+  assert.deepEqual(r.dados.acoes.map(a => [a.tipo, a.ok]), [["criar_post", true], ["treinar", true]]);
+  assert.equal(r.dados.acoes[0].artes, true, "a tela cria a arte em seguida");
+  const posts = (await p.req("/api/orgs/1/mk/posts?status=AGUARDANDO", { quem: "admin" })).dados.posts;
+  assert.deepEqual(posts.map(x => [x.titulo, x.data, x.hora]), [["Clareamento seguro", "2026-10-20", "19:00"]]);
+  const tr = (await p.req("/api/orgs/1/engine/training", { quem: "admin" })).dados;
+  assert.match(tr.dados.regras, /bairro do cliente/, "o treinamento da IA do WhatsApp mudou pelo comando");
+
+  // Quem é só atendente não muda o treinamento.
+  const novo = await p.req("/api/orgs/1/membros", { metodo: "POST", quem: "admin", corpo: { email: "agente@denia.test", papel: "AGENTE" } });
+  await p.entrar("agente", "agente@denia.test", novo.dados.senha_temporaria);
+  await p.req("/api/conta", { metodo: "POST", quem: "agente", corpo: { acao: "senha", atual: novo.dados.senha_temporaria, nova: "SenhaDoAgente2026x" } });
+  await p.entrar("agente", "agente@denia.test", "SenhaDoAgente2026x");
+  const negado = await p.req("/api/orgs/1/assistente/conversa", { metodo: "POST", quem: "agente", corpo: { mensagens: [{ papel: "usuario", texto: "Muda o treinamento" }] } });
+  assert.deepEqual(negado.dados.acoes.map(a => [a.tipo, a.ok]), [["criar_post", true], ["treinar", false]], "atendente cria post, mas não muda o treinamento");
+  assert.match(negado.dados.acoes[1].resumo, /permissão/);
+});
+
+test("Site — número do WhatsApp do botão flutuante, só o administrador geral muda", async () => {
+  const p = await criarPlataforma();
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  assert.equal((await p.req("/api/publico")).dados.whatsapp, "");
+  const ruim = await p.req("/api/admin/site", { metodo: "POST", quem: "admin", corpo: { whatsapp: "9162" } });
+  assert.equal(ruim.status, 400);
+  const ok = await p.req("/api/admin/site", { metodo: "POST", quem: "admin", corpo: { whatsapp: "(21) 99999-9162" } });
+  assert.equal(ok.dados.whatsapp, "5521999999162");
+  assert.equal((await p.req("/api/publico")).dados.whatsapp, "5521999999162");
+  const anonimo = await p.req("/api/admin/site", { metodo: "POST", quem: "x", corpo: { whatsapp: "21999999999" } });
+  assert.ok(anonimo.status === 401 || anonimo.status === 403);
 });

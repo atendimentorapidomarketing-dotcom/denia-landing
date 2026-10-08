@@ -362,6 +362,11 @@
     .then(function (r) { return r.ok ? r.json() : null; })
     .then(function (cfg) {
       if (!cfg) return;
+      var flut = document.getElementById("whats-flutuante");
+      if (flut && cfg.whatsapp) {
+        flut.setAttribute("href", "https://wa.me/" + cfg.whatsapp + "?text=" + encodeURIComponent("Olá! Quero saber mais sobre a DENIA."));
+        flut.setAttribute("target", "_blank"); flut.setAttribute("rel", "noopener noreferrer");
+      }
       var destino = "";
       if (cfg.whatsapp) destino = "https://wa.me/" + cfg.whatsapp + "?text=" + encodeURIComponent("Olá! Quero conhecer a DENIA.");
       else if (cfg.email) destino = "mailto:" + cfg.email + "?subject=" + encodeURIComponent("Quero conhecer a DENIA");
