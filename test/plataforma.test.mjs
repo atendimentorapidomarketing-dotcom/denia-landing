@@ -12,8 +12,16 @@ async function criarPlataforma(extra = {}) {
   const mod = await import(new URL("../src/worker.js?t=" + (++n), import.meta.url).href);
   const engine = await criarAmbiente({ env: { DENIA_PLATFORM_SERVICE_TOKEN: TOKEN_ENGINE } });
   const fetchMock = globalThis.fetch;
-  const chamadasEngine = [], emails = [];
+  const chamadasEngine = [], emails = [], openaiChamadas = [];
+  let p;
   globalThis.fetch = async (url, op = {}) => {
+    if (p && p.openai && String(url).startsWith("https://api.openai.com/v1/")) {
+      const corpo = op.body && typeof op.body === "string" ? JSON.parse(op.body) : null;
+      openaiChamadas.push({ url: String(url), corpo });
+      const r = p.openai ? p.openai(String(url), corpo) : {};
+      if (r instanceof Response) return r;
+      return new Response(JSON.stringify(r), { status: 200, headers: { "content-type": "application/json" } });
+    }
     if (String(url) === "https://api.resend.com/emails") { emails.push(JSON.parse(op.body)); return new Response(JSON.stringify({ id: "e1" }), { status: 200 }); }
     if (String(url).startsWith("https://engine.test/")) {
       chamadasEngine.push({ url: String(url), headers: op.headers, corpo: op.body ? JSON.parse(op.body) : null });
@@ -29,7 +37,7 @@ async function criarPlataforma(extra = {}) {
     __semEspera: true, ASSETS: { fetch: async req => new Response("asset:" + new URL(req.url).pathname, { status: 200, headers: { "content-type": "text/html" } }) },
     ...extra
   };
-  const p = { env, engine, chamadasEngine, emails, cookies: {} };
+  p = { env, engine, chamadasEngine, emails, openaiChamadas, cookies: {} };
   p.req = async (caminho, { metodo = "GET", corpo, quem, cabecalhos = {} } = {}) => {
     const headers = { "x-denia": "1", origin: "https://plataforma.test", ...cabecalhos };
     if (quem && p.cookies[quem]) headers.cookie = p.cookies[quem];
@@ -381,4 +389,101 @@ test("Plataforma — resposta que não é da IA vira uma explicação clara", as
   const r = await p.req("/api/orgs/1/engine/conversations", { quem: "admin" });
   assert.equal(r.status, 502);
   assert.match(r.dados.erro, /1042/);
+});
+
+const resposta = (obj) => ({ output: [{ content: [{ type: "output_text", text: JSON.stringify(obj) }] }] });
+
+test("Estúdio — marcas, semana criada pela IA, aprovação humana e imagem", async () => {
+  const semIa = await criarPlataforma();
+  await semIa.entrar("a", ADMIN, SENHA_ADMIN);
+  await semIa.req("/api/orgs/1/mk/marcas", { metodo: "POST", quem: "a", corpo: { nome: "Clínica Sol" } });
+  const bloqueado = await semIa.req("/api/orgs/1/mk/ia/semana", { metodo: "POST", quem: "a", corpo: { marca_id: 1 } });
+  assert.equal(bloqueado.dados.codigo, "SEM_OPENAI", "sem a chave, explica o que falta");
+  const p = await criarPlataforma({ OPENAI_API_KEY: "sk-teste" });
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+
+  const mk = await p.req("/api/orgs/1/mk/marcas", { metodo: "POST", quem: "admin", corpo: { nome: "Clínica Sol", segmento: "Odontologia", cidade: "Niterói", instagram: "@clinicasol", tom: "acolhedor" } });
+  const m2 = await p.req("/api/orgs/1/mk/marcas", { metodo: "POST", quem: "admin", corpo: { nome: "Pet Feliz", instagram: "https://instagram.com/petfeliz/" } });
+  const marcas = (await p.req("/api/orgs/1/mk/marcas", { quem: "admin" })).dados.marcas;
+  assert.deepEqual(marcas.map(x => [x.nome, x.instagram]), [["Clínica Sol", "clinicasol"], ["Pet Feliz", "petfeliz"]], "várias marcas, cada uma com o seu Instagram");
+
+  p.openai = () => resposta({ posts: [
+    { dia: 0, hora: "18:00", formato: "post", titulo: "Sorriso em dia", legenda: "Cuide do seu sorriso!", hashtags: "#niteroi", chamada: "Chame no WhatsApp", ideia_imagem: "Sorriso" },
+    { dia: 3, hora: "12:00", formato: "story", titulo: "Bastidores", legenda: "Conheça a equipe", hashtags: "#odonto", chamada: "Agende", ideia_imagem: "Equipe" }
+  ] });
+  const sem = await p.req("/api/orgs/1/mk/ia/semana", { metodo: "POST", quem: "admin", corpo: { marca_id: mk.dados.id, inicio: "2026-10-14", quantidade: 2 } });
+  assert.equal(sem.dados.criados.length, 2);
+  const posts = (await p.req("/api/orgs/1/mk/posts?de=2026-10-12&ate=2026-10-18", { quem: "admin" })).dados.posts;
+  assert.deepEqual(posts.map(x => [x.data, x.status]), [["2026-10-12", "AGUARDANDO"], ["2026-10-15", "AGUARDANDO"]], "semana começa na segunda; no modo humano tudo espera aprovação");
+  assert.deepEqual(posts[0].canais, ["instagram", "facebook"]);
+  assert.match(p.openaiChamadas.at(-1).corpo.input[0].content[0].text, /Clínica Sol[\s\S]*Niterói/);
+
+  const ok = await p.req(`/api/orgs/1/mk/posts/${posts[0].id}/acao`, { metodo: "POST", quem: "admin", corpo: { acao: "aprovar" } });
+  assert.equal(ok.dados.status, "APROVADO");
+  const rej = await p.req(`/api/orgs/1/mk/posts/${posts[1].id}/acao`, { metodo: "POST", quem: "admin", corpo: { acao: "rejeitar", comentario: "Trocar a foto" } });
+  assert.equal(rej.dados.status, "REJEITADO");
+
+  p.openai = (url) => url.endsWith("images/generations") ? { data: [{ b64_json: Buffer.from("imagem-jpeg").toString("base64") }] } : {};
+  const img = await p.req("/api/orgs/1/mk/ia/imagem", { metodo: "POST", quem: "admin", corpo: { post_id: posts[0].id } });
+  assert.equal(img.status, 200);
+  const arquivo = await p.req(`/api/orgs/1/mk/midias/${img.dados.midia_id}`, { quem: "admin" });
+  assert.equal(arquivo.r.headers.get("content-type"), "image/jpeg");
+  assert.equal(await arquivo.r.text(), "imagem-jpeg");
+  const outra = await p.req(`/api/orgs/1/mk/midias/${img.dados.midia_id}`, { quem: "x" });
+  assert.equal(outra.status, 401, "imagem só para quem está logado na empresa");
+  assert.ok(m2.dados.id);
+});
+
+test("Estúdio — aprovação automática: a IA revisa e só aprova o que passa da nota mínima", async () => {
+  const p = await criarPlataforma({ OPENAI_API_KEY: "sk-teste" });
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  const mk = await p.req("/api/orgs/1/mk/marcas", { metodo: "POST", quem: "admin", corpo: { nome: "Central" } });
+  await p.req("/api/orgs/1/mk/config", { metodo: "POST", quem: "admin", corpo: { modo: "AUTOMATICO", posts_semana: 2, nota_minima: 8 } });
+  let revisoes = 0;
+  p.openai = (url, corpo) => {
+    if (corpo.instructions.startsWith("Você é a diretora de criação")) { revisoes++; return resposta(revisoes === 1 ? { nota: 9, aprovado: true, comentario: "Ótimo" } : { nota: 6, aprovado: false, comentario: "Legenda fraca" }); }
+    return resposta({ posts: [{ dia: 1, titulo: "A", legenda: "a" }, { dia: 2, titulo: "B", legenda: "b" }] });
+  };
+  const r = await p.req("/api/orgs/1/mk/ia/semana", { metodo: "POST", quem: "admin", corpo: { marca_id: mk.dados.id } });
+  assert.deepEqual(r.dados.criados.map(x => x.status), ["APROVADO", "AGUARDANDO"]);
+  const posts = (await p.req("/api/orgs/1/mk/posts", { quem: "admin" })).dados.posts;
+  assert.equal(posts[0].aprovado_por, "DENIA (aprovação automática)");
+  assert.equal(posts[1].revisao.comentario, "Legenda fraca");
+});
+
+test("Estúdio — Google: resposta de avaliação pela IA, palavras-chave com posição semanal e métricas", async () => {
+  const p = await criarPlataforma({ OPENAI_API_KEY: "sk-teste" });
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  const mk = await p.req("/api/orgs/1/mk/marcas", { metodo: "POST", quem: "admin", corpo: { nome: "Central", cidade: "Rio de Janeiro" } });
+  const av = await p.req("/api/orgs/1/mk/avaliacoes", { metodo: "POST", quem: "admin", corpo: { marca_id: mk.dados.id, autor: "Ana", nota: 2, texto: "Demoraram para responder" } });
+  p.openai = () => resposta({ resposta: "Olá, Ana! Sentimos muito pela demora..." });
+  const sug = await p.req(`/api/orgs/1/mk/avaliacoes/${av.dados.id}/sugerir`, { metodo: "POST", quem: "admin", corpo: {} });
+  assert.match(sug.dados.resposta, /Ana/);
+  await p.req(`/api/orgs/1/mk/avaliacoes/${av.dados.id}/responder`, { metodo: "POST", quem: "admin", corpo: { resposta: sug.dados.resposta } });
+  assert.equal((await p.req("/api/orgs/1/mk/avaliacoes", { quem: "admin" })).dados.avaliacoes[0].status, "RESPONDIDA");
+  const pk = await p.req("/api/orgs/1/mk/palavras", { metodo: "POST", quem: "admin", corpo: { marca_id: mk.dados.id, palavra: "chaveiro 24 horas" } });
+  await p.req(`/api/orgs/1/mk/palavras/${pk.dados.id}/posicao`, { metodo: "POST", quem: "admin", corpo: { semana: "2026-10-15", posicao: 7 } });
+  const pal = (await p.req(`/api/orgs/1/mk/palavras?marca=${mk.dados.id}`, { quem: "admin" })).dados.palavras;
+  assert.deepEqual([pal[0].cidade, pal[0].posicoes[0].semana, pal[0].posicoes[0].posicao], ["Rio de Janeiro", "2026-10-12", 7]);
+  await p.req("/api/orgs/1/mk/metricas", { metodo: "POST", quem: "admin", corpo: { marca_id: mk.dados.id, semana: "2026-10-12", visualizacoes: 1200, ligacoes: 14 } });
+  const met = (await p.req(`/api/orgs/1/mk/metricas?marca=${mk.dados.id}`, { quem: "admin" })).dados.metricas;
+  assert.equal(met[0].ligacoes, 14);
+});
+
+test("Assistente DENIA — conversa com os dados do painel e fala em voz", async () => {
+  const p = await criarPlataforma({ OPENAI_API_KEY: "sk-teste", DENIA_PLATFORM_SERVICE_TOKEN: TOKEN_ENGINE });
+  p.env.ENGINE = { fetch: async (req) => p.engine.worker.fetch(req, p.engine.env, { waitUntil() { } }) };
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  let instrucoes = "";
+  p.openai = (url, corpo) => {
+    if (url.endsWith("audio/speech")) return new Response(new Uint8Array([1, 2, 3]), { status: 200, headers: { "content-type": "audio/mpeg" } });
+    instrucoes = corpo.instructions;
+    return { output: [{ content: [{ type: "output_text", text: "Hoje está tudo funcionando." }] }] };
+  };
+  const r = await p.req("/api/orgs/1/assistente/conversa", { metodo: "POST", quem: "admin", corpo: { mensagens: [{ papel: "usuario", texto: "Como está a operação?" }] } });
+  assert.equal(r.dados.resposta, "Hoje está tudo funcionando.");
+  assert.match(instrucoes, /IA do WhatsApp: (funcionando|com alertas)/, "a DENIA conhece o estado real da IA");
+  const voz = await p.req("/api/orgs/1/assistente/falar", { metodo: "POST", quem: "admin", corpo: { texto: "Olá" } });
+  assert.equal(voz.r.headers.get("content-type"), "audio/mpeg");
+  assert.match(voz.r.headers.get("permissions-policy"), /microphone=\(self\)/);
 });
