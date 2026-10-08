@@ -176,6 +176,8 @@ test("Plataforma — equipe por perfil, senha temporária e isolamento entre emp
   const id = conversas.dados.conversas[0].pessoa_id;
   const assumir = await p.req(`/api/orgs/1/engine/conversations/${id}/takeover`, { metodo: "POST", quem: "carla", corpo: {} });
   assert.equal(assumir.dados.ia_pausada, true);
+  const lista = await p.req("/api/orgs/1/engine/conversations", { quem: "carla" });
+  assert.equal(lista.dados.conversas.find(c => c.pessoa_id === id).ia_pausada, true, "a lista mostra quem está com a equipe (numa consulta só)");
 
   // Suspender a empresa tira o acesso da equipe.
   await p.req("/api/admin/organizacoes/1", { metodo: "POST", quem: "admin", corpo: { status: "SUSPENSA" } });
@@ -536,7 +538,7 @@ test("Assistente DENIA — executa comandos de voz: cria post, muda o treinament
 test("Site — número do WhatsApp do botão flutuante, só o administrador geral muda", async () => {
   const p = await criarPlataforma();
   await p.entrar("admin", ADMIN, SENHA_ADMIN);
-  assert.equal((await p.req("/api/publico")).dados.whatsapp, "");
+  assert.equal((await p.req("/api/publico")).dados.whatsapp, "5521975469162", "sem configurar, vai para o WhatsApp da Central");
   const ruim = await p.req("/api/admin/site", { metodo: "POST", quem: "admin", corpo: { whatsapp: "9162" } });
   assert.equal(ruim.status, 400);
   const ok = await p.req("/api/admin/site", { metodo: "POST", quem: "admin", corpo: { whatsapp: "(21) 99999-9162" } });
@@ -544,4 +546,49 @@ test("Site — número do WhatsApp do botão flutuante, só o administrador gera
   assert.equal((await p.req("/api/publico")).dados.whatsapp, "5521999999162");
   const anonimo = await p.req("/api/admin/site", { metodo: "POST", quem: "x", corpo: { whatsapp: "21999999999" } });
   assert.ok(anonimo.status === 401 || anonimo.status === 403);
+});
+
+test("Integrações — chave da OpenAI colada na plataforma liga o Estúdio e a voz (sem mexer na Cloudflare)", async () => {
+  const p = await criarPlataforma();
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  await p.req("/api/orgs/1/mk/marcas", { metodo: "POST", quem: "admin", corpo: { nome: "Clínica Sol" } });
+  const antes = await p.req("/api/orgs/1/mk/ia/legenda", { metodo: "POST", quem: "admin", corpo: { marca_id: 1, tema: "x" } });
+  assert.equal(antes.dados.codigo, "SEM_OPENAI");
+  assert.match(antes.dados.erro, /Integrações/, "o aviso diz onde colar a chave");
+  assert.equal((await p.req("/api/orgs/1/ia/chave", { metodo: "POST", quem: "admin", corpo: { chave: "minha-chave" } })).status, 400);
+  const chave = "sk-proj-" + "a".repeat(40) + "WXYZ";
+  assert.equal((await p.req("/api/orgs/1/ia/chave", { metodo: "POST", quem: "admin", corpo: { chave } })).status, 200);
+  const info = (await p.req("/api/orgs/1/ia/chave", { quem: "admin" })).dados;
+  assert.deepEqual(info, { configurada: true, origem: "plataforma", final: "WXYZ" }, "a chave nunca volta inteira");
+  const salvo = (await p.env.DB.prepare("SELECT valor FROM plt_meta WHERE chave='openai_org_1'").first()).valor;
+  assert.ok(!salvo.includes(chave), "guardada cifrada");
+  p.openai = (url) => url.endsWith("/models") ? { data: [] } : { output: [{ content: [{ type: "output_text", text: JSON.stringify({ titulo: "T", legenda: "L", hashtags: "", chamada: "", ideia_imagem: "" }) }] }] };
+  const depois = await p.req("/api/orgs/1/mk/ia/legenda", { metodo: "POST", quem: "admin", corpo: { marca_id: 1, tema: "x" } });
+  assert.equal(depois.status, 200);
+  assert.equal((await p.req("/api/orgs/1/ia/chave/testar", { metodo: "POST", quem: "admin", corpo: {} })).dados.ok, true);
+  assert.equal((await p.req("/api/orgs/1/mk/config", { quem: "admin" })).dados.ia_ligada, true);
+});
+
+test("Assistente DENIA — modo assistido devolve o plano para a tela executar à vista, e executar faz cada passo", async () => {
+  const p = await criarPlataforma({ OPENAI_API_KEY: "sk-teste", DENIA_PLATFORM_SERVICE_TOKEN: TOKEN_ENGINE });
+  p.env.ENGINE = { fetch: async (req) => p.engine.worker.fetch(req, p.engine.env, { waitUntil() { } }) };
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  await p.req("/api/orgs/1/mk/marcas", { metodo: "POST", quem: "admin", corpo: { nome: "Clínica Sol" } });
+  await p.req("/api/orgs/1/mk/marcas", { metodo: "POST", quem: "admin", corpo: { nome: "Pet Feliz" } });
+  p.openai = () => ({ output: [{ content: [{ type: "output_text", text: JSON.stringify({ resposta: "Vou fazer.", acoes: [
+    { tipo: "criar_semana", marca: "pet feliz", canais: ["instagram"], quantidade: 2 },
+    { tipo: "treinar", campo: "regras", texto: "Peça o bairro." },
+    { tipo: "criar_post", marca: "Marca que não existe" },
+    { tipo: "apagar_tudo" }
+  ] }) }] }] });
+  const r = await p.req("/api/orgs/1/assistente/conversa", { metodo: "POST", quem: "admin", corpo: { mensagens: [{ papel: "usuario", texto: "faça" }], assistido: true } });
+  const [semana, treino, ruim, desconhecida] = r.dados.plano;
+  assert.deepEqual([semana.tipo, semana.marca, semana.quantidade, semana.canais], ["criar_semana", "Pet Feliz", 2, ["instagram"]]);
+  assert.deepEqual([treino.campo, treino.rotulo, treino.modo], ["regras", "Regras", "acrescentar"]);
+  assert.match(ruim.erro, /Não encontrei a marca/);
+  assert.match(desconhecida.erro, /desconhecida/);
+  assert.equal((await p.req("/api/orgs/1/mk/posts", { quem: "admin" })).dados.posts.length, 0, "no modo assistido nada é feito sem a tela");
+  const pausa = await p.req("/api/orgs/1/assistente/executar", { metodo: "POST", quem: "admin", corpo: { acao: { tipo: "pausar_ia", pausar: true } } });
+  assert.equal(pausa.dados.ok, true);
+  assert.equal((await p.req("/api/orgs/1/engine/status", { quem: "admin" })).dados.pausa_geral, true);
 });

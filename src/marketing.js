@@ -40,7 +40,7 @@ async function garantir(env) {
 
 function chave(env) { return String(env.OPENAI_API_KEY || "").trim(); }
 function semChave() {
-  return { status: 503, corpo: { erro: "A inteligência do Estúdio ainda não foi ligada: falta o secret OPENAI_API_KEY no Worker denia-landing (Cloudflare → denia-landing → Settings → Variables and Secrets).", codigo: "SEM_OPENAI" } };
+  return { status: 503, corpo: { erro: "A inteligência da DENIA ainda não foi ligada: falta a chave da OpenAI. Vá em Administração → Integrações → \"Inteligência da DENIA (OpenAI)\", cole a chave e salve.", codigo: "SEM_OPENAI" } };
 }
 function textoDaResposta(d) {
   if (typeof d?.output_text === "string" && d.output_text) return d.output_text;
@@ -445,17 +445,44 @@ async function iaJSONConversa(env, instrucoes, mensagens, maxTokens = 1600) {
 const CAMPOS_TREINO = ["instrucoes", "servicos", "regras", "precos", "procedimentos", "informacoes", "exemplos"];
 const ROTULO_TREINO = { instrucoes: "Instruções", servicos: "Serviços", regras: "Regras", precos: "Preços", procedimentos: "Procedimentos", informacoes: "Informações", exemplos: "Exemplos" };
 
-// Executa uma ação pedida por voz usando as rotas normais do painel (com as mesmas permissões e auditoria).
-async function executarAcao(a, { orgId, marcasOrg, contexto, txt }) {
+const semAcento = s => String(s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+function marcaPorNome(marcasOrg, nome, obrigatoria = true) {
+  if (!nome && marcasOrg.length === 1) return marcasOrg[0];
+  const n = semAcento(nome);
+  const m = n ? marcasOrg.find(x => semAcento(x.nome) === n) || marcasOrg.find(x => semAcento(x.nome).includes(n) || n.includes(semAcento(x.nome))) : null;
+  if (!m && obrigatoria) throw new Error(marcasOrg.length ? `Não encontrei a marca "${nome || ""}". Diga qual: ${marcasOrg.map(x => x.nome).join(", ")}.` : "Cadastre uma marca primeiro, em Marketing → Marcas.");
+  return m;
+}
+const TIPOS_ACAO = ["criar_semana", "criar_post", "aprovar_posts", "publicar_post", "treinar", "pausar_ia"];
+// Deixa a ação pronta para a tela executar: marca resolvida, campos conferidos.
+function prepararAcao(a, marcasOrg, txt) {
   const tipo = String(a?.tipo || "");
-  const sem = s => String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().trim();
-  const acharMarca = (nome, obrigatoria = true) => {
-    if (!nome && marcasOrg.length === 1) return marcasOrg[0];
-    const n = sem(nome);
-    const m = n ? marcasOrg.find(x => sem(x.nome) === n) || marcasOrg.find(x => sem(x.nome).includes(n) || n.includes(sem(x.nome))) : null;
-    if (!m && obrigatoria) throw new Error(marcasOrg.length ? `Não encontrei a marca "${nome || ""}". Diga qual: ${marcasOrg.map(x => x.nome).join(", ")}.` : "Cadastre uma marca primeiro, em Marketing → Marcas.");
-    return m;
-  };
+  if (!TIPOS_ACAO.includes(tipo)) throw new Error("Ação desconhecida.");
+  const p = { tipo };
+  const canais = (Array.isArray(a.canais) ? a.canais : []).map(String).filter(c => ["instagram", "facebook", "google"].includes(c));
+  if (tipo === "criar_semana" || tipo === "criar_post") {
+    const m = marcaPorNome(marcasOrg, a.marca);
+    Object.assign(p, { marca: m.nome, marca_id: m.id, canais: canais.length ? canais : tipo === "criar_post" ? ["instagram"] : ["instagram", "facebook"] });
+  }
+  if (tipo === "criar_semana") Object.assign(p, { quantidade: Math.max(1, Math.min(14, Number(a.quantidade) || 3)), semana: a.semana === "esta" ? "esta" : "proxima", com_artes: a.com_artes !== false });
+  if (tipo === "criar_post") Object.assign(p, { tema: txt(a.tema, 600), formato: ["post", "carrossel", "story", "reels"].includes(a.formato) ? a.formato : "post", data: /^\d{4}-\d{2}-\d{2}$/.test(String(a.data || "")) ? a.data : "", hora: /^\d{2}:\d{2}$/.test(String(a.hora || "")) ? a.hora : "", com_arte: a.com_arte !== false });
+  if (tipo === "aprovar_posts" && a.marca) { const m = marcaPorNome(marcasOrg, a.marca); Object.assign(p, { marca: m.nome, marca_id: m.id }); }
+  if (tipo === "publicar_post") p.post_id = Number(a.post_id) || 0;
+  if (tipo === "treinar") {
+    p.campo = CAMPOS_TREINO.includes(a.campo) ? a.campo : "instrucoes";
+    p.rotulo = ROTULO_TREINO[p.campo];
+    p.modo = a.modo === "substituir" ? "substituir" : "acrescentar";
+    p.texto = txt(a.texto, 8000);
+    if (!p.texto) throw new Error("Faltou dizer o que a IA deve aprender.");
+  }
+  if (tipo === "pausar_ia") p.pausar = a.pausar !== false;
+  return p;
+}
+
+// Executa uma ação pedida por voz usando as rotas normais do painel (com as mesmas permissões e auditoria).
+async function executarAcao(a, { marcasOrg, contexto, txt }) {
+  const tipo = String(a?.tipo || "");
+  const acharMarca = (nome, obrigatoria = true) => marcaPorNome(marcasOrg, nome, obrigatoria);
   const falhou = r => r.status >= 400 ? (r.dados?.erro || "Não foi possível fazer agora.") : "";
   const canais = Array.isArray(a.canais) && a.canais.length ? a.canais : undefined;
   if (tipo === "criar_semana") {
@@ -554,6 +581,15 @@ Responda SEMPRE em JSON: {"resposta":"texto para falar","acoes":[]}
 DADOS DO PAINEL (agora):
 ${contexto.dados}`, msgs, 1600);
       const acoes = (Array.isArray(r?.acoes) ? r.acoes : []).slice(0, 4);
+      // Modo assistido: a tela executa cada ação à vista (menus abrindo, campos sendo preenchidos), com pausa e parada.
+      if (l.corpo.assistido) {
+        const plano = [];
+        for (const a of acoes) {
+          try { plano.push(prepararAcao(a, marcasOrg, txt)); }
+          catch (e) { plano.push({ tipo: String(a?.tipo || "acao"), erro: e?.message || "Não foi possível preparar." }); }
+        }
+        return json({ resposta: txt(r?.resposta, 3000) || (plano.length ? "Vou fazer agora." : "Desculpe, não consegui responder agora. Pode repetir?"), plano });
+      }
       const feitas = [];
       for (const a of acoes) {
         try { feitas.push(await executarAcao(a, { env, orgId, papel, marcasOrg, contexto, txt })); }
@@ -561,6 +597,15 @@ ${contexto.dados}`, msgs, 1600);
       }
       const resposta = txt(r?.resposta, 3000) || (feitas.length ? "Pronto." : "Desculpe, não consegui responder agora. Pode repetir?");
       return json({ resposta, acoes: feitas });
+    }
+    if (resto === "assistente/executar" && request.method === "POST") {
+      const l = await lerCorpo(request, 20000);
+      if (l.erro) return l.erro;
+      await garantir(env);
+      const marcasOrg = (await env.DB.prepare("SELECT id, nome FROM plt_mk_marcas WHERE org_id=? AND ativa=1 ORDER BY nome").bind(orgId).all())?.results || [];
+      const a = l.corpo.acao || {};
+      try { return json(await executarAcao(a, { env, orgId, papel, marcasOrg, contexto, txt })); }
+      catch (e) { return json({ tipo: String(a?.tipo || "acao"), ok: false, resumo: e?.message || "Não foi possível fazer agora." }); }
     }
     return json({ erro: "Rota não encontrada." }, 404);
   } catch (e) {

@@ -84,8 +84,9 @@
       <button class="icone-botao assistente-fechar" id="assistente-fechar" type="button" aria-label="Fechar"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button></header>
     <div class="assistente-msgs" id="assistente-msgs" aria-live="polite"></div>
     <form class="assistente-form" id="assistente-form">
-      <button class="assistente-mic mic-denia" id="assistente-mic" type="button" aria-label="Falar"><svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button>
-      <input class="entrada" id="assistente-texto" placeholder="Pergunte à DENIA…" autocomplete="off" maxlength="2000">
+      <button class="assistente-mic mic-ditar" id="assistente-mic" type="button" title="Gravar e transcrever (você revisa antes de enviar)" aria-label="Gravar e transcrever"><svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></button>
+      <input class="entrada" id="assistente-texto" placeholder="Escreva ou grave…" autocomplete="off" maxlength="2000">
+      <button class="assistente-mic assistente-conversar mic-denia" id="assistente-conversar" type="button" title="Conversar por voz (ela responde falando)" aria-label="Conversar por voz"><svg viewBox="0 0 24 24"><path d="M4 10v4M8 7v10M12 4v16M16 7v10M20 10v4"/></svg></button>
       <button class="btn btn-primario btn-pequeno" type="submit">Enviar</button>
     </form>
   </aside>

@@ -361,3 +361,30 @@ select.entrada option { background: #0b1020; }
 .voz-historico { padding: 0; overflow: hidden; }
 .voz-msgs { height: min(420px, 50vh); }
 .a-acao { align-self: flex-start; color: #bbf7d0; background: rgba(34, 197, 94, 0.12); border: 1px solid rgba(34, 197, 94, 0.4); font-size: 13px; }
+
+/* Piloto: a DENIA executando na tela */
+.piloto { position: fixed; left: 0; right: 0; margin: 0 auto; top: 78px; z-index: 90; display: flex; align-items: center; gap: 14px; width: min(640px, calc(100vw - 24px)); padding: 12px 14px 12px 16px; border-radius: 18px; border: 1px solid rgba(34, 211, 238, 0.55); background: rgba(8, 12, 26, 0.96); box-shadow: 0 24px 60px -20px rgba(79, 140, 255, 0.9); animation: surgir 0.25s ease both; }
+.piloto-orbe { flex: 0 0 34px; height: 34px; border-radius: 50%; background: radial-gradient(circle at 35% 35%, #e6faff, #4f8cff 45%, #8b5cf6 80%); box-shadow: 0 0 22px rgba(79, 140, 255, 0.9); animation: pulsarOrbe 1.2s ease-in-out infinite; }
+.piloto.pausado .piloto-orbe { animation: none; opacity: 0.6; }
+.piloto-texto { display: grid; min-width: 0; margin-right: auto; }
+.piloto-texto strong { font-size: 13px; letter-spacing: 0.04em; color: #a5f3fc; }
+.piloto-texto span { font-size: 14px; color: var(--texto); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.piloto-acoes { display: flex; gap: 8px; flex: 0 0 auto; }
+.cursor-denia { position: fixed; left: 0; top: 0; z-index: 95; pointer-events: none; transition: transform 0.6s cubic-bezier(0.22, 1, 0.36, 1); display: flex; align-items: flex-start; gap: 4px; }
+.cursor-denia svg { width: 26px; height: 26px; fill: #fff; stroke: #4f8cff; stroke-width: 1.5; filter: drop-shadow(0 0 8px rgba(79, 140, 255, 0.95)); }
+.cursor-rotulo { margin-top: 18px; padding: 2px 8px; border-radius: 999px; background: linear-gradient(135deg, #4f8cff, #8b5cf6); color: #fff; font-size: 11px; font-weight: 800; letter-spacing: 0.1em; }
+.cursor-denia::after { content: ""; position: absolute; left: -10px; top: -10px; width: 22px; height: 22px; border-radius: 50%; border: 2px solid rgba(34, 211, 238, 0.9); opacity: 0; }
+.cursor-denia.clicando::after { animation: cliqueDenia 0.45s ease-out; }
+@keyframes cliqueDenia { from { transform: scale(0.4); opacity: 1; } to { transform: scale(2.2); opacity: 0; } }
+.piloto-alvo { outline: 2px solid rgba(34, 211, 238, 0.95) !important; outline-offset: 3px; box-shadow: 0 0 0 6px rgba(34, 211, 238, 0.18) !important; transition: outline 0.2s ease; }
+.a-link { display: inline-block; margin-top: 6px; color: #a5f3fc; font-weight: 700; }
+.assistente-conversar { background: linear-gradient(135deg, rgba(79, 140, 255, 0.35), rgba(139, 92, 246, 0.35)); }
+.assistente-form .assistente-mic svg { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+.voz-historico .assistente-form { align-items: flex-end; }
+.voz-texto { min-height: 44px; resize: vertical; }
+@media (max-width: 560px) { .piloto { top: 66px; gap: 10px; } .piloto-orbe { display: none; } }
+body.pilotando .denia-orbe { display: none; }
+.faixa-ia { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 0 0 18px; padding: 12px 16px; border-radius: 14px; border: 1px solid rgba(244, 63, 94, 0.45); background: rgba(244, 63, 94, 0.1); color: #fecdd3; font-size: 14px; }
+.faixa-ia strong { color: #fff; }
+.faixa-ia a { margin-left: auto; }
+@media (prefers-reduced-motion: reduce) { .cursor-denia { transition: none; } }
