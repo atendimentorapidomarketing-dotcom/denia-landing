@@ -37,7 +37,7 @@
   if (ano) ano.textContent = String(new Date().getFullYear());
   document.querySelectorAll(".js-ano").forEach(function (n) { n.textContent = String(new Date().getFullYear()); });
 
-  // ---------- Constelação viva no fundo + brilho suave que acompanha o mouse/dedo ----------
+  // ---------- Rede neural viva no fundo + brilho suave que acompanha o mouse/dedo ----------
   var toque = window.matchMedia && window.matchMedia("(hover: none)").matches;
   var luz = document.getElementById("luz-cursor");
   var ponteiro = { x: window.innerWidth * 0.5, y: window.innerHeight * 0.35, ultimo: 0 };
@@ -47,92 +47,182 @@
   window.addEventListener("touchstart", function (e) { var t = e.touches[0]; if (t) moverPonteiro(t.clientX, t.clientY); }, { passive: true });
   window.addEventListener("touchmove", function (e) { var t = e.touches[0]; if (t) moverPonteiro(t.clientX, t.clientY); }, { passive: true });
 
+  // Rede de neurônios: corpos que brilham, ramificações (dendritos), sinapses curvas e
+  // pulsos de energia que correm entre eles. Um pulso principal viaja sem parar pela rede.
   var tela = document.getElementById("rede");
   if (tela && tela.getContext && !semMovimento) {
     var ctx = tela.getContext("2d");
-    var pontos = [], largura = 0, altura = 0, dpr = 1, quadro = 0, visivel = true, estrela = [], cadentes = [], proximaCadente = 0;
-    var dimensionar = function () {
+    var neuronios = [], ligacoes = [], pulsos = [], largura = 0, altura = 0, dpr = 1, quadro = 0, visivel = true;
+    var energia = null, rastro = [], proximoDisparo = 0;
+    var aleatorio = function (a, b) { return a + Math.random() * (b - a); };
+    // Brilho do neurônio desenhado uma vez só (muito mais leve do que recriar a cada quadro).
+    var sprite = document.createElement("canvas"); sprite.width = sprite.height = 64;
+    (function () {
+      var c = sprite.getContext("2d"), g = c.createRadialGradient(32, 32, 0, 32, 32, 32);
+      g.addColorStop(0, "rgba(235,250,255,1)"); g.addColorStop(0.14, "rgba(170,225,255,0.9)"); g.addColorStop(0.38, "rgba(100,160,255,0.32)"); g.addColorStop(1, "rgba(80,110,255,0)");
+      c.fillStyle = g; c.fillRect(0, 0, 64, 64);
+    })();
+    var montar = function () {
       dpr = Math.min(window.devicePixelRatio || 1, 2);
       largura = window.innerWidth; altura = window.innerHeight;
       tela.width = largura * dpr; tela.height = altura * dpr;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      var n = Math.round(Math.max(28, Math.min(90, (largura * altura) / (toque ? 11000 : 15000))));
-      pontos = [];
-      for (var i = 0; i < n; i++) pontos.push({ x: Math.random() * largura, y: Math.random() * altura, vx: (Math.random() - 0.5) * 0.3, vy: (Math.random() - 0.5) * 0.3, r: Math.random() * 1.5 + 0.6 });
+      var n = Math.round(Math.max(26, Math.min(70, (largura * altura) / (toque ? 13000 : 19000))));
+      neuronios = []; ligacoes = []; pulsos = []; rastro = [];
+      // Distribuição espalhada (evita neurônios amontoados).
+      var tentativas = 0, minimo = Math.sqrt((largura * altura) / n) * 0.62;
+      while (neuronios.length < n && tentativas++ < n * 40) {
+        var x = aleatorio(-20, largura + 20), y = aleatorio(-20, altura + 20);
+        if (neuronios.some(function (o) { return (o.bx - x) * (o.bx - x) + (o.by - y) * (o.by - y) < minimo * minimo; })) continue;
+        var ramos = [];
+        for (var r = 0, nr = 3 + ((Math.random() * 4) | 0); r < nr; r++) {
+          var ang = aleatorio(0, Math.PI * 2), comp = aleatorio(14, 36);
+          ramos.push({ ang: ang, comp: comp, curva: aleatorio(-0.6, 0.6), galho: Math.random() < 0.55 ? aleatorio(0.35, 0.8) : 0 });
+        }
+        neuronios.push({ bx: x, by: y, x: x, y: y, fase: aleatorio(0, 6.28), r: aleatorio(1.8, 3.4), carga: 0, ramos: ramos, vizinhos: [] });
+      }
+      // Sinapses: cada neurônio liga aos 2 ou 3 mais próximos, com curva suave.
+      neuronios.forEach(function (a, i) {
+        var perto = neuronios.map(function (b, j) { return { j: j, d: (a.bx - b.bx) * (a.bx - b.bx) + (a.by - b.by) * (a.by - b.by) }; })
+          .filter(function (o) { return o.j !== i; }).sort(function (p, q) { return p.d - q.d; }).slice(0, 2 + ((Math.random() * 2) | 0));
+        perto.forEach(function (o) {
+          if (ligacoes.some(function (l) { return (l.a === i && l.b === o.j) || (l.a === o.j && l.b === i); })) return;
+          var l = { a: i, b: o.j, curva: aleatorio(-0.28, 0.28), brilho: 0 };
+          ligacoes.push(l);
+          a.vizinhos.push({ l: l, outro: o.j });
+          neuronios[o.j].vizinhos.push({ l: l, outro: i });
+        });
+      });
+      energia = { de: 0, l: null, para: 0, t: 0 };
+      escolherCaminho(energia, (Math.random() * neuronios.length) | 0, -1);
+    };
+    // Ponto ao longo da sinapse (curva de Bézier quadrática).
+    var ponto = function (l, t, deA) {
+      var A = neuronios[deA ? l.a : l.b], B = neuronios[deA ? l.b : l.a];
+      var mx = (A.x + B.x) / 2, my = (A.y + B.y) / 2, dx = B.x - A.x, dy = B.y - A.y;
+      var c = deA ? l.curva : -l.curva;
+      var cx = mx - dy * c, cy = my + dx * c, u = 1 - t;
+      return { x: u * u * A.x + 2 * u * t * cx + t * t * B.x, y: u * u * A.y + 2 * u * t * cy + t * t * B.y };
+    };
+    function escolherCaminho(p, origem, evitar) {
+      var opcoes = neuronios[origem].vizinhos.filter(function (v) { return v.outro !== evitar; });
+      if (!opcoes.length) opcoes = neuronios[origem].vizinhos;
+      if (!opcoes.length) return false;
+      var v = opcoes[(Math.random() * opcoes.length) | 0];
+      p.de = origem; p.para = v.outro; p.l = v.l; p.t = 0;
+      return true;
+    }
+    var disparar = function (origem, profundidade) {
+      if (pulsos.length > 42) return;
+      neuronios[origem].vizinhos.forEach(function (v) {
+        if (Math.random() < (profundidade === 0 ? 0.9 : 0.45)) {
+          var p = { profundidade: profundidade, v: aleatorio(0.012, 0.022) };
+          p.de = origem; p.para = v.outro; p.l = v.l; p.t = 0;
+          pulsos.push(p);
+        }
+      });
     };
     var desenhar = function (agora) {
       ctx.clearRect(0, 0, largura, altura);
-      // A estrela viaja sozinha por toda a tela, inclusive pelos cantos.
       var s = agora / 1000;
-      var ex = largura * (0.5 + 0.30 * Math.sin(s * 0.23) + 0.17 * Math.sin(s * 0.61 + 1));
-      var ey = altura * (0.5 + 0.28 * Math.sin(s * 0.17 + 2) + 0.18 * Math.cos(s * 0.47));
-      estrela.push({ x: ex, y: ey });
-      if (estrela.length > 70) estrela.shift();
-      // Sem mouse por alguns segundos (ou no celular parado), o brilho acompanha a estrela.
-      if (Date.now() - ponteiro.ultimo > 2500) { alvoLuz.x = ex; alvoLuz.y = ey; if (luz) luz.classList.add("ativa"); }
-      // A luz desliza até o alvo (movimento macio, sem "pular").
+      // Neurônios "respiram" devagar.
+      neuronios.forEach(function (n) {
+        n.x = n.bx + Math.sin(s * 0.35 + n.fase) * 6; n.y = n.by + Math.cos(s * 0.29 + n.fase * 1.3) * 6;
+        n.carga *= 0.955;
+      });
+      // Disparos espontâneos.
+      if (agora > proximoDisparo) { proximoDisparo = agora + aleatorio(600, 1500); disparar((Math.random() * neuronios.length) | 0, 0); }
+      // Pulso principal: a energia que nunca para de viajar.
+      if (energia && energia.l) {
+        energia.t += 0.011;
+        if (energia.t >= 1) {
+          neuronios[energia.para].carga = 1;
+          if (Math.random() < 0.5) disparar(energia.para, 1);
+          escolherCaminho(energia, energia.para, energia.de);
+        }
+      }
+      var e = energia && energia.l ? ponto(energia.l, Math.min(1, energia.t), energia.l.a === energia.de) : { x: -999, y: -999 };
+      rastro.push(e); if (rastro.length > 46) rastro.shift();
+      if (Date.now() - ponteiro.ultimo > 2500) { alvoLuz.x = e.x; alvoLuz.y = e.y; if (luz) luz.classList.add("ativa"); }
+      // Sinapses.
+      var raio2 = 170 * 170;
+      ligacoes.forEach(function (l) {
+        l.brilho *= 0.93;
+        var A = neuronios[l.a], B = neuronios[l.b];
+        var mx = (A.x + B.x) / 2 - posLuz.x, my = (A.y + B.y) / 2 - posLuz.y, dm = mx * mx + my * my;
+        var perto = dm < raio2 ? 1 - dm / raio2 : 0;
+        var c = ponto(l, 0.5, true);
+        var cx = 2 * c.x - (A.x + B.x) / 2, cy = 2 * c.y - (A.y + B.y) / 2;
+        ctx.strokeStyle = "rgba(110,160,255," + Math.min(0.65, 0.17 + perto * 0.25 + l.brilho * 0.45).toFixed(3) + ")";
+        ctx.lineWidth = 1 + l.brilho * 1.3;
+        ctx.beginPath(); ctx.moveTo(A.x, A.y); ctx.quadraticCurveTo(cx, cy, B.x, B.y); ctx.stroke();
+      });
+      // Dendritos e corpos dos neurônios.
+      neuronios.forEach(function (n) {
+        var dx = n.x - posLuz.x, dy = n.y - posLuz.y, d = dx * dx + dy * dy;
+        var luzPerto = d < raio2 ? 1 - d / raio2 : 0;
+        var ex = n.x - e.x, ey = n.y - e.y, de = ex * ex + ey * ey;
+        var energiaPerto = de < 22000 ? 1 - de / 22000 : 0;
+        var acesa = Math.min(1, n.carga + luzPerto * 0.6 + energiaPerto * 0.7);
+        ctx.strokeStyle = "rgba(140,195,255," + (0.26 + acesa * 0.5).toFixed(3) + ")";
+        ctx.lineWidth = 0.9;
+        n.ramos.forEach(function (r) {
+          var a = r.ang + Math.sin(s * 0.5 + n.fase) * 0.05;
+          var fx = n.x + Math.cos(a) * r.comp, fy = n.y + Math.sin(a) * r.comp;
+          var qx = n.x + Math.cos(a + r.curva) * r.comp * 0.55, qy = n.y + Math.sin(a + r.curva) * r.comp * 0.55;
+          ctx.beginPath(); ctx.moveTo(n.x, n.y); ctx.quadraticCurveTo(qx, qy, fx, fy); ctx.stroke();
+          if (r.galho) {
+            var gx = n.x + Math.cos(a) * r.comp * r.galho, gy = n.y + Math.sin(a) * r.comp * r.galho, b2 = a + (r.curva > 0 ? -0.7 : 0.7);
+            ctx.beginPath(); ctx.moveTo(gx, gy); ctx.lineTo(gx + Math.cos(b2) * r.comp * 0.45, gy + Math.sin(b2) * r.comp * 0.45); ctx.stroke();
+          }
+        });
+        var raio = (n.r + acesa * 2.4) * 5;
+        ctx.globalAlpha = 0.62 + acesa * 0.38;
+        ctx.drawImage(sprite, n.x - raio, n.y - raio, raio * 2, raio * 2);
+        ctx.globalAlpha = 1;
+      });
+      // Pulsos de energia correndo pelas sinapses.
+      pulsos = pulsos.filter(function (p) {
+        p.t += p.v;
+        p.l.brilho = Math.max(p.l.brilho, 0.8);
+        if (p.t >= 1) {
+          neuronios[p.para].carga = Math.max(neuronios[p.para].carga, 0.8);
+          if (p.profundidade < 2 && Math.random() < 0.35) disparar(p.para, p.profundidade + 1);
+          return false;
+        }
+        var deA = p.l.a === p.de, q = ponto(p.l, p.t, deA), q2 = ponto(p.l, Math.max(0, p.t - 0.08), deA);
+        var cauda = ctx.createLinearGradient(q.x, q.y, q2.x, q2.y);
+        cauda.addColorStop(0, "rgba(200,240,255,0.95)"); cauda.addColorStop(1, "rgba(120,170,255,0)");
+        ctx.strokeStyle = cauda; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(q2.x, q2.y); ctx.lineTo(q.x, q.y); ctx.stroke();
+        ctx.fillStyle = "rgba(230,250,255,0.95)";
+        ctx.beginPath(); ctx.arc(q.x, q.y, 1.6, 0, Math.PI * 2); ctx.fill();
+        return true;
+      });
+      // A energia principal: rastro e núcleo brilhante.
+      ctx.lineCap = "round";
+      for (var k = 1; k < rastro.length; k++) {
+        if (Math.abs(rastro[k].x - rastro[k - 1].x) + Math.abs(rastro[k].y - rastro[k - 1].y) > 60) continue;
+        var v = k / rastro.length;
+        ctx.strokeStyle = "rgba(160,225,255," + (0.55 * v * v).toFixed(3) + ")";
+        ctx.lineWidth = 0.6 + v * 2.8;
+        ctx.beginPath(); ctx.moveTo(rastro[k - 1].x, rastro[k - 1].y); ctx.lineTo(rastro[k].x, rastro[k].y); ctx.stroke();
+      }
+      ctx.drawImage(sprite, e.x - 30, e.y - 30, 60, 60);
+      ctx.drawImage(sprite, e.x - 12, e.y - 12, 24, 24);
+      // O brilho do mouse desliza macio até o alvo.
       posLuz.x += (alvoLuz.x - posLuz.x) * 0.12; posLuz.y += (alvoLuz.y - posLuz.y) * 0.12;
       if (luz) luz.style.transform = "translate(" + posLuz.x.toFixed(1) + "px," + posLuz.y.toFixed(1) + "px)";
-      var raio2 = 170 * 170;
-      for (var i = 0; i < pontos.length; i++) {
-        var p = pontos[i];
-        p.x += p.vx; p.y += p.vy;
-        if (p.x < 0 || p.x > largura) p.vx *= -1;
-        if (p.y < 0 || p.y > altura) p.vy *= -1;
-        var mx = p.x - posLuz.x, my = p.y - posLuz.y, dm = mx * mx + my * my;
-        var perto = dm < raio2 ? 1 - dm / raio2 : 0;
-        for (var j = i + 1; j < pontos.length; j++) {
-          var q = pontos[j], dx = p.x - q.x, dy = p.y - q.y, d = dx * dx + dy * dy;
-          if (d < 17000) {
-            ctx.strokeStyle = "rgba(110,160,255," + ((0.13 + perto * 0.3) * (1 - d / 17000)).toFixed(3) + ")";
-            ctx.lineWidth = 1;
-            ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(q.x, q.y); ctx.stroke();
-          }
-        }
-        // Pontos perto da estrela se acendem e se ligam a ela.
-        var sx = p.x - ex, sy = p.y - ey, ds = sx * sx + sy * sy, brilho = ds < 48000 ? 1 - ds / 48000 : 0;
-        if (brilho) {
-          ctx.strokeStyle = "rgba(140,225,255," + (0.55 * brilho).toFixed(3) + ")";
-          ctx.lineWidth = 1;
-          ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(ex, ey); ctx.stroke();
-        }
-        ctx.fillStyle = "rgba(200,238,255," + Math.min(1, 0.6 + perto * 0.4 + brilho * 0.4).toFixed(3) + ")";
-        ctx.beginPath(); ctx.arc(p.x, p.y, p.r + perto + brilho * 1.6, 0, Math.PI * 2); ctx.fill();
-      }
-      // Rastro da estrela.
-      ctx.lineCap = "round";
-      for (var k = 1; k < estrela.length; k++) {
-        var v = k / estrela.length;
-        ctx.strokeStyle = "rgba(150,215,255," + (0.5 * v * v).toFixed(3) + ")";
-        ctx.lineWidth = 0.6 + v * 2.6;
-        ctx.beginPath(); ctx.moveTo(estrela[k - 1].x, estrela[k - 1].y); ctx.lineTo(estrela[k].x, estrela[k].y); ctx.stroke();
-      }
-      // Núcleo brilhante da estrela.
-      var g = ctx.createRadialGradient(ex, ey, 0, ex, ey, 26);
-      g.addColorStop(0, "rgba(255,255,255,0.95)"); g.addColorStop(0.18, "rgba(170,230,255,0.75)"); g.addColorStop(0.5, "rgba(90,140,255,0.22)"); g.addColorStop(1, "rgba(90,140,255,0)");
-      ctx.fillStyle = g;
-      ctx.beginPath(); ctx.arc(ex, ey, 26, 0, Math.PI * 2); ctx.fill();
-      // Estrelas cadentes de vez em quando.
-      if (agora > proximaCadente) {
-        proximaCadente = agora + 3500 + Math.random() * 5000;
-        var ang = (20 + Math.random() * 20) * Math.PI / 180;
-        cadentes.push({ x: Math.random() * largura * 0.8, y: Math.random() * altura * 0.35, vx: Math.cos(ang) * (9 + Math.random() * 5), vy: Math.sin(ang) * (9 + Math.random() * 5), t: agora });
-      }
-      cadentes = cadentes.filter(function (c) { return agora - c.t < 1100; });
-      cadentes.forEach(function (c) {
-        c.x += c.vx; c.y += c.vy;
-        var vida = 1 - (agora - c.t) / 1100;
-        var cauda = ctx.createLinearGradient(c.x, c.y, c.x - c.vx * 12, c.y - c.vy * 12);
-        cauda.addColorStop(0, "rgba(235,248,255," + (0.9 * vida).toFixed(3) + ")"); cauda.addColorStop(1, "rgba(120,170,255,0)");
-        ctx.strokeStyle = cauda; ctx.lineWidth = 1.6;
-        ctx.beginPath(); ctx.moveTo(c.x, c.y); ctx.lineTo(c.x - c.vx * 12, c.y - c.vy * 12); ctx.stroke();
-      });
       quadro = visivel ? window.requestAnimationFrame(desenhar) : 0;
     };
-    dimensionar();
+    montar();
     quadro = window.requestAnimationFrame(desenhar);
     var espera;
-    window.addEventListener("resize", function () { clearTimeout(espera); espera = setTimeout(dimensionar, 150); });
+    window.addEventListener("resize", function () {
+      // No celular a barra do navegador muda a altura ao rolar: só remonta se a tela mudou de verdade.
+      if (Math.abs(window.innerWidth - largura) < 2 && Math.abs(window.innerHeight - altura) < 160) return;
+      clearTimeout(espera); espera = setTimeout(montar, 200);
+    });
     document.addEventListener("visibilitychange", function () {
       visivel = document.visibilityState === "visible";
       if (visivel && !quadro) quadro = window.requestAnimationFrame(desenhar);

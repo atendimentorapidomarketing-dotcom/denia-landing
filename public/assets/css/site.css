@@ -284,3 +284,5 @@ html, body { overflow-x: clip; }
 .plano ul { margin-bottom: 4px; }
 .planos-acao p { margin: 0; color: var(--texto-2); }
 .planos-acao a { color: var(--ciano); font-weight: 600; }
+
+@media (max-width: 900px) { .rede { opacity: 0.55; } }
