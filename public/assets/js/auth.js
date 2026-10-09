@@ -116,7 +116,7 @@
     } else if (acao === "cadastro") {
       if (!form.nome.value.trim() || !form.empresa.value.trim() || !email || !form.senha.value) { mostrar(erro, "Preencha todos os campos."); return; }
       if (!form.aceite.checked) { mostrar(erro, "Para criar a conta, aceite os Termos de uso e a Política de privacidade."); return; }
-      enviar("/api/cadastro", { nome: form.nome.value.trim(), empresa: form.empresa.value.trim(), email: email, senha: form.senha.value, plano: NOMES_PLANO[plano] ? plano : "" }, function () { location.replace("/app"); });
+      enviar("/api/cadastro", { nome: form.nome.value.trim(), empresa: form.empresa.value.trim(), email: email, senha: form.senha.value, plano: NOMES_PLANO[plano] ? plano : "", aceite: form.aceite.checked, idioma: (document.documentElement.lang || "pt-BR") }, function () { location.replace("/app"); });
     } else if (acao === "recuperar") {
       if (!email) { mostrar(erro, "Informe o seu e-mail."); return; }
       enviar("/api/senha/esqueci", { email: email }, function (d) {

@@ -23,6 +23,8 @@
 import { apiMarketing, apiAssistente } from "./marketing.js";
 
 const VERSAO = "2.8.0";
+// Versão dos Termos de uso e da Política de privacidade aceitas no cadastro.
+const VERSAO_TERMOS = "2026-10";
 // WhatsApp da Central de Atendimento (botão flutuante do site).
 const WHATSAPP_CENTRAL = "5521975469162";
 const SCHEMA = "2.4.0-a";
@@ -337,6 +339,7 @@ async function cadastrar(request, env) {
   const nome = txt(corpo.nome, 120), empresa = txt(corpo.empresa, 120), email = normEmail(corpo.email), senha = String(corpo.senha || "");
   if (nome.length < 2 || empresa.length < 2) return json({ erro: "Informe o seu nome e o nome da empresa." }, 400);
   if (!emailValido(email)) return json({ erro: "Informe um e-mail válido." }, 400);
+  if (corpo.aceite !== true) return json({ erro: "Para criar a conta, aceite os Termos de uso e a Política de privacidade." }, 400);
   const fraca = senhaForte(senha);
   if (fraca) return json({ erro: fraca }, 400);
   const chave = "cad:" + ipDe(request);
@@ -354,6 +357,8 @@ async function cadastrar(request, env) {
   await env.DB.prepare("UPDATE plt_organizacoes SET plano=?, plano_status='TESTE' WHERE id=?").bind(plano, o.id).run();
   await env.DB.prepare("INSERT INTO plt_membros(org_id,usuario_id,papel,criado_ms) VALUES(?,?,'OWNER',?)").bind(o.id, u.id, agora(env)).run();
   await auditar(env, request, { usuario: u }, o.id, "EMPRESA", `Conta criada: ${empresa}`);
+  // Prova do aceite: versão dos documentos, data, IP (registrado pela auditoria) e idioma da página.
+  await auditar(env, request, { usuario: u }, o.id, "ACEITE", `Aceitou os Termos de uso ${VERSAO_TERMOS} e a Política de privacidade ${VERSAO_TERMOS} (idioma ${txt(corpo.idioma, 10) || "pt-BR"}; navegador ${txt(request.headers.get("user-agent"), 160)})`);
   return json({ ok: true }, 200, { "set-cookie": cookieSessao(await criarCookie(env, u), SESSAO_MS / 1000) });
 }
 

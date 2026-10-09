@@ -294,3 +294,10 @@ html, body { overflow-x: clip; }
 @keyframes pulsoZap { 0% { box-shadow: 0 14px 34px -10px rgba(37, 211, 102, 0.8), 0 0 0 0 rgba(37, 211, 102, 0.55); } 70%, 100% { box-shadow: 0 14px 34px -10px rgba(37, 211, 102, 0.8), 0 0 0 16px rgba(37, 211, 102, 0); } }
 @media (max-width: 640px) { .whats-flutuante { right: 14px; bottom: 14px; padding: 14px; } .whats-flutuante span { display: none; } }
 @media (prefers-reduced-motion: reduce) { .whats-flutuante { animation: none; } }
+
+/* Estado de cada recurso (sem promessas escondidas) */
+.estado { display: inline-flex; align-items: center; gap: 6px; margin-bottom: 12px; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; letter-spacing: 0.02em; }
+.estado::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.estado-ok { color: #86efac; background: rgba(34, 197, 94, 0.12); border: 1px solid rgba(34, 197, 94, 0.35); }
+.estado-breve { color: #a5b4fc; background: rgba(99, 102, 241, 0.14); border: 1px solid rgba(99, 102, 241, 0.4); }
+.planos-nota { margin-top: 10px; font-size: 13px; color: var(--texto-3, #94a3b8); }

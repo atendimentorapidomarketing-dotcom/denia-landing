@@ -14,4 +14,9 @@ for (const f of readdirSync("public").filter(f => f.endsWith(".html")).map(f => 
   if (/\sstyle="/i.test(html)) { console.error(`${f}: atributo style embutido não é permitido pela política de segurança.`); process.exit(1); }
   for (const m of html.matchAll(/(?:src|href)="(\/assets\/[^"#?]+)"/g)) if (!existsSync("public" + m[1])) { console.error(`${f}: arquivo ${m[1]} não existe.`); process.exit(1); }
 }
+// Dicionários de idioma: JSON válido, e um aviso (não bloqueia) se houver texto novo sem tradução.
+for (const f of existsSync("public/assets/i18n") ? readdirSync("public/assets/i18n") : []) {
+  try { JSON.parse(readFileSync("public/assets/i18n/" + f, "utf8")); } catch (e) { console.error(`${f}: dicionário de idioma inválido (${e.message}).`); process.exit(1); }
+}
+try { execFileSync(process.execPath, ["scripts/i18n.mjs", "verificar"], { stdio: "inherit" }); } catch { /* só informativo */ }
 console.log("DENIA Platform: tudo certo para publicar.");

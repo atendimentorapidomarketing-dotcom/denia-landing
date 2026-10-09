@@ -5,6 +5,9 @@
   if (!form) return;
   var q = new URLSearchParams(location.search);
   var planos = { start: "Start", pro: "Pro", growth: "Growth", elite: "Elite" };
+  if (q.get("assunto") && q.get("assunto") !== "planos") {
+    for (var i = 0; i < form.assunto.options.length; i++) if (form.assunto.options[i].text === q.get("assunto")) form.assunto.selectedIndex = i;
+  }
   if (q.get("assunto") === "planos") {
     form.assunto.value = "Planos e valores";
     var pl = planos[(q.get("plano") || "").toLowerCase()];

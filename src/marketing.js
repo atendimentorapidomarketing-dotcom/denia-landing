@@ -31,6 +31,7 @@ const prontos = new WeakSet();
 async function garantir(env) {
   if (prontos.has(env.DB)) return;
   await env.DB.batch(DDL.map(s => env.DB.prepare(s)));
+  await env.DB.prepare("ALTER TABLE plt_mk_marcas ADD COLUMN idioma TEXT").run().catch(() => { }); // já existe
   prontos.add(env.DB);
 }
 
@@ -103,11 +104,14 @@ function linhaPost(p) {
   try { revisao = p.revisao ? JSON.parse(p.revisao) : null; } catch { revisao = null; }
   return { ...p, canais, revisao };
 }
+// Idiomas da plataforma (interface, conteúdo das marcas e conversa com a DENIA).
+export const IDIOMAS = { "pt-BR": "português do Brasil", en: "inglês (English)", es: "espanhol (español)", de: "alemão (Deutsch)", it: "italiano", fr: "francês (français)", ja: "japonês (日本語)" };
+export const idiomaDe = v => (IDIOMAS[String(v || "")] ? String(v) : "pt-BR");
 function resumoMarca(m) {
-  return [`Marca: ${m.nome}`, m.segmento && `Segmento: ${m.segmento}`, m.cidade && `Cidade/região: ${m.cidade}`, m.publico && `Público: ${m.publico}`, m.tom && `Tom de voz: ${m.tom}`,
+  return [`Marca: ${m.nome}`, `IDIOMA DO CONTEÚDO: ${IDIOMAS[idiomaDe(m.idioma)]} (escreva tudo neste idioma)`, m.segmento && `Segmento: ${m.segmento}`, m.cidade && `Cidade/região: ${m.cidade}`, m.publico && `Público: ${m.publico}`, m.tom && `Tom de voz: ${m.tom}`,
     m.diferenciais && `Diferenciais: ${m.diferenciais}`, m.cores && `Cores da marca: ${m.cores}`, m.whatsapp && `WhatsApp para contato: ${m.whatsapp}`, m.site && `Site: ${m.site}`].filter(Boolean).join("\n");
 }
-const REGRAS_CONTEUDO = `Regras: português do Brasil impecável, sem erros; nada de promessas que a empresa não pode cumprir; não invente preços, descontos, prêmios, números ou depoimentos; nada de conteúdo enganoso; respeite as políticas do Instagram, Facebook e Google; chamadas para ação claras (ex.: "Chame no WhatsApp"); hashtags relevantes e locais, no máximo 12.`;
+const REGRAS_CONTEUDO = `Regras: escrita impecável, sem erros, no IDIOMA DO CONTEÚDO da marca (inclusive hashtags e chamadas); nada de promessas que a empresa não pode cumprir; não invente preços, descontos, prêmios, números ou depoimentos; nada de conteúdo enganoso; respeite as políticas do Instagram, Facebook e Google; chamadas para ação claras (ex.: "Chame no WhatsApp"); hashtags relevantes e locais, no máximo 12.`;
 
 // Revisão da IA (modo automático): dá nota de 0 a 10 e diz o que melhorar.
 async function revisar(env, marca, post) {
@@ -139,8 +143,9 @@ export async function apiMarketing(request, env, k, orgId, papel, resto) {
     if (resto === "marcas" && metodo === "POST") {
       exigir("ADMIN");
       const c = await corpoOu(8000);
-      const campos = ["nome", "segmento", "cidade", "instagram", "facebook", "google", "site", "whatsapp", "tom", "publico", "cores", "diferenciais"];
+      const campos = ["nome", "segmento", "cidade", "instagram", "facebook", "google", "site", "whatsapp", "tom", "publico", "cores", "diferenciais", "idioma"];
       const v = Object.fromEntries(campos.map(x => [x, txt(c[x], x === "diferenciais" || x === "publico" ? 600 : 200)]));
+      v.idioma = idiomaDe(c.idioma);
       v.instagram = v.instagram.replace(/^@+/, "").replace(/^https?:\/\/(www\.)?instagram\.com\//i, "").replace(/\/.*$/, "");
       if (v.nome.length < 2) return json({ erro: "Informe o nome da marca." }, 400);
       if (c.id) {
@@ -307,7 +312,7 @@ Responda em JSON: {"titulo":"","legenda":"","hashtags":"","chamada":"","ideia_im
         if (!marca) return json({ erro: "Escolha a marca." }, 400);
         const ideia = txt(c.ideia || p?.ideia_imagem || p?.titulo, 1000);
         if (!ideia) return json({ erro: "Descreva a imagem que a IA deve criar." }, 400);
-        const prompt = `Arte profissional para redes sociais da marca "${marca.nome}" (${marca.segmento || "serviços"}${marca.cidade ? ", " + marca.cidade : ""}). ${marca.cores ? "Cores da marca: " + marca.cores + ". " : ""}${ideia}. Visual moderno, limpo, de agência de alto padrão, boa iluminação, composição equilibrada; se houver texto na arte, em português do Brasil, curto e sem erros.`;
+        const prompt = `Arte profissional para redes sociais da marca "${marca.nome}" (${marca.segmento || "serviços"}${marca.cidade ? ", " + marca.cidade : ""}). ${marca.cores ? "Cores da marca: " + marca.cores + ". " : ""}${ideia}. Visual moderno, limpo, de agência de alto padrão, boa iluminação, composição equilibrada; se houver texto na arte, em ${IDIOMAS[idiomaDe(marca.idioma)]}, curto e sem erros.`;
         const vertical = p ? p.formato === "story" || p.formato === "reels" : c.formato === "story" || c.formato === "reels" || c.formato === "vertical";
         const formato = vertical ? "1024x1536" : "1024x1024";
         const d = await openai(env, "images/generations", { model: String(env.OPENAI_IMAGE_MODEL || "gpt-image-1").trim(), prompt, size: formato, quality: "medium", output_format: "jpeg", output_compression: 82, n: 1 }, { timeout: 120000 });
@@ -350,7 +355,7 @@ Responda em JSON: {"titulo":"","legenda":"","hashtags":"","chamada":"","ideia_im
       }
       if (!chave(env)) { const s = semChave(); return json(s.corpo, s.status); }
       const marca = await marcaDa(a.marca_id);
-      const r = await iaJSON(env, `Você responde avaliações do Google em nome da empresa, como o dono responderia: cordial, humano, específico ao que o cliente escreveu, curto (2 a 4 frases). Agradeça sempre. Em avaliação negativa: peça desculpas sem se defender, mostre que vai resolver e convide para falar no WhatsApp; nunca exponha dados do cliente nem discuta. Não invente fatos. Português do Brasil impecável.
+      const r = await iaJSON(env, `Você responde avaliações do Google em nome da empresa, como o dono responderia: cordial, humano, específico ao que o cliente escreveu, curto (2 a 4 frases). Agradeça sempre. Em avaliação negativa: peça desculpas sem se defender, mostre que vai resolver e convide para falar no WhatsApp; nunca exponha dados do cliente nem discuta. Não invente fatos. Responda no mesmo idioma em que a avaliação foi escrita, com escrita impecável.
 Responda em JSON: {"resposta":""}`, `${resumoMarca(marca)}\n\nAvaliação de ${a.autor} (${a.nota} de 5 estrelas):\n"${a.texto || "(sem texto)"}"\nResponda em JSON.`, 600);
       const resp = txt(r.resposta, 2000);
       await env.DB.prepare("UPDATE plt_mk_avaliacoes SET resposta_sugerida=? WHERE id=?").bind(resp, a.id).run();
@@ -536,6 +541,8 @@ async function executarAcao(a, { marcasOrg, contexto, txt }) {
 
 export async function apiAssistente(request, env, k, orgId, papel, resto, contexto) {
   const { json, lerCorpo, txt } = k;
+  const idioma = idiomaDe(request.headers.get("x-denia-idioma"));
+  const falaEm = `IDIOMA: fale e escreva sempre em ${IDIOMAS[idioma]}; se a pessoa falar em outro idioma, acompanhe o idioma dela.`;
   // Preparar, executar e ler o painel não usam a OpenAI.
   if (!chave(env) && !["assistente/preparar", "assistente/executar", "assistente/contexto"].includes(resto)) { const s = semChave(); return json(s.corpo, s.status); }
   try {
@@ -546,7 +553,7 @@ export async function apiAssistente(request, env, k, orgId, papel, resto, contex
       const f = new FormData();
       f.append("file", new Blob([audio], { type: tipo.split(";")[0] }), "fala." + (tipo.includes("mp4") ? "mp4" : tipo.includes("ogg") ? "ogg" : "webm"));
       f.append("model", String(env.OPENAI_TRANSCRIPTION_MODEL || "gpt-4o-mini-transcribe"));
-      f.append("language", "pt");
+      f.append("language", idioma.slice(0, 2));
       const d = await openai(env, "audio/transcriptions", f, { timeout: 45000 });
       return json({ texto: String(d?.text || "").trim() });
     }
@@ -556,7 +563,7 @@ export async function apiAssistente(request, env, k, orgId, papel, resto, contex
       const texto = txt(l.corpo.texto, 1500);
       if (!texto) return json({ erro: "Nada para falar." }, 400);
       const r = await openai(env, "audio/speech", { model: String(env.OPENAI_TTS_MODEL || "gpt-4o-mini-tts"), voice: String(env.OPENAI_TTS_VOZ || "coral"), input: texto, response_format: "mp3",
-        instructions: "Fale em português do Brasil, com voz feminina calorosa, segura e profissional, ritmo natural." }, { binario: true, timeout: 45000 });
+        instructions: `Fale em ${IDIOMAS[idioma]}, com voz feminina calorosa, segura e profissional, ritmo natural.` }, { binario: true, timeout: 45000 });
       return new Response(r.body, { headers: { "content-type": "audio/mpeg", "cache-control": "no-store" } });
     }
     if (resto === "assistente/conversa" && request.method === "POST") {
@@ -568,7 +575,7 @@ export async function apiAssistente(request, env, k, orgId, papel, resto, contex
       await garantir(env);
       const marcasOrg = (await env.DB.prepare("SELECT id, nome FROM plt_mk_marcas WHERE org_id=? AND ativa=1 ORDER BY nome").bind(orgId).all())?.results || [];
       const r = await iaJSONConversa(env, `Você é a DENIA, a superinteligência da plataforma DENIA, conversando com a equipe da empresa "${contexto.empresa}" dentro do painel (não com clientes). O perfil de quem fala é ${papel}.
-Seja uma colega brilhante: direta, calorosa, prática, em português do Brasil impecável. A resposta normalmente é falada em voz: frases curtas e naturais (até 5), sem listas longas, sem símbolos, sem markdown.
+Seja uma colega brilhante: direta, calorosa, prática, com linguagem impecável. ${falaEm} A resposta normalmente é falada em voz: frases curtas e naturais (até 5), sem listas longas, sem símbolos, sem markdown.
 Você responde sobre tudo do painel usando os DADOS DO PAINEL: WhatsApp (conversas, atendimentos, profissionais), treinamento da IA, aprendizados, marcas e perfis de Instagram, Facebook e Google, posts e aprovações. Nunca invente números, conversas, clientes ou resultados que não estão nos dados.
 Você também EXECUTA ações quando a pessoa pede claramente. Ações disponíveis (campo "acoes"):
 - {"tipo":"criar_semana","marca":"nome da marca","canais":["instagram","facebook","google"],"quantidade":3,"semana":"esta"|"proxima","com_artes":true} — planeja e cria os posts da semana (legendas, hashtags e as imagens).
@@ -606,7 +613,7 @@ ${contexto.dados}`, msgs, 1600);
       const marcasOrg = (await env.DB.prepare("SELECT id, nome FROM plt_mk_marcas WHERE org_id=? AND ativa=1 ORDER BY nome").bind(orgId).all())?.results || [];
       const modelo = String(env.OPENAI_REALTIME_MODEL || "gpt-realtime").trim();
       const instructions = `Você é a DENIA, a superinteligência da plataforma DENIA, numa conversa de VOZ AO VIVO com a equipe da empresa "${contexto.empresa}" (não com clientes). O perfil de quem fala é ${papel}.
-Fale como uma colega brilhante ao telefone: português do Brasil natural, caloroso e direto; frases curtas; nada de listas, símbolos ou markdown. Se for interrompida, pare e escute.
+Fale como uma colega brilhante ao telefone: natural, calorosa e direta. ${falaEm} frases curtas; nada de listas, símbolos ou markdown. Se for interrompida, pare e escute.
 Use os DADOS DO PAINEL para responder sobre conversas do WhatsApp, atendimentos, profissionais, treinamento, aprendizados, marcas e perfis de Instagram, Facebook e Google, posts e aprovações. Nunca invente números ou fatos que não estão nos dados; se precisar de dados mais novos, use a ferramenta dados_do_painel.
 Para assuntos de fora (notícias, concorrentes, tendências, preços de mercado, qualquer dúvida do mundo), use a ferramenta pesquisar_web e conte o resultado de forma curta, citando de onde veio.
 Quando a pessoa pedir claramente uma ação, use a ferramenta certa (criar_semana, criar_post, aprovar_posts, publicar_post, treinar, pausar_ia). Antes, diga numa frase curta o que vai fazer ("Vou abrir o treinamento e acrescentar isso"); a pessoa vê você fazendo na tela e pode pausar ou parar. Quando a ferramenta devolver o resultado, conte em uma frase. Se faltar algo essencial (por exemplo qual marca, havendo mais de uma), pergunte antes.
@@ -629,7 +636,7 @@ ${contexto.dados}`;
       ];
       const voz = String(env.OPENAI_REALTIME_VOZ || "marin");
       const sessao = { type: "realtime", model: modelo, instructions, tools, tool_choice: "auto",
-        audio: { input: { transcription: { model: String(env.OPENAI_TRANSCRIPTION_MODEL || "gpt-4o-mini-transcribe"), language: "pt" }, turn_detection: { type: "semantic_vad", eagerness: "high" }, noise_reduction: { type: "near_field" } }, output: { voice: voz } } };
+        audio: { input: { transcription: { model: String(env.OPENAI_TRANSCRIPTION_MODEL || "gpt-4o-mini-transcribe"), language: idioma.slice(0, 2) }, turn_detection: { type: "semantic_vad", eagerness: "high" }, noise_reduction: { type: "near_field" } }, output: { voice: voz } } };
       const d = await openai(env, "realtime/client_secrets", { expires_after: { anchor: "created_at", seconds: 120 }, session: sessao }, { timeout: 20000 });
       const chaveTemp = d?.value || d?.client_secret?.value;
       if (!chaveTemp) return json({ erro: "A voz ao vivo não respondeu. Tente de novo." }, 502);
@@ -650,7 +657,7 @@ ${contexto.dados}`;
       if (!pergunta) return json({ erro: "Faltou a pergunta." }, 400);
       const d = await openai(env, "responses", {
         model: String(env.OPENAI_MODEL || MODELO_TEXTO).trim(), tools: [{ type: "web_search" }],
-        instructions: "Pesquise na internet e responda em português do Brasil, em até 6 frases objetivas, com números e datas quando houver. No fim, cite as fontes pelo nome do site.",
+        instructions: `Pesquise na internet e responda em ${IDIOMAS[idioma]}, em até 6 frases objetivas, com números e datas quando houver. No fim, cite as fontes pelo nome do site.`,
         input: [{ role: "user", content: [{ type: "input_text", text: pergunta }] }], max_output_tokens: 900, store: false
       }, { timeout: 60000 });
       return json({ resultado: textoDaResposta(d).trim() || "Não encontrei nada confiável sobre isso." });
