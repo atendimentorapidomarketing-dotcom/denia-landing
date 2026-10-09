@@ -51,6 +51,11 @@
         if (m) { r = P[i][1].replace(/\{(\d+)\}/g, function (_x, n) { var v = m[Number(n) + 1] || ""; var tv = profundidade < 2 ? traduzir(v, profundidade + 1) : null; return tv != null ? tv : v; }); break; }
       }
     }
+    if (r == null) {
+      // "Texto (12)": traduz o texto e mantém o número.
+      var c = nucleo.match(/^(.+?) \(([\d.,]+)\)$/);
+      if (c && T[c[1]] != null) r = T[c[1]] + " (" + c[2] + ")";
+    }
     if (r == null || r === nucleo) return null;
     var ini = texto.match(/^\s*/)[0], fim = texto.match(/\s*$/)[0];
     return ini + r + fim;
@@ -58,6 +63,8 @@
   window.denia_t = function (s) { var r = traduzir(s); return r == null ? s : r; };
 
   function excluido(el) { return el && el.closest && el.closest(EXCLUIR); }
+  // Caixas de texto: o conteúdo é da pessoa, mas o texto de exemplo (placeholder) é traduzido.
+  function soAtributos(el) { return el.tagName === "TEXTAREA" && !(el.parentElement && excluido(el.parentElement)); }
   function noTexto(n) {
     if (!n.parentElement || excluido(n.parentElement)) return;
     if (feitos.get(n) === n.data) return;
@@ -66,7 +73,7 @@
     feitos.set(n, n.data);
   }
   function elemento(el) {
-    if (excluido(el)) return;
+    if (excluido(el) && !soAtributos(el)) return;
     // Blocos com links e destaques (textos legais, perguntas): o bloco inteiro é traduzido.
     if (el.children.length && /^(P|LI|H1|H2|H3|SUMMARY|LABEL|TD|SPAN|SMALL|DIV)$/.test(el.tagName) && !el.dataset.i18nH) {
       var chave = limpo(el.textContent);
@@ -80,11 +87,12 @@
   }
   function percorrer(no) {
     if (no.nodeType === 3) { noTexto(no); return; }
-    if (no.nodeType !== 1 || excluido(no)) return;
+    if (no.nodeType !== 1) return;
+    if (excluido(no)) { if (soAtributos(no)) elemento(no); else no.querySelectorAll && no.querySelectorAll("textarea").forEach(function (t) { if (soAtributos(t)) elemento(t); }); return; }
     elemento(no);
     var it = document.createTreeWalker(no, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, null);
     var n;
-    while ((n = it.nextNode())) { if (n.nodeType === 3) noTexto(n); else elemento(n); }
+    while ((n = it.nextNode())) { if (n.nodeType === 3) noTexto(n); else if (n.tagName === "TEXTAREA") { if (soAtributos(n)) elemento(n); } else elemento(n); }
   }
   function tudo() {
     percorrer(document.body);
