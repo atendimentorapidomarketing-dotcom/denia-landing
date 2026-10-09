@@ -87,20 +87,23 @@
     // SQLite grava CURRENT_TIMESTAMP em UTC, sem fuso.
     return new Date(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}/.test(s) ? s.replace(" ", "T") + "Z" : s);
   }
-  const fmtDataHora = new Intl.DateTimeFormat("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
-  const fmtHora = new Intl.DateTimeFormat("pt-BR", { hour: "2-digit", minute: "2-digit" });
+  const IDIOMA = window.DENIA_IDIOMA || "pt-BR", LOCALE = window.DENIA_LOCALE || "pt-BR";
+  const fmtDataHora = new Intl.DateTimeFormat(LOCALE, { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
+  const fmtHora = new Intl.DateTimeFormat(LOCALE, { hour: "2-digit", minute: "2-digit" });
   function quando(v) {
     const d = dataDe(v);
     if (!d || isNaN(d)) return "—";
     const hoje = new Date();
-    return d.toDateString() === hoje.toDateString() ? "Hoje, " + fmtHora.format(d) : fmtDataHora.format(d);
+    return d.toDateString() === hoje.toDateString() ? `Hoje, ${fmtHora.format(d)}` : fmtDataHora.format(d);
   }
   // Para o meio de frases: "atualizado hoje, às 15:02" / "em 08/10/2026, às 15:02".
   function quandoFrase(v) {
     const d = dataDe(v);
     if (!d || isNaN(d)) return "—";
-    const dia = d.toDateString() === new Date().toDateString() ? "hoje" : "em " + new Intl.DateTimeFormat("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric" }).format(d);
-    return `${dia}, às ${fmtHora.format(d)}`;
+    const hora = fmtHora.format(d);
+    if (d.toDateString() === new Date().toDateString()) return `hoje, às ${hora}`;
+    const data = new Intl.DateTimeFormat(LOCALE, { day: "2-digit", month: "2-digit", year: "numeric" }).format(d);
+    return `em ${data}, às ${hora}`;
   }
   function telefone(t) {
     const d = String(t || "").replace(/\D/g, "");
@@ -111,7 +114,7 @@
     const p = String(nome || "?").trim().split(/\s+/);
     return ((p[0] || "?")[0] + (p.length > 1 ? p[p.length - 1][0] : "")).toUpperCase();
   }
-  const numero = n => new Intl.NumberFormat("pt-BR").format(Number(n) || 0);
+  const numero = n => new Intl.NumberFormat(LOCALE).format(Number(n) || 0);
   const carregando = (texto = "Carregando…") => h("div", { class: "carregando", text: texto });
   function vazio(titulo, texto, ic = ICONES.caixa) { return h("div", { class: "vazio" }, icone(ic), h("strong", { text: titulo }), texto ? h("span", { text: texto }) : null); }
   function cabeca(titulo, texto, ...acoes) {
@@ -150,7 +153,7 @@
     try {
       r = await fetch(caminho, {
         method: metodo, credentials: "same-origin",
-        headers: { accept: "application/json", "x-denia": "1", ...(corpo !== undefined ? { "content-type": "application/json" } : {}) },
+        headers: { accept: "application/json", "x-denia": "1", "x-denia-idioma": IDIOMA, ...(corpo !== undefined ? { "content-type": "application/json" } : {}) },
         body: corpo !== undefined ? JSON.stringify(corpo) : undefined
       });
     } catch { throw new ErroApi("Sem conexão. Verifique a internet e tente novamente.", 0); }
@@ -1053,7 +1056,9 @@
     if (u.trocar_senha) el.appendChild(h("p", { class: "nota nota-alerta", text: "Bem-vinda(o)! Para continuar, crie a sua senha pessoal no lugar da senha temporária." }));
     el.appendChild(cabeca("Conta e segurança", u.email + (u.super_admin ? " · administrador geral" : estado.org ? ` · ${NOME_PAPEL[estado.papel] || ""} na ${estado.org.nome}` : "")));
     const nome = h("input", { class: "entrada", value: u.nome || "", maxlength: "120" });
+    const seletorIdioma = window.denia_seletor_idioma ? window.denia_seletor_idioma() : null;
     const perfil = h("section", { class: "cartao vidro formulario" }, h("h3", { style: "margin:0", text: "Perfil" }), campo("Seu nome", nome),
+      seletorIdioma ? h("div", { class: "campo" }, h("label", { text: "Idioma / Language" }), seletorIdioma) : null,
       h("div", { class: "acoes" }, botao("Salvar nome", async () => {
         try { await api("/api/conta", { metodo: "POST", corpo: { acao: "perfil", nome: nome.value } }); u.nome = nome.value.trim(); $("usuario").textContent = u.nome || u.email; aviso("Nome atualizado.", "ok"); }
         catch (e) { aviso(e.message, "erro"); }
@@ -1468,6 +1473,7 @@
       pode("ADMIN") ? h("div", { class: "acoes", style: "margin-top:14px" }, botao("Editar", () => formMarca(m), "btn-secundario btn-pequeno"),
         botao("Remover", async () => { if (!(await modal({ titulo: `Remover ${m.nome}?`, conteudo: "Os posts já criados continuam guardados.", confirmar: "Remover", perigo: true }))) return; await mk(`marcas/${m.id}/remover`, { metodo: "POST", corpo: {} }); navegar(); }, "btn-perigo btn-pequeno")) : null)));
   }
+  const IDIOMAS_CONTEUDO = [["pt-BR", "Português (Brasil)"], ["en", "English"], ["es", "Español"], ["de", "Deutsch"], ["it", "Italiano"], ["fr", "Français"], ["ja", "日本語"]];
   function formMarca(m) {
     const c = {};
     const linha = (k, rot, ph, area) => { c[k] = area ? h("textarea", { class: "entrada", value: m[k] || "", placeholder: ph || "", style: "min-height:80px" }) : h("input", { class: "entrada", value: m[k] || "", placeholder: ph || "" }); return campo(rot, c[k]); };
@@ -1475,7 +1481,8 @@
       h("div", { class: "linha-form" }, linha("nome", "Nome da marca"), linha("segmento", "Segmento", "Ex.: assistência técnica")),
       h("div", { class: "linha-form" }, linha("cidade", "Cidade / região", "Ex.: Rio de Janeiro — Zona Sul"), linha("whatsapp", "WhatsApp", "Ex.: (21) 99999-9999")),
       h("div", { class: "linha-form" }, linha("instagram", "Instagram", "@perfil"), linha("facebook", "Página do Facebook", "Endereço da página"), linha("google", "Perfil no Google", "Nome ou link do perfil")),
-      h("div", { class: "linha-form" }, linha("site", "Site", "https://"), linha("cores", "Cores da marca", "Ex.: azul-marinho e dourado")),
+      h("div", { class: "linha-form" }, linha("site", "Site", "https://"), linha("cores", "Cores da marca", "Ex.: azul-marinho e dourado"),
+        campo("Idioma do conteúdo", c.idioma = h("select", { class: "entrada" }, IDIOMAS_CONTEUDO.map(([v, n]) => h("option", { value: v, text: n, selected: (m.idioma || (m.id ? "pt-BR" : IDIOMA)) === v }))))),
       linha("tom", "Tom de voz", "Ex.: próximo, acolhedor, sem gírias"), linha("publico", "Público", "Quem são os clientes", true), linha("diferenciais", "Diferenciais", "O que a marca faz melhor que os concorrentes", true),
       h("div", { class: "acoes" }, botao("Salvar marca", async () => {
         try { const corpo = { id: m.id }; Object.keys(c).forEach(k => { corpo[k] = c[k].value; }); await mk("marcas", { metodo: "POST", corpo }); aviso("Marca salva.", "ok"); fechar(); cacheMarcas = null; navegar(); }
@@ -1706,7 +1713,7 @@
   async function falar(texto) {
     estadoAssistente("Falando…");
     try {
-      const r = await fetch(`/api/orgs/${estado.org.id}/assistente/falar`, { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json", "x-denia": "1" }, body: JSON.stringify({ texto: texto.slice(0, 1500) }) });
+      const r = await fetch(`/api/orgs/${estado.org.id}/assistente/falar`, { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json", "x-denia": "1", "x-denia-idioma": IDIOMA }, body: JSON.stringify({ texto: texto.slice(0, 1500) }) });
       if (!r.ok) throw new Error("voz indisponível");
       const url = URL.createObjectURL(await r.blob());
       if (assistente.audio) assistente.audio.pause();
@@ -1716,7 +1723,7 @@
       URL.revokeObjectURL(url);
     } catch {
       // Sem a voz da OpenAI, usa a voz do próprio aparelho.
-      if (window.speechSynthesis) await new Promise(fim => { const u = new SpeechSynthesisUtterance(texto); u.lang = "pt-BR"; u.onend = u.onerror = fim; window.speechSynthesis.speak(u); setTimeout(fim, 60000); });
+      if (window.speechSynthesis) await new Promise(fim => { const u = new SpeechSynthesisUtterance(texto); u.lang = LOCALE; u.onend = u.onerror = fim; window.speechSynthesis.speak(u); setTimeout(fim, 60000); });
     }
     estadoAssistente();
   }
@@ -1749,7 +1756,7 @@
       if (blob.size < 1200) { estadoAssistente(); return; }
       estadoAssistente("Transcrevendo…");
       try {
-        const r = await fetch(`/api/orgs/${estado.org.id}/assistente/transcrever`, { method: "POST", credentials: "same-origin", headers: { "content-type": blob.type, "x-denia": "1" }, body: blob });
+        const r = await fetch(`/api/orgs/${estado.org.id}/assistente/transcrever`, { method: "POST", credentials: "same-origin", headers: { "content-type": blob.type, "x-denia": "1", "x-denia-idioma": IDIOMA }, body: blob });
         const d = await r.json().catch(() => ({}));
         if (!r.ok) throw Object.assign(new Error(d.erro || "Não consegui entender o áudio."), { dados: d });
         if (!d.texto) { estadoAssistente(); if (modo === "voz" && assistente.continua) alternarGravacao("voz"); return; }

@@ -283,14 +283,18 @@ test("Plataforma — criar conta: empresa própria, sem configuração e sem ace
   const p = await criarPlataforma({ DENIA_ENGINE_URL: "https://engine.test", DENIA_PLATFORM_SERVICE_TOKEN: TOKEN_ENGINE });
   const fraca = await p.req("/api/cadastro", { metodo: "POST", quem: "novo", corpo: { nome: "Rafa", empresa: "Clínica Sol", email: "rafa@sol.test", senha: "123" } });
   assert.equal(fraca.status, 400);
-  const r = await p.req("/api/cadastro", { metodo: "POST", quem: "novo", corpo: { nome: "Rafa", empresa: "Clínica Sol", email: "Rafa@Sol.test", senha: "SenhaDaRafa2026" } });
+  const semAceite = await p.req("/api/cadastro", { metodo: "POST", quem: "novo", corpo: { nome: "Rafa", empresa: "Clínica Sol", email: "Rafa@Sol.test", senha: "SenhaDaRafa2026" } });
+  assert.equal(semAceite.status, 400, "sem aceitar os Termos não cria conta");
+  const r = await p.req("/api/cadastro", { metodo: "POST", quem: "novo", corpo: { nome: "Rafa", empresa: "Clínica Sol", email: "Rafa@Sol.test", senha: "SenhaDaRafa2026", aceite: true, idioma: "pt-BR" } });
   assert.equal(r.status, 200);
+  const aceite = p.env.DB.q("SELECT detalhe, ip FROM plt_auditoria WHERE acao='ACEITE'")[0];
+  assert.match(aceite.detalhe, /Termos de uso 2026-10/, "o aceite fica registrado com a versão");
   const eu = await p.req("/api/eu", { quem: "novo" });
   assert.deepEqual(eu.dados.organizacoes.map(o => [o.nome, o.papel, o.conectada]), [["Clínica Sol", "OWNER", false]]);
   const id = eu.dados.organizacoes[0].id;
   assert.equal((await p.req(`/api/orgs/${id}/engine/training`, { quem: "novo" })).dados.codigo, "ENGINE_NAO_CONFIGURADO");
   assert.equal((await p.req("/api/orgs/1/engine/training", { quem: "novo" })).status, 404, "não vê a IA da Central");
-  const repetido = await p.req("/api/cadastro", { metodo: "POST", corpo: { nome: "Xavier", empresa: "Ypsilon", email: "rafa@sol.test", senha: "SenhaDaRafa2026" } });
+  const repetido = await p.req("/api/cadastro", { metodo: "POST", corpo: { nome: "Xavier", empresa: "Ypsilon", email: "rafa@sol.test", senha: "SenhaDaRafa2026", aceite: true } });
   assert.equal(repetido.status, 409);
   await p.entrar("admin", ADMIN, SENHA_ADMIN);
   const st = await p.req("/api/orgs/1/engine/status", { quem: "admin" });
@@ -623,4 +627,21 @@ test("Voz ao vivo — chave temporária com ferramentas, pesquisa na internet, e
   const nova = await p.req("/api/admin/organizacoes", { metodo: "POST", quem: "admin", corpo: { nome: "Outra Empresa" } });
   const k = (await p.req(`/api/orgs/${nova.dados.id}/ia/chave`, { quem: "admin" })).dados;
   assert.deepEqual([k.configurada, k.origem], [true, "central"]);
+});
+
+test("Idiomas — cada marca cria no seu idioma e a DENIA responde no idioma do painel", async () => {
+  const p = await criarPlataforma({ OPENAI_API_KEY: "sk-teste" });
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  const m = await p.req("/api/orgs/1/mk/marcas", { metodo: "POST", quem: "admin", corpo: { nome: "Sakura Dental", idioma: "ja" } });
+  const ruim = await p.req("/api/orgs/1/mk/marcas", { metodo: "POST", quem: "admin", corpo: { nome: "Outra", idioma: "klingon" } });
+  const lista = (await p.req("/api/orgs/1/mk/marcas", { quem: "admin" })).dados.marcas;
+  assert.deepEqual(lista.map(x => [x.nome, x.idioma]), [["Outra", "pt-BR"], ["Sakura Dental", "ja"]], "idioma inválido vira português");
+  let instr = "";
+  p.openai = (url, corpo) => { instr = JSON.stringify(corpo); return { output: [{ content: [{ type: "output_text", text: JSON.stringify({ titulo: "t", legenda: "l", hashtags: "", chamada: "", ideia_imagem: "" }) }] }] }; };
+  await p.req("/api/orgs/1/mk/ia/legenda", { metodo: "POST", quem: "admin", corpo: { marca_id: m.dados.id, tema: "limpeza" } });
+  assert.match(instr, /IDIOMA DO CONTEÚDO: japonês/);
+  assert.ok(ruim.dados.id);
+  const r = await p.req("/api/orgs/1/assistente/conversa", { metodo: "POST", quem: "admin", cabecalhos: { "x-denia-idioma": "de" }, corpo: { mensagens: [{ papel: "usuario", texto: "Hallo" }] } });
+  assert.equal(r.status, 200);
+  assert.match(instr, /alemão \(Deutsch\)/, "a DENIA fala alemão quando o painel está em alemão");
 });

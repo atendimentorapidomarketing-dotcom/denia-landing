@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <script src="/assets/js/i18n.js"></script>
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Fale conosco — DENIA</title>
-  <meta name="description" content="Fale com a equipe DENIA: demonstração, planos, implantação e suporte.">
+  <title>Exclusão de dados — DENIA</title>
+  <meta name="description" content="Condições de uso da plataforma DENIA.">
   <meta name="theme-color" content="#04060c">
   <link rel="icon" href="/assets/img/logo.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="/apple-touch-icon.png">
@@ -51,39 +51,31 @@
   <main id="conteudo" class="pagina">
     <section class="pagina-topo">
       <div class="container estreito">
-        <span class="sobretitulo">Contato</span>
-        <h1>Vamos conversar sobre a sua operação.</h1>
-        <p>Conte um pouco sobre a sua empresa. A nossa equipe responde em até um dia útil.</p>
+        <span class="sobretitulo">Privacidade</span>
+        <h1>Exclusão de dados</h1>
+        <p>Como pedir a exclusão dos seus dados e desconectar contas do Instagram, do Facebook e do Google.</p>
       </div>
     </section>
-    <section class="container contato-grade">
-      <form class="vidro contato-form" id="form-contato" novalidate>
-        <div class="linha-dupla">
-          <div class="campo"><label for="c-nome">Nome</label><input class="entrada" id="c-nome" name="nome" autocomplete="name" maxlength="120" required></div>
-          <div class="campo"><label for="c-empresa">Empresa</label><input class="entrada" id="c-empresa" name="empresa" autocomplete="organization" maxlength="120"></div>
-        </div>
-        <div class="linha-dupla">
-          <div class="campo"><label for="c-email">E-mail</label><input class="entrada" id="c-email" name="email" type="email" autocomplete="email" required></div>
-          <div class="campo"><label for="c-telefone">WhatsApp</label><input class="entrada" id="c-telefone" name="telefone" type="tel" autocomplete="tel" maxlength="40"></div>
-        </div>
-        <div class="campo"><label for="c-assunto">Assunto</label>
-          <select class="entrada" id="c-assunto" name="assunto">
-            <option>Quero uma demonstração</option><option>Planos e valores</option><option>Implantação</option><option>Suporte</option><option>Parcerias</option><option>Exclusão de dados</option><option>Privacidade e LGPD</option><option>Outro assunto</option>
-          </select>
-        </div>
-        <div class="campo"><label for="c-mensagem">Mensagem</label><textarea class="entrada" id="c-mensagem" name="mensagem" maxlength="3000" required></textarea></div>
-        <input class="isca" type="text" name="site" tabindex="-1" autocomplete="off" aria-hidden="true">
-        <p class="entrar-erro oculto" id="c-erro" role="alert"></p>
-        <p class="entrar-ok oculto" id="c-ok" role="status"></p>
-        <button class="btn btn-primario" id="c-botao" type="submit">Enviar mensagem</button>
-        <p class="contato-nota">Ao enviar, você concorda com a nossa <a href="/privacidade">Política de privacidade</a>.</p>
-      </form>
-      <aside class="contato-lado">
-        <div class="vidro contato-cartao"><h3>Demonstração guiada</h3><p>Mostramos a DENIA funcionando com o fluxo real da sua empresa: atendimento, profissionais e agenda.</p></div>
-        <div class="vidro contato-cartao"><h3>Implantação acompanhada</h3><p>Treinamos a IA com os seus serviços, preços e o jeito de falar da sua equipe.</p></div>
-        <div class="vidro contato-cartao"><h3>Já é cliente?</h3><p>Entre no centro de comando para falar com o suporte e acompanhar a sua operação.</p><a class="btn btn-secundario btn-pequeno" href="/entrar">Acessar a plataforma</a></div>
-      </aside>
-    </section>
+    <article class="container estreito texto-legal vidro">
+      <p>Você pode pedir a exclusão dos seus dados pessoais tratados pela DENIA a qualquer momento. Esta página também atende às exigências da Meta (Instagram, Facebook e WhatsApp) e do Google para aplicativos conectados.</p>
+
+      <h2>1. Se você é cliente de uma empresa que usa a DENIA</h2>
+      <p>Mensagens e dados de atendimento pertencem à empresa com quem você conversou (a controladora). Peça a exclusão a ela, pelo próprio WhatsApp ou canal de atendimento. Se preferir, faça o pedido para nós pelo formulário abaixo, informando o nome da empresa e o número de telefone usado; encaminharemos e ajudaremos a atender.</p>
+
+      <h2>2. Se você conectou Instagram, Facebook ou Google à DENIA</h2>
+      <ul>
+        <li>No painel da DENIA, em <strong>Integrações</strong>, desconecte a conta. Os tokens de acesso são apagados na hora.</li>
+        <li>Você também pode remover o acesso pelas configurações da própria plataforma: no Facebook/Instagram, em <em>Configurações → Segurança → Aplicativos e sites</em>; no Google, em <em>myaccount.google.com → Segurança → Apps com acesso à sua conta</em>.</li>
+        <li>Depois disso, os dados obtidos dessas contas (mensagens, comentários, avaliações e métricas) são excluídos em até 30 dias, salvo o que a lei exigir guardar.</li>
+      </ul>
+
+      <h2>3. Se você tem uma conta na DENIA</h2>
+      <p>O proprietário da empresa pode pedir o encerramento da conta e a exclusão de todos os dados. Antes, se quiser, pedimos a exportação.</p>
+
+      <h2>4. Como pedir</h2>
+      <p>Envie o pedido pela página <a href="/contato?assunto=Exclus%C3%A3o%20de%20dados">Fale conosco</a>, com o assunto "Exclusão de dados", informando o seu nome, o e-mail ou telefone usado e o que deseja excluir. Confirmamos a sua identidade e respondemos em até 15 dias, com um código de confirmação do pedido.</p>
+      <p class="texto-legal-data">Última atualização: outubro de 2026.</p>
+    </article>
   </main>
 
   <footer class="rodape">
@@ -103,6 +95,5 @@
   </footer>
 
   <script src="/assets/js/site.js" defer></script>
-  <script src="/assets/js/contato.js" defer></script>
 </body>
 </html>

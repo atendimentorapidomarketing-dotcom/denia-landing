@@ -13,7 +13,8 @@
 }
 .topo-linha { display: flex; align-items: center; gap: 24px; min-height: 68px; }
 .marca { display: inline-flex; align-items: center; gap: 10px; font-weight: 800; letter-spacing: 0.14em; font-size: 15px; }
-.menu { display: flex; gap: 26px; margin-left: auto; font-size: 15px; color: var(--texto-2); }
+.menu { display: flex; gap: 22px; margin-left: auto; padding-left: 28px; font-size: 14.5px; color: var(--texto-2); }
+.menu a { white-space: nowrap; }
 .menu a:hover { color: var(--texto); }
 .topo-acoes { display: flex; gap: 10px; align-items: center; }
 .menu-botao { display: none; width: 44px; height: 44px; border-radius: 12px; border: 1px solid var(--borda-forte); background: var(--painel-forte); cursor: pointer; padding: 12px 11px; flex-direction: column; justify-content: space-between; }
@@ -111,13 +112,16 @@
   .grade-planos { grid-template-columns: repeat(2, 1fr); }
   .etapas { grid-template-columns: repeat(2, 1fr); }
 }
-@media (max-width: 900px) {
+/* Menu do topo vira botão antes de apertar: textos em alemão ou japonês são mais longos. */
+@media (max-width: 1240px) {
   .menu { display: none; position: absolute; top: 68px; left: 0; right: 0; flex-direction: column; gap: 0; padding: 8px 16px 16px; background: rgba(4, 6, 12, 0.96); border-bottom: 1px solid var(--borda); }
   .menu.aberto { display: flex; }
   .menu a { padding: 14px 4px; border-bottom: 1px solid var(--borda); }
   .menu-botao { display: flex; }
   .topo-acoes { margin-left: auto; }
   .topo-acoes .js-contato { display: none !important; }
+}
+@media (max-width: 900px) {
   .hero { padding-top: 44px; }
   .hero-grade, .seguranca-grade { grid-template-columns: 1fr; gap: 40px; }
   .hero-visual { min-height: 0; }
@@ -294,3 +298,10 @@ html, body { overflow-x: clip; }
 @keyframes pulsoZap { 0% { box-shadow: 0 14px 34px -10px rgba(37, 211, 102, 0.8), 0 0 0 0 rgba(37, 211, 102, 0.55); } 70%, 100% { box-shadow: 0 14px 34px -10px rgba(37, 211, 102, 0.8), 0 0 0 16px rgba(37, 211, 102, 0); } }
 @media (max-width: 640px) { .whats-flutuante { right: 14px; bottom: 14px; padding: 14px; } .whats-flutuante span { display: none; } }
 @media (prefers-reduced-motion: reduce) { .whats-flutuante { animation: none; } }
+
+/* Estado de cada recurso (sem promessas escondidas) */
+.estado { display: inline-flex; align-items: center; gap: 6px; margin-bottom: 12px; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; letter-spacing: 0.02em; }
+.estado::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.estado-ok { color: #86efac; background: rgba(34, 197, 94, 0.12); border: 1px solid rgba(34, 197, 94, 0.35); }
+.estado-breve { color: #a5b4fc; background: rgba(99, 102, 241, 0.14); border: 1px solid rgba(99, 102, 241, 0.4); }
+.planos-nota { margin-top: 10px; font-size: 13px; color: var(--texto-3, #94a3b8); }
