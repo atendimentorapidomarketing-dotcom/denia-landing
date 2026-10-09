@@ -22,7 +22,7 @@
 
 import { apiMarketing, apiAssistente } from "./marketing.js";
 
-const VERSAO = "2.8.0";
+const VERSAO = "3.0.0";
 // Versão dos Termos de uso e da Política de privacidade aceitas no cadastro.
 const VERSAO_TERMOS = "2026-10";
 // WhatsApp da Central de Atendimento (botão flutuante do site).

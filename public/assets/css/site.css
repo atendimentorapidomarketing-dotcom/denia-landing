@@ -13,7 +13,7 @@
 }
 .topo-linha { display: flex; align-items: center; gap: 24px; min-height: 68px; }
 .marca { display: inline-flex; align-items: center; gap: 10px; font-weight: 800; letter-spacing: 0.14em; font-size: 15px; }
-.menu { display: flex; gap: 26px; margin-left: auto; font-size: 15px; color: var(--texto-2); }
+.menu { display: flex; gap: 22px; margin-left: auto; padding-left: 28px; font-size: 14.5px; color: var(--texto-2); }
 .menu a { white-space: nowrap; }
 .menu a:hover { color: var(--texto); }
 .topo-acoes { display: flex; gap: 10px; align-items: center; }
