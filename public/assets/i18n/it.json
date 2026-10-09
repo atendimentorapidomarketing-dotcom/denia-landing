@@ -1239,7 +1239,12 @@
   "🔎 Pesquisando:": "🔎 Ricerca:",
   "aprovados": "approvati",
   "Idioma / Language": "Lingua",
-  "A chave da OpenAI foi recusada. Cole uma chave válida em Integrações → Inteligência da DENIA (OpenAI).": "OpenAI ha rifiutato la chiave. Incolli una chiave valida in Integrazioni → Intelligenza di DENIA (OpenAI)."
+  "A chave da OpenAI foi recusada. Cole uma chave válida em Integrações → Inteligência da DENIA (OpenAI).": "OpenAI ha rifiutato la chiave. Incolli una chiave valida in Integrazioni → Intelligenza di DENIA (OpenAI).",
+  "atende": "assiste",
+  "entende": "capisce",
+  "aprende": "impara",
+  "agenda": "pianifica",
+  "resolve": "risolve"
  },
  "h": {
   "1 lugarpara toda a operação": "<strong>1 posto</strong><span>per tutte le operazioni</span>",

@@ -189,12 +189,15 @@
   }
 
   // ---------- Palavra viva no título ----------
-  var palavra = document.getElementById("palavra-viva");
-  if (palavra && !semMovimento) {
+  // O elemento é buscado a cada troca: a tradução substitui o título inteiro.
+  if (document.getElementById("palavra-viva") && !semMovimento) {
     var palavras = ["atende", "entende", "aprende", "agenda", "resolve"], k = 0;
+    var traduzir = function (w) { return window.denia_t ? window.denia_t(w) : w; };
     setInterval(function () {
+      var palavra = document.getElementById("palavra-viva");
+      if (!palavra) return;
       palavra.classList.add("trocando");
-      setTimeout(function () { k = (k + 1) % palavras.length; palavra.textContent = palavras[k]; palavra.classList.remove("trocando"); }, 350);
+      setTimeout(function () { k = (k + 1) % palavras.length; palavra.textContent = traduzir(palavras[k]); palavra.classList.remove("trocando"); }, 350);
     }, 2600);
   }
 
