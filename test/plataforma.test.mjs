@@ -645,3 +645,11 @@ test("Idiomas — cada marca cria no seu idioma e a DENIA responde no idioma do 
   assert.equal(r.status, 200);
   assert.match(instr, /alemão \(Deutsch\)/, "a DENIA fala alemão quando o painel está em alemão");
 });
+
+test("Site — páginas, scripts e dicionários de idioma sempre conferem se há versão nova", async () => {
+  const p = await criarPlataforma();
+  for (const c of ["/", "/assets/i18n/ja.json", "/assets/js/site.js", "/termos"]) {
+    const r = await p.req(c);
+    assert.equal(r.r.headers.get("cache-control"), "no-cache", c);
+  }
+});
