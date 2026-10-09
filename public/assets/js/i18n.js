@@ -112,7 +112,9 @@
     }).observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ATRIBUTOS });
   }
 
-  var pronto = fetch("/assets/i18n/" + idioma + ".json", { cache: "force-cache" }).then(function (r) { return r.ok ? r.json() : {}; }).catch(function () { return {}; });
+  // A versão muda sempre que um dicionário muda (scripts/i18n.mjs atualiza): o navegador nunca fica com tradução velha.
+  var VERSAO_DICIONARIOS = "57712ab1fa";
+  var pronto = fetch("/assets/i18n/" + idioma + ".json?v=" + VERSAO_DICIONARIOS).then(function (r) { return r.ok ? r.json() : {}; }).catch(function () { return {}; });
   var comecar = function () {
     pronto.then(function (d) {
       T = d.t || {}; H = d.h || {};

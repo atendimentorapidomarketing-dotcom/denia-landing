@@ -956,6 +956,8 @@ function comSeguranca(resposta, request) {
   h.set("permissions-policy", "camera=(), microphone=(self), geolocation=(), payment=()");
   h.set("cross-origin-opener-policy", "same-origin");
   const caminho = new URL(request.url).pathname;
+  // Páginas, scripts, estilos e dicionários: o navegador sempre confere se há versão nova (resposta rápida 304 quando não há).
+  if (caminho.startsWith("/assets/i18n/") || caminho.startsWith("/assets/js/") || caminho.startsWith("/assets/css/") || caminho.endsWith(".html") || !caminho.split("/").pop().includes(".")) h.set("cache-control", "no-cache");
   if (caminho.startsWith("/api/") || caminho.startsWith("/app") || caminho.startsWith("/entrar") || caminho.startsWith("/cadastro") || caminho.startsWith("/recuperar") || caminho.startsWith("/redefinir")) h.set("cache-control", "no-store");
   return new Response(resposta.body, { status: resposta.status, statusText: resposta.statusText, headers: h });
 }
