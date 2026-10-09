@@ -1238,7 +1238,8 @@
   "🎙 Conversar por voz": "🎙 Parler à voix haute",
   "🔎 Pesquisando:": "🔎 Recherche :",
   "aprovados": "validés",
-  "Idioma / Language": "Langue"
+  "Idioma / Language": "Langue",
+  "A chave da OpenAI foi recusada. Cole uma chave válida em Integrações → Inteligência da DENIA (OpenAI).": "OpenAI a refusé la clé. Collez une clé valide dans Intégrations → Intelligence de DENIA (OpenAI)."
  },
  "h": {
   "1 lugarpara toda a operação": "<strong>1 seul endroit</strong><span>pour toute l'activité</span>",

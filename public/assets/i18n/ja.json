@@ -1238,7 +1238,8 @@
   "🎙 Conversar por voz": "🎙 音声で会話",
   "🔎 Pesquisando:": "🔎 検索中：",
   "aprovados": "承認済み",
-  "Idioma / Language": "言語"
+  "Idioma / Language": "言語",
+  "A chave da OpenAI foi recusada. Cole uma chave válida em Integrações → Inteligência da DENIA (OpenAI).": "OpenAIがキーを拒否しました。連携 → DENIAインテリジェンス（OpenAI）に有効なキーを貼り付けてください。"
  },
  "h": {
   "1 lugarpara toda a operação": "<strong>1か所</strong><span>で業務全体を管理</span>",
