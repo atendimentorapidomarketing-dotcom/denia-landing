@@ -159,3 +159,5 @@ textarea.entrada { min-height: 140px; resize: vertical; line-height: 1.5; }
 html.i18n-carregando body { visibility: hidden; }
 .seletor-idioma { appearance: none; -webkit-appearance: none; min-height: 34px; padding: 4px 28px 4px 12px; border-radius: 999px; border: 1px solid rgba(148, 163, 184, 0.35); background: rgba(15, 23, 42, 0.6) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") no-repeat right 8px center / 14px; color: inherit; font: inherit; font-size: 13px; cursor: pointer; }
 .seletor-idioma option { background: #0b1020; color: #e2e8f0; }
+@media (max-width: 1400px) { .topo-acoes .js-contato { display: none !important; } }
+@media (max-width: 620px) { .topo-acoes .seletor-idioma, .barra-topo-direita .seletor-idioma { display: none; } }

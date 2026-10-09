@@ -27,7 +27,7 @@
   window.DENIA_LOCALE = LOCALES[idioma];
   document.documentElement.lang = idioma;
   window.denia_t = function (s) { return s; };
-  if (idioma === "pt-BR") { window.addEventListener("DOMContentLoaded", function () { colocarSeletor(); }); return; }
+  if (idioma === "pt-BR") { window.denia_seletor_idioma = novoSeletor; window.addEventListener("DOMContentLoaded", function () { colocarSeletor(); }); return; }
 
   var raiz = document.documentElement;
   raiz.classList.add("i18n-carregando");
@@ -126,17 +126,22 @@
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", comecar); else comecar();
 
   // Seletor de idioma: no topo do site, no rodapé, nas telas de entrada e no painel.
+  function novoSeletor() {
+    var s = document.createElement("select");
+    s.className = "seletor-idioma";
+    s.setAttribute("aria-label", "Idioma / Language");
+    s.setAttribute("data-sem-traducao", "");
+    IDIOMAS.forEach(function (x) { var o = document.createElement("option"); o.value = x[0]; o.textContent = x[1]; if (x[0] === idioma) o.selected = true; s.appendChild(o); });
+    s.addEventListener("change", function () { gravar(s.value); var u = new URL(location.href); u.searchParams.delete("lang"); location.replace(u.toString()); });
+    return s;
+  }
+  window.denia_seletor_idioma = novoSeletor;
   function colocarSeletor() {
     var lugares = [".topo-acoes", ".barra-topo-direita", ".auth-links", ".rodape-base"];
     lugares.forEach(function (sel) {
       var alvo = document.querySelector(sel);
       if (!alvo || alvo.querySelector(".seletor-idioma")) return;
-      var s = document.createElement("select");
-      s.className = "seletor-idioma";
-      s.setAttribute("aria-label", "Idioma / Language");
-      s.setAttribute("data-sem-traducao", "");
-      IDIOMAS.forEach(function (x) { var o = document.createElement("option"); o.value = x[0]; o.textContent = x[1]; if (x[0] === idioma) o.selected = true; s.appendChild(o); });
-      s.addEventListener("change", function () { gravar(s.value); var u = new URL(location.href); u.searchParams.delete("lang"); location.replace(u.toString()); });
+      var s = novoSeletor();
       if (sel === ".rodape-base") { var velho = Array.prototype.find.call(alvo.querySelectorAll("p"), function (p) { return /Português \(Brasil\)/.test(p.textContent); }); if (velho) { velho.replaceWith(s); return; } }
       if (sel === ".topo-acoes" || sel === ".barra-topo-direita") alvo.insertBefore(s, alvo.firstChild); else alvo.appendChild(s);
     });

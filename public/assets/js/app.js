@@ -1056,7 +1056,9 @@
     if (u.trocar_senha) el.appendChild(h("p", { class: "nota nota-alerta", text: "Bem-vinda(o)! Para continuar, crie a sua senha pessoal no lugar da senha temporária." }));
     el.appendChild(cabeca("Conta e segurança", u.email + (u.super_admin ? " · administrador geral" : estado.org ? ` · ${NOME_PAPEL[estado.papel] || ""} na ${estado.org.nome}` : "")));
     const nome = h("input", { class: "entrada", value: u.nome || "", maxlength: "120" });
+    const seletorIdioma = window.denia_seletor_idioma ? window.denia_seletor_idioma() : null;
     const perfil = h("section", { class: "cartao vidro formulario" }, h("h3", { style: "margin:0", text: "Perfil" }), campo("Seu nome", nome),
+      seletorIdioma ? h("div", { class: "campo" }, h("label", { text: "Idioma / Language" }), seletorIdioma) : null,
       h("div", { class: "acoes" }, botao("Salvar nome", async () => {
         try { await api("/api/conta", { metodo: "POST", corpo: { acao: "perfil", nome: nome.value } }); u.nome = nome.value.trim(); $("usuario").textContent = u.nome || u.email; aviso("Nome atualizado.", "ok"); }
         catch (e) { aviso(e.message, "erro"); }
