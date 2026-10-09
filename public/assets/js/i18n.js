@@ -4,6 +4,7 @@
 (function () {
   "use strict";
   var IDIOMAS = [["pt-BR", "Português"], ["en", "English"], ["es", "Español"], ["de", "Deutsch"], ["it", "Italiano"], ["fr", "Français"], ["ja", "日本語"]];
+  var CURTO = { "pt-BR": "PT", en: "EN", es: "ES", de: "DE", it: "IT", fr: "FR", ja: "JA" };
   var LOCALES = { "pt-BR": "pt-BR", en: "en-US", es: "es-ES", de: "de-DE", it: "it-IT", fr: "fr-FR", ja: "ja-JP" };
   var valido = function (c) { return IDIOMAS.some(function (x) { return x[0] === c; }); };
   function normalizar(c) {
@@ -27,7 +28,7 @@
   window.DENIA_LOCALE = LOCALES[idioma];
   document.documentElement.lang = idioma;
   window.denia_t = function (s) { return s; };
-  if (idioma === "pt-BR") { window.denia_seletor_idioma = novoSeletor; window.addEventListener("DOMContentLoaded", function () { colocarSeletor(); }); return; }
+  if (idioma === "pt-BR") { window.denia_seletor_idioma = novoSeletor;  window.addEventListener("DOMContentLoaded", function () { colocarSeletor(); }); return; }
 
   var raiz = document.documentElement;
   raiz.classList.add("i18n-carregando");
@@ -136,12 +137,40 @@
     return s;
   }
   window.denia_seletor_idioma = novoSeletor;
+  // Botão compacto com globo (topo do site, telas de entrada e painel): sempre visível, também no celular.
+  function novoBotao() {
+    var caixa = document.createElement("div");
+    caixa.className = "idioma-menu";
+    caixa.setAttribute("data-sem-traducao", "");
+    var b = document.createElement("button");
+    b.type = "button"; b.className = "idioma-botao"; b.setAttribute("aria-haspopup", "true"); b.setAttribute("aria-expanded", "false");
+    b.setAttribute("aria-label", "Idioma / Language");
+    var ns = "http://www.w3.org/2000/svg", g = document.createElementNS(ns, "svg");
+    g.setAttribute("viewBox", "0 0 24 24"); g.setAttribute("aria-hidden", "true");
+    ["M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18z", "M3 12h18", "M12 3c2.5 2.7 3.8 5.7 3.8 9s-1.3 6.3-3.8 9c-2.5-2.7-3.8-5.7-3.8-9S9.5 5.7 12 3z"].forEach(function (d) { var pth = document.createElementNS(ns, "path"); pth.setAttribute("d", d); g.appendChild(pth); });
+    var rot = document.createElement("span"); rot.textContent = CURTO[idioma];
+    b.appendChild(g); b.appendChild(rot);
+    var lista = document.createElement("ul"); lista.className = "idioma-lista"; lista.hidden = true;
+    IDIOMAS.forEach(function (x) {
+      var li = document.createElement("li"), op = document.createElement("button");
+      op.type = "button"; op.lang = x[0]; op.textContent = x[1];
+      if (x[0] === idioma) op.setAttribute("aria-current", "true");
+      op.addEventListener("click", function () { gravar(x[0]); var u = new URL(location.href); u.searchParams.delete("lang"); location.replace(u.toString()); });
+      li.appendChild(op); lista.appendChild(li);
+    });
+    var abrir = function (sim) { lista.hidden = !sim; b.setAttribute("aria-expanded", sim ? "true" : "false"); };
+    b.addEventListener("click", function (e) { e.stopPropagation(); abrir(lista.hidden); });
+    document.addEventListener("click", function () { abrir(false); });
+    document.addEventListener("keydown", function (e) { if (e.key === "Escape") abrir(false); });
+    caixa.appendChild(b); caixa.appendChild(lista);
+    return caixa;
+  }
   function colocarSeletor() {
     var lugares = [".topo-acoes", ".barra-topo-direita", ".auth-links", ".rodape-base"];
     lugares.forEach(function (sel) {
       var alvo = document.querySelector(sel);
-      if (!alvo || alvo.querySelector(".seletor-idioma")) return;
-      var s = novoSeletor();
+      if (!alvo || alvo.querySelector(".seletor-idioma, .idioma-menu")) return;
+      var s = sel === ".rodape-base" ? novoSeletor() : novoBotao();
       if (sel === ".rodape-base") { var velho = Array.prototype.find.call(alvo.querySelectorAll("p"), function (p) { return /Português \(Brasil\)/.test(p.textContent); }); if (velho) { velho.replaceWith(s); return; } }
       if (sel === ".topo-acoes" || sel === ".barra-topo-direita") alvo.insertBefore(s, alvo.firstChild); else alvo.appendChild(s);
     });

@@ -63,7 +63,7 @@ async function openai(env, caminho, corpo, extras = {}) {
   const d = await r.json().catch(() => ({}));
   if (!r.ok) {
     const msg = d?.error?.message || `HTTP ${r.status}`;
-    const e = new Error(r.status === 401 ? "A chave da OpenAI foi recusada. Confira o OPENAI_API_KEY no Worker denia-landing." : r.status === 429 ? "A OpenAI recusou por limite ou falta de crédito na conta. Confira em platform.openai.com → Billing." : "A IA não conseguiu responder agora: " + msg);
+    const e = new Error(r.status === 401 ? "A chave da OpenAI foi recusada. Cole uma chave válida em Integrações → Inteligência da DENIA (OpenAI)." : r.status === 429 ? "A OpenAI recusou por limite ou falta de crédito na conta. Confira em platform.openai.com → Billing." : "A IA não conseguiu responder agora: " + msg);
     e.status = r.status;
     throw e;
   }
@@ -315,7 +315,14 @@ Responda em JSON: {"titulo":"","legenda":"","hashtags":"","chamada":"","ideia_im
         const prompt = `Arte profissional para redes sociais da marca "${marca.nome}" (${marca.segmento || "serviços"}${marca.cidade ? ", " + marca.cidade : ""}). ${marca.cores ? "Cores da marca: " + marca.cores + ". " : ""}${ideia}. Visual moderno, limpo, de agência de alto padrão, boa iluminação, composição equilibrada; se houver texto na arte, em ${IDIOMAS[idiomaDe(marca.idioma)]}, curto e sem erros.`;
         const vertical = p ? p.formato === "story" || p.formato === "reels" : c.formato === "story" || c.formato === "reels" || c.formato === "vertical";
         const formato = vertical ? "1024x1536" : "1024x1024";
-        const d = await openai(env, "images/generations", { model: String(env.OPENAI_IMAGE_MODEL || "gpt-image-1").trim(), prompt, size: formato, quality: "medium", output_format: "jpeg", output_compression: 82, n: 1 }, { timeout: 120000 });
+        // O modelo de imagem muda com o tempo (o gpt-image-1 está sendo aposentado): tenta o configurado e cai para o seguinte.
+        const modelos = [...new Set([String(env.OPENAI_IMAGE_MODEL || "").trim(), "gpt-image-1.5", "gpt-image-1"].filter(Boolean))];
+        let d = null, ultimoErro = null;
+        for (const modelo of modelos) {
+          try { d = await openai(env, "images/generations", { model: modelo, prompt, size: formato, quality: "medium", output_format: "jpeg", output_compression: 82, n: 1 }, { timeout: 120000 }); break; }
+          catch (e) { ultimoErro = e; if (!/model|modelo|not found|does not exist|deprecat|404/i.test(String(e?.message))) throw e; }
+        }
+        if (!d) throw ultimoErro;
         const b64 = d?.data?.[0]?.b64_json;
         if (!b64) return json({ erro: "A IA não devolveu a imagem. Tente de novo." }, 502);
         const md = await env.DB.prepare("INSERT INTO plt_mk_midias(org_id,mime,dados,prompt,criado_ms) VALUES(?,?,?,?,?) RETURNING id").bind(orgId, "image/jpeg", b64, prompt.slice(0, 2000), agora(env)).first();
