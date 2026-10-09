@@ -1244,7 +1244,15 @@
   "entende": "understands",
   "aprende": "learns",
   "agenda": "schedules",
-  "resolve": "solves"
+  "resolve": "solves",
+  "A DENIA passa a tratar as mensagens deste número como de profissional: nunca abre pedido nem repassa a outro profissional. Pedidos abertos por engano por este número são encerrados.": "DENIA will treat messages from this number as coming from a professional: it never opens a request or forwards them to another professional. Requests opened by mistake from this number are closed.",
+  "Contato marcado como cliente.": "Contact marked as a customer.",
+  "Contato marcado como profissional.": "Contact marked as a professional.",
+  "Este contato é um profissional?": "Is this contact a professional?",
+  "Não está na lista (outro profissional)": "Not on the list (another professional)",
+  "Profissional da lista": "Professional on the list",
+  "É cliente": "Is a customer",
+  "É profissional": "Is a professional"
  },
  "h": {
   "1 lugarpara toda a operação": "<strong>1 place</strong><span>for the whole operation</span>",
@@ -1360,6 +1368,8 @@
   "{0} · {1} linha(s)": "{0} · {1} row(s)",
   "{0}% lido · {1} sugestão(ões) aguardando aprovação.": "{0}% read · {1} suggestion(s) awaiting approval.",
   "{0}× no histórico": "{0}× in the history",
-  "· Caso #{0} · {1}": "· Case #{0} · {1}"
+  "· Caso #{0} · {1}": "· Case #{0} · {1}",
+  "Profissional: {0}": "Professional: {0}",
+  "{0} pedido(s) aberto(s) por engano foram encerrados.": "{0} request(s) opened by mistake were closed."
  }
 }

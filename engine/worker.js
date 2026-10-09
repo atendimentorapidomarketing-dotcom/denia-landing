@@ -35,7 +35,7 @@
 //       relatório diário. Nunca inicia conversa nova por conta própria.
 // ============================================================================
 
-const VERSAO = "30.5.0";
+const VERSAO = "30.6.0";
 const SCHEMA_VERSAO = "30.3.0-a";
 const EMPRESA_ID = 1;
 const PHONE_ID_PADRAO = "473474732510163";
@@ -172,11 +172,23 @@ function variantesTel(tel) {
   }
   return [...v];
 }
+// Outros números de um mesmo profissional (vinculados pela equipe na plataforma). Recarregado a cada minuto.
+let TELS_EXTRAS = { em: -1, mapa: new Map() };
+async function carregarTelsExtras(c, forcar) {
+  if (!forcar && TELS_EXTRAS.em >= 0 && c.agora() - TELS_EXTRAS.em < 60000) return;
+  try {
+    const r = (await c.db.prepare("SELECT telefone, prestador_id FROM d30_prestador_tels").all())?.results || [];
+    TELS_EXTRAS = { em: c.agora(), mapa: new Map(r.map(x => [digitos(x.telefone), x.prestador_id])) };
+  } catch { TELS_EXTRAS = { em: c.agora(), mapa: new Map() }; }
+}
 function prestadorPorTelefone(tel) {
   let t = digitos(tel);
   if (t.startsWith("000") && t.length > 13) t = t.slice(3); // telefone simulado do painel de teste
   const vs = variantesTel(t);
-  return PRESTADORES.find(p => vs.includes(p.telefone) || variantesTel(p.telefone).includes(t)) || null;
+  const daLista = PRESTADORES.find(p => vs.includes(p.telefone) || variantesTel(p.telefone).includes(t));
+  if (daLista) return daLista;
+  for (const v of vs) { const id = TELS_EXTRAS.mapa.get(v); if (id) { const p = PRESTADORES.find(x => x.id === id); if (p) return p; } }
+  return null;
 }
 function ocultarTelefones(texto) {
   return String(texto || "").replace(/(\+?55[\s-]?)?\(?\d{2}\)?[\s-]?9?\d{4}[\s-]?\d{4}\b/g, "[telefone omitido]");
@@ -289,6 +301,7 @@ const SQL_SCHEMA = [
   `CREATE INDEX IF NOT EXISTS d30_consultas_prest ON d30_consultas(prestador_tel, status, atualizado_ms)`,
   `CREATE INDEX IF NOT EXISTS d30_consultas_caso ON d30_consultas(caso_id, id)`,
   `CREATE TABLE IF NOT EXISTS d30_pausas (telefone TEXT PRIMARY KEY, ate_ms INTEGER NOT NULL, motivo TEXT)`,
+  `CREATE TABLE IF NOT EXISTS d30_prestador_tels (telefone TEXT PRIMARY KEY, prestador_id TEXT NOT NULL, criado_ms INTEGER NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS d30_envios (chave TEXT PRIMARY KEY, criado_ms INTEGER NOT NULL)`,
   `CREATE INDEX IF NOT EXISTS d30_envios_ms ON d30_envios(criado_ms)`,
   `CREATE TABLE IF NOT EXISTS d30_midias (id INTEGER PRIMARY KEY AUTOINCREMENT, caso_id INTEGER, telefone TEXT, media_id TEXT NOT NULL, tipo TEXT, mime TEXT, legenda TEXT, comprovante INTEGER DEFAULT 0, enviado_para TEXT, criado_ms INTEGER NOT NULL)`,
@@ -596,9 +609,15 @@ async function processarSync(c) {
 
 // Ordem de precedência: lista oficial de prestadores > equipe (atendentes) > técnico do D1 > cliente.
 async function identificar(c, tel) {
+  await carregarTelsExtras(c);
   const prestador = prestadorPorTelefone(tel);
   const pessoa = await buscarPessoa(c, tel);
   if (prestador) return { papel: "PRESTADOR", prestador, pessoa };
+  // Quem já recebeu uma consulta da DENIA é profissional, mesmo que o número não esteja (mais) na lista.
+  const vsC = variantesTel(tel);
+  const consultado = await c.db.prepare(`SELECT prestador_id FROM d30_consultas WHERE prestador_tel IN (${vsC.map(() => "?").join(",")}) AND criado_ms > ? ORDER BY id DESC LIMIT 1`)
+    .bind(...vsC, c.agora() - 180 * 86400000).first().catch(() => null);
+  if (consultado) return { papel: "PRESTADOR", prestador: PRESTADORES.find(x => x.id === consultado.prestador_id) || null, pessoa };
   if (pessoa) {
     const at = await c.db.prepare("SELECT 1 AS ok FROM atendentes WHERE empresa_id=? AND pessoa_id=? AND COALESCE(ativo,1)=1 LIMIT 1").bind(EMPRESA_ID, pessoa.id).first().catch(() => null);
     const tipo = String(pessoa.tipo || "").toUpperCase();
@@ -742,7 +761,8 @@ async function consultaDoCaso(c, casoId) {
     .bind(casoId, ...STATUS_CONSULTA_ABERTA).first();
 }
 async function consultasAbertasPrestador(c, tel) {
-  const vs = variantesTel(tel), agora = c.agora();
+  const ligado = prestadorPorTelefone(tel); // número extra: as consultas estão no número principal
+  const vs = [...new Set([...variantesTel(tel), ...(ligado ? variantesTel(ligado.telefone) : [])])], agora = c.agora();
   const r = await c.db.prepare(`SELECT * FROM d30_consultas WHERE prestador_tel IN (${vs.map(() => "?").join(",")})
     AND ((status IN ('ENVIADA','AGUARDANDO_COMPOSICAO','RESPONDIDA','AGUARDANDO_CONFIRMACAO') AND atualizado_ms > ?)
       OR (status='CONFIRMADA' AND atualizado_ms > ?)) ORDER BY atualizado_ms DESC LIMIT 10`)
@@ -1510,6 +1530,12 @@ async function consultarPrestador(c, caso, pessoa, chaveLote) {
     return null;
   }
   if (await consultaDoCaso(c, caso.casoId)) return null; // nunca duplicar consulta
+  // Trava: a mensagem de um profissional nunca é repassada a outro profissional como se fosse de cliente.
+  if (prestadorPorTelefone(caso.telefone) || String(pessoa?.tipo || "").toUpperCase() === "TECNICO") {
+    await mudarEtapa(c, caso, "EQUIPE");
+    await alertarEquipe(c, `O caso #${caso.casoId} foi aberto por um número de PROFISSIONAL (${nomeCli}). Nenhum outro profissional foi consultado. Verifique a conversa.`, "prof-como-cliente:" + caso.casoId, caso.casoId);
+    return null;
+  }
   const tentados = new Set(((await c.db.prepare("SELECT prestador_id FROM d30_consultas WHERE caso_id=?").bind(caso.casoId).all())?.results || []).map(x => x.prestador_id));
   const p = PRESTADORES.find(x => x.area === area && !tentados.has(x.id));
   if (!p) {
@@ -1855,7 +1881,26 @@ async function processarLote(c, tel, itens) {
     for (const m of msgs) await registrarMensagem(c, { pessoaId: id.pessoa?.id, wamid: m.wamid, direcao: "ENTRADA", origem: "WHATSAPP", tipo: String(m.tipo || "text").toUpperCase(), conteudo: txt(m.texto, 4000) || `[${m.tipo}]` });
     return;
   }
+  // Número desconhecido falando de um caso de OUTRA pessoa que está com profissional: provavelmente é o profissional
+  // escrevendo de outro número. Não vira pedido novo nem é repassado a ninguém: a equipe confirma no painel.
+  const suspeita = await casoDeOutroComProfissional(c, tel, msgs);
+  if (suspeita) {
+    const pessoa = id.pessoa || await obterPessoa(c, tel, msgs.map(m => m.nome).filter(Boolean).pop() || "", "CLIENTE");
+    for (const m of msgs) await registrarMensagem(c, { pessoaId: pessoa?.id, casoId: suspeita.casoId, wamid: m.wamid, direcao: "ENTRADA", origem: "WHATSAPP", tipo: String(m.tipo || "text").toUpperCase(), conteudo: txt(m.texto, 4000) || `[${m.tipo}]` });
+    await alertarEquipe(c, `O número ${tel} falou do caso #${suspeita.casoId} (que está com ${suspeita.prestador || "um profissional"}): "${txt(msgs.map(m => m.texto || "").join(" "), 200)}". Pode ser o profissional escrevendo de outro número. Nada foi enviado. Se for profissional, abra a conversa na plataforma e toque em "É profissional".`, "suspeita:" + opts.chaveLote, suspeita.casoId);
+    return;
+  }
   return processarCliente(c, tel, id, msgs, opts);
+}
+async function casoDeOutroComProfissional(c, tel, msgs) {
+  const texto = msgs.map(m => m.conteudo || m.texto || "").join("\n");
+  // "caso 123", "caso #123", "caso nº 123" ou "#123" (pelo menos 2 dígitos, para não confundir com "casa #2").
+  const num = texto.match(/\bcaso\s*(?:n[º°o.]?\s*)?#?\s*(\d{1,9})\b/i) || texto.match(/(?:^|\s)#(\d{2,9})\b/);
+  if (!num) return null;
+  const caso = await carregarCasoPorId(c, Number(num[1]));
+  if (!caso || variantesTel(caso.telefone).some(v => variantesTel(tel).includes(v))) return null;
+  const k = await c.db.prepare("SELECT prestador_nome FROM d30_consultas WHERE caso_id=? ORDER BY id DESC LIMIT 1").bind(caso.casoId).first().catch(() => null);
+  return k ? { casoId: caso.casoId, prestador: k.prestador_nome } : null;
 }
 
 // ============================================================================
@@ -2157,7 +2202,39 @@ async function platformApi(request, env, caminho, metodo) {
     const p = await c.db.prepare("SELECT id,nome,telefone,tipo FROM pessoas WHERE id=?").bind(Number(m[1])).first();
     if (!p) return json({ sucesso: false, erro: "Conversa não encontrada." }, 404);
     const casos = await carregarCasos(c, p);
-    return json({ sucesso: true, pessoa: p, ia_pausada: await estaPausado(c, p.telefone), caso_ativo: casos.ativo, casos_recentes: casos.recentes, mensagens: await historico(c, p.id, 500) });
+    await carregarTelsExtras(c);
+    const daLista = prestadorPorTelefone(p.telefone);
+    return json({ sucesso: true, pessoa: { ...p, profissional: daLista ? daLista.nome : null, oficial: Boolean(daLista && !TELS_EXTRAS.mapa.has(digitos(p.telefone))) }, ia_pausada: await estaPausado(c, p.telefone), caso_ativo: casos.ativo, casos_recentes: casos.recentes, mensagens: await historico(c, p.id, 500) });
+  }
+  // A equipe diz quem é a pessoa: profissional (opcionalmente ligado a um profissional da lista) ou cliente.
+  if ((m = caminho.match(/^\/platform\/conversations\/(\d+)\/type$/)) && metodo === "POST") {
+    const p = await c.db.prepare("SELECT id,nome,telefone,tipo FROM pessoas WHERE id=?").bind(Number(m[1])).first();
+    if (!p) return json({ sucesso: false, erro: "Conversa não encontrada." }, 404);
+    await carregarTelsExtras(c, true);
+    const tipo = String(corpo?.tipo || "").toUpperCase() === "TECNICO" ? "TECNICO" : "CLIENTE";
+    const prest = PRESTADORES.find(x => x.id === corpo?.prestador_id) || null;
+    if (prestadorPorTelefone(p.telefone) && !TELS_EXTRAS.mapa.has(digitos(p.telefone)) && tipo === "CLIENTE") return json({ sucesso: false, erro: "Este número está na lista oficial de profissionais e não pode virar cliente." }, 409);
+    await c.db.prepare("UPDATE pessoas SET tipo=?, atualizado_em=CURRENT_TIMESTAMP WHERE id=?").bind(tipo, p.id).run();
+    for (const v of variantesTel(p.telefone)) await c.db.prepare("DELETE FROM d30_prestador_tels WHERE telefone=?").bind(v).run();
+    if (tipo === "TECNICO" && prest && !PRESTADORES.some(x => variantesTel(x.telefone).includes(digitos(p.telefone)))) {
+      await c.db.prepare("INSERT OR REPLACE INTO d30_prestador_tels(telefone,prestador_id,criado_ms) VALUES(?,?,?)").bind(digitos(p.telefone), prest.id, c.agora()).run();
+    }
+    await carregarTelsExtras(c, true);
+    // Pedidos abertos por engano por um profissional (tratado como cliente) são encerrados, sem avisar ninguém.
+    let encerrados = 0;
+    if (tipo === "TECNICO") {
+      const abertos = (await c.db.prepare("SELECT caso_id FROM d30_casos WHERE cliente_id=? AND etapa NOT IN ('CONCLUIDO','CANCELADO')").bind(p.id).all().catch(() => null))?.results || [];
+      for (const x of abertos) {
+        const caso = await carregarCasoPorId(c, x.caso_id);
+        if (!caso) continue;
+        await mudarEtapa(c, caso, "CANCELADO");
+        await c.db.prepare("UPDATE d30_consultas SET status='CANCELADA', atualizado_ms=? WHERE caso_id=? AND status NOT IN ('CONFIRMADA','RECUSADA','CANCELADA')").bind(c.agora(), caso.casoId).run();
+        await evento(c, caso.casoId, "ABERTO_POR_PROFISSIONAL", `${p.nome || p.telefone} marcado como profissional por ${txt(corpo?.autor, 120) || "platform"}`);
+        encerrados++;
+      }
+    }
+    await evento(c, null, "TIPO_CONTATO", `${p.nome || p.telefone} → ${tipo}${prest ? " (" + prest.nome + ")" : ""} por ${txt(corpo?.autor, 120) || "platform"}`);
+    return json({ sucesso: true, tipo, prestador: prest ? prest.nome : null, casos_encerrados: encerrados });
   }
   if ((m = caminho.match(/^\/platform\/conversations\/(\d+)\/(send|takeover|release)$/)) && metodo === "POST") {
     const p = await c.db.prepare("SELECT id,nome,telefone FROM pessoas WHERE id=?").bind(Number(m[1])).first();

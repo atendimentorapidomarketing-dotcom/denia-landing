@@ -1244,7 +1244,15 @@
   "entende": "comprend",
   "aprende": "apprend",
   "agenda": "planifie",
-  "resolve": "résout"
+  "resolve": "résout",
+  "A DENIA passa a tratar as mensagens deste número como de profissional: nunca abre pedido nem repassa a outro profissional. Pedidos abertos por engano por este número são encerrados.": "DENIA traitera les messages de ce numéro comme provenant d'un professionnel : elle n'ouvre jamais de demande et ne les transmet jamais à un autre professionnel. Les demandes ouvertes par erreur depuis ce numéro sont clôturées.",
+  "Contato marcado como cliente.": "Contact marqué comme client.",
+  "Contato marcado como profissional.": "Contact marqué comme professionnel.",
+  "Este contato é um profissional?": "Ce contact est-il un professionnel ?",
+  "Não está na lista (outro profissional)": "Absent de la liste (autre professionnel)",
+  "Profissional da lista": "Professionnel de la liste",
+  "É cliente": "C'est un client",
+  "É profissional": "C'est un professionnel"
  },
  "h": {
   "1 lugarpara toda a operação": "<strong>1 seul endroit</strong><span>pour toute l'activité</span>",
@@ -1360,6 +1368,8 @@
   "{0} · {1} linha(s)": "{0} · {1} ligne(s)",
   "{0}% lido · {1} sugestão(ões) aguardando aprovação.": "{0} % lu · {1} suggestion(s) en attente de validation.",
   "{0}× no histórico": "{0}× dans l'historique",
-  "· Caso #{0} · {1}": "· Dossier n° {0} · {1}"
+  "· Caso #{0} · {1}": "· Dossier n° {0} · {1}",
+  "Profissional: {0}": "Professionnel : {0}",
+  "{0} pedido(s) aberto(s) por engano foram encerrados.": "{0} demande(s) ouverte(s) par erreur ont été clôturées."
  }
 }

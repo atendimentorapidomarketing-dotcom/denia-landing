@@ -653,3 +653,18 @@ test("Site — páginas, scripts e dicionários de idioma sempre conferem se há
     assert.equal(r.r.headers.get("cache-control"), "no-cache", c);
   }
 });
+
+test("Conversas — a equipe marca um contato como profissional pela plataforma", async () => {
+  const p = await criarPlataforma({ DENIA_PLATFORM_SERVICE_TOKEN: TOKEN_ENGINE });
+  p.env.ENGINE = { fetch: async (req) => p.engine.worker.fetch(req, p.engine.env, { waitUntil() { } }) };
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  p.engine.llmCliente = () => ({ resposta: "Oi!", intencao: "CONVERSA", fatos: {} });
+  await p.engine.cliente("5521977776666", "Oi");
+  const id = (await p.req("/api/orgs/1/engine/conversations", { quem: "admin" })).dados.conversas[0].pessoa_id;
+  const r = await p.req(`/api/orgs/1/engine/conversations/${id}/type`, { metodo: "POST", quem: "admin", corpo: { tipo: "TECNICO", prestador_id: "CHAV-ANDERSON" } });
+  assert.equal(r.status, 200);
+  const d = (await p.req(`/api/orgs/1/engine/conversations/${id}`, { quem: "admin" })).dados;
+  assert.deepEqual([d.pessoa.tipo, d.pessoa.profissional, d.pessoa.oficial], ["TECNICO", "Anderson (chaveiro)", false]);
+  const aud = p.env.DB.q("SELECT detalhe FROM plt_auditoria WHERE acao='CONVERSA'").map(x => x.detalhe);
+  assert.ok(aud.some(x => /type/.test(x)), "fica na auditoria");
+});

@@ -520,7 +520,30 @@
     if (!(d.mensagens || []).length) msgs.appendChild(vazio("Sem mensagens", ""));
     const caso = d.caso_ativo;
     const estadoIa = d.ia_pausada ? selo("Atendimento humano", "alerta") : selo("IA atendendo", "ok");
+    // Quem é este contato: a equipe corrige quando a DENIA confunde profissional com cliente.
+    const ehProf = String(d.pessoa.tipo || "").toUpperCase() === "TECNICO" || d.pessoa.profissional;
+    const marcarTipo = async (tipo) => {
+      let prestador_id = "";
+      if (tipo === "TECNICO") {
+        let lista = [];
+        try { lista = (await eng("professionals")).profissionais || []; } catch { /* segue sem a lista */ }
+        const sel = h("select", { class: "entrada" }, h("option", { value: "", text: "Não está na lista (outro profissional)" }), lista.map(p => h("option", { value: p.id, text: `${p.nome} — ${p.area_rotulo ? p.area_rotulo.split(" (")[0] : p.area}` })));
+        if (!(await modal({ titulo: "Este contato é um profissional?", conteudo: ["A DENIA passa a tratar as mensagens deste número como de profissional: nunca abre pedido nem repassa a outro profissional. Pedidos abertos por engano por este número são encerrados.", campo("Profissional da lista", sel)], confirmar: "É profissional" }))) return;
+        prestador_id = sel.value;
+      }
+      try {
+        const r = await eng(`conversations/${id}/type`, { metodo: "POST", corpo: { tipo, prestador_id } });
+        aviso(tipo === "TECNICO" ? "Contato marcado como profissional." : "Contato marcado como cliente.", "ok");
+        if (r.casos_encerrados) aviso(`${r.casos_encerrados} pedido(s) aberto(s) por engano foram encerrados.`, "ok");
+        estado.cacheConversas = null;
+        abrirConversa(painel, id, vivo);
+      } catch (e) { aviso(e.message, "erro"); }
+    };
+    const quem = d.pessoa.oficial ? selo(`Profissional: ${d.pessoa.profissional}`, "info")
+      : pode("AGENTE") ? (ehProf ? h("span", { class: "acoes" }, selo(d.pessoa.profissional ? `Profissional: ${d.pessoa.profissional}` : "Profissional", "info"), botao("É cliente", () => marcarTipo("CLIENTE"), "btn-secundario btn-pequeno"))
+        : botao("É profissional", () => marcarTipo("TECNICO"), "btn-secundario btn-pequeno")) : null;
     const acoes = h("div", { class: "acoes" },
+      quem,
       h("a", { class: "btn btn-secundario btn-pequeno", href: "#/conversas" }, "Voltar"),
       pode("AGENTE") ? (d.ia_pausada
         ? botao("Devolver para a IA", async () => { try { await eng(`conversations/${id}/release`, { metodo: "POST", corpo: {} }); aviso("A IA voltou a atender esta conversa.", "ok"); abrirConversa(painel, id, vivo); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno")
