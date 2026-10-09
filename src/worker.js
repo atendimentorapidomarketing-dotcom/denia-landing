@@ -45,6 +45,7 @@ const ROTAS_ENGINE = [
   ["GET", /^conversations$/, "VISUALIZADOR"],
   ["GET", /^conversations\/\d{1,12}$/, "VISUALIZADOR"],
   ["POST", /^conversations\/\d{1,12}\/(send|takeover|release)$/, "AGENTE", "CONVERSA"],
+  ["POST", /^conversations\/\d{1,12}\/type$/, "AGENTE", "CONVERSA"],
   ["GET", /^cases$/, "VISUALIZADOR"],
   ["POST", /^cases\/\d{1,12}\/status$/, "AGENTE", "ATENDIMENTO"],
   ["GET", /^professionals$/, "VISUALIZADOR"],
@@ -564,7 +565,7 @@ async function proxyEngine(request, env, sessao, orgId, papel, caminho) {
     if (lido.erro) return lido.erro;
     corpo = lido.corpo;
     const autor = sessao.usuario.nome ? `${sessao.usuario.nome} <${sessao.usuario.email}>` : sessao.usuario.email;
-    if (/^(training|learning\/suggestions\/\d+|pause)$/.test(caminho)) corpo.autor = autor;
+    if (/^(training|learning\/suggestions\/\d+|pause|conversations\/\d+\/type)$/.test(caminho)) corpo.autor = autor;
   }
   const params = {};
   const q = new URL(request.url).searchParams;

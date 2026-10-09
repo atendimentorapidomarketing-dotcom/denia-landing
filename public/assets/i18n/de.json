@@ -1244,7 +1244,15 @@
   "entende": "versteht",
   "aprende": "lernt",
   "agenda": "plant",
-  "resolve": "löst"
+  "resolve": "löst",
+  "A DENIA passa a tratar as mensagens deste número como de profissional: nunca abre pedido nem repassa a outro profissional. Pedidos abertos por engano por este número são encerrados.": "DENIA behandelt Nachrichten dieser Nummer als Nachrichten einer Fachkraft: Es wird nie ein Auftrag eröffnet und nichts an eine andere Fachkraft weitergeleitet. Versehentlich von dieser Nummer eröffnete Aufträge werden geschlossen.",
+  "Contato marcado como cliente.": "Kontakt als Kunde markiert.",
+  "Contato marcado como profissional.": "Kontakt als Fachkraft markiert.",
+  "Este contato é um profissional?": "Ist dieser Kontakt eine Fachkraft?",
+  "Não está na lista (outro profissional)": "Nicht in der Liste (andere Fachkraft)",
+  "Profissional da lista": "Fachkraft aus der Liste",
+  "É cliente": "Ist Kunde",
+  "É profissional": "Ist Fachkraft"
  },
  "h": {
   "1 lugarpara toda a operação": "<strong>1 Ort</strong><span>für den gesamten Betrieb</span>",
@@ -1360,6 +1368,8 @@
   "{0} · {1} linha(s)": "{0} · {1} Zeile(n)",
   "{0}% lido · {1} sugestão(ões) aguardando aprovação.": "{0} % gelesen · {1} Vorschlag/Vorschläge warten auf Freigabe.",
   "{0}× no histórico": "{0}× in der Historie",
-  "· Caso #{0} · {1}": "· Fall #{0} · {1}"
+  "· Caso #{0} · {1}": "· Fall #{0} · {1}",
+  "Profissional: {0}": "Fachkraft: {0}",
+  "{0} pedido(s) aberto(s) por engano foram encerrados.": "{0} versehentlich eröffnete(r) Auftrag/Aufträge wurde(n) geschlossen."
  }
 }

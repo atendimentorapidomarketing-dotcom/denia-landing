@@ -635,3 +635,71 @@ test("V30.4 — cliente manda várias mensagens enquanto a IA pensa: uma respost
   const registradas = a.DB.q("SELECT COUNT(*) n FROM mensagens WHERE direcao='ENTRADA'")[0].n;
   assert.equal(registradas, 3, "cada mensagem registrada uma vez só");
 });
+
+// ----- V30.6: profissional nunca é tratado como cliente -----
+const OUTRO_NUM = "5521977776666";
+const casoAtual = a => a.DB.q("SELECT caso_id FROM d30_casos ORDER BY caso_id DESC LIMIT 1")[0].caso_id;
+const pessoaDe = (a, tel) => a.DB.q("SELECT id FROM pessoas WHERE telefone=?", tel)[0].id;
+
+test("V30.6 — profissional escrevendo de OUTRO número sobre o caso não vira pedido nem é repassado a ninguém", async () => {
+  const a = await criarAmbiente();
+  await iniciarConsultaChaveiro(a);
+  const caso = casoAtual(a);
+  const enviadosAntes = a.enviados.length;
+  a.llmCliente = () => { throw new Error("não deveria tratar o profissional como cliente"); };
+  await a.cliente(OUTRO_NUM, `Sobre o caso ${caso}: consigo ir amanhã às 10h, fica 150`);
+  assert.equal(a.llm.filter(x => x.papel === "cliente" && x.entrada.includes("consigo ir amanhã")).length, 0);
+  assert.equal(a.enviados.length, enviadosAntes, "nada enviado ao cliente, ao número nem a outro profissional");
+  assert.ok(a.telegram.some(t => /Pode ser o profissional escrevendo de outro número/.test(t)), "a equipe é avisada");
+  assert.equal(a.DB.q("SELECT COUNT(*) n FROM d30_casos")[0].n, 1, "nenhum pedido novo foi aberto");
+});
+
+test("V30.6 — a equipe marca o outro número como profissional e a ponte cliente ↔ profissional continua", async () => {
+  const a = await criarAmbiente({ env: { DENIA_PLATFORM_SERVICE_TOKEN: SERVICO } });
+  await iniciarConsultaChaveiro(a);
+  const caso = casoAtual(a);
+  a.llmCliente = () => { throw new Error("não deveria tratar como cliente"); };
+  await a.cliente(OUTRO_NUM, `Caso ${caso}: qual o bairro mesmo?`);
+  const r = await (await api(a, `/platform/conversations/${pessoaDe(a, OUTRO_NUM)}/type`, { method: "POST", body: JSON.stringify({ tipo: "TECNICO", prestador_id: "CHAV-ANDERSON", autor: "Equipe" }) })).json();
+  assert.equal(r.sucesso, true);
+  a.llmPrestador = () => prest({ tipo: "ACEITA", valor_centavos: 15000, valor_e_final: "SIM", disponibilidade: "amanhã às 10h" });
+  await a.cliente(OUTRO_NUM, "Faço amanhã às 10h, 150 já é o valor final");
+  assert.match(a.ultimoPara(CLI), /R\$ 150,00/, "a resposta do profissional pelo outro número chega ao cliente");
+  const det = await (await api(a, `/platform/conversations/${pessoaDe(a, OUTRO_NUM)}`)).json();
+  assert.equal(det.pessoa.profissional, "Anderson (chaveiro)");
+});
+
+test("V30.6 — número que já recebeu consulta continua profissional mesmo fora da lista", async () => {
+  const a = await criarAmbiente();
+  await iniciarConsultaChaveiro(a);
+  a.DB.q("UPDATE d30_consultas SET prestador_tel=?, prestador_id='EX-PROF'", OUTRO_NUM);
+  a.llmCliente = () => { throw new Error("não deveria tratar como cliente"); };
+  a.llmPrestador = () => prest({ tipo: "COMENTARIO" });
+  await a.cliente(OUTRO_NUM, "Bom dia, vi a mensagem de vocês");
+  assert.equal(a.llm.filter(x => x.papel === "cliente" && x.entrada.includes("vi a mensagem")).length, 0);
+});
+
+test("V30.6 — profissional que já tinha aberto pedido como cliente: marcar como profissional encerra o pedido aberto por engano", async () => {
+  const a = await criarAmbiente({ env: { DENIA_PLATFORM_SERVICE_TOKEN: SERVICO } });
+  a.llmCliente = () => decisao({ resposta: "Vou consultar.", intencao: "NOVO_PEDIDO", quer_orcamento_ou_atendimento: true, pronto_para_profissional: true, fatos: { servico: "higienização", problema: "limpeza de sofá", bairro: "Tijuca", categoria: "HIGIENIZACAO" } });
+  await a.cliente(OUTRO_NUM, "Limpeza de sofá na Tijuca");
+  const caso = casoAtual(a);
+  const r = await (await api(a, `/platform/conversations/${pessoaDe(a, OUTRO_NUM)}/type`, { method: "POST", body: JSON.stringify({ tipo: "TECNICO" }) })).json();
+  assert.equal(r.casos_encerrados, 1);
+  assert.equal(a.DB.q("SELECT etapa FROM d30_casos WHERE caso_id=?", caso)[0].etapa, "CANCELADO");
+  a.llmCliente = () => { throw new Error("agora é profissional"); };
+  await a.cliente(OUTRO_NUM, "Oi, tudo bem?");
+  assert.equal(a.llm.filter(x => x.papel === "cliente" && x.entrada.includes("tudo bem")).length, 0);
+});
+
+test("V30.6 — trava: caso aberto por número de profissional nunca é repassado a outro profissional", async () => {
+  const a = await criarAmbiente({ env: { DENIA_PLATFORM_SERVICE_TOKEN: SERVICO } });
+  a.llmCliente = () => decisao({ resposta: "Ok", intencao: "CONVERSA" });
+  await a.cliente(OUTRO_NUM, "Oi");
+  a.DB.q("UPDATE pessoas SET tipo='TECNICO' WHERE telefone=?", OUTRO_NUM);
+  // simula uma rota antiga que ainda chamasse o fluxo de cliente
+  a.DB.q("DELETE FROM d30_consultas");
+  const antes = a.enviados.filter(e => e.to !== OUTRO_NUM).length;
+  await a.cliente(OUTRO_NUM, "Limpeza de sofá");
+  assert.equal(a.enviados.filter(e => e.to !== OUTRO_NUM).length, antes, "nenhum profissional recebe a mensagem de outro profissional");
+});

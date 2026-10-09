@@ -1244,7 +1244,15 @@
   "entende": "理解",
   "aprende": "学習",
   "agenda": "予約",
-  "resolve": "解決"
+  "resolve": "解決",
+  "A DENIA passa a tratar as mensagens deste número como de profissional: nunca abre pedido nem repassa a outro profissional. Pedidos abertos por engano por este número são encerrados.": "DENIAはこの番号からのメッセージを専門スタッフからのものとして扱います。依頼を作成したり、別の専門スタッフに転送したりすることはありません。この番号から誤って作成された依頼は終了されます。",
+  "Contato marcado como cliente.": "連絡先を顧客として設定しました。",
+  "Contato marcado como profissional.": "連絡先を専門スタッフとして設定しました。",
+  "Este contato é um profissional?": "この連絡先は専門スタッフですか？",
+  "Não está na lista (outro profissional)": "リストにない（別の専門スタッフ）",
+  "Profissional da lista": "リストの専門スタッフ",
+  "É cliente": "顧客です",
+  "É profissional": "専門スタッフです"
  },
  "h": {
   "1 lugarpara toda a operação": "<strong>1か所</strong><span>で業務全体を管理</span>",
@@ -1360,6 +1368,8 @@
   "{0} · {1} linha(s)": "{0} · {1}行",
   "{0}% lido · {1} sugestão(ões) aguardando aprovação.": "{0}%読み取り済み · {1}件の提案が承認待ちです。",
   "{0}× no histórico": "履歴内で{0}回",
-  "· Caso #{0} · {1}": "· 案件 #{0} · {1}"
+  "· Caso #{0} · {1}": "· 案件 #{0} · {1}",
+  "Profissional: {0}": "専門スタッフ：{0}",
+  "{0} pedido(s) aberto(s) por engano foram encerrados.": "誤って作成された依頼{0}件を終了しました。"
  }
 }
