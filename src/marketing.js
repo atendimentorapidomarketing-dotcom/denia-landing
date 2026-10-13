@@ -239,7 +239,10 @@ Classifique:
 Responda em JSON: {"sentimento":"","temas":[],"resumo":"","urgencia":"","precisa_humano":false,"motivo_humano":"","viola_politica":false,"politica":"","como_remover":"","resposta":""}`;
 
 async function analisarUmaAvaliacao(env, marca, a) {
-  const r = await iaJSON(env, INSTRUCOES_AVALIACAO, `${resumoMarca(marca)}\n\nAvaliação de ${a.autor || "Cliente"} — ${a.nota} de 5 estrelas${a.data ? ", em " + a.data : ""}:\n"${a.texto || "(sem texto, só a nota)"}"\nResponda em JSON.`, 900);
+  // Aprende o jeito da empresa: as respostas que ela já deu (inclusive as antigas, trazidas do Google, e as corrigidas pela equipe).
+  const anteriores = (await env.DB.prepare("SELECT nota, texto, resposta FROM plt_mk_avaliacoes WHERE marca_id=? AND id<>? AND resposta IS NOT NULL AND TRIM(resposta)<>'' ORDER BY id DESC LIMIT 8").bind(marca.id, a.id).all().catch(() => null))?.results || [];
+  const exemplos = anteriores.length ? `\n\nRESPOSTAS QUE A EMPRESA JÁ DEU (aprenda o tom, o tamanho, a forma de tratar e a assinatura; nunca copie frases, cada resposta é única):\n${anteriores.map(x => `- ${x.nota}★ "${String(x.texto || "").slice(0, 160)}" → "${String(x.resposta).slice(0, 400)}"`).join("\n")}` : "";
+  const r = await iaJSON(env, INSTRUCOES_AVALIACAO, `${resumoMarca(marca)}${exemplos}\n\nAvaliação de ${a.autor || "Cliente"} — ${a.nota} de 5 estrelas${a.data ? ", em " + a.data : ""}:\n"${a.texto || "(sem texto, só a nota)"}"\nResponda em JSON.`, 900);
   const sent = SENTIMENTOS.includes(String(r.sentimento).toUpperCase()) ? String(r.sentimento).toUpperCase() : (a.nota >= 5 ? "OTIMA" : a.nota >= 4 ? "POSITIVA" : a.nota === 3 ? "NEUTRA" : "NEGATIVA");
   const analise = {
     sentimento: sent, temas: (Array.isArray(r.temas) ? r.temas : []).map(t => String(t).slice(0, 40)).slice(0, 4), resumo: String(r.resumo || "").slice(0, 300),
