@@ -3,7 +3,7 @@
 //   node scripts/i18n.mjs verificar → mostra, por idioma, quantos textos ainda não têm tradução
 import { readFileSync, writeFileSync, readdirSync, existsSync } from "node:fs";
 
-const IDIOMAS = ["en", "es", "de", "it", "fr", "ja"];
+const IDIOMAS = ["en", "es", "de", "it", "fr", "ja", "hi"];
 const limpo = s => String(s).replace(/\s+/g, " ").trim();
 const decodificar = s => s.replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&rarr;/g, "→").replace(/&middot;/g, "·");
 const temLetra = s => /[A-Za-zÀ-ú]{2,}/.test(s);
