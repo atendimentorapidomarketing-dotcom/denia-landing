@@ -28,6 +28,12 @@ async function criarPlataforma(extra = {}) {
       const r = p.meta(String(url), op.method || "GET", corpo);
       return new Response(JSON.stringify(r), { status: r && r.error ? 400 : 200, headers: { "content-type": "application/json" } });
     }
+    if (p && p.google && /^https:\/\/(oauth2|mybusiness[a-z]*|businessprofileperformance)\.googleapis\.com\//.test(String(url))) {
+      const corpo = op.body ? (typeof op.body === "string" ? JSON.parse(op.body) : Object.fromEntries(new URLSearchParams(String(op.body)))) : null;
+      (p.googleChamadas ||= []).push({ url: String(url), metodo: op.method || "GET", corpo });
+      const r = p.google(String(url), op.method || "GET", corpo);
+      return new Response(JSON.stringify(r), { status: r && r.error ? (r.error.code || 400) : 200, headers: { "content-type": "application/json" } });
+    }
     if (String(url) === "https://api.resend.com/emails") { emails.push(JSON.parse(op.body)); return new Response(JSON.stringify({ id: "e1" }), { status: 200 }); }
     if (String(url).startsWith("https://engine.test/")) {
       chamadasEngine.push({ url: String(url), headers: op.headers, corpo: op.body ? JSON.parse(op.body) : null });
@@ -835,6 +841,87 @@ test("Aprovar sem a marca conectada avisa que falta conectar", async () => {
   assert.equal(r.dados.publicado, false);
   assert.match(r.dados.resumo, /ainda não está conectada/);
   assert.equal(p.env.DB.q("SELECT status FROM plt_mk_posts WHERE id=?", post)[0].status, "APROVADO");
+});
+
+test("Google Meu Negócio — conectar o perfil, trazer avaliações e desempenho, responder no Google e publicar post", async () => {
+  const p = await criarPlataforma({ GOOGLE_CLIENT_ID: "cliente.apps.googleusercontent.com", GOOGLE_CLIENT_SECRET: "segredo-google" });
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  const marca = (await p.req("/api/orgs/1/mk/marcas", { metodo: "POST", quem: "admin", corpo: { nome: "Oficina", site: "https://oficina.test" } })).dados.id;
+  assert.equal((await p.req("/api/orgs/1/mk/google/estado", { quem: "admin" })).dados.configurada, true);
+  const ida = await p.req(`/api/orgs/1/mk/google/conectar?marca=${marca}`, { quem: "admin" });
+  assert.equal(ida.status, 302);
+  const dialogo = new URL(ida.r.headers.get("location"));
+  assert.equal(dialogo.hostname, "accounts.google.com");
+  assert.equal(dialogo.searchParams.get("redirect_uri"), "https://plataforma.test/api/google/retorno");
+  assert.equal(dialogo.searchParams.get("access_type"), "offline");
+  assert.match(dialogo.searchParams.get("scope"), /business\.manage/);
+  const state = dialogo.searchParams.get("state");
+
+  let respondida = null;
+  p.google = (url, metodo, corpo) => {
+    if (url.startsWith("https://oauth2.googleapis.com/token")) return corpo.grant_type === "authorization_code" ? { access_token: "ya29.a", refresh_token: "1//permanente", expires_in: 3599 } : { access_token: "ya29.b", expires_in: 3599 };
+    if (url.includes("/v1/accounts?")) return { accounts: [{ name: "accounts/111", accountName: "Oficina" }] };
+    if (url.includes("/accounts/111/locations?")) return { locations: [{ name: "locations/222", title: "Oficina SEO Brasil", storefrontAddress: { addressLines: ["Rua A, 10"], locality: "Niterói" } }] };
+    if (url.endsWith("/accounts/111/locations/222/reviews/r1/reply") && metodo === "PUT") { respondida = corpo.comment; return { comment: corpo.comment }; }
+    if (url.includes("/accounts/111/locations/222/reviews?")) return { reviews: [
+      { reviewId: "r1", reviewer: { displayName: "Ana" }, starRating: "FIVE", comment: "Atendimento excelente!", createTime: "2026-10-01T10:00:00Z" },
+      { reviewId: "r2", reviewer: { displayName: "Bruno" }, starRating: "TWO", comment: "Demorou.", createTime: "2026-10-02T10:00:00Z", reviewReply: { comment: "Sentimos muito, Bruno." } }] };
+    if (url.includes(":fetchMultiDailyMetricsTimeSeries")) return { multiDailyMetricTimeSeries: [{ dailyMetricTimeSeries: [
+      { dailyMetric: "CALL_CLICKS", timeSeries: { datedValues: [{ value: "3" }, { value: "2" }] } },
+      { dailyMetric: "BUSINESS_IMPRESSIONS_MOBILE_MAPS", timeSeries: { datedValues: [{ value: "40" }, {}] } },
+      { dailyMetric: "BUSINESS_IMPRESSIONS_MOBILE_SEARCH", timeSeries: { datedValues: [{ value: "10" }] } }] }] };
+    if (url.includes("/searchkeywords/impressions/monthly")) return { searchKeywordsCounts: [{ searchKeyword: "marketing niteroi", insightsValue: { value: "120" } }, { searchKeyword: "agencia seo", insightsValue: { threshold: "15" } }] };
+    if (url.endsWith("/accounts/111/locations/222/localPosts") && metodo === "POST") return { name: "accounts/111/locations/222/localPosts/9", searchUrl: "https://local.google.com/place?id=9" };
+    return { error: { code: 404, message: "inesperado " + url } };
+  };
+  const volta = await p.req(`/api/google/retorno?code=abc&state=${encodeURIComponent(state)}`);
+  const nonce = (await volta.r.text()).match(/\/app#\/marcas\/google-([A-Za-z0-9_-]+)/)[1];
+  const locais = (await p.req(`/api/orgs/1/mk/google/locais?n=${nonce}`, { quem: "admin" })).dados.locais;
+  assert.deepEqual(locais, [{ id: "locations/222", titulo: "Oficina SEO Brasil", endereco: "Rua A, 10, Niterói" }]);
+  const esc = await p.req("/api/orgs/1/mk/google/escolher", { metodo: "POST", quem: "admin", corpo: { n: nonce, local_id: "locations/222" } });
+  assert.equal(esc.dados.perfil, "Oficina SEO Brasil");
+  assert.equal(esc.dados.sincronizacao.avaliacoes_total, 2);
+  assert.ok(!p.env.DB.q("SELECT token_cifrado FROM plt_mk_google")[0].token_cifrado.includes("permanente"), "token guardado cifrado");
+
+  // Avaliações vieram do Google; responder publica no perfil.
+  const avs = (await p.req(`/api/orgs/1/mk/avaliacoes?marca=${marca}`, { quem: "admin" })).dados.avaliacoes;
+  const ana = avs.find(a => a.autor === "Ana"), bruno = avs.find(a => a.autor === "Bruno");
+  assert.equal(ana.status, "PENDENTE"); assert.equal(bruno.status, "RESPONDIDA");
+  const resp = await p.req(`/api/orgs/1/mk/avaliacoes/${ana.id}/responder`, { metodo: "POST", quem: "admin", corpo: { resposta: "Obrigada, Ana!" } });
+  assert.equal(resp.dados.publicada_google, true);
+  assert.equal(respondida, "Obrigada, Ana!");
+  // Sincronizar de novo não duplica.
+  await p.req("/api/orgs/1/mk/google/sincronizar", { metodo: "POST", quem: "admin", corpo: { marca_id: marca } });
+  assert.equal((await p.req(`/api/orgs/1/mk/avaliacoes?marca=${marca}`, { quem: "admin" })).dados.avaliacoes.length, 2);
+
+  // Desempenho: semanas gravadas e números ao vivo com as buscas do mês.
+  const sem = (await p.req(`/api/orgs/1/mk/metricas?marca=${marca}`, { quem: "admin" })).dados.metricas;
+  assert.equal(sem.length, 2);
+  assert.equal(sem[0].ligacoes, 5);
+  const des = (await p.req(`/api/orgs/1/mk/google/desempenho?marca=${marca}`, { quem: "admin" })).dados;
+  assert.equal(des.totais.visualizacoes, 50);
+  assert.deepEqual(des.palavras[0], { palavra: "marketing niteroi", buscas: 120, menos_de: null });
+
+  // Post para o Google: aprovar com o horário já chegado publica no perfil, com o botão para o site.
+  p.env.DB.prepare("INSERT INTO plt_mk_midias(org_id,mime,dados,prompt,criado_ms) VALUES(1,'image/jpeg',?, 'x', 1)").bind(Buffer.from("JPEG").toString("base64")).run();
+  const post = (await p.req("/api/orgs/1/mk/posts", { metodo: "POST", quem: "admin", corpo: { marca_id: marca, canais: ["google"], formato: "google", data: "2020-01-01", hora: "09:00", titulo: "Novidade", legenda: "Agora atendemos em Niterói!", midia_id: 1 } })).dados.id;
+  const ap = await p.req(`/api/orgs/1/mk/posts/${post}/acao`, { metodo: "POST", quem: "admin", corpo: { acao: "aprovar" } });
+  assert.equal(ap.dados.publicado, true);
+  assert.match(ap.dados.resumo, /Google: https:\/\/local\.google\.com/);
+  const envio = p.googleChamadas.find(c => c.url.endsWith("/localPosts"));
+  assert.equal(envio.corpo.summary, "Agora atendemos em Niterói!");
+  assert.deepEqual(envio.corpo.callToAction, { actionType: "LEARN_MORE", url: "https://oficina.test" });
+  assert.match(envio.corpo.media[0].sourceUrl, /^https:\/\/plataforma\.test\/m\/1-/);
+});
+
+test("Google Meu Negócio — sem os secrets, a plataforma diz o que falta", async () => {
+  const p = await criarPlataforma();
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  const marca = (await p.req("/api/orgs/1/mk/marcas", { metodo: "POST", quem: "admin", corpo: { nome: "Oficina" } })).dados.id;
+  const est = (await p.req("/api/orgs/1/mk/google/estado", { quem: "admin" })).dados;
+  assert.deepEqual([est.configurada, est.faltando], [false, ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"]]);
+  assert.equal((await p.req(`/api/orgs/1/mk/google/conectar?marca=${marca}`, { quem: "admin" })).dados.codigo, "GOOGLE_NAO_CONFIGURADO");
+  assert.equal((await p.req("/api/google/retorno?code=x&state=forjado")).r.status, 200, "state forjado não conecta nada");
 });
 
 test("Instagram e Facebook — sem os secrets da Meta, a plataforma explica o que falta", async () => {

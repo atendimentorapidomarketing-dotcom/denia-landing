@@ -22,6 +22,7 @@
 
 import { apiMarketing, apiAssistente } from "./marketing.js";
 import { retornoMeta, servirMidiaPublica, publicarPendentes } from "./meta.js";
+import { retornoGoogle, sincronizarGooglePendentes } from "./google.js";
 
 const VERSAO = "3.1.0";
 // Versão dos Termos de uso e da Política de privacidade aceitas no cadastro.
@@ -640,9 +641,11 @@ async function contextoAssistente(env, orgId) {
   try {
     const q = async (sql) => Number((await env.DB.prepare(sql).bind(orgId).first())?.n || 0);
     linhas.push(`Estúdio de Marketing: ${await q("SELECT COUNT(*) n FROM plt_mk_marcas WHERE org_id=? AND ativa=1")} marca(s), ${await q("SELECT COUNT(*) n FROM plt_mk_posts WHERE org_id=? AND status='AGUARDANDO'")} post(s) aguardando aprovação, ${await q("SELECT COUNT(*) n FROM plt_mk_posts WHERE org_id=? AND status='APROVADO'")} aprovado(s) prontos para publicar, ${await q("SELECT COUNT(*) n FROM plt_mk_avaliacoes WHERE org_id=? AND status='PENDENTE'")} avaliação(ões) do Google sem resposta.`);
-    const marcas = (await env.DB.prepare("SELECT nome, segmento, cidade, instagram, facebook, google, whatsapp FROM plt_mk_marcas WHERE org_id=? AND ativa=1 ORDER BY nome LIMIT 40").bind(orgId).all())?.results || [];
-    if (marcas.length) linhas.push("MARCAS E PERFIS (a publicação e as respostas automáticas no Instagram, Facebook e Google começam depois da conexão oficial com a Meta e o Google, que ainda não foi feita; até lá os posts aprovados são baixados e publicados pela equipe):\n" +
-      marcas.map(m => `- ${m.nome}${m.segmento ? " (" + m.segmento + ")" : ""}${m.cidade ? ", " + m.cidade : ""}: Instagram ${m.instagram ? "@" + m.instagram : "não informado"}; Facebook ${m.facebook || "não informado"}; Google ${m.google || "não informado"}; WhatsApp ${m.whatsapp || "não informado"}`).join("\n"));
+    const marcas = (await env.DB.prepare("SELECT id, nome, segmento, cidade, instagram, facebook, google, whatsapp FROM plt_mk_marcas WHERE org_id=? AND ativa=1 ORDER BY nome LIMIT 40").bind(orgId).all())?.results || [];
+    const conectadas = async (sql) => new Set((((await env.DB.prepare(sql).bind(orgId).all().catch(() => null))?.results) || []).map(x => x.marca_id));
+    const [comMeta, comGoogle] = await Promise.all([conectadas("SELECT marca_id FROM plt_mk_contas WHERE org_id=?"), conectadas("SELECT marca_id FROM plt_mk_google WHERE org_id=?")]);
+    if (marcas.length) linhas.push("MARCAS E PERFIS (marca conectada publica sozinha os posts aprovados no horário; sem conexão, a equipe baixa a arte e publica):\n" +
+      marcas.map(m => `- ${m.nome}${m.segmento ? " (" + m.segmento + ")" : ""}${m.cidade ? ", " + m.cidade : ""}: Instagram ${m.instagram ? "@" + m.instagram : "não informado"}; Facebook ${m.facebook || "não informado"}; Google ${m.google || "não informado"}; WhatsApp ${m.whatsapp || "não informado"}. Instagram/Facebook: ${comMeta.has(m.id) ? "CONECTADO" : "não conectado"}; Google: ${comGoogle.has(m.id) ? "CONECTADO" : "não conectado"}.`).join("\n"));
     const prox = (await env.DB.prepare("SELECT p.id, p.data, p.hora, p.titulo, p.status, p.canais, m.nome marca FROM plt_mk_posts p JOIN plt_mk_marcas m ON m.id=p.marca_id WHERE p.org_id=? AND p.status IN ('AGUARDANDO','APROVADO','RASCUNHO') ORDER BY p.data, p.hora LIMIT 25").bind(orgId).all())?.results || [];
     if (prox.length) linhas.push("PRÓXIMOS POSTS: " + prox.map(x => `#${x.id} ${x.marca} ${x.data || "sem data"} ${x.hora || ""} "${x.titulo || ""}" [${x.status}] ${x.canais}`).join("; ") + ".");
   } catch { /* tabelas ainda não criadas */ }
@@ -862,6 +865,7 @@ async function api(request, env, caminho) {
 
   // Volta do Login do Facebook: chega sem a sessão (cookie SameSite=Strict); vale pelo state assinado.
   if (caminho === "/api/meta/retorno" && metodo === "GET") return retornoMeta(request, env, kitBase(env));
+  if (caminho === "/api/google/retorno" && metodo === "GET") return retornoGoogle(request, env, kitBase(env));
 
   const sessao = await lerSessao(request, env);
   if (!sessao) return json({ erro: "Sua sessão expirou. Entre novamente." }, 401);
@@ -983,9 +987,15 @@ export default {
       return comSeguranca(json({ erro: "Erro interno. Tente novamente." }, 500), request);
     }
   },
-  // A cada 5 minutos: publica no Instagram e no Facebook os posts aprovados cujo horário chegou.
+  // A cada 5 minutos: publica no Instagram, Facebook e Google os posts aprovados cujo horário chegou;
+  // de hora em hora, traz as avaliações e o desempenho dos perfis do Google.
   async scheduled(_evento, env, ctx) {
-    const tarefa = (async () => { await garantirSchema(env); return publicarPendentes(env, kitBase(env)); })().catch(e => console.error("publicação agendada", e?.message));
+    const tarefa = (async () => {
+      await garantirSchema(env);
+      const k = kitBase(env);
+      await publicarPendentes(env, k).catch(e => console.error("publicação agendada", e?.message));
+      await sincronizarGooglePendentes(env, k).catch(e => console.error("google", e?.message));
+    })().catch(e => console.error("cron", e?.message));
     if (ctx && ctx.waitUntil) ctx.waitUntil(tarefa); else await tarefa;
   }
 };
