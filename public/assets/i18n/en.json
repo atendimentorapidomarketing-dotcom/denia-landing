@@ -1301,7 +1301,25 @@
   "O pedido de conexão expirou. Volte à plataforma e clique em Conectar de novo.": "The connection request has expired. Go back to the platform and click Connect again.",
   "Quase pronto": "Almost done",
   "Aprovando…": "Approving…",
-  "Post aprovado. A marca ainda não está conectada ao Instagram/Facebook: vá em Marcas → Conectar para ele sair sozinho.": "Post approved. The brand is not connected to Instagram/Facebook yet: go to Brands → Connect so it goes out on its own."
+  "Post aprovado. A marca ainda não está conectada ao Instagram/Facebook: vá em Marcas → Conectar para ele sair sozinho.": "Post approved. The brand is not connected to Instagram/Facebook yet: go to Brands → Connect so it goes out on its own.",
+  "A DENIA escreve exatamente isto na arte e confere a ortografia.": "DENIA writes exactly this on the artwork and checks the spelling.",
+  "A IA monta a semana só nesses dias e horários. Você ainda pode mudar a data e a hora de cada post.": "The AI plans the week only on these days and times. You can still change each post's date and time.",
+  "A logo é grande demais. Envie um arquivo menor (até 1 MB).": "The logo is too large. Upload a smaller file (up to 1 MB).",
+  "Arte criada e conferida.": "Artwork created and checked.",
+  "Criando e conferindo a arte… (até 2 minutos)": "Creating and checking the artwork… (up to 2 minutes)",
+  "Criando e conferindo a imagem… (até 2 minutos)": "Creating and checking the image… (up to 2 minutes)",
+  "De preferência PNG com fundo transparente. A IA aplica esta logo em todas as artes, sem redesenhar.": "Preferably a PNG with a transparent background. The AI applies this logo to every artwork without redrawing it.",
+  "Depois de salvar, clique em Editar para enviar a logo da marca.": "After saving, click Edit to upload the brand logo.",
+  "Dias e horários preferidos para publicar": "Preferred days and times to post",
+  "Enviar logo": "Upload logo",
+  "Envie a logo em PNG, JPG ou WEBP.": "Upload the logo as PNG, JPG or WEBP.",
+  "Ex.: Orçamento grátis hoje (deixe vazio para arte sem texto)": "E.g.: Free quote today (leave empty for artwork without text)",
+  "Ideia da arte (a cena)": "Artwork idea (the scene)",
+  "Logo da marca": "Brand logo",
+  "Logo salva. As próximas artes já saem com ela.": "Logo saved. The next artworks will include it.",
+  "Sem logo": "No logo",
+  "Texto escrito na arte": "Text written on the artwork",
+  "Trocar logo": "Change logo"
  },
  "h": {
   "1 lugarpara toda a operação": "<strong>1 place</strong><span>for the whole operation</span>",
@@ -1428,6 +1446,8 @@
   "Instagram @{0}": "Instagram @{0}",
   "Post #{0} aprovado. {1}": "Post #{0} approved. {1}",
   "{0}: publicado": "{0}: published",
-  "Post aprovado. Ele sai sozinho em {0}/{1} às {2} (horário de Brasília). Para publicar já, abra o post e clique em Publicar agora.": "Post approved. It goes out on its own on {0}/{1} at {2} (Brasília time). To publish now, open the post and click Publish now."
+  "Post aprovado. Ele sai sozinho em {0}/{1} às {2} (horário de Brasília). Para publicar já, abra o post e clique em Publicar agora.": "Post approved. It goes out on its own on {0}/{1} at {2} (Brasília time). To publish now, open the post and click Publish now.",
+  "A revisão da arte encontrou um problema: {0} Clique de novo em Criar arte para refazer.": "The artwork review found a problem: {0} Click Create artwork again to redo it.",
+  "Criando a arte do post {0} de {1}. Cada arte leva de 1 a 2 minutos: a DENIA cria em alta qualidade e confere o texto.": "Creating the artwork for post {0} of {1}. Each artwork takes 1 to 2 minutes: DENIA creates it in high quality and checks the text."
  }
 }

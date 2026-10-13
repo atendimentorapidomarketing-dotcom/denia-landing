@@ -1301,7 +1301,25 @@
   "O pedido de conexão expirou. Volte à plataforma e clique em Conectar de novo.": "接続リクエストの有効期限が切れました。プラットフォームに戻り、もう一度「接続」をクリックしてください。",
   "Quase pronto": "あと少しです",
   "Aprovando…": "承認中…",
-  "Post aprovado. A marca ainda não está conectada ao Instagram/Facebook: vá em Marcas → Conectar para ele sair sozinho.": "投稿を承認しました。ブランドはまだInstagram/Facebookに接続されていません。自動で公開するには「ブランド → 接続」へ進んでください。"
+  "Post aprovado. A marca ainda não está conectada ao Instagram/Facebook: vá em Marcas → Conectar para ele sair sozinho.": "投稿を承認しました。ブランドはまだInstagram/Facebookに接続されていません。自動で公開するには「ブランド → 接続」へ進んでください。",
+  "A DENIA escreve exatamente isto na arte e confere a ortografia.": "DENIAはこの文言をそのままアートに入れ、つづりを確認します。",
+  "A IA monta a semana só nesses dias e horários. Você ainda pode mudar a data e a hora de cada post.": "AIはこの曜日と時間だけで1週間の投稿を組みます。各投稿の日時はあとから変更できます。",
+  "A logo é grande demais. Envie um arquivo menor (até 1 MB).": "ロゴのサイズが大きすぎます。1 MB以下のファイルをアップロードしてください。",
+  "Arte criada e conferida.": "アートを作成し、確認しました。",
+  "Criando e conferindo a arte… (até 2 minutos)": "アートを作成・確認中…（最大2分）",
+  "Criando e conferindo a imagem… (até 2 minutos)": "画像を作成・確認中…（最大2分）",
+  "De preferência PNG com fundo transparente. A IA aplica esta logo em todas as artes, sem redesenhar.": "背景が透明なPNGがおすすめです。AIはこのロゴを描き直さずに、すべてのアートに入れます。",
+  "Depois de salvar, clique em Editar para enviar a logo da marca.": "保存後に「編集」をクリックして、ブランドのロゴをアップロードしてください。",
+  "Dias e horários preferidos para publicar": "投稿に適した曜日と時間",
+  "Enviar logo": "ロゴをアップロード",
+  "Envie a logo em PNG, JPG ou WEBP.": "ロゴはPNG、JPG、WEBPのいずれかでアップロードしてください。",
+  "Ex.: Orçamento grátis hoje (deixe vazio para arte sem texto)": "例：本日お見積り無料（文字なしのアートにする場合は空欄）",
+  "Ideia da arte (a cena)": "アートのアイデア（シーン）",
+  "Logo da marca": "ブランドロゴ",
+  "Logo salva. As próximas artes já saem com ela.": "ロゴを保存しました。次のアートから入ります。",
+  "Sem logo": "ロゴなし",
+  "Texto escrito na arte": "アートに入れる文字",
+  "Trocar logo": "ロゴを変更"
  },
  "h": {
   "1 lugarpara toda a operação": "<strong>1か所</strong><span>で業務全体を管理</span>",
@@ -1428,6 +1446,8 @@
   "Instagram @{0}": "Instagram @{0}",
   "Post #{0} aprovado. {1}": "投稿 #{0} を承認しました。{1}",
   "{0}: publicado": "{0}：公開済み",
-  "Post aprovado. Ele sai sozinho em {0}/{1} às {2} (horário de Brasília). Para publicar já, abra o post e clique em Publicar agora.": "投稿を承認しました。{0}/{1} {2}（ブラジリア時間）に自動で公開されます。今すぐ公開するには、投稿を開いて「今すぐ公開」をクリックしてください。"
+  "Post aprovado. Ele sai sozinho em {0}/{1} às {2} (horário de Brasília). Para publicar já, abra o post e clique em Publicar agora.": "投稿を承認しました。{0}/{1} {2}（ブラジリア時間）に自動で公開されます。今すぐ公開するには、投稿を開いて「今すぐ公開」をクリックしてください。",
+  "A revisão da arte encontrou um problema: {0} Clique de novo em Criar arte para refazer.": "アートの確認で問題が見つかりました：{0} もう一度「アートを作成」をクリックして作り直してください。",
+  "Criando a arte do post {0} de {1}. Cada arte leva de 1 a 2 minutos: a DENIA cria em alta qualidade e confere o texto.": "投稿 {0}/{1} のアートを作成中です。1枚あたり1〜2分かかります。DENIAが高画質で作成し、文字を確認します。"
  }
 }
