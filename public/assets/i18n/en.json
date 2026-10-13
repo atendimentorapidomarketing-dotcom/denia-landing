@@ -1326,7 +1326,10 @@
   "Quanto mais detalhes reais (produtos, preços, promoções, garantias), mais as legendas vendem. A IA nunca inventa preço ou promoção.": "The more real details (products, prices, promotions, warranties), the more the captions sell. The AI never makes up prices or promotions.",
   "Ex.: segunda, quarta e sexta às 18h, sábado às 10h": "E.g.: Monday, Wednesday and Friday at 6 pm, Saturday at 10 am",
   "A logo da marca é enviada logo depois de salvar (o campo aparece na sequência).": "You upload the brand logo right after saving (the field appears next).",
-  "Marca salva. Agora envie a logo da marca.": "Brand saved. Now upload the brand logo."
+  "Marca salva. Agora envie a logo da marca.": "Brand saved. Now upload the brand logo.",
+  "Revisor de aprendizados": "Learning reviewer",
+  "Seu perfil só tem acesso aos aprendizados da IA.": "Your profile only has access to the AI's learnings.",
+  "Vá em Workers e Pages → denia-landing → Settings → Variables and Secrets → Add, escolha o tipo Secret, crie com o nome exato e clique em Deploy. Depois volte aqui e clique em Conectar de novo.": "Go to Workers & Pages → denia-landing → Settings → Variables and Secrets → Add, choose the Secret type, create it with the exact name and click Deploy. Then come back here and click Connect again."
  },
  "h": {
   "1 lugarpara toda a operação": "<strong>1 place</strong><span>for the whole operation</span>",
@@ -1455,6 +1458,7 @@
   "{0}: publicado": "{0}: published",
   "Post aprovado. Ele sai sozinho em {0}/{1} às {2} (horário de Brasília). Para publicar já, abra o post e clique em Publicar agora.": "Post approved. It goes out on its own on {0}/{1} at {2} (Brasília time). To publish now, open the post and click Publish now.",
   "A revisão da arte encontrou um problema: {0} Clique de novo em Criar arte para refazer.": "The artwork review found a problem: {0} Click Create artwork again to redo it.",
-  "Criando a arte do post {0} de {1}. Cada arte leva de 1 a 2 minutos: a DENIA cria em alta qualidade e confere o texto.": "Creating the artwork for post {0} of {1}. Each artwork takes 1 to 2 minutes: DENIA creates it in high quality and checks the text."
+  "Criando a arte do post {0} de {1}. Cada arte leva de 1 a 2 minutos: a DENIA cria em alta qualidade e confere o texto.": "Creating the artwork for post {0} of {1}. Each artwork takes 1 to 2 minutes: DENIA creates it in high quality and checks the text.",
+  "Na Cloudflare, no Worker denia-landing, falta: {0}.": "In Cloudflare, the denia-landing Worker is missing: {0}."
  }
 }

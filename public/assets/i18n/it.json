@@ -1326,7 +1326,10 @@
   "Quanto mais detalhes reais (produtos, preços, promoções, garantias), mais as legendas vendem. A IA nunca inventa preço ou promoção.": "Più dettagli reali (prodotti, prezzi, promozioni, garanzie) inserisci, più le didascalie vendono. L’IA non inventa mai prezzi o promozioni.",
   "Ex.: segunda, quarta e sexta às 18h, sábado às 10h": "Es.: lunedì, mercoledì e venerdì alle 18, sabato alle 10",
   "A logo da marca é enviada logo depois de salvar (o campo aparece na sequência).": "Il logo del brand si carica subito dopo aver salvato (il campo compare subito dopo).",
-  "Marca salva. Agora envie a logo da marca.": "Brand salvato. Ora carica il logo del brand."
+  "Marca salva. Agora envie a logo da marca.": "Brand salvato. Ora carica il logo del brand.",
+  "Revisor de aprendizados": "Revisore degli apprendimenti",
+  "Seu perfil só tem acesso aos aprendizados da IA.": "Il tuo profilo ha accesso solo agli apprendimenti dell’IA.",
+  "Vá em Workers e Pages → denia-landing → Settings → Variables and Secrets → Add, escolha o tipo Secret, crie com o nome exato e clique em Deploy. Depois volte aqui e clique em Conectar de novo.": "Vai su Workers e Pages → denia-landing → Settings → Variables and Secrets → Add, scegli il tipo Secret, crealo con il nome esatto e clicca su Deploy. Poi torna qui e clicca di nuovo su Collega."
  },
  "h": {
   "1 lugarpara toda a operação": "<strong>1 posto</strong><span>per tutte le operazioni</span>",
@@ -1455,6 +1458,7 @@
   "{0}: publicado": "{0}: pubblicato",
   "Post aprovado. Ele sai sozinho em {0}/{1} às {2} (horário de Brasília). Para publicar já, abra o post e clique em Publicar agora.": "Post approvato. Esce da solo il {0}/{1} alle {2} (ora di Brasília). Per pubblicarlo subito, apri il post e clicca su Pubblica ora.",
   "A revisão da arte encontrou um problema: {0} Clique de novo em Criar arte para refazer.": "La revisione della grafica ha trovato un problema: {0} Clicca di nuovo su Crea grafica per rifarla.",
-  "Criando a arte do post {0} de {1}. Cada arte leva de 1 a 2 minutos: a DENIA cria em alta qualidade e confere o texto.": "Creazione della grafica del post {0} di {1}. Ogni grafica richiede da 1 a 2 minuti: DENIA la crea in alta qualità e controlla il testo."
+  "Criando a arte do post {0} de {1}. Cada arte leva de 1 a 2 minutos: a DENIA cria em alta qualidade e confere o texto.": "Creazione della grafica del post {0} di {1}. Ogni grafica richiede da 1 a 2 minuti: DENIA la crea in alta qualità e controlla il testo.",
+  "Na Cloudflare, no Worker denia-landing, falta: {0}.": "Su Cloudflare, nel Worker denia-landing, manca: {0}."
  }
 }

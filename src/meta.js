@@ -96,7 +96,7 @@ export async function rotasMeta(request, env, k, orgId, papel, resto) {
 
   if (resto === "meta/estado" && metodo === "GET") {
     const contas = (await env.DB.prepare("SELECT marca_id, pagina_id, pagina_nome, ig_id, ig_usuario, atualizado_ms FROM plt_mk_contas WHERE org_id=?").bind(orgId).all())?.results || [];
-    return json({ configurada: metaConfigurada(env), contas });
+    return json({ configurada: metaConfigurada(env), faltando: ["META_APP_ID", "META_APP_SECRET"].filter(n => !String(env[n] || "").trim()), contas });
   }
 
   if (resto === "meta/conectar" && metodo === "GET") {

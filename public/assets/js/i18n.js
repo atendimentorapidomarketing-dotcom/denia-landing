@@ -22,6 +22,12 @@
     return "en";
   }
   function gravar(c) { try { localStorage.setItem("denia_idioma", c); } catch (e) { /* sem armazenamento */ } }
+  // Troca de idioma: recarrega a página. (Só trocar o endereço não recarrega quando ele tem # — como no painel.)
+  function trocar(c) {
+    gravar(c);
+    var u = new URL(location.href);
+    if (u.searchParams.has("lang")) { u.searchParams.delete("lang"); location.replace(u.toString()); } else location.reload();
+  }
 
   var idioma = escolher();
   window.DENIA_IDIOMA = idioma;
@@ -113,7 +119,7 @@
   }
 
   // A versão muda sempre que um dicionário muda (scripts/i18n.mjs atualiza): o navegador nunca fica com tradução velha.
-  var VERSAO_DICIONARIOS = "2c7ed52724";
+  var VERSAO_DICIONARIOS = "863f457b06";
   var pronto = fetch("/assets/i18n/" + idioma + ".json?v=" + VERSAO_DICIONARIOS).then(function (r) { return r.ok ? r.json() : {}; }).catch(function () { return {}; });
   var comecar = function () {
     pronto.then(function (d) {
@@ -135,7 +141,7 @@
     s.setAttribute("aria-label", "Idioma / Language");
     s.setAttribute("data-sem-traducao", "");
     IDIOMAS.forEach(function (x) { var o = document.createElement("option"); o.value = x[0]; o.textContent = x[1]; if (x[0] === idioma) o.selected = true; s.appendChild(o); });
-    s.addEventListener("change", function () { gravar(s.value); var u = new URL(location.href); u.searchParams.delete("lang"); location.replace(u.toString()); });
+    s.addEventListener("change", function () { trocar(s.value); });
     return s;
   }
   window.denia_seletor_idioma = novoSeletor;
@@ -157,7 +163,7 @@
       var li = document.createElement("li"), op = document.createElement("button");
       op.type = "button"; op.lang = x[0]; op.textContent = x[1];
       if (x[0] === idioma) op.setAttribute("aria-current", "true");
-      op.addEventListener("click", function () { gravar(x[0]); var u = new URL(location.href); u.searchParams.delete("lang"); location.replace(u.toString()); });
+      op.addEventListener("click", function () { trocar(x[0]); });
       li.appendChild(op); lista.appendChild(li);
     });
     var abrir = function (sim) { lista.hidden = !sim; b.setAttribute("aria-expanded", sim ? "true" : "false"); };

@@ -225,13 +225,21 @@ test("Plataforma — aprendizado e importação de clientes passam pela platafor
   assert.equal(ini.dados.status, "RODANDO");
   p.engine.llmAprendizado = () => ({ itens: [{ tipo: "QUEM_ATENDE", titulo: "Geladeira", conteudo: "Geladeira é com a assistência técnica.", evidencia: "atendente" }] });
   await p.engine.cron();
-  const sug = await p.req("/api/orgs/1/engine/learning/suggestions?status=PENDENTE", { quem: "admin" });
+  // Revisor de aprendizados: aprova e rejeita o que a IA aprendeu, e não vê mais nada da empresa.
+  const rev = await p.req("/api/orgs/1/membros", { metodo: "POST", quem: "admin", corpo: { email: "revisora@central.test", papel: "REVISOR" } });
+  assert.equal(rev.status, 200);
+  await p.entrar("revisora", "revisora@central.test", rev.dados.senha_temporaria);
+  await p.req("/api/conta", { metodo: "POST", quem: "revisora", corpo: { acao: "senha", atual: rev.dados.senha_temporaria, nova: "SenhaDaRevisora2026" } });
+  const sug = await p.req("/api/orgs/1/engine/learning/suggestions?status=PENDENTE", { quem: "revisora" });
   assert.equal(sug.dados.sugestoes.length, 1);
-  const ap = await p.req(`/api/orgs/1/engine/learning/suggestions/${sug.dados.sugestoes[0].id}`, { metodo: "POST", quem: "admin", corpo: { acao: "aprovar", conteudo: "Geladeira é sempre com a assistência técnica." } });
+  assert.equal((await p.req("/api/orgs/1/engine/learning", { quem: "revisora" })).status, 200);
+  for (const [metodo, rota] of [["GET", "engine/conversations"], ["GET", "engine/training"], ["GET", "mk/marcas"], ["GET", "membros"], ["POST", "engine/learning/start"], ["GET", "assistente/contexto"]])
+    assert.equal((await p.req(`/api/orgs/1/${rota}`, { metodo, quem: "revisora", corpo: metodo === "POST" ? {} : undefined })).status, 403, `revisor sem acesso a ${rota}`);
+  const ap = await p.req(`/api/orgs/1/engine/learning/suggestions/${sug.dados.sugestoes[0].id}`, { metodo: "POST", quem: "revisora", corpo: { acao: "aprovar", conteudo: "Geladeira é sempre com a assistência técnica." } });
   assert.equal(ap.status, 200);
   const t = await p.req("/api/orgs/1/engine/training", { quem: "admin" });
   assert.match(t.dados.dados.aprendizados, /Geladeira é sempre com a assistência técnica/);
-  assert.match(t.dados.autor, /dono@denia\.test/);
+  assert.match(t.dados.autor, /revisora@central\.test/);
   const imp = await p.req("/api/orgs/1/engine/import/clients", { metodo: "POST", quem: "admin", corpo: { origem: "clientes.csv", linhas: [{ telefone: "21 98888-7777", nome: "Paulo" }] } });
   assert.equal(imp.dados.importadas, 1);
   const aud = await p.req("/api/orgs/1/auditoria", { quem: "admin" });

@@ -1326,7 +1326,10 @@
   "Quanto mais detalhes reais (produtos, preços, promoções, garantias), mais as legendas vendem. A IA nunca inventa preço ou promoção.": "जितनी ज़्यादा असली जानकारी (प्रोडक्ट, दाम, ऑफ़र, वारंटी) होगी, कैप्शन उतना ज़्यादा बिकेगा। AI कभी भी दाम या ऑफ़र अपने से नहीं बनाती।",
   "Ex.: segunda, quarta e sexta às 18h, sábado às 10h": "उदा.: सोमवार, बुधवार और शुक्रवार शाम 6 बजे, शनिवार सुबह 10 बजे",
   "A logo da marca é enviada logo depois de salvar (o campo aparece na sequência).": "ब्रांड का लोगो सेव करने के तुरंत बाद अपलोड होता है (फ़ील्ड उसके बाद दिखेगा)।",
-  "Marca salva. Agora envie a logo da marca.": "ब्रांड सेव हो गया। अब ब्रांड का लोगो अपलोड करें।"
+  "Marca salva. Agora envie a logo da marca.": "ब्रांड सेव हो गया। अब ब्रांड का लोगो अपलोड करें।",
+  "Revisor de aprendizados": "लर्निंग समीक्षक",
+  "Seu perfil só tem acesso aos aprendizados da IA.": "आपकी प्रोफ़ाइल को केवल AI की सीख तक पहुँच है।",
+  "Vá em Workers e Pages → denia-landing → Settings → Variables and Secrets → Add, escolha o tipo Secret, crie com o nome exato e clique em Deploy. Depois volte aqui e clique em Conectar de novo.": "Workers & Pages → denia-landing → Settings → Variables and Secrets → Add पर जाएँ, Secret टाइप चुनें, बिल्कुल सही नाम से बनाएँ और Deploy पर क्लिक करें। फिर यहाँ लौटकर दोबारा कनेक्ट पर क्लिक करें।"
  },
  "h": {
   "1 lugarpara toda a operação": "<strong>1 जगह</strong><span>पूरे ऑपरेशन के लिए</span>",
@@ -1455,6 +1458,7 @@
   "{0}: publicado": "{0}: पब्लिश किया गया",
   "Post aprovado. Ele sai sozinho em {0}/{1} às {2} (horário de Brasília). Para publicar já, abra o post e clique em Publicar agora.": "पोस्ट अप्रूव हो गया। यह {0}/{1} को {2} बजे (ब्रासीलिया समय) अपने-आप पब्लिश होगा। अभी पब्लिश करने के लिए, पोस्ट खोलें और अभी पब्लिश करें पर क्लिक करें।",
   "A revisão da arte encontrou um problema: {0} Clique de novo em Criar arte para refazer.": "आर्टवर्क की समीक्षा में एक समस्या मिली: {0} दोबारा बनाने के लिए फिर से आर्टवर्क बनाएँ पर क्लिक करें।",
-  "Criando a arte do post {0} de {1}. Cada arte leva de 1 a 2 minutos: a DENIA cria em alta qualidade e confere o texto.": "{1} में से पोस्ट {0} का आर्टवर्क बना रही हूँ। हर आर्टवर्क में 1 से 2 मिनट लगते हैं: DENIA इसे हाई क्वालिटी में बनाती है और टेक्स्ट जाँचती है।"
+  "Criando a arte do post {0} de {1}. Cada arte leva de 1 a 2 minutos: a DENIA cria em alta qualidade e confere o texto.": "{1} में से पोस्ट {0} का आर्टवर्क बना रही हूँ। हर आर्टवर्क में 1 से 2 मिनट लगते हैं: DENIA इसे हाई क्वालिटी में बनाती है और टेक्स्ट जाँचती है।",
+  "Na Cloudflare, no Worker denia-landing, falta: {0}.": "Cloudflare में denia-landing Worker में यह नहीं है: {0}।"
  }
 }

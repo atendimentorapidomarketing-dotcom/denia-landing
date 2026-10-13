@@ -1326,7 +1326,10 @@
   "Quanto mais detalhes reais (produtos, preços, promoções, garantias), mais as legendas vendem. A IA nunca inventa preço ou promoção.": "Plus il y a de détails réels (produits, prix, promotions, garanties), plus les légendes vendent. L’IA n’invente jamais de prix ni de promotion.",
   "Ex.: segunda, quarta e sexta às 18h, sábado às 10h": "Ex. : lundi, mercredi et vendredi à 18 h, samedi à 10 h",
   "A logo da marca é enviada logo depois de salvar (o campo aparece na sequência).": "Le logo de la marque s’envoie juste après l’enregistrement (le champ apparaît ensuite).",
-  "Marca salva. Agora envie a logo da marca.": "Marque enregistrée. Envoyez maintenant le logo de la marque."
+  "Marca salva. Agora envie a logo da marca.": "Marque enregistrée. Envoyez maintenant le logo de la marque.",
+  "Revisor de aprendizados": "Réviseur des apprentissages",
+  "Seu perfil só tem acesso aos aprendizados da IA.": "Votre profil n’a accès qu’aux apprentissages de l’IA.",
+  "Vá em Workers e Pages → denia-landing → Settings → Variables and Secrets → Add, escolha o tipo Secret, crie com o nome exato e clique em Deploy. Depois volte aqui e clique em Conectar de novo.": "Allez dans Workers et Pages → denia-landing → Settings → Variables and Secrets → Add, choisissez le type Secret, créez-le avec le nom exact et cliquez sur Deploy. Revenez ensuite ici et cliquez à nouveau sur Connecter."
  },
  "h": {
   "1 lugarpara toda a operação": "<strong>1 seul endroit</strong><span>pour toute l'activité</span>",
@@ -1455,6 +1458,7 @@
   "{0}: publicado": "{0} : publié",
   "Post aprovado. Ele sai sozinho em {0}/{1} às {2} (horário de Brasília). Para publicar já, abra o post e clique em Publicar agora.": "Publication approuvée. Elle part toute seule le {0}/{1} à {2} (heure de Brasília). Pour publier tout de suite, ouvrez la publication et cliquez sur Publier maintenant.",
   "A revisão da arte encontrou um problema: {0} Clique de novo em Criar arte para refazer.": "La vérification du visuel a trouvé un problème : {0} Cliquez à nouveau sur Créer le visuel pour le refaire.",
-  "Criando a arte do post {0} de {1}. Cada arte leva de 1 a 2 minutos: a DENIA cria em alta qualidade e confere o texto.": "Création du visuel de la publication {0} sur {1}. Chaque visuel prend 1 à 2 minutes : DENIA le crée en haute qualité et vérifie le texte."
+  "Criando a arte do post {0} de {1}. Cada arte leva de 1 a 2 minutos: a DENIA cria em alta qualidade e confere o texto.": "Création du visuel de la publication {0} sur {1}. Chaque visuel prend 1 à 2 minutes : DENIA le crée en haute qualité et vérifie le texte.",
+  "Na Cloudflare, no Worker denia-landing, falta: {0}.": "Dans Cloudflare, il manque dans le Worker denia-landing : {0}."
  }
 }

@@ -36,9 +36,9 @@ const BLOQUEIO_MS = 15 * 60 * 1000;
 // PBKDF2: o número fica gravado com cada senha, então pode subir no futuro sem
 // invalidar as senhas antigas. 20 mil cabe no limite de CPU do plano gratuito.
 const PBKDF2_ITER = 20000;
-const PAPEIS = ["OWNER", "ADMIN", "AGENTE", "VISUALIZADOR"];
+const PAPEIS = ["OWNER", "ADMIN", "AGENTE", "VISUALIZADOR", "REVISOR"];
 const NIVEL = { VISUALIZADOR: 1, AGENTE: 2, ADMIN: 3, OWNER: 4 };
-const NOME_PAPEL = { OWNER: "Proprietário", ADMIN: "Administrador", AGENTE: "Atendente", VISUALIZADOR: "Somente leitura" };
+const NOME_PAPEL = { OWNER: "Proprietário", ADMIN: "Administrador", AGENTE: "Atendente", VISUALIZADOR: "Somente leitura", REVISOR: "Revisor de aprendizados" };
 
 // Operações do Engine liberadas, com o papel mínimo de cada uma.
 const ROTAS_ENGINE = [
@@ -557,7 +557,7 @@ async function chamarEngine(con, metodo, caminho, corpo, params) {
 async function proxyEngine(request, env, sessao, orgId, papel, caminho) {
   const rota = ROTAS_ENGINE.find(([m, re]) => m === request.method && re.test(caminho));
   if (!rota) return json({ erro: "Operação não permitida." }, 404);
-  if (!pode(papel, rota[2])) return json({ erro: "Seu perfil não tem permissão para esta ação." }, 403);
+  if (!pode(papel, rota[2]) && papel !== "REVISOR") return json({ erro: "Seu perfil não tem permissão para esta ação." }, 403); // o revisor só chega aqui pelas rotas de aprendizado
   const con = await conexaoDa(env, orgId);
   if (!con) return json({ erro: "A IA desta empresa ainda não foi conectada. Vá em Integrações e informe o endereço e o token da IA.", codigo: "ENGINE_NAO_CONFIGURADO" }, 503);
   let corpo;
@@ -652,6 +652,8 @@ async function contextoAssistente(env, orgId) {
 async function apiOrg(request, env, sessao, orgId, resto) {
   const papel = await papelNa(env, sessao.usuario, orgId);
   if (!papel) return json({ erro: "Empresa não encontrada." }, 404);
+  // Revisor de aprendizados: só vê e decide o que a IA aprendeu; nada mais da empresa.
+  if (papel === "REVISOR" && !/^engine\/learning(\/suggestions(\/\d{1,12})?)?$/.test(resto)) return json({ erro: "Seu perfil só tem acesso aos aprendizados da IA." }, 403);
   const metodo = request.method;
   if (resto.startsWith("engine/")) return proxyEngine(request, env, sessao, orgId, papel, resto.slice(7));
   const kit = { ...kitBase(env), sessao };
