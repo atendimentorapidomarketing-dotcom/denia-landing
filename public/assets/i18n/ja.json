@@ -1326,7 +1326,10 @@
   "Quanto mais detalhes reais (produtos, preços, promoções, garantias), mais as legendas vendem. A IA nunca inventa preço ou promoção.": "実際の情報（商品、価格、キャンペーン、保証）が多いほど、キャプションの販売力が上がります。AIが価格やキャンペーンを勝手に作ることはありません。",
   "Ex.: segunda, quarta e sexta às 18h, sábado às 10h": "例：月・水・金の18時、土曜の10時",
   "A logo da marca é enviada logo depois de salvar (o campo aparece na sequência).": "ブランドのロゴは保存後すぐにアップロードできます（次に欄が表示されます）。",
-  "Marca salva. Agora envie a logo da marca.": "ブランドを保存しました。次にブランドのロゴをアップロードしてください。"
+  "Marca salva. Agora envie a logo da marca.": "ブランドを保存しました。次にブランドのロゴをアップロードしてください。",
+  "Revisor de aprendizados": "学習レビュー担当",
+  "Seu perfil só tem acesso aos aprendizados da IA.": "このプロフィールはAIの学習内容にのみアクセスできます。",
+  "Vá em Workers e Pages → denia-landing → Settings → Variables and Secrets → Add, escolha o tipo Secret, crie com o nome exato e clique em Deploy. Depois volte aqui e clique em Conectar de novo.": "Workers & Pages → denia-landing → Settings → Variables and Secrets → Add を開き、種類で Secret を選び、正確な名前で作成して Deploy をクリックしてください。その後ここに戻り、もう一度「接続」をクリックしてください。"
  },
  "h": {
   "1 lugarpara toda a operação": "<strong>1か所</strong><span>で業務全体を管理</span>",
@@ -1455,6 +1458,7 @@
   "{0}: publicado": "{0}：公開済み",
   "Post aprovado. Ele sai sozinho em {0}/{1} às {2} (horário de Brasília). Para publicar já, abra o post e clique em Publicar agora.": "投稿を承認しました。{0}/{1} {2}（ブラジリア時間）に自動で公開されます。今すぐ公開するには、投稿を開いて「今すぐ公開」をクリックしてください。",
   "A revisão da arte encontrou um problema: {0} Clique de novo em Criar arte para refazer.": "アートの確認で問題が見つかりました：{0} もう一度「アートを作成」をクリックして作り直してください。",
-  "Criando a arte do post {0} de {1}. Cada arte leva de 1 a 2 minutos: a DENIA cria em alta qualidade e confere o texto.": "投稿 {0}/{1} のアートを作成中です。1枚あたり1〜2分かかります。DENIAが高画質で作成し、文字を確認します。"
+  "Criando a arte do post {0} de {1}. Cada arte leva de 1 a 2 minutos: a DENIA cria em alta qualidade e confere o texto.": "投稿 {0}/{1} のアートを作成中です。1枚あたり1〜2分かかります。DENIAが高画質で作成し、文字を確認します。",
+  "Na Cloudflare, no Worker denia-landing, falta: {0}.": "Cloudflare の Worker denia-landing に次の設定がありません：{0}。"
  }
 }

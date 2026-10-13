@@ -1326,7 +1326,10 @@
   "Quanto mais detalhes reais (produtos, preços, promoções, garantias), mais as legendas vendem. A IA nunca inventa preço ou promoção.": "Je mehr echte Details (Produkte, Preise, Aktionen, Garantien), desto besser verkaufen die Texte. Die KI erfindet niemals Preise oder Aktionen.",
   "Ex.: segunda, quarta e sexta às 18h, sábado às 10h": "z. B.: Montag, Mittwoch und Freitag um 18 Uhr, Samstag um 10 Uhr",
   "A logo da marca é enviada logo depois de salvar (o campo aparece na sequência).": "Das Logo der Marke lädst du direkt nach dem Speichern hoch (das Feld erscheint danach).",
-  "Marca salva. Agora envie a logo da marca.": "Marke gespeichert. Lade jetzt das Logo der Marke hoch."
+  "Marca salva. Agora envie a logo da marca.": "Marke gespeichert. Lade jetzt das Logo der Marke hoch.",
+  "Revisor de aprendizados": "Lernprüfer",
+  "Seu perfil só tem acesso aos aprendizados da IA.": "Dein Profil hat nur Zugriff auf die Lerninhalte der KI.",
+  "Vá em Workers e Pages → denia-landing → Settings → Variables and Secrets → Add, escolha o tipo Secret, crie com o nome exato e clique em Deploy. Depois volte aqui e clique em Conectar de novo.": "Gehe zu Workers & Pages → denia-landing → Settings → Variables and Secrets → Add, wähle den Typ Secret, lege ihn mit dem exakten Namen an und klicke auf Deploy. Komm dann hierher zurück und klicke erneut auf Verbinden."
  },
  "h": {
   "1 lugarpara toda a operação": "<strong>1 Ort</strong><span>für den gesamten Betrieb</span>",
@@ -1455,6 +1458,7 @@
   "{0}: publicado": "{0}: veröffentlicht",
   "Post aprovado. Ele sai sozinho em {0}/{1} às {2} (horário de Brasília). Para publicar já, abra o post e clique em Publicar agora.": "Beitrag freigegeben. Er erscheint automatisch am {0}.{1}. um {2} (Brasília-Zeit). Um sofort zu veröffentlichen, öffne den Beitrag und klicke auf Jetzt veröffentlichen.",
   "A revisão da arte encontrou um problema: {0} Clique de novo em Criar arte para refazer.": "Die Prüfung des Motivs hat ein Problem gefunden: {0} Klicke erneut auf Motiv erstellen, um es neu zu machen.",
-  "Criando a arte do post {0} de {1}. Cada arte leva de 1 a 2 minutos: a DENIA cria em alta qualidade e confere o texto.": "Motiv für Beitrag {0} von {1} wird erstellt. Jedes Motiv dauert 1 bis 2 Minuten: DENIA erstellt es in hoher Qualität und prüft den Text."
+  "Criando a arte do post {0} de {1}. Cada arte leva de 1 a 2 minutos: a DENIA cria em alta qualidade e confere o texto.": "Motiv für Beitrag {0} von {1} wird erstellt. Jedes Motiv dauert 1 bis 2 Minuten: DENIA erstellt es in hoher Qualität und prüft den Text.",
+  "Na Cloudflare, no Worker denia-landing, falta: {0}.": "In Cloudflare fehlt im Worker denia-landing: {0}."
  }
 }

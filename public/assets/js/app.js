@@ -196,6 +196,9 @@
   const estado = { eu: null, org: null, papel: null, status: null, render: 0 };
   const NIVEL = { VISUALIZADOR: 1, AGENTE: 2, ADMIN: 3, OWNER: 4 };
   const pode = minimo => (NIVEL[estado.papel] || 0) >= NIVEL[minimo];
+  // Revisor de aprendizados: só a tela de Aprendizados (e a própria conta).
+  const ehRevisor = () => estado.papel === "REVISOR";
+  const ROTAS_REVISOR = ["aprendizados", "conta"];
 
   const ETAPAS = [
     ["COLETANDO", "Coletando informações"],
@@ -210,7 +213,7 @@
   ];
   const NOME_ETAPA = Object.fromEntries(ETAPAS);
   const ETAPAS_MANUAIS = ["COLETANDO", "EQUIPE", "AGENDADO", "CONCLUIDO", "CANCELADO"];
-  const PAPEIS = [["OWNER", "Proprietário"], ["ADMIN", "Administrador"], ["AGENTE", "Atendente"], ["VISUALIZADOR", "Somente leitura"]];
+  const PAPEIS = [["OWNER", "Proprietário"], ["ADMIN", "Administrador"], ["AGENTE", "Atendente"], ["VISUALIZADOR", "Somente leitura"], ["REVISOR", "Revisor de aprendizados"]];
   const NOME_PAPEL = Object.fromEntries(PAPEIS);
 
   const ROTAS = {
@@ -248,6 +251,7 @@
     if (!estado.eu) return;
     let { nome, param } = rotaAtual();
     if (estado.eu.usuario.trocar_senha) nome = "conta";
+    else if (ehRevisor() && !ROTAS_REVISOR.includes(nome)) nome = "aprendizados";
     const rota = ROTAS[nome];
     // Dentro de Conversas, abrir outra conversa não recarrega a página inteira.
     const viva = estado.paginaViva;
@@ -317,7 +321,15 @@
     av.style.background = estado.org && estado.org.cor ? `linear-gradient(135deg, ${estado.org.cor}, #8b5cf6)` : "";
     document.querySelectorAll("#lateral-nav a[data-minimo]").forEach(a => a.classList.toggle("oculto", !pode(a.dataset.minimo)));
     document.querySelectorAll("#lateral-nav a[data-super]").forEach(a => a.classList.toggle("oculto", !estado.eu.usuario.super_admin));
-    if (!estado.eu.usuario.trocar_senha) { atualizarStatus(); atualizarAprovacoes(); }
+    document.querySelectorAll("#lateral-nav a[data-rota]:not([data-minimo]):not([data-super])").forEach(a => a.classList.toggle("oculto", ehRevisor() && !ROTAS_REVISOR.includes(a.dataset.rota)));
+    // Título de grupo do menu some quando todos os links do grupo estão ocultos.
+    document.querySelectorAll("#lateral-nav .lateral-grupo").forEach(g => {
+      let el = g.nextElementSibling, algum = false;
+      while (el && !el.classList.contains("lateral-grupo")) { if (el.tagName === "A" && !el.classList.contains("oculto")) algum = true; el = el.nextElementSibling; }
+      g.classList.toggle("oculto", !algum);
+    });
+    if (ehRevisor()) $("status-engine").replaceChildren(h("span", { class: "ponto" }), "Revisor de aprendizados");
+    else if (!estado.eu.usuario.trocar_senha) { atualizarStatus(); atualizarAprovacoes(); }
     else $("status-engine").replaceChildren(h("span", { class: "ponto" }), "Primeiro acesso");
   }
 
@@ -747,7 +759,7 @@
   }
   function cartaoSugestao(s, filtro) {
     const [nomeTipo, cor] = TIPOS[s.tipo] || [s.tipo, ""];
-    const editavel = filtro === "PENDENTE" && pode("ADMIN");
+    const editavel = filtro === "PENDENTE" && (pode("ADMIN") || ehRevisor());
     const ta = h("textarea", { class: "entrada", value: s.conteudo, readOnly: !editavel, maxlength: "800", "aria-label": "Conteúdo da sugestão" });
     const cartao = h("article", { class: "sugestao vidro" },
       h("div", { class: "sugestao-topo" }, h("strong", { text: s.titulo }), selo(nomeTipo, cor), Number(s.ocorrencias) > 1 ? h("span", { class: "selo", text: `${s.ocorrencias}× no histórico` }) : null),
@@ -1503,13 +1515,20 @@
   let cacheMeta = null;
   async function estadoMeta(forcar) {
     if (!forcar && cacheMeta && cacheMeta.org === estado.org.id && Date.now() - cacheMeta.em < 30000) return cacheMeta.d;
-    const d = await mk("meta/estado").catch(() => ({ configurada: false, contas: [] }));
+    const d = await mk("meta/estado").catch(e => ({ configurada: false, contas: [], erro: e.message }));
     cacheMeta = { org: estado.org.id, em: Date.now(), d };
     return d;
   }
   const contaDa = (meta, marcaId) => (meta.contas || []).find(c => String(c.marca_id) === String(marcaId)) || null;
   async function conectarMeta(marca) {
     const meta = await estadoMeta(true);
+    if (meta.erro) { aviso(meta.erro, "erro"); return; }
+    if (meta.configurada === false && meta.faltando && meta.faltando.length) {
+      await modal({ titulo: "Falta configurar a Meta", soInformar: true, conteudo: [
+        `Na Cloudflare, no Worker denia-landing, falta: ${meta.faltando.join(" e ")}.`,
+        "Vá em Workers e Pages → denia-landing → Settings → Variables and Secrets → Add, escolha o tipo Secret, crie com o nome exato e clique em Deploy. Depois volte aqui e clique em Conectar de novo."] });
+      return;
+    }
     if (!meta.configurada) {
       await modal({ titulo: "Falta configurar a Meta", soInformar: true, conteudo: [
         "Para a DENIA publicar sozinha, a plataforma precisa do aplicativo da Meta (é feito uma vez só):",
