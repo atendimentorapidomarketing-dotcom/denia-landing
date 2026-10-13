@@ -34,7 +34,7 @@ const prontos = new WeakSet();
 async function garantir(env) {
   if (prontos.has(env.DB)) return;
   await env.DB.batch(DDL.map(s => env.DB.prepare(s)));
-  for (const alter of ["ALTER TABLE plt_mk_marcas ADD COLUMN idioma TEXT", "ALTER TABLE plt_mk_marcas ADD COLUMN horarios TEXT", "ALTER TABLE plt_mk_marcas ADD COLUMN logo_midia_id INTEGER", "ALTER TABLE plt_mk_posts ADD COLUMN texto_arte TEXT", "ALTER TABLE plt_mk_marcas ADD COLUMN ofertas TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN analise TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN google_id TEXT"])
+  for (const alter of ["ALTER TABLE plt_mk_marcas ADD COLUMN idioma TEXT", "ALTER TABLE plt_mk_marcas ADD COLUMN horarios TEXT", "ALTER TABLE plt_mk_marcas ADD COLUMN logo_midia_id INTEGER", "ALTER TABLE plt_mk_posts ADD COLUMN texto_arte TEXT", "ALTER TABLE plt_mk_marcas ADD COLUMN ofertas TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN analise TEXT", "ALTER TABLE plt_mk_config ADD COLUMN avaliacoes_auto TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN google_id TEXT"])
     await env.DB.prepare(alter).run().catch(() => { }); // coluna já existe
   prontos.add(env.DB);
 }
@@ -228,6 +228,13 @@ Honestidade: nunca prometa posição no Google nem resultado garantido; números
 // ---------------------------------------------------------------------------
 
 const SENTIMENTOS = ["OTIMA", "POSITIVA", "NEUTRA", "NEGATIVA", "GRAVE"];
+const MODOS_AVALIACAO = ["DESLIGADO", "BOAS", "TODAS"];
+// Pode sair sem uma pessoa? Nunca as graves, as que pedem uma pessoa, as suspeitas de violar regras ou as urgentes.
+function podeResponderSozinha(modo, a, analise) {
+  if (!a.google_id || !analise || modo === "DESLIGADO" || !MODOS_AVALIACAO.includes(modo)) return false;
+  if (analise.precisa_humano || analise.viola_politica || analise.sentimento === "GRAVE" || analise.urgencia === "ALTA") return false;
+  return modo === "TODAS" || (Number(a.nota) >= 4 && ["OTIMA", "POSITIVA"].includes(analise.sentimento));
+}
 const INSTRUCOES_AVALIACAO = `Você é a gerente de reputação online da empresa, especialista em Google Perfil da Empresa. Leia UMA avaliação com atenção ao contexto (o que aconteceu, o tom, a nota, o que a pessoa quer) e decida como tratá-la.
 Classifique:
 - sentimento: OTIMA (elogio forte), POSITIVA, NEUTRA, NEGATIVA (reclamação comum: atraso, preço, atendimento) ou GRAVE (acusação séria, risco à segurança, ameaça de processo, ofensa, dado pessoal exposto, fraude).
@@ -256,19 +263,29 @@ async function analisarUmaAvaliacao(env, marca, a) {
 }
 
 // Cron: analisa as avaliações ainda não lidas e devolve as que precisam de uma pessoa (para avisar a equipe).
-export async function analisarAvaliacoesPendentes(env, orgId, limite = 10) {
+export async function analisarAvaliacoesPendentes(env, orgId, limite = 10, k = null) {
   if (!chave(env)) return { analisadas: 0, alertas: [] };
   await garantir(env);
+  const modo = (await env.DB.prepare("SELECT avaliacoes_auto FROM plt_mk_config WHERE org_id=?").bind(orgId).first().catch(() => null))?.avaliacoes_auto || "DESLIGADO";
+  let publicadas = 0;
   const lista = (await env.DB.prepare("SELECT a.*, m.nome AS marca_nome FROM plt_mk_avaliacoes a JOIN plt_mk_marcas m ON m.id=a.marca_id WHERE a.org_id=? AND a.analise IS NULL AND a.status='PENDENTE' ORDER BY a.id DESC LIMIT ?").bind(orgId, limite).all())?.results || [];
   const alertas = [];
   for (const a of lista) {
     const marca = await env.DB.prepare("SELECT * FROM plt_mk_marcas WHERE id=?").bind(a.marca_id).first();
     try {
-      const { analise } = await analisarUmaAvaliacao(env, marca, a);
+      const { analise, resposta } = await analisarUmaAvaliacao(env, marca, a);
       if (analise.precisa_humano || analise.viola_politica || analise.urgencia === "ALTA") alertas.push({ marca: a.marca_nome, autor: a.autor, nota: a.nota, texto: a.texto, analise });
+      else if (k && resposta && podeResponderSozinha(modo, a, analise)) {
+        try {
+          await responderAvaliacaoGoogle(env, k, a, resposta);
+          await env.DB.prepare("UPDATE plt_mk_avaliacoes SET resposta=?, status='RESPONDIDA' WHERE id=?").bind(resposta, a.id).run();
+          await env.DB.prepare("INSERT INTO plt_auditoria(org_id,usuario_id,email,acao,detalhe,ip,criado_ms) VALUES(?,?,?,?,?,?,?)").bind(orgId, null, "DENIA (resposta automática)", "MARKETING", `Respondeu no Google a avaliação de ${a.autor} (${a.nota}★)`.slice(0, 400), null, k.agora(env)).run().catch(() => { });
+          publicadas++;
+        } catch (e) { console.error("resposta automática", a.id, e?.message); }
+      }
     } catch (e) { console.error("análise de avaliação", a.id, e?.message); break; }
   }
-  return { analisadas: lista.length, alertas };
+  return { analisadas: lista.length, alertas, publicadas };
 }
 
 // Relatório semanal de especialista (Google Meu Negócio + Instagram/Facebook), por marca.
@@ -391,7 +408,7 @@ export async function apiMarketing(request, env, k, orgId, papel, resto) {
     // ----- Configuração (modo de aprovação)
     if (resto === "config" && metodo === "GET") {
       const c = await env.DB.prepare("SELECT * FROM plt_mk_config WHERE org_id=?").bind(orgId).first();
-      return json({ modo: c?.modo || "HUMANO", posts_semana: c?.posts_semana || 3, nota_minima: c?.nota_minima || 8, ia_ligada: Boolean(chave(env)) });
+      return json({ modo: c?.modo || "HUMANO", posts_semana: c?.posts_semana || 3, nota_minima: c?.nota_minima || 8, avaliacoes_auto: MODOS_AVALIACAO.includes(c?.avaliacoes_auto) ? c.avaliacoes_auto : "DESLIGADO", ia_ligada: Boolean(chave(env)) });
     }
     if (resto === "config" && metodo === "POST") {
       exigir("ADMIN");
@@ -402,6 +419,16 @@ export async function apiMarketing(request, env, k, orgId, papel, resto) {
       await env.DB.prepare("INSERT OR REPLACE INTO plt_mk_config(org_id,modo,posts_semana,nota_minima,atualizado_ms) VALUES(?,?,?,?,?)").bind(orgId, modo, ps, nota, agora(env)).run();
       await auditar(env, request, sessao, orgId, "MARKETING", `Aprovação de artes: ${modo === "AUTOMATICO" ? `automática (nota mínima ${nota})` : "por uma pessoa"} · ${ps} posts por semana`);
       return json({ ok: true });
+    }
+
+    // Avaliações do Google: uma pessoa aprova, ou a DENIA responde sozinha (as boas, ou todas menos as graves).
+    if (resto === "config/avaliacoes" && metodo === "POST") {
+      exigir("ADMIN");
+      const c = await corpoOu(500);
+      const modo = MODOS_AVALIACAO.includes(c.modo) ? c.modo : "DESLIGADO";
+      await env.DB.prepare("INSERT INTO plt_mk_config(org_id,avaliacoes_auto,atualizado_ms) VALUES(?,?,?) ON CONFLICT(org_id) DO UPDATE SET avaliacoes_auto=excluded.avaliacoes_auto, atualizado_ms=excluded.atualizado_ms").bind(orgId, modo, agora(env)).run();
+      await auditar(env, request, sessao, orgId, "MARKETING", `Respostas das avaliações do Google: ${({ DESLIGADO: "uma pessoa aprova", BOAS: "automáticas para 4 e 5 estrelas", TODAS: "automáticas, menos as graves" })[modo]}`);
+      return json({ ok: true, avaliacoes_auto: modo });
     }
 
     // ----- Posts
