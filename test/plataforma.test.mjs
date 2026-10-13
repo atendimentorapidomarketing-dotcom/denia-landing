@@ -17,7 +17,7 @@ async function criarPlataforma(extra = {}) {
   globalThis.fetch = async (url, op = {}) => {
     if (p && p.openai && String(url).startsWith("https://api.openai.com/v1/")) {
       const corpo = op.body && typeof op.body === "string" ? JSON.parse(op.body) : null;
-      openaiChamadas.push({ url: String(url), corpo });
+      openaiChamadas.push({ url: String(url), corpo, form: op.body instanceof FormData ? op.body : null });
       const r = p.openai ? p.openai(String(url), corpo) : {};
       if (r instanceof Response) return r;
       return new Response(JSON.stringify(r), { status: 200, headers: { "content-type": "application/json" } });
@@ -452,6 +452,57 @@ test("Estúdio — marcas, semana criada pela IA, aprovação humana e imagem", 
   const novo = await p.req("/api/orgs/1/mk/posts", { metodo: "POST", quem: "admin", corpo: { marca_id: m2.dados.id, canais: ["instagram"], titulo: "Banho", midia_id: avulsa.dados.midia_id } });
   const doPost = (await p.req("/api/orgs/1/mk/posts?marca=" + m2.dados.id, { quem: "admin" })).dados.posts.find(x => x.id === novo.dados.id);
   assert.equal(doPost.midia_id, avulsa.dados.midia_id, "a imagem criada vira a arte do novo post");
+});
+
+test("Artes — logo oficial vai junto, qualidade alta, texto da arte conferido e refeito se vier errado; horários preferidos", async () => {
+  const p = await criarPlataforma({ OPENAI_API_KEY: "sk-teste" });
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  const marca = (await p.req("/api/orgs/1/mk/marcas", { metodo: "POST", quem: "admin", corpo: { nome: "Clínica Sol", cores: "azul e dourado", horarios: "terça e quinta às 19h" } })).dados.id;
+
+  // Logo: só imagem de verdade (PNG/JPG/WEBP); aparece na marca.
+  const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from("resto-do-png")]).toString("base64");
+  assert.equal((await p.req(`/api/orgs/1/mk/marcas/${marca}/logo`, { metodo: "POST", quem: "admin", corpo: { dados: Buffer.from("<svg>").toString("base64") } })).status, 400);
+  assert.equal((await p.req(`/api/orgs/1/mk/marcas/${marca}/logo`, { metodo: "POST", quem: "admin", corpo: { dados: "data:image/png;base64," + png } })).status, 200);
+  const m = (await p.req("/api/orgs/1/mk/marcas", { quem: "admin" })).dados.marcas[0];
+  assert.ok(m.logo_midia_id);
+  assert.equal(m.horarios, "terça e quinta às 19h");
+
+  // Semana: os horários preferidos e o texto da arte entram no pedido à IA.
+  p.openai = () => ({ output: [{ content: [{ type: "output_text", text: JSON.stringify({ posts: [{ dia: 1, hora: "19:00", formato: "post", titulo: "Sorriso", legenda: "L", hashtags: "", chamada: "", texto_arte: "Seu sorriso merece cuidado", ideia_imagem: "Dentista sorrindo" }] }) }] }] });
+  const sem = await p.req("/api/orgs/1/mk/ia/semana", { metodo: "POST", quem: "admin", corpo: { marca_id: marca, inicio: "2030-01-07" } });
+  assert.match(JSON.stringify(p.openaiChamadas.at(-1).corpo), /terça e quinta às 19h/);
+  const post = sem.dados.criados[0].id;
+  assert.equal(p.env.DB.q("SELECT texto_arte FROM plt_mk_posts WHERE id=?", post)[0].texto_arte, "Seu sorriso merece cuidado");
+
+  // Arte: vai pela edição de imagem com a logo anexada, qualidade alta; a revisão acha erro e a DENIA refaz uma vez.
+  let conferencias = 0;
+  p.openai = (url) => {
+    if (url.endsWith("images/edits")) return { data: [{ b64_json: Buffer.from("arte-" + conferencias).toString("base64") }] };
+    if (url.endsWith("responses")) { conferencias++; return { output: [{ content: [{ type: "output_text", text: JSON.stringify(conferencias === 1 ? { correto: false, problemas: "Escreveu \"sorizo\" sem o segundo r." } : { correto: true, problemas: "" }) }] }] }; }
+    return { error: { message: "inesperado " + url } };
+  };
+  const arte = await p.req("/api/orgs/1/mk/ia/imagem", { metodo: "POST", quem: "admin", corpo: { post_id: post } });
+  assert.equal(arte.status, 200);
+  assert.deepEqual(arte.dados.conferencia, { correto: true, problemas: "" });
+  const edicoes = p.openaiChamadas.filter(c => c.url.endsWith("images/edits"));
+  assert.equal(edicoes.length, 2, "refez a arte depois da revisão");
+  const form = edicoes[1].form;
+  assert.equal(form.get("quality"), "high");
+  assert.equal(form.get("input_fidelity"), "high");
+  assert.ok(form.get("image[]") instanceof Blob, "a logo vai anexada");
+  assert.match(form.get("prompt"), /exatamente, "Seu sorriso merece cuidado"/);
+  assert.match(form.get("prompt"), /correção obrigatória da tentativa anterior: Escreveu "sorizo"/);
+  const visao = p.openaiChamadas.find(c => c.url.endsWith("responses") && JSON.stringify(c.corpo).includes("input_image"));
+  assert.ok(visao, "a revisão olha a imagem pronta");
+  assert.equal(await (await p.req(`/api/orgs/1/mk/midias/${arte.dados.midia_id}`, { quem: "admin" })).r.text(), "arte-1");
+
+  // Sem logo e sem texto: arte direta, sem revisão de texto.
+  await p.req(`/api/orgs/1/mk/marcas/${marca}/logo`, { metodo: "POST", quem: "admin", corpo: { remover: true } });
+  p.openai = (url) => url.endsWith("images/generations") ? { data: [{ b64_json: Buffer.from("x").toString("base64") }] } : { error: { message: "inesperado" } };
+  const simples = await p.req("/api/orgs/1/mk/ia/imagem", { metodo: "POST", quem: "admin", corpo: { marca_id: marca, ideia: "Consultório claro" } });
+  assert.equal(simples.status, 200);
+  assert.equal(simples.dados.conferencia, null);
+  assert.match(p.openaiChamadas.at(-1).corpo.prompt, /não escreva nenhuma palavra/);
 });
 
 test("Estúdio — aprovação automática: a IA revisa e só aprova o que passa da nota mínima", async () => {

@@ -32,7 +32,8 @@ const prontos = new WeakSet();
 async function garantir(env) {
   if (prontos.has(env.DB)) return;
   await env.DB.batch(DDL.map(s => env.DB.prepare(s)));
-  await env.DB.prepare("ALTER TABLE plt_mk_marcas ADD COLUMN idioma TEXT").run().catch(() => { }); // já existe
+  for (const alter of ["ALTER TABLE plt_mk_marcas ADD COLUMN idioma TEXT", "ALTER TABLE plt_mk_marcas ADD COLUMN horarios TEXT", "ALTER TABLE plt_mk_marcas ADD COLUMN logo_midia_id INTEGER", "ALTER TABLE plt_mk_posts ADD COLUMN texto_arte TEXT"])
+    await env.DB.prepare(alter).run().catch(() => { }); // coluna já existe
   prontos.add(env.DB);
 }
 
@@ -110,15 +111,104 @@ export const IDIOMAS = { "pt-BR": "português do Brasil", en: "inglês (English)
 export const idiomaDe = v => (IDIOMAS[String(v || "")] ? String(v) : "pt-BR");
 function resumoMarca(m) {
   return [`Marca: ${m.nome}`, `IDIOMA DO CONTEÚDO: ${IDIOMAS[idiomaDe(m.idioma)]} (escreva tudo neste idioma)`, m.segmento && `Segmento: ${m.segmento}`, m.cidade && `Cidade/região: ${m.cidade}`, m.publico && `Público: ${m.publico}`, m.tom && `Tom de voz: ${m.tom}`,
-    m.diferenciais && `Diferenciais: ${m.diferenciais}`, m.cores && `Cores da marca: ${m.cores}`, m.whatsapp && `WhatsApp para contato: ${m.whatsapp}`, m.site && `Site: ${m.site}`].filter(Boolean).join("\n");
+    m.diferenciais && `Diferenciais: ${m.diferenciais}`, m.cores && `Cores da marca: ${m.cores}`, m.horarios && `Dias e horários preferidos para publicar: ${m.horarios}`, m.whatsapp && `WhatsApp para contato: ${m.whatsapp}`, m.site && `Site: ${m.site}`].filter(Boolean).join("\n");
 }
-const REGRAS_CONTEUDO = `Regras: escrita impecável, sem erros, no IDIOMA DO CONTEÚDO da marca (inclusive hashtags e chamadas); nada de promessas que a empresa não pode cumprir; não invente preços, descontos, prêmios, números ou depoimentos; nada de conteúdo enganoso; respeite as políticas do Instagram, Facebook e Google; chamadas para ação claras (ex.: "Chame no WhatsApp"); hashtags relevantes e locais, no máximo 12.`;
+const REGRAS_CONTEUDO = `Regras: escrita impecável (ortografia, acentos e pontuação revisados palavra por palavra), sem erros, no IDIOMA DO CONTEÚDO da marca (inclusive hashtags e chamadas); nada de promessas que a empresa não pode cumprir; não invente preços, descontos, prêmios, números ou depoimentos; nada de conteúdo enganoso; respeite as políticas do Instagram, Facebook e Google; chamadas para ação claras (ex.: "Chame no WhatsApp"); hashtags relevantes e locais, no máximo 12.`;
+
+// ---------------------------------------------------------------------------
+// Artes: qualidade alta, logo verdadeira e texto conferido
+// ---------------------------------------------------------------------------
+
+const LIMITE_LOGO_B64 = 1_900_000; // ~1,4 MB (limite de linha do D1 é 2 MB); o navegador reduz a logo antes de enviar
+function tipoDaImagem(b64) {
+  if (!b64 || b64.length > LIMITE_LOGO_B64 || !/^[A-Za-z0-9+/=\s]+$/.test(b64)) return "";
+  const ini = atob(b64.slice(0, 24).replace(/\s/g, ""));
+  if (ini.startsWith("\x89PNG")) return "image/png";
+  if (ini.startsWith("\xff\xd8\xff")) return "image/jpeg";
+  if (ini.startsWith("RIFF") && ini.slice(8, 12) === "WEBP") return "image/webp";
+  return "";
+}
+const bytesDe = b64 => Uint8Array.from(atob(b64), ch => ch.charCodeAt(0));
+
+function briefDaArte(marca, ideia, textoArte, temLogo, correcao) {
+  const idioma = IDIOMAS[idiomaDe(marca.idioma)];
+  return [
+    `Arte para redes sociais da marca "${marca.nome}" (${marca.segmento || "serviços"}${marca.cidade ? ", " + marca.cidade : ""}), com acabamento de agência de publicidade premium.`,
+    `Cena: ${ideia}.`,
+    marca.cores ? `Paleta: use as cores da marca (${marca.cores}) com elegância, em detalhes e na tipografia.` : "",
+    "Direção de arte: fotografia publicitária hiper-realista (ou ilustração 3D refinada, se a cena pedir), iluminação de estúdio suave, profundidade de campo, cores ricas e naturais, pessoas com aparência real e mãos corretas, composição limpa com espaço para respirar e hierarquia visual clara. Nada de aparência genérica de banco de imagens, nada de elementos distorcidos.",
+    textoArte
+      ? `Texto: o ÚNICO texto escrito na arte é, exatamente, "${textoArte}" (em ${idioma}). Copie letra por letra, com todos os acentos e cedilhas, em tipografia moderna, grande, nítida e muito legível. Não escreva nenhuma outra palavra, número, telefone, site ou hashtag.`
+      : "Texto: não escreva nenhuma palavra, letra ou número na arte.",
+    temLogo
+      ? "Logo: a imagem anexada é a logo oficial da marca. Aplique-a EXATAMENTE como está — mesmas formas, letras e cores, sem redesenhar, sem distorcer —, pequena e nítida em um canto, sobre uma área limpa da arte. Não crie nenhuma outra logo."
+      : "Logo: não invente logotipo nem marca d'água.",
+    correcao ? `ATENÇÃO, correção obrigatória da tentativa anterior: ${correcao}` : ""
+  ].filter(Boolean).join("\n");
+}
+
+async function gerarImagem(env, prompt, tamanho, logo) {
+  const qualidade = String(env.OPENAI_IMAGE_QUALITY || "high").trim();
+  // O modelo de imagem muda com o tempo (o gpt-image-1 está sendo aposentado): tenta o configurado e cai para o seguinte.
+  const modelos = [...new Set([String(env.OPENAI_IMAGE_MODEL || "").trim(), "gpt-image-1.5", "gpt-image-1"].filter(Boolean))];
+  let ultimoErro = null;
+  for (const modelo of modelos) {
+    try {
+      let d;
+      if (logo) {
+        const envio = (fidelidade) => {
+          const f = new FormData();
+          for (const [k, v] of Object.entries({ model: modelo, prompt, size: tamanho, quality: qualidade, output_format: "jpeg", output_compression: "88", n: "1" })) f.append(k, v);
+          if (fidelidade) f.append("input_fidelity", "high");
+          f.append("image[]", new Blob([bytesDe(logo.dados)], { type: logo.mime }), "logo." + logo.mime.split("/")[1]);
+          return f;
+        };
+        try { d = await openai(env, "images/edits", envio(true), { timeout: 180000 }); }
+        catch (e) { if (!/input_fidelity/i.test(String(e?.message))) throw e; d = await openai(env, "images/edits", envio(false), { timeout: 180000 }); }
+      } else {
+        d = await openai(env, "images/generations", { model: modelo, prompt, size: tamanho, quality: qualidade, output_format: "jpeg", output_compression: 88, n: 1 }, { timeout: 180000 });
+      }
+      const b64 = d?.data?.[0]?.b64_json;
+      if (!b64) throw Object.assign(new Error("A IA não devolveu a imagem. Tente de novo."), { status: 502 });
+      return b64;
+    } catch (e) { ultimoErro = e; if (!/model|modelo|not found|does not exist|deprecat|404/i.test(String(e?.message))) throw e; }
+  }
+  throw ultimoErro;
+}
+
+// A IA "olha" a arte pronta, como um revisor: o texto está escrito certo? a logo aparece?
+async function conferirArte(env, b64, textoArte, temLogo) {
+  const d = await openai(env, "responses", {
+    model: String(env.OPENAI_MODEL || MODELO_TEXTO).trim(),
+    instructions: `Você é revisora de artes de uma agência. Leia com atenção todo o texto visível na imagem e confira a ortografia letra por letra, inclusive acentos e cedilhas. Responda em JSON: {"texto_lido":"","correto":true,"problemas":""}. correto=false se houver qualquer erro de escrita, letra trocada, palavra inventada, texto diferente do esperado${temLogo ? ", ou se a logo não aparecer" : ""}. problemas: o que corrigir, em uma frase.`,
+    input: [{ role: "user", content: [
+      { type: "input_text", text: textoArte ? `Texto que deveria estar escrito: "${textoArte}" (e nenhum outro).` : "A arte não deveria ter texto escrito (a logo da marca pode aparecer)." },
+      { type: "input_image", image_url: `data:image/jpeg;base64,${b64}` }] }],
+    text: { format: { type: "json_object" } }, max_output_tokens: 400, store: false
+  }, { timeout: 60000 });
+  const r = JSON.parse(textoDaResposta(d) || "{}");
+  return { correto: r.correto !== false, problemas: String(r.problemas || "").slice(0, 300), texto_lido: String(r.texto_lido || "").slice(0, 200) };
+}
+
+const TENTATIVAS_ARTE = 2;
+async function criarArte(env, { marca, ideia, textoArte, logo, tamanho }) {
+  let correcao = "", b64 = "", prompt = "", conferencia = null;
+  for (let i = 0; i < TENTATIVAS_ARTE; i++) {
+    prompt = briefDaArte(marca, ideia, textoArte, Boolean(logo), correcao);
+    b64 = await gerarImagem(env, prompt, tamanho, logo);
+    if (!textoArte && !logo) break;
+    conferencia = await conferirArte(env, b64, textoArte, Boolean(logo)).catch(() => null);
+    if (!conferencia || conferencia.correto) break;
+    correcao = conferencia.problemas + (textoArte ? ` O texto deve ser exatamente "${textoArte}".` : " A arte não deve ter texto escrito.");
+  }
+  return { b64, prompt, conferencia: conferencia ? { correto: conferencia.correto, problemas: conferencia.problemas } : null };
+}
 
 // Revisão da IA (modo automático): dá nota de 0 a 10 e diz o que melhorar.
 async function revisar(env, marca, post) {
   const r = await iaJSON(env, `Você é a diretora de criação de uma agência. Avalie um post antes da publicação. ${REGRAS_CONTEUDO}
 Responda em JSON: {"nota":0,"aprovado":false,"comentario":""} — nota de 0 a 10; aprovado=true só se estiver pronto para publicar sem nenhum ajuste; comentario em 1 ou 2 frases.`,
-  `${resumoMarca(marca)}\n\nPOST (${post.formato}, canais ${post.canais.join(", ")}):\nTítulo: ${post.titulo || "-"}\nLegenda: ${post.legenda || "-"}\nHashtags: ${post.hashtags || "-"}\nChamada: ${post.chamada || "-"}\nIdeia da imagem: ${post.ideia_imagem || "-"}`, 400);
+  `${resumoMarca(marca)}\n\nPOST (${post.formato}, canais ${post.canais.join(", ")}):\nTítulo: ${post.titulo || "-"}\nLegenda: ${post.legenda || "-"}\nHashtags: ${post.hashtags || "-"}\nChamada: ${post.chamada || "-"}\nTexto escrito na arte: ${post.texto_arte || "-"}\nIdeia da imagem: ${post.ideia_imagem || "-"}`, 400);
   return { nota: Math.max(0, Math.min(10, Math.round(Number(r?.nota) || 0))), aprovado: r?.aprovado === true, comentario: String(r?.comentario || "").slice(0, 400) };
 }
 
@@ -146,7 +236,7 @@ export async function apiMarketing(request, env, k, orgId, papel, resto) {
     if (resto === "marcas" && metodo === "POST") {
       exigir("ADMIN");
       const c = await corpoOu(8000);
-      const campos = ["nome", "segmento", "cidade", "instagram", "facebook", "google", "site", "whatsapp", "tom", "publico", "cores", "diferenciais", "idioma"];
+      const campos = ["nome", "segmento", "cidade", "instagram", "facebook", "google", "site", "whatsapp", "tom", "publico", "cores", "diferenciais", "idioma", "horarios"];
       const v = Object.fromEntries(campos.map(x => [x, txt(c[x], x === "diferenciais" || x === "publico" ? 600 : 200)]));
       v.idioma = idiomaDe(c.idioma);
       v.instagram = v.instagram.replace(/^@+/, "").replace(/^https?:\/\/(www\.)?instagram\.com\//i, "").replace(/\/.*$/, "");
@@ -160,6 +250,26 @@ export async function apiMarketing(request, env, k, orgId, papel, resto) {
       const n = await env.DB.prepare(`INSERT INTO plt_mk_marcas(org_id,${campos.join(",")},ativa,criado_ms) VALUES(?,${campos.map(() => "?").join(",")},1,?) RETURNING id`).bind(orgId, ...campos.map(x => v[x] || null), agora(env)).first();
       await auditar(env, request, sessao, orgId, "MARKETING", `Criou a marca ${v.nome}`);
       return json({ ok: true, id: n.id });
+    }
+    // Logo oficial da marca: vai junto para a IA em toda arte, para sair a logo verdadeira (nunca uma inventada).
+    if ((m = resto.match(/^marcas\/(\d{1,12})\/logo$/)) && metodo === "POST") {
+      exigir("ADMIN");
+      const marca = await marcaDa(m[1]);
+      if (!marca) return json({ erro: "Marca não encontrada." }, 404);
+      const c = await corpoOu(LIMITE_LOGO_B64 + 2000);
+      const antiga = marca.logo_midia_id;
+      if (c.remover) {
+        await env.DB.prepare("UPDATE plt_mk_marcas SET logo_midia_id=NULL WHERE id=?").bind(marca.id).run();
+      } else {
+        const dados = String(c.dados || "").replace(/^data:[^,]*,/, "");
+        const mime = tipoDaImagem(dados);
+        if (!mime) return json({ erro: "Envie a logo em PNG, JPG ou WEBP." }, 400);
+        const n = await env.DB.prepare("INSERT INTO plt_mk_midias(org_id,mime,dados,prompt,criado_ms) VALUES(?,?,?,?,?) RETURNING id").bind(orgId, mime, dados, "logo", agora(env)).first();
+        await env.DB.prepare("UPDATE plt_mk_marcas SET logo_midia_id=? WHERE id=?").bind(n.id, marca.id).run();
+      }
+      if (antiga) await env.DB.prepare("DELETE FROM plt_mk_midias WHERE id=? AND org_id=?").bind(antiga, orgId).run();
+      await auditar(env, request, sessao, orgId, "MARKETING", `${c.remover ? "Removeu" : "Enviou"} a logo da marca ${marca.nome}`);
+      return json({ ok: true });
     }
     if ((m = resto.match(/^marcas\/(\d{1,12})\/remover$/)) && metodo === "POST") {
       exigir("ADMIN");
@@ -202,19 +312,19 @@ export async function apiMarketing(request, env, k, orgId, papel, resto) {
       const marca = await marcaDa(c.marca_id);
       if (!marca) return json({ erro: "Escolha a marca do post." }, 400);
       const v = { canais: JSON.stringify(canaisOk(c.canais)), formato: FORMATOS.includes(c.formato) ? c.formato : "post", data: dataISO(c.data) || null, hora: horaOk(c.hora) || null,
-        titulo: txt(c.titulo, 200), legenda: txt(c.legenda, 2200), hashtags: txt(c.hashtags, 600), chamada: txt(c.chamada, 200), ideia_imagem: txt(c.ideia_imagem, 1000) };
+        titulo: txt(c.titulo, 200), legenda: txt(c.legenda, 2200), hashtags: txt(c.hashtags, 600), chamada: txt(c.chamada, 200), ideia_imagem: txt(c.ideia_imagem, 1000), texto_arte: txt(c.texto_arte, 80) };
       if (c.id) {
         const p = await env.DB.prepare("SELECT * FROM plt_mk_posts WHERE id=? AND org_id=?").bind(Number(c.id), orgId).first();
         if (!p) return json({ erro: "Post não encontrado." }, 404);
         if (p.status === "PUBLICADO") return json({ erro: "Este post já foi publicado." }, 409);
         // Editar um post aprovado devolve ele para aprovação.
         const status = p.status === "APROVADO" && !pode(papel, "ADMIN") ? "AGUARDANDO" : p.status;
-        await env.DB.prepare("UPDATE plt_mk_posts SET marca_id=?, canais=?, formato=?, data=?, hora=?, titulo=?, legenda=?, hashtags=?, chamada=?, ideia_imagem=?, status=?, atualizado_ms=? WHERE id=? AND org_id=?")
-          .bind(marca.id, v.canais, v.formato, v.data, v.hora, v.titulo, v.legenda, v.hashtags, v.chamada, v.ideia_imagem, status, agora(env), Number(c.id), orgId).run();
+        await env.DB.prepare("UPDATE plt_mk_posts SET marca_id=?, canais=?, formato=?, data=?, hora=?, titulo=?, legenda=?, hashtags=?, chamada=?, ideia_imagem=?, texto_arte=?, status=?, atualizado_ms=? WHERE id=? AND org_id=?")
+          .bind(marca.id, v.canais, v.formato, v.data, v.hora, v.titulo, v.legenda, v.hashtags, v.chamada, v.ideia_imagem, v.texto_arte || null, status, agora(env), Number(c.id), orgId).run();
         return json({ ok: true, id: Number(c.id) });
       }
-      const n = await env.DB.prepare(`INSERT INTO plt_mk_posts(org_id,marca_id,canais,formato,data,hora,titulo,legenda,hashtags,chamada,ideia_imagem,status,criado_por,criado_ms,atualizado_ms)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,'RASCUNHO',?,?,?) RETURNING id`).bind(orgId, marca.id, v.canais, v.formato, v.data, v.hora, v.titulo, v.legenda, v.hashtags, v.chamada, v.ideia_imagem, autor, agora(env), agora(env)).first();
+      const n = await env.DB.prepare(`INSERT INTO plt_mk_posts(org_id,marca_id,canais,formato,data,hora,titulo,legenda,hashtags,chamada,ideia_imagem,texto_arte,status,criado_por,criado_ms,atualizado_ms)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'RASCUNHO',?,?,?) RETURNING id`).bind(orgId, marca.id, v.canais, v.formato, v.data, v.hora, v.titulo, v.legenda, v.hashtags, v.chamada, v.ideia_imagem, v.texto_arte || null, autor, agora(env), agora(env)).first();
       // Imagem criada antes, fora de um post (Criar imagem com IA): passa a ser a arte do novo post.
       if (c.midia_id) {
         const md = await env.DB.prepare("SELECT id FROM plt_mk_midias WHERE id=? AND org_id=?").bind(Number(c.midia_id), orgId).first();
@@ -281,24 +391,25 @@ export async function apiMarketing(request, env, k, orgId, papel, resto) {
         const canais = canaisOk(c.canais && c.canais.length ? c.canais : ["instagram", "facebook"]);
         const anteriores = ((await env.DB.prepare("SELECT titulo FROM plt_mk_posts WHERE marca_id=? ORDER BY id DESC LIMIT 20").bind(marca.id).all())?.results || []).map(x => x.titulo).filter(Boolean);
         const r = await iaJSON(env, `Você é a estrategista de conteúdo de uma agência de marketing digital de alto nível. Crie o calendário de posts de UMA semana para a marca, variado (dicas, bastidores, prova social sem inventar depoimentos, oferta de serviço, educativo, sazonal), com foco em gerar contatos pelo WhatsApp. ${REGRAS_CONTEUDO}
-Responda em JSON: {"posts":[{"dia":0,"hora":"18:00","formato":"post","titulo":"","legenda":"","hashtags":"","chamada":"","ideia_imagem":""}]}
-- dia: 0=segunda … 6=domingo; distribua bem na semana; horários de maior alcance.
+Responda em JSON: {"posts":[{"dia":0,"hora":"18:00","formato":"post","titulo":"","legenda":"","hashtags":"","chamada":"","texto_arte":"","ideia_imagem":""}]}
+- dia: 0=segunda … 6=domingo; hora no formato HH:MM. Se a marca tiver "Dias e horários preferidos", use SOMENTE esses dias e horários; senão, distribua bem na semana nos horários de maior alcance.
 - formato: post, carrossel, story ou reels.
 - legenda: pronta para publicar (pode usar emojis com moderação e quebras de linha).
-- ideia_imagem: descrição visual detalhada da arte (cena, composição, cores da marca, texto curto que aparece na arte), para um designer ou gerador de imagens.`,
+- texto_arte: a frase curta (até 6 palavras) que aparece escrita na arte, com ortografia e acentos perfeitos; vazio se a arte não deve ter texto.
+- ideia_imagem: descrição visual detalhada da cena (assunto, ambiente, composição, luz, cores da marca), SEM texto escrito — o texto vai em texto_arte.`,
         `${resumoMarca(marca)}\n\nSemana que começa em ${inicio}. Quantidade de posts: ${qtd}. Canais: ${canais.join(", ")}.\nTemas já usados recentemente (evite repetir): ${anteriores.join("; ") || "nenhum"}.\nResponda em JSON.`, 4000);
         const lista = (Array.isArray(r?.posts) ? r.posts : []).slice(0, qtd);
         const criados = [];
         for (const it of lista) {
           const post = { canais, formato: FORMATOS.includes(it.formato) ? it.formato : "post", data: maisDias(inicio, Math.max(0, Math.min(6, Number(it.dia) || 0))), hora: horaOk(it.hora) || "18:00",
-            titulo: txt(it.titulo, 200), legenda: txt(it.legenda, 2200), hashtags: txt(it.hashtags, 600), chamada: txt(it.chamada, 200), ideia_imagem: txt(it.ideia_imagem, 1000) };
+            titulo: txt(it.titulo, 200), legenda: txt(it.legenda, 2200), hashtags: txt(it.hashtags, 600), chamada: txt(it.chamada, 200), ideia_imagem: txt(it.ideia_imagem, 1000), texto_arte: txt(it.texto_arte, 80) };
           let status = "AGUARDANDO", revisao = null;
           if (cfg.modo === "AUTOMATICO") {
             revisao = await revisar(env, marca, post).catch(() => null);
             status = revisao && revisao.aprovado && revisao.nota >= cfg.nota_minima ? "APROVADO" : "AGUARDANDO";
           }
-          const n = await env.DB.prepare(`INSERT INTO plt_mk_posts(org_id,marca_id,canais,formato,data,hora,titulo,legenda,hashtags,chamada,ideia_imagem,status,revisao,criado_por,aprovado_por,criado_ms,atualizado_ms)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`).bind(orgId, marca.id, JSON.stringify(post.canais), post.formato, post.data, post.hora, post.titulo, post.legenda, post.hashtags, post.chamada, post.ideia_imagem, status, revisao ? JSON.stringify(revisao) : null, "DENIA (IA)", status === "APROVADO" ? "DENIA (aprovação automática)" : null, agora(env), agora(env)).first();
+          const n = await env.DB.prepare(`INSERT INTO plt_mk_posts(org_id,marca_id,canais,formato,data,hora,titulo,legenda,hashtags,chamada,ideia_imagem,texto_arte,status,revisao,criado_por,aprovado_por,criado_ms,atualizado_ms)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`).bind(orgId, marca.id, JSON.stringify(post.canais), post.formato, post.data, post.hora, post.titulo, post.legenda, post.hashtags, post.chamada, post.ideia_imagem, post.texto_arte || null, status, revisao ? JSON.stringify(revisao) : null, "DENIA (IA)", status === "APROVADO" ? "DENIA (aprovação automática)" : null, agora(env), agora(env)).first();
           criados.push({ id: n.id, status });
         }
         await auditar(env, request, sessao, orgId, "MARKETING", `IA criou ${criados.length} post(s) para ${marca.nome} (semana de ${inicio})`);
@@ -310,8 +421,8 @@ Responda em JSON: {"posts":[{"dia":0,"hora":"18:00","formato":"post","titulo":""
         const marca = await marcaDa(c.marca_id);
         if (!marca) return json({ erro: "Escolha a marca." }, 400);
         const r = await iaJSON(env, `Você é redatora publicitária sênior. Escreva um post a partir do tema pedido. ${REGRAS_CONTEUDO}
-Responda em JSON: {"titulo":"","legenda":"","hashtags":"","chamada":"","ideia_imagem":""}`, `${resumoMarca(marca)}\n\nTema: ${txt(c.tema, 600)}\nFormato: ${FORMATOS.includes(c.formato) ? c.formato : "post"}\nCanal: ${CANAIS.includes(c.canal) ? c.canal : "instagram"}\nResponda em JSON.`, 1500);
-        return json({ ok: true, sugestao: { titulo: txt(r.titulo, 200), legenda: txt(r.legenda, 2200), hashtags: txt(r.hashtags, 600), chamada: txt(r.chamada, 200), ideia_imagem: txt(r.ideia_imagem, 1000) } });
+Responda em JSON: {"titulo":"","legenda":"","hashtags":"","chamada":"","texto_arte":"","ideia_imagem":""} — texto_arte: frase curta (até 6 palavras) escrita na arte, com acentos perfeitos; ideia_imagem: a cena, sem texto escrito.`, `${resumoMarca(marca)}\n\nTema: ${txt(c.tema, 600)}\nFormato: ${FORMATOS.includes(c.formato) ? c.formato : "post"}\nCanal: ${CANAIS.includes(c.canal) ? c.canal : "instagram"}\nResponda em JSON.`, 1500);
+        return json({ ok: true, sugestao: { titulo: txt(r.titulo, 200), legenda: txt(r.legenda, 2200), hashtags: txt(r.hashtags, 600), chamada: txt(r.chamada, 200), texto_arte: txt(r.texto_arte, 80), ideia_imagem: txt(r.ideia_imagem, 1000) } });
       }
       if (resto === "ia/imagem" && metodo === "POST") {
         exigir("AGENTE");
@@ -321,25 +432,19 @@ Responda em JSON: {"titulo":"","legenda":"","hashtags":"","chamada":"","ideia_im
         if (!marca) return json({ erro: "Escolha a marca." }, 400);
         const ideia = txt(c.ideia || p?.ideia_imagem || p?.titulo, 1000);
         if (!ideia) return json({ erro: "Descreva a imagem que a IA deve criar." }, 400);
-        const prompt = `Arte profissional para redes sociais da marca "${marca.nome}" (${marca.segmento || "serviços"}${marca.cidade ? ", " + marca.cidade : ""}). ${marca.cores ? "Cores da marca: " + marca.cores + ". " : ""}${ideia}. Visual moderno, limpo, de agência de alto padrão, boa iluminação, composição equilibrada; se houver texto na arte, em ${IDIOMAS[idiomaDe(marca.idioma)]}, curto e sem erros.`;
+        // Texto da arte: o do post, ou o que a pessoa escreveu entre aspas na descrição.
+        const textoArte = txt(c.texto_arte ?? p?.texto_arte ?? (ideia.match(/["“]([^"”]{2,80})["”]/) || [])[1], 80);
+        const logo = marca.logo_midia_id ? await env.DB.prepare("SELECT mime, dados FROM plt_mk_midias WHERE id=? AND org_id=?").bind(marca.logo_midia_id, orgId).first() : null;
         const vertical = p ? p.formato === "story" || p.formato === "reels" : c.formato === "story" || c.formato === "reels" || c.formato === "vertical";
-        const formato = vertical ? "1024x1536" : "1024x1024";
-        // O modelo de imagem muda com o tempo (o gpt-image-1 está sendo aposentado): tenta o configurado e cai para o seguinte.
-        const modelos = [...new Set([String(env.OPENAI_IMAGE_MODEL || "").trim(), "gpt-image-1.5", "gpt-image-1"].filter(Boolean))];
-        let d = null, ultimoErro = null;
-        for (const modelo of modelos) {
-          try { d = await openai(env, "images/generations", { model: modelo, prompt, size: formato, quality: "medium", output_format: "jpeg", output_compression: 82, n: 1 }, { timeout: 120000 }); break; }
-          catch (e) { ultimoErro = e; if (!/model|modelo|not found|does not exist|deprecat|404/i.test(String(e?.message))) throw e; }
-        }
-        if (!d) throw ultimoErro;
-        const b64 = d?.data?.[0]?.b64_json;
-        if (!b64) return json({ erro: "A IA não devolveu a imagem. Tente de novo." }, 502);
+        const arte = await criarArte(env, { marca, ideia, textoArte, logo, tamanho: vertical ? "1024x1536" : "1024x1024" });
+        const b64 = arte.b64;
+        const prompt = arte.prompt;
         const md = await env.DB.prepare("INSERT INTO plt_mk_midias(org_id,mime,dados,prompt,criado_ms) VALUES(?,?,?,?,?) RETURNING id").bind(orgId, "image/jpeg", b64, prompt.slice(0, 2000), agora(env)).first();
         if (p) {
           await env.DB.prepare("UPDATE plt_mk_posts SET midia_id=?, atualizado_ms=? WHERE id=?").bind(md.id, agora(env), p.id).run();
           if (p.midia_id) await env.DB.prepare("DELETE FROM plt_mk_midias WHERE id=? AND org_id=?").bind(p.midia_id, orgId).run();
         }
-        return json({ ok: true, midia_id: md.id });
+        return json({ ok: true, midia_id: md.id, conferencia: arte.conferencia });
       }
     }
 

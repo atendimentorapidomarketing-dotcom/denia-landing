@@ -1301,7 +1301,25 @@
   "O pedido de conexão expirou. Volte à plataforma e clique em Conectar de novo.": "La richiesta di connessione è scaduta. Torni alla piattaforma e clicchi di nuovo su Collega.",
   "Quase pronto": "Quasi fatto",
   "Aprovando…": "Approvazione…",
-  "Post aprovado. A marca ainda não está conectada ao Instagram/Facebook: vá em Marcas → Conectar para ele sair sozinho.": "Post approvato. Il brand non è ancora collegato a Instagram/Facebook: vai su Brand → Collega perché esca da solo."
+  "Post aprovado. A marca ainda não está conectada ao Instagram/Facebook: vá em Marcas → Conectar para ele sair sozinho.": "Post approvato. Il brand non è ancora collegato a Instagram/Facebook: vai su Brand → Collega perché esca da solo.",
+  "A DENIA escreve exatamente isto na arte e confere a ortografia.": "DENIA scrive esattamente questo sulla grafica e controlla l’ortografia.",
+  "A IA monta a semana só nesses dias e horários. Você ainda pode mudar a data e a hora de cada post.": "L’IA pianifica la settimana solo in questi giorni e orari. Puoi comunque cambiare data e ora di ogni post.",
+  "A logo é grande demais. Envie um arquivo menor (até 1 MB).": "Il logo è troppo grande. Carica un file più piccolo (fino a 1 MB).",
+  "Arte criada e conferida.": "Grafica creata e verificata.",
+  "Criando e conferindo a arte… (até 2 minutos)": "Creazione e verifica della grafica… (fino a 2 minuti)",
+  "Criando e conferindo a imagem… (até 2 minutos)": "Creazione e verifica dell’immagine… (fino a 2 minuti)",
+  "De preferência PNG com fundo transparente. A IA aplica esta logo em todas as artes, sem redesenhar.": "Preferibilmente PNG con sfondo trasparente. L’IA applica questo logo in tutte le grafiche, senza ridisegnarlo.",
+  "Depois de salvar, clique em Editar para enviar a logo da marca.": "Dopo aver salvato, clicca su Modifica per caricare il logo del brand.",
+  "Dias e horários preferidos para publicar": "Giorni e orari preferiti per pubblicare",
+  "Enviar logo": "Carica logo",
+  "Envie a logo em PNG, JPG ou WEBP.": "Carica il logo in PNG, JPG o WEBP.",
+  "Ex.: Orçamento grátis hoje (deixe vazio para arte sem texto)": "Es.: Preventivo gratuito oggi (lascia vuoto per una grafica senza testo)",
+  "Ideia da arte (a cena)": "Idea della grafica (la scena)",
+  "Logo da marca": "Logo del brand",
+  "Logo salva. As próximas artes já saem com ela.": "Logo salvato. Le prossime grafiche lo includeranno.",
+  "Sem logo": "Nessun logo",
+  "Texto escrito na arte": "Testo scritto sulla grafica",
+  "Trocar logo": "Cambia logo"
  },
  "h": {
   "1 lugarpara toda a operação": "<strong>1 posto</strong><span>per tutte le operazioni</span>",
@@ -1428,6 +1446,8 @@
   "Instagram @{0}": "Instagram @{0}",
   "Post #{0} aprovado. {1}": "Post #{0} approvato. {1}",
   "{0}: publicado": "{0}: pubblicato",
-  "Post aprovado. Ele sai sozinho em {0}/{1} às {2} (horário de Brasília). Para publicar já, abra o post e clique em Publicar agora.": "Post approvato. Esce da solo il {0}/{1} alle {2} (ora di Brasília). Per pubblicarlo subito, apri il post e clicca su Pubblica ora."
+  "Post aprovado. Ele sai sozinho em {0}/{1} às {2} (horário de Brasília). Para publicar já, abra o post e clique em Publicar agora.": "Post approvato. Esce da solo il {0}/{1} alle {2} (ora di Brasília). Per pubblicarlo subito, apri il post e clicca su Pubblica ora.",
+  "A revisão da arte encontrou um problema: {0} Clique de novo em Criar arte para refazer.": "La revisione della grafica ha trovato un problema: {0} Clicca di nuovo su Crea grafica per rifarla.",
+  "Criando a arte do post {0} de {1}. Cada arte leva de 1 a 2 minutos: a DENIA cria em alta qualidade e confere o texto.": "Creazione della grafica del post {0} di {1}. Ogni grafica richiede da 1 a 2 minuti: DENIA la crea in alta qualità e controlla il testo."
  }
 }

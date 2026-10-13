@@ -1234,7 +1234,7 @@
           for (const [i, c] of r.criados.entries()) {
             if (await pontoDoPiloto()) { parado = true; break; }
             b.textContent = `Criando as artes… ${i + 1} de ${r.criados.length}`;
-            progresso.textContent = `Criando a arte do post ${i + 1} de ${r.criados.length}. Cada arte leva cerca de 30 segundos.`;
+            progresso.textContent = `Criando a arte do post ${i + 1} de ${r.criados.length}. Cada arte leva de 1 a 2 minutos: a DENIA cria em alta qualidade e confere o texto.`;
             try { await mk("ia/imagem", { metodo: "POST", corpo: { post_id: c.id } }); artes++; } catch (e) { aviso(e.message, "erro"); break; }
           }
         }
@@ -1250,9 +1250,10 @@
     const resultado = h("div", { class: "criador-resultado" });
     const criarImagem = botao("✦ Criar imagem com IA", async (_e, b) => {
       if (!ideia.value.trim()) { aviso("Descreva a imagem que a DENIA deve criar.", "erro"); ideia.focus(); return; }
-      b.textContent = "Criando a imagem… (até 1 minuto)";
+      b.textContent = "Criando e conferindo a imagem… (até 2 minutos)";
       try {
         const r = await mk("ia/imagem", { metodo: "POST", corpo: { marca_id: marcaImg.value, ideia: ideia.value, formato: formatoImg.value } });
+        avisoConferencia(r.conferencia);
         const url = `/api/orgs/${estado.org.id}/mk/midias/${r.midia_id}`;
         resultado.replaceChildren(h("img", { class: "post-arte-img", src: url, alt: "Imagem criada pela DENIA" }),
           h("div", { class: "acoes" }, h("a", { class: "btn btn-secundario btn-pequeno", href: url, download: `denia-imagem-${r.midia_id}.jpg` }, "Baixar imagem"),
@@ -1375,6 +1376,10 @@
     await desenhar();
   }
 
+  function avisoConferencia(c) {
+    if (c && !c.correto) aviso(`A revisão da arte encontrou um problema: ${c.problemas} Clique de novo em Criar arte para refazer.`, "erro");
+    else aviso(c ? "Arte criada e conferida." : "Arte criada.", "ok");
+  }
   function miniatura(p, classe) {
     return p.midia_id ? h("img", { class: classe || "post-img", src: `/api/orgs/${estado.org.id}/mk/midias/${p.midia_id}`, alt: "", loading: "lazy" }) : null;
   }
@@ -1398,6 +1403,7 @@
     const legenda = h("textarea", { class: "entrada", value: p.legenda || "", maxlength: "2200", style: "min-height:160px" });
     const hashtags = ent(p.hashtags, { maxlength: "600" }), chamada = ent(p.chamada, { maxlength: "200" });
     const ideia = h("textarea", { class: "entrada", value: p.ideia_imagem || "", maxlength: "1000", style: "min-height:90px" });
+    const textoArte = ent(p.texto_arte, { maxlength: "80", placeholder: "Ex.: Orçamento grátis hoje (deixe vazio para arte sem texto)" });
     const imagem = h("div", { class: "post-arte" }, miniatura(p, "post-arte-img") || h("span", { text: "Sem arte ainda" }));
     let pub = {};
     try { pub = typeof p.publicacao === "string" ? JSON.parse(p.publicacao || "{}") : (p.publicacao || {}); } catch { pub = {}; }
@@ -1406,7 +1412,7 @@
         ? h("p", { class: "nota" }, `${NOME_CANAL[c]}: publicado `, pub[c].link ? h("a", { href: pub[c].link, target: "_blank", rel: "noopener noreferrer", text: "ver post" }) : null)
         : h("p", { class: "nota nota-alerta", text: `${NOME_CANAL[c]}: ${pub[c].erro}` })));
     const revisao = h("div", {}, p.revisao ? h("p", { class: "nota" + (p.revisao.nota >= 8 ? "" : " nota-alerta"), text: `Revisão da IA: nota ${p.revisao.nota}/10 — ${p.revisao.comentario}` }) : null, p.comentario ? h("p", { class: "nota nota-alerta", text: "Comentário: " + p.comentario }) : null);
-    const dados = () => ({ id: p.id, marca_id: marca.value, canais: [...canais.querySelectorAll("input:checked")].map(i => i.value), formato: formato.value, data: data.value, hora: hora.value, titulo: tituloP.value, legenda: legenda.value, hashtags: hashtags.value, chamada: chamada.value, ideia_imagem: ideia.value });
+    const dados = () => ({ id: p.id, marca_id: marca.value, canais: [...canais.querySelectorAll("input:checked")].map(i => i.value), formato: formato.value, data: data.value, hora: hora.value, titulo: tituloP.value, legenda: legenda.value, hashtags: hashtags.value, chamada: chamada.value, texto_arte: textoArte.value, ideia_imagem: ideia.value });
     const salvar = async (silencioso) => { const r = await mk("posts", { metodo: "POST", corpo: dados() }); p.id = r.id; if (!silencioso) aviso("Post salvo.", "ok"); return r.id; };
     const acao = async (a, extra = {}) => { await salvar(true); const r = await mk(`posts/${p.id}/acao`, { metodo: "POST", corpo: { acao: a, ...extra } }); fechar(); recarregar && recarregar(); atualizarAprovacoes(); return r; };
     const editar = pode("AGENTE") && p.status !== "PUBLICADO";
@@ -1438,18 +1444,18 @@
         b.textContent = "Escrevendo…";
         try {
           const r = (await mk("ia/legenda", { metodo: "POST", corpo: { marca_id: marca.value, tema: tema.value, formato: formato.value, canal: (dados().canais[0] || "instagram") } })).sugestao;
-          tituloP.value = r.titulo; legenda.value = r.legenda; hashtags.value = r.hashtags; chamada.value = r.chamada; ideia.value = r.ideia_imagem;
+          tituloP.value = r.titulo; legenda.value = r.legenda; hashtags.value = r.hashtags; chamada.value = r.chamada; textoArte.value = r.texto_arte || ""; ideia.value = r.ideia_imagem;
           aviso("Texto criado. Revise e salve.", "ok");
         } catch (e) { aviso(e.message, "erro"); } finally { b.textContent = "✦ Escrever com IA"; }
       }),
       botao("✦ Criar arte com IA", async (_e, b) => {
-        b.textContent = "Criando a arte… (até 1 minuto)";
+        b.textContent = "Criando e conferindo a arte… (até 2 minutos)";
         try {
           await salvar(true);
-          const r = await mk("ia/imagem", { metodo: "POST", corpo: { post_id: p.id, ideia: ideia.value } });
+          const r = await mk("ia/imagem", { metodo: "POST", corpo: { post_id: p.id, ideia: ideia.value, texto_arte: textoArte.value } });
           p.midia_id = r.midia_id;
           imagem.replaceChildren(miniatura(p, "post-arte-img"));
-          aviso("Arte criada.", "ok"); recarregar && recarregar();
+          avisoConferencia(r.conferencia); recarregar && recarregar();
         } catch (e) { aviso(e.message, "erro"); } finally { b.textContent = "✦ Criar arte com IA"; }
       }),
       botao("✦ Revisar com IA", async (_e, b) => {
@@ -1465,7 +1471,7 @@
           h("div", { class: "linha-form" }, campo("Marca", marca), campo("Formato", formato)),
           h("div", { class: "campo" }, h("label", { text: "Canais" }), canais),
           h("div", { class: "linha-form" }, campo("Data", data), campo("Horário", hora)),
-          campo("Título (interno)", tituloP), campo("Legenda", legenda), campo("Hashtags", hashtags), campo("Chamada para ação", chamada), campo("Ideia da arte", ideia)),
+          campo("Título (interno)", tituloP), campo("Legenda", legenda), campo("Hashtags", hashtags), campo("Chamada para ação", chamada), campo("Texto escrito na arte", textoArte, "A DENIA escreve exatamente isto na arte e confere a ortografia."), campo("Ideia da arte (a cena)", ideia)),
         h("div", { class: "formulario" }, h("label", { style: "font-weight:600;color:var(--texto-2);font-size:14px", text: "Arte" }), imagem,
           h("p", { class: "nota", text: "Com a marca conectada (Marcas → Conectar Instagram e Facebook), os posts aprovados saem sozinhos no dia e horário marcados. Sem conexão, baixe a arte e copie a legenda para publicar." }))),
       botoes]);
@@ -1544,7 +1550,7 @@
     area.replaceChildren(...lista.map(m => {
       const conta = contaDa(meta, m.id);
       return h("article", { class: "cartao vidro marca-cartao" },
-        h("div", { class: "marca-topo" }, h("span", { class: "empresa-avatar", text: iniciais(m.nome) }), h("div", {}, h("h3", { style: "margin:0", text: m.nome }), h("span", { class: "sub", text: [m.segmento, m.cidade].filter(Boolean).join(" · ") || "—" }))),
+        h("div", { class: "marca-topo" }, m.logo_midia_id ? h("img", { class: "empresa-avatar marca-logo", src: `/api/orgs/${estado.org.id}/mk/midias/${m.logo_midia_id}`, alt: "" }) : h("span", { class: "empresa-avatar", text: iniciais(m.nome) }), h("div", {}, h("h3", { style: "margin:0", text: m.nome }), h("span", { class: "sub", text: [m.segmento, m.cidade].filter(Boolean).join(" · ") || "—" }))),
         h("ul", { class: "lista-saude" },
           h("li", {}, "Instagram", conta && conta.ig_usuario ? selo(`Conectado · @${conta.ig_usuario}`, "ok") : m.instagram ? h("span", { class: "selo", text: "@" + m.instagram }) : selo("Não informado", "alerta")),
           h("li", {}, "Facebook", conta ? selo(`Conectado · ${String(conta.pagina_nome || "").slice(0, 24)}`, "ok") : m.facebook ? h("span", { class: "selo", text: m.facebook.slice(0, 28) }) : selo("Não informado", "alerta")),
@@ -1569,10 +1575,48 @@
       h("div", { class: "linha-form" }, linha("site", "Site", "https://"), linha("cores", "Cores da marca", "Ex.: azul-marinho e dourado"),
         campo("Idioma do conteúdo", c.idioma = h("select", { class: "entrada" }, IDIOMAS_CONTEUDO.map(([v, n]) => h("option", { value: v, text: n, selected: (m.idioma || (m.id ? "pt-BR" : IDIOMA)) === v }))))),
       linha("tom", "Tom de voz", "Ex.: próximo, acolhedor, sem gírias"), linha("publico", "Público", "Quem são os clientes", true), linha("diferenciais", "Diferenciais", "O que a marca faz melhor que os concorrentes", true),
+      campo("Dias e horários preferidos para publicar", c.horarios = h("input", { class: "entrada", value: m.horarios || "", maxlength: "200", placeholder: "Ex.: segunda, quarta e sexta às 18h; sábado às 10h" }), "A IA monta a semana só nesses dias e horários. Você ainda pode mudar a data e a hora de cada post."),
+      m.id ? campoLogo(m) : h("p", { class: "nota", text: "Depois de salvar, clique em Editar para enviar a logo da marca." }),
       h("div", { class: "acoes" }, botao("Salvar marca", async () => {
         try { const corpo = { id: m.id }; Object.keys(c).forEach(k => { corpo[k] = c[k].value; }); await mk("marcas", { metodo: "POST", corpo }); aviso("Marca salva.", "ok"); fechar(); cacheMarcas = null; navegar(); }
         catch (e) { aviso(e.message, "erro"); }
       }, "btn-primario")))]);
+  }
+
+  // Logo oficial: vai junto para a IA em toda arte. O navegador reduz a imagem antes de enviar.
+  async function logoReduzida(arquivo) {
+    const img = await createImageBitmap(arquivo);
+    for (const lado of [1024, 768, 512]) {
+      const k = Math.min(1, lado / Math.max(img.width, img.height));
+      const tela = document.createElement("canvas");
+      tela.width = Math.round(img.width * k); tela.height = Math.round(img.height * k);
+      tela.getContext("2d").drawImage(img, 0, 0, tela.width, tela.height);
+      const url = tela.toDataURL("image/png");
+      if (url.length < 1800000) return url;
+    }
+    throw new Error("A logo é grande demais. Envie um arquivo menor (até 1 MB).");
+  }
+  function campoLogo(m) {
+    const previa = h("div", { class: "logo-previa" }, m.logo_midia_id ? h("img", { src: `/api/orgs/${estado.org.id}/mk/midias/${m.logo_midia_id}`, alt: "Logo da marca" }) : h("span", { text: "Sem logo" }));
+    const arquivo = h("input", { type: "file", accept: "image/png,image/jpeg,image/webp", class: "oculto" });
+    arquivo.addEventListener("change", async () => {
+      const f = arquivo.files && arquivo.files[0];
+      if (!f) return;
+      try {
+        const dados = await logoReduzida(f);
+        await mk(`marcas/${m.id}/logo`, { metodo: "POST", corpo: { dados } });
+        previa.replaceChildren(h("img", { src: dados, alt: "Logo da marca" }));
+        cacheMarcas = null;
+        aviso("Logo salva. As próximas artes já saem com ela.", "ok");
+      } catch (e) { aviso(e.message, "erro"); }
+      arquivo.value = "";
+    });
+    return h("div", { class: "campo" }, h("label", { text: "Logo da marca" }),
+      h("div", { class: "logo-linha" }, previa,
+        h("div", { class: "acoes" }, botao(m.logo_midia_id ? "Trocar logo" : "Enviar logo", () => arquivo.click(), "btn-secundario btn-pequeno"),
+          m.logo_midia_id ? botao("Remover", async () => { try { await mk(`marcas/${m.id}/logo`, { metodo: "POST", corpo: { remover: true } }); previa.replaceChildren(h("span", { text: "Sem logo" })); cacheMarcas = null; } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno") : null)),
+      arquivo,
+      h("p", { class: "dica", style: "margin:0;font-size:13px;color:var(--texto-3)", text: "De preferência PNG com fundo transparente. A IA aplica esta logo em todas as artes, sem redesenhar." }));
   }
 
   // ----- Canais Instagram e Facebook
