@@ -285,6 +285,20 @@ export async function analisarAvaliacoesPendentes(env, orgId, limite = 10, k = n
       }
     } catch (e) { console.error("análise de avaliação", a.id, e?.message); break; }
   }
+  // No automático, também saem as que já estavam lidas e esperando (por exemplo, chegaram antes de ligar o automático).
+  if (k && modo !== "DESLIGADO") {
+    const esperando = (await env.DB.prepare("SELECT * FROM plt_mk_avaliacoes WHERE org_id=? AND status='PENDENTE' AND analise IS NOT NULL AND google_id IS NOT NULL AND resposta_sugerida IS NOT NULL AND TRIM(resposta_sugerida)<>'' ORDER BY id LIMIT 10").bind(orgId).all().catch(() => null))?.results || [];
+    for (const a of esperando) {
+      let analise = null; try { analise = JSON.parse(a.analise); } catch { analise = null; }
+      if (!podeResponderSozinha(modo, a, analise)) continue;
+      try {
+        await responderAvaliacaoGoogle(env, k, a, a.resposta_sugerida);
+        await env.DB.prepare("UPDATE plt_mk_avaliacoes SET resposta=?, status='RESPONDIDA' WHERE id=?").bind(a.resposta_sugerida, a.id).run();
+        await env.DB.prepare("INSERT INTO plt_auditoria(org_id,usuario_id,email,acao,detalhe,ip,criado_ms) VALUES(?,?,?,?,?,?,?)").bind(orgId, null, "DENIA (resposta automática)", "MARKETING", `Respondeu no Google a avaliação de ${a.autor} (${a.nota}★)`.slice(0, 400), null, k.agora(env)).run().catch(() => { });
+        publicadas++;
+      } catch (e) { console.error("resposta automática", a.id, e?.message); }
+    }
+  }
   return { analisadas: lista.length, alertas, publicadas };
 }
 

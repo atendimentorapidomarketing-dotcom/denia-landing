@@ -625,7 +625,9 @@ async function responsaveisDa(env, orgId) {
   return emails;
 }
 async function cuidarDasAvaliacoes(env, k) {
-  const orgs = (await env.DB.prepare("SELECT DISTINCT org_id FROM plt_mk_avaliacoes WHERE analise IS NULL AND status='PENDENTE' LIMIT 5").all().catch(() => null))?.results || [];
+  // Empresas com avaliação nova para ler, ou com o automático ligado e avaliação esperando resposta.
+  const orgs = (await env.DB.prepare(`SELECT DISTINCT a.org_id FROM plt_mk_avaliacoes a LEFT JOIN plt_mk_config c ON c.org_id=a.org_id
+    WHERE a.status='PENDENTE' AND (a.analise IS NULL OR (COALESCE(c.avaliacoes_auto,'DESLIGADO')<>'DESLIGADO' AND a.google_id IS NOT NULL)) LIMIT 5`).all().catch(() => null))?.results || [];
   const base = String((await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave='base_url'").first().catch(() => null))?.valor || "").replace(/\/+$/, "");
   for (const { org_id } of orgs) {
     const envIA = await comIA(env, org_id);
