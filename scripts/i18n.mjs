@@ -76,7 +76,7 @@ function js(arquivo, soMensagens) {
 const modo = process.argv[2] || "extrair";
 for (const f of readdirSync("public").filter(f => f.endsWith(".html"))) html("public/" + f);
 for (const f of ["app.js", "site.js", "auth.js", "contato.js"]) js("public/assets/js/" + f, false);
-for (const f of ["src/worker.js", "src/marketing.js"]) js(f, true);
+for (const f of ["src/worker.js", "src/marketing.js", "src/meta.js"]) js(f, true);
 for (const k of h.keys()) t.delete(k);
 const fonte = { t: Object.fromEntries([...t].sort().map(k => [k, ""])), h: Object.fromEntries([...h].sort()), p: Object.fromEntries([...p].sort().map(k => [k, ""])) };
 

@@ -21,8 +21,9 @@
 // ============================================================================
 
 import { apiMarketing, apiAssistente } from "./marketing.js";
+import { retornoMeta, servirMidiaPublica, publicarPendentes } from "./meta.js";
 
-const VERSAO = "3.0.0";
+const VERSAO = "3.1.0";
 // Versão dos Termos de uso e da Política de privacidade aceitas no cadastro.
 const VERSAO_TERMOS = "2026-10";
 // WhatsApp da Central de Atendimento (botão flutuante do site).
@@ -590,6 +591,9 @@ async function proxyEngine(request, env, sessao, orgId, papel, caminho) {
   }
 }
 
+// Ferramentas que os módulos (marketing, Meta) usam.
+function kitBase(env) { return { env, json, lerCorpo, txt, pode, agora, auditar, cifrar, decifrar, hmac, segredo, b64url, deB64url }; }
+
 // Chave da OpenAI: a colada em Integrações (cifrada no banco) ou o secret OPENAI_API_KEY.
 async function chaveIA(env, orgId) {
   const salva = (await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave=?").bind("openai_org_" + orgId).first().catch(() => null))?.valor;
@@ -650,7 +654,7 @@ async function apiOrg(request, env, sessao, orgId, resto) {
   if (!papel) return json({ erro: "Empresa não encontrada." }, 404);
   const metodo = request.method;
   if (resto.startsWith("engine/")) return proxyEngine(request, env, sessao, orgId, papel, resto.slice(7));
-  const kit = { json, lerCorpo, txt, pode, agora, auditar, sessao };
+  const kit = { ...kitBase(env), sessao };
   if (resto === "ia/chave" && metodo === "GET") {
     const k = await chaveIA(env, orgId);
     return json({ configurada: Boolean(k.chave), origem: k.origem, final: k.chave && pode(papel, "ADMIN") ? k.chave.slice(-4) : "" });
@@ -853,6 +857,9 @@ async function api(request, env, caminho) {
   if (caminho === "/api/contato" && metodo === "POST") return receberContato(request, env);
   if (caminho === "/api/sair" && metodo === "POST") return json({ ok: true }, 200, { "set-cookie": cookieSessao("", 0) });
 
+  // Volta do Login do Facebook: chega sem a sessão (cookie SameSite=Strict); vale pelo state assinado.
+  if (caminho === "/api/meta/retorno" && metodo === "GET") return retornoMeta(request, env, kitBase(env));
+
   const sessao = await lerSessao(request, env);
   if (!sessao) return json({ erro: "Sua sessão expirou. Entre novamente." }, 401);
   const u = sessao.usuario;
@@ -931,6 +938,8 @@ async function rotear(request, env) {
   if (caminho.startsWith("/api/")) return api(request, env, caminho);
   if (!["GET", "HEAD"].includes(request.method)) return new Response("Método não permitido.", { status: 405 });
 
+  // Imagens dos posts com link assinado: o Instagram e o Facebook baixam a arte por aqui.
+  if (caminho.startsWith("/m/")) { await garantirSchema(env); return servirMidiaPublica(env, kitBase(env), caminho); }
   const antigo = ANTIGOS[caminho.replace(/\.html$/, "")];
   if (antigo) return redirecionar(antigo);
   const ehPainel = caminho === "/app" || caminho === "/app.html" || caminho.startsWith("/app/");
@@ -970,5 +979,10 @@ export default {
       console.error("Erro não tratado:", e?.stack || e);
       return comSeguranca(json({ erro: "Erro interno. Tente novamente." }, 500), request);
     }
+  },
+  // A cada 5 minutos: publica no Instagram e no Facebook os posts aprovados cujo horário chegou.
+  async scheduled(_evento, env, ctx) {
+    const tarefa = (async () => { await garantirSchema(env); return publicarPendentes(env, kitBase(env)); })().catch(e => console.error("publicação agendada", e?.message));
+    if (ctx && ctx.waitUntil) ctx.waitUntil(tarefa); else await tarefa;
   }
 };

@@ -176,3 +176,7 @@ html.i18n-carregando body { visibility: hidden; }
   .topo-acoes > .btn-secundario[href="/entrar"] { display: none; }
   .menu .so-celular { display: block; }
 }
+.retorno-meta { min-height: 100vh; display: grid; place-items: center; padding: 24px; background: #05070f; color: #e2e8f0; font-family: Inter, system-ui, sans-serif; text-align: center; }
+.retorno-meta main { max-width: 480px; }
+.retorno-meta h1 { font-size: 26px; margin: 0 0 12px; }
+.retorno-meta p { color: #94a3b8; line-height: 1.55; }

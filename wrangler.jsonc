@@ -21,5 +21,7 @@
   "services": [
     { "binding": "ENGINE", "service": "denia" }
   ],
+  // Publicação automática no Instagram e no Facebook (posts aprovados cujo horário chegou).
+  "triggers": { "crons": ["*/5 * * * *"] },
   "observability": { "enabled": true }
 }
