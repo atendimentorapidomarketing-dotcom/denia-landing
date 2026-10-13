@@ -1329,7 +1329,16 @@
   "Marca salva. Agora envie a logo da marca.": "ブランドを保存しました。次にブランドのロゴをアップロードしてください。",
   "Revisor de aprendizados": "学習レビュー担当",
   "Seu perfil só tem acesso aos aprendizados da IA.": "このプロフィールはAIの学習内容にのみアクセスできます。",
-  "Vá em Workers e Pages → denia-landing → Settings → Variables and Secrets → Add, escolha o tipo Secret, crie com o nome exato e clique em Deploy. Depois volte aqui e clique em Conectar de novo.": "Workers & Pages → denia-landing → Settings → Variables and Secrets → Add を開き、種類で Secret を選び、正確な名前で作成して Deploy をクリックしてください。その後ここに戻り、もう一度「接続」をクリックしてください。"
+  "Vá em Workers e Pages → denia-landing → Settings → Variables and Secrets → Add, escolha o tipo Secret, crie com o nome exato e clique em Deploy. Depois volte aqui e clique em Conectar de novo.": "Workers & Pages → denia-landing → Settings → Variables and Secrets → Add を開き、種類で Secret を選び、正確な名前で作成して Deploy をクリックしてください。その後ここに戻り、もう一度「接続」をクリックしてください。",
+  "Escreva (ou dite pelo microfone do teclado) o que foi conversado por telefone. A DENIA passa a considerar isso como informação confirmada nesta conversa.": "電話で話した内容を入力（またはキーボードのマイクで音声入力）してください。DENIAはこの会話で確認済みの情報として扱います。",
+  "Escreva o resumo da ligação.": "通話の要約を入力してください。",
+  "Ex.: Liguei para o cliente. Ele prefere atendimento depois das 14h, o portão é azul e já tem a peça em casa.": "例：お客様に電話しました。14時以降の訪問を希望、門は青色で、部品はすでに手元にあるとのことです。",
+  "Resumo da ligação": "通話の要約",
+  "Resumo de ligação ·": "通話の要約 ·",
+  "Resumo salvo. A DENIA já considera o que foi combinado.": "要約を保存しました。DENIAは取り決めた内容を反映します。",
+  "Salvar resumo": "要約を保存",
+  "msg msg-ligacao": "msg msg-ligacao",
+  "📞 Registrar ligação": "📞 通話を記録"
  },
  "h": {
   "1 lugarpara toda a operação": "<strong>1か所</strong><span>で業務全体を管理</span>",

@@ -1329,7 +1329,16 @@
   "Marca salva. Agora envie a logo da marca.": "Brand salvato. Ora carica il logo del brand.",
   "Revisor de aprendizados": "Revisore degli apprendimenti",
   "Seu perfil só tem acesso aos aprendizados da IA.": "Il tuo profilo ha accesso solo agli apprendimenti dell’IA.",
-  "Vá em Workers e Pages → denia-landing → Settings → Variables and Secrets → Add, escolha o tipo Secret, crie com o nome exato e clique em Deploy. Depois volte aqui e clique em Conectar de novo.": "Vai su Workers e Pages → denia-landing → Settings → Variables and Secrets → Add, scegli il tipo Secret, crealo con il nome esatto e clicca su Deploy. Poi torna qui e clicca di nuovo su Collega."
+  "Vá em Workers e Pages → denia-landing → Settings → Variables and Secrets → Add, escolha o tipo Secret, crie com o nome exato e clique em Deploy. Depois volte aqui e clique em Conectar de novo.": "Vai su Workers e Pages → denia-landing → Settings → Variables and Secrets → Add, scegli il tipo Secret, crealo con il nome esatto e clicca su Deploy. Poi torna qui e clicca di nuovo su Collega.",
+  "Escreva (ou dite pelo microfone do teclado) o que foi conversado por telefone. A DENIA passa a considerar isso como informação confirmada nesta conversa.": "Scrivi (o detta con il microfono della tastiera) cosa è stato detto al telefono. DENIA lo considererà un’informazione confermata in questa conversazione.",
+  "Escreva o resumo da ligação.": "Scrivi il riepilogo della chiamata.",
+  "Ex.: Liguei para o cliente. Ele prefere atendimento depois das 14h, o portão é azul e já tem a peça em casa.": "Es.: Ho chiamato il cliente. Preferisce l’intervento dopo le 14, il cancello è blu e ha già il pezzo a casa.",
+  "Resumo da ligação": "Riepilogo della chiamata",
+  "Resumo de ligação ·": "Riepilogo chiamata ·",
+  "Resumo salvo. A DENIA já considera o que foi combinado.": "Riepilogo salvato. DENIA tiene già conto di quanto concordato.",
+  "Salvar resumo": "Salva riepilogo",
+  "msg msg-ligacao": "msg msg-ligacao",
+  "📞 Registrar ligação": "📞 Registra chiamata"
  },
  "h": {
   "1 lugarpara toda a operação": "<strong>1 posto</strong><span>per tutte le operazioni</span>",

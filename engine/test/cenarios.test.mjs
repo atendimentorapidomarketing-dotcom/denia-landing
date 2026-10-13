@@ -29,7 +29,8 @@ test("Cenário 1 — chaveiro: não repete pergunta, consulta o chaveiro certo u
   await a.cliente(CLI, "Trocar a fechadura. Botafogo");
   assert.equal(a.para(CHAVEIRO).length, 1, "consulta enviada ao Anderson CHAVEIRO");
   assert.equal(a.para(ANDERSON_REFORMA).length, 0, "nunca o Anderson da reforma");
-  assert.match(a.para(CHAVEIRO)[0].texto, /Caso #\d+/);
+  assert.match(a.para(CHAVEIRO)[0].texto, /caso \d+/i);
+  assert.doesNotMatch(a.para(CHAVEIRO)[0].texto, /Solicitação:|Marca\/modelo:/, "escrita como gente, não como formulário");
   assert.doesNotMatch(a.para(CHAVEIRO)[0].texto, new RegExp(CLI), "telefone do cliente não vai ao prestador");
   assert.match(a.ultimoPara(CLI), /^Enviamos sua solicitação ao profissional/);
 
@@ -77,7 +78,7 @@ test("Cenário 7 — prestador: +50% só quando é a parte dele, cliente aceita,
 
   a.llmPrestador = () => prest({ tipo: "ACEITA", valor_centavos: 40000, disponibilidade: "amanhã às 14h" });
   await a.cliente(CARLOS_ESTOF, "Faço sim, amanhã às 14h, 400");
-  assert.match(a.ultimoPara(CARLOS_ESTOF), /valor final para o cliente ou é somente a sua parte/);
+  assert.match(a.ultimoPara(CARLOS_ESTOF), /valor final pro cliente ou é só a sua parte/);
   assert.equal(a.para(CLI).length, 1, "cliente ainda não recebe valor ambíguo");
 
   a.llmPrestador = () => prest({ tipo: "COMENTARIO", valor_e_final: "NAO" });
@@ -158,7 +159,7 @@ test("Prestador pergunta 'que cliente?' e recebe o contexto do caso certo", asyn
   a.llmPrestador = () => prest({ tipo: "PEDE_CONTEXTO" });
   await a.cliente(CHAVEIRO, "Que cliente? Verificar o quê?");
   const r = a.ultimoPara(CHAVEIRO);
-  assert.match(r, /Caso #\d+[\s\S]*troca de fechadura[\s\S]*Botafogo/);
+  assert.match(r, /caso \d+[\s\S]*Botafogo[\s\S]*troca de fechadura/);
   assert.doesNotMatch(r, new RegExp(CLI));
 });
 
@@ -170,7 +171,7 @@ test("Pergunta do prestador vai ao cliente e a resposta volta ao prestador", asy
   assert.equal(a.ultimoPara(CLI), "Para o orçamento, a fechadura é de porta de madeira ou de metal?");
   a.llmCliente = (e) => { assert.match(e, /PERGUNTA DO PROFISSIONAL PENDENTE/); return decisao({ resposta: "Ok", resposta_para_profissional: "Porta de madeira." }); };
   await a.cliente(CLI, "madeira");
-  assert.match(a.ultimoPara(CHAVEIRO), /resposta do cliente: Porta de madeira/);
+  assert.match(a.ultimoPara(CHAVEIRO), /o cliente respondeu: Porta de madeira/);
   assert.equal(a.ultimoPara(CLI), "Obrigado! Vamos repassar ao profissional.");
 });
 
@@ -226,13 +227,43 @@ test("À noite a consulta fica para as 8h (cron), sem mandar nada ao prestador",
   assert.equal(a.para(CHAVEIRO).length, 1, "uma única vez");
 });
 
-test("Mensagem antiga (Meta reenviando depois de 20 min) não é respondida, só registrada", async () => {
+test("V30.7 — mensagem atrasada (20 min) é respondida com desculpas; mais de 12 h só é registrada", async () => {
   const a = await criarAmbiente();
-  a.llmCliente = () => decisao({ resposta: "Olá!" });
-  await a.cliente(CLI, "Oi", { ts: a.agora - 20 * 60 * 1000 });
-  assert.equal(a.para(CLI).length, 0);
-  assert.equal(a.DB.q("SELECT COUNT(*) n FROM mensagens")[0].n, 1);
-  assert.ok(a.telegram.some(t => /atraso/.test(t)));
+  a.llmCliente = (entrada) => decisao({ resposta: /pedido de desculpas/.test(entrada) ? "Oi! Desculpa a demora. Como posso te ajudar?" : "Olá!" });
+  await a.cliente(CLI, "Oi, alguém aí?", { ts: a.agora - 20 * 60 * 1000 });
+  assert.equal(a.para(CLI).length, 1, "nenhuma conversa fica sem resposta");
+  assert.match(a.para(CLI)[0].texto, /Desculpa a demora/);
+  const b = await criarAmbiente();
+  b.llmCliente = () => decisao({ resposta: "Olá!" });
+  await b.cliente(CLI, "Oi", { ts: b.agora - 13 * 3600 * 1000 });
+  assert.equal(b.para(CLI).length, 0);
+  assert.equal(b.DB.q("SELECT COUNT(*) n FROM mensagens")[0].n, 1);
+  assert.ok(b.telegram.some(t => /atraso/.test(t)));
+});
+
+test("V30.7 — falha passageira: a DENIA tenta de novo e responde", async () => {
+  const a = await criarAmbiente();
+  let vez = 0;
+  a.llmCliente = () => { vez++; if (vez === 1) throw new Error("rede caiu"); return decisao({ resposta: "Oi! Tudo bem? Me conta o que aconteceu." }); };
+  const original = a.DB.prepare.bind(a.DB);
+  let falhou = false;
+  a.DB.prepare = (sql) => { if (!falhou && /FROM d30_casos/.test(sql)) { falhou = true; throw new Error("D1 instável"); } return original(sql); };
+  await a.cliente(CLI, "Oi");
+  a.DB.prepare = original;
+  assert.equal(a.para(CLI).length, 1);
+});
+
+test("V30.7 — resumo de ligação entra no histórico e a DENIA usa o que foi combinado por telefone", async () => {
+  const a = await criarAmbiente({ env: { DENIA_PLATFORM_SERVICE_TOKEN: SERVICO } });
+  a.llmCliente = () => decisao({ resposta: "Oi! Me conta." });
+  await a.cliente(CLI, "Oi");
+  const r = await (await api(a, `/platform/conversations/${pessoaDe(a, CLI)}/note`, { method: "POST", body: JSON.stringify({ texto: "Cliente ligou: prefere atendimento depois das 14h e o portão é azul.", autor: "Ana <ana@central.test>" }) })).json();
+  assert.equal(r.sucesso, true);
+  let entrada = "";
+  a.llmCliente = (e) => { entrada = e; return decisao({ resposta: "Combinado, depois das 14h então!" }); };
+  await a.cliente(CLI, "Então, conseguem amanhã?");
+  assert.match(entrada, /RESUMO DE LIGAÇÃO REGISTRADO PELA EQUIPE[^\n]*portão é azul\. — registrado por Ana/);
+  assert.equal(a.para(CLI).length, 2);
 });
 
 test("Mesmo webhook duas vezes não gera resposta duplicada", async () => {
@@ -307,7 +338,7 @@ test("Simulador do painel roda o fluxo sem enviar nada pela Meta", async () => {
   a.llmCliente = () => decisao({ resposta: "Ok", intencao: "NOVO_PEDIDO", quer_orcamento_ou_atendimento: true, pronto_para_profissional: true, fatos: { servico: "chaveiro", problema: "cópia de chave" } });
   const r = await (await a.http("/api/teste", { method: "POST", body: JSON.stringify({ remetente: "cliente", texto: "Preciso de cópia de chave" }) })).json();
   assert.equal(a.enviados.length, 0);
-  assert.ok(r.saidas.some(s => s.papel === "prestador" && /Caso #/.test(s.texto)));
+  assert.ok(r.saidas.some(s => s.papel === "prestador" && /caso \d+/i.test(s.texto)));
   assert.ok(r.saidas.some(s => s.papel === "cliente" && /^Enviamos/.test(s.texto)));
   a.llmPrestador = () => prest({ tipo: "ACEITA", valor_centavos: 3000, valor_e_final: "SIM", disponibilidade: "hoje" });
   const r2 = await (await a.http("/api/teste", { method: "POST", body: JSON.stringify({ remetente: "CHAV-ANDERSON", texto: "faço por 30, hoje" }) })).json();
@@ -599,7 +630,7 @@ test("V30.4 — ponte contínua: cada dúvida do cliente vai ao profissional e a
 
   a.llmCliente = () => decisao({ resposta: "Vou confirmar com o profissional.", intencao: "PERGUNTA_PARA_PROFISSIONAL", resposta_para_profissional: "A fechadura nova está inclusa no valor?" });
   await a.cliente(CLI, "A fechadura nova está inclusa?");
-  assert.match(a.ultimoPara(CHAVEIRO), /Caso #\d+ — o cliente perguntou: A fechadura nova está inclusa no valor\?/);
+  assert.match(a.ultimoPara(CHAVEIRO), /o cliente do caso \d+ perguntou: A fechadura nova está inclusa no valor\?/);
   assert.match(a.ultimoPara(CLI), /Vou confirmar com o profissional e já te respondo/);
 
   a.llmPrestador = (e) => { assert.match(e, /PERGUNTA DO CLIENTE: A fechadura nova/); return prest({ tipo: "RESPONDE", mensagem_para_cliente: "Sim, a fechadura nova já está inclusa." }); };
@@ -608,7 +639,7 @@ test("V30.4 — ponte contínua: cada dúvida do cliente vai ao profissional e a
 
   a.llmCliente = () => decisao({ resposta: "Vou confirmar.", intencao: "PERGUNTA_PARA_PROFISSIONAL", resposta_para_profissional: "Tem garantia?" });
   await a.cliente(CLI, "E tem garantia?");
-  assert.match(a.ultimoPara(CHAVEIRO), /o cliente perguntou: Tem garantia\?/, "a ponte continua enquanto houver dúvidas");
+  assert.match(a.ultimoPara(CHAVEIRO), /o cliente do caso \d+ perguntou: Tem garantia\?/, "a ponte continua enquanto houver dúvidas");
   a.llmPrestador = () => prest({ tipo: "RESPONDE", mensagem_para_cliente: "Sim, são 90 dias de garantia." });
   await a.cliente(CHAVEIRO, "90 dias");
   assert.equal(a.ultimoPara(CLI), "Sim, são 90 dias de garantia.");

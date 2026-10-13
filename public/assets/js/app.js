@@ -474,7 +474,7 @@
         class: "conversa-item" + (String(c.pessoa_id) === aberta ? " ativo" : ""), type: "button", "data-id": c.pessoa_id,
         onclick: () => { location.hash = "#/conversas/" + c.pessoa_id; }
       }, h("strong", {}, c.nome || telefone(c.telefone), c.ia_pausada ? selo("Humano", "alerta") : null, String(c.tipo || "").toUpperCase() === "TECNICO" ? selo("Profissional", "info") : null),
-        h("span", { text: (String(c.ultima_direcao).toUpperCase() === "SAIDA" ? (String(c.ultima_origem).toUpperCase() === "HUMANO" ? "Equipe: " : "DENIA: ") : "") + (c.ultima_mensagem || "") }),
+        h("span", { text: (String(c.ultima_direcao).toUpperCase() === "SAIDA" ? ({ HUMANO: "Equipe: ", LIGACAO: "📞 " }[String(c.ultima_origem).toUpperCase()] || "DENIA: ") : "") + (c.ultima_mensagem || "") }),
         h("span", { text: quando(c.ultima_mensagem_em) }))) : [vazio("Nenhuma conversa", q ? "Nada encontrado para essa busca." : "As conversas do WhatsApp aparecem aqui.", ICONES.conversa)]));
     };
     const carregarLista = async (forcar) => {
@@ -527,6 +527,7 @@
     painel.dataset.conversa = String(id);
     const msgs = h("div", { class: "mensagens", "aria-live": "polite" }, (d.mensagens || []).map(m => {
       const saida = String(m.direcao).toUpperCase() === "SAIDA", humano = String(m.origem).toUpperCase() === "HUMANO";
+      if (String(m.origem).toUpperCase() === "LIGACAO") return h("div", { class: "msg msg-ligacao" }, "📞 " + (m.conteudo || ""), h("small", { text: "Resumo de ligação · " + quando(m.criado_em) }));
       return h("div", { class: "msg " + (saida ? "msg-saida" + (humano ? " msg-humano" : "") : "msg-entrada") }, m.conteudo || "[sem texto]", h("small", { text: (saida ? (humano ? "Equipe · " : "DENIA · ") : "") + quando(m.criado_em) }));
     }));
     if (!(d.mensagens || []).length) msgs.appendChild(vazio("Sem mensagens", ""));
@@ -554,8 +555,17 @@
     const quem = d.pessoa.oficial ? selo(`Profissional: ${d.pessoa.profissional}`, "info")
       : pode("AGENTE") ? (ehProf ? h("span", { class: "acoes" }, selo(d.pessoa.profissional ? `Profissional: ${d.pessoa.profissional}` : "Profissional", "info"), botao("É cliente", () => marcarTipo("CLIENTE"), "btn-secundario btn-pequeno"))
         : botao("É profissional", () => marcarTipo("TECNICO"), "btn-secundario btn-pequeno")) : null;
+    // Resumo de ligação: o que foi falado por telefone entra no contexto da DENIA.
+    const registrarLigacao = async () => {
+      const resumo = h("textarea", { class: "entrada", maxlength: "3000", style: "min-height:140px", placeholder: "Ex.: Liguei para o cliente. Ele prefere atendimento depois das 14h, o portão é azul e já tem a peça em casa." });
+      if (!(await modal({ titulo: "Resumo da ligação", conteudo: ["Escreva (ou dite pelo microfone do teclado) o que foi conversado por telefone. A DENIA passa a considerar isso como informação confirmada nesta conversa.", resumo], confirmar: "Salvar resumo" }))) return;
+      if (resumo.value.trim().length < 3) { aviso("Escreva o resumo da ligação.", "erro"); return; }
+      try { await eng(`conversations/${id}/note`, { metodo: "POST", corpo: { texto: resumo.value.trim() } }); aviso("Resumo salvo. A DENIA já considera o que foi combinado.", "ok"); abrirConversa(painel, id, vivo); }
+      catch (e) { aviso(e.message, "erro"); }
+    };
     const acoes = h("div", { class: "acoes" },
       quem,
+      pode("AGENTE") ? botao("📞 Registrar ligação", registrarLigacao, "btn-secundario btn-pequeno") : null,
       h("a", { class: "btn btn-secundario btn-pequeno", href: "#/conversas" }, "Voltar"),
       pode("AGENTE") ? (d.ia_pausada
         ? botao("Devolver para a IA", async () => { try { await eng(`conversations/${id}/release`, { metodo: "POST", corpo: {} }); aviso("A IA voltou a atender esta conversa.", "ok"); abrirConversa(painel, id, vivo); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno")

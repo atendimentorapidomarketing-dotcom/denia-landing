@@ -1,5 +1,25 @@
 # Changelog — DENIA Engine
 
+## 30.7.0 — 2026-10-13
+
+### Novo
+- Resumo de ligação: a equipe registra pelo painel (Conversas → "Registrar ligação") o que foi
+  combinado por telefone com cliente ou profissional; entra no histórico como informação
+  confirmada e a DENIA passa a considerar (endpoint `/platform/conversations/:id/note`).
+- Mensagens aos profissionais escritas como uma pessoa da equipe no WhatsApp (saudação pelo
+  horário, nome, frase corrida), sem cara de formulário. O número do caso continua no fim.
+- Atendimento ao cliente: "a arte de atender" — escuta, espelhar o tom do cliente, variar as
+  frases, uma coisa por vez, cliente irritado, venda natural; só afirma o que tem certeza
+  (na dúvida, confirma e chama a equipe); não fala de assuntos fora do atendimento; não se
+  apresenta como robô, mas não nega ser assistente virtual se perguntarem com sinceridade.
+
+### Corrigido
+- Nenhuma conversa sem resposta: mensagens que chegam atrasadas (até 12 h) agora são
+  respondidas com um pedido de desculpas pela demora (antes, com mais de 15 min, ficavam sem
+  resposta); se alguém da equipe já respondeu depois, a DENIA não repete.
+- Falha passageira (rede, banco, IA) ao processar: a DENIA tenta mais uma vez antes de
+  desistir e avisar a equipe.
+
 ## 30.4.0 — 2026-10-08
 
 ### Novo

@@ -119,7 +119,7 @@
   }
 
   // A versão muda sempre que um dicionário muda (scripts/i18n.mjs atualiza): o navegador nunca fica com tradução velha.
-  var VERSAO_DICIONARIOS = "863f457b06";
+  var VERSAO_DICIONARIOS = "e0dca66774";
   var pronto = fetch("/assets/i18n/" + idioma + ".json?v=" + VERSAO_DICIONARIOS).then(function (r) { return r.ok ? r.json() : {}; }).catch(function () { return {}; });
   var comecar = function () {
     pronto.then(function (d) {
