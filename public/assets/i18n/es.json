@@ -1299,7 +1299,9 @@
   "O Instagram não conseguiu baixar a imagem do post. Gere a arte de novo e tente outra vez.": "Instagram no pudo descargar la imagen de la publicación. Genere la imagen de nuevo e inténtelo otra vez.",
   "O acesso à conta da Meta expirou ou foi removido. Conecte de novo em Marcas.": "El acceso a la cuenta de Meta expiró o fue eliminado. Vuelva a conectar en Marcas.",
   "O pedido de conexão expirou. Volte à plataforma e clique em Conectar de novo.": "La solicitud de conexión expiró. Vuelva a la plataforma y haga clic en Conectar de nuevo.",
-  "Quase pronto": "Casi listo"
+  "Quase pronto": "Casi listo",
+  "Aprovando…": "Aprobando…",
+  "Post aprovado. A marca ainda não está conectada ao Instagram/Facebook: vá em Marcas → Conectar para ele sair sozinho.": "Publicación aprobada. La marca aún no está conectada a Instagram/Facebook: ve a Marcas → Conectar para que salga sola."
  },
  "h": {
   "1 lugarpara toda a operação": "<strong>1 lugar</strong><span>para toda la operación</span>",
@@ -1425,6 +1427,7 @@
   "Desconectar {0}?": "¿Desconectar {0}?",
   "Instagram @{0}": "Instagram @{0}",
   "Post #{0} aprovado. {1}": "Publicación #{0} aprobada. {1}",
-  "{0}: publicado": "{0}: publicado"
+  "{0}: publicado": "{0}: publicado",
+  "Post aprovado. Ele sai sozinho em {0}/{1} às {2} (horário de Brasília). Para publicar já, abra o post e clique em Publicar agora.": "Publicación aprobada. Sale sola el {0}/{1} a las {2} (hora de Brasilia). Para publicar ya, abre la publicación y haz clic en Publicar ahora."
  }
 }

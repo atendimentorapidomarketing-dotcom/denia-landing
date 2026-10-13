@@ -1,4 +1,4 @@
-import { rotasMeta } from "./meta.js";
+import { rotasMeta, aoAprovar } from "./meta.js";
 // ============================================================================
 // DENIA Platform — Estúdio de Marketing e Assistente DENIA (texto e voz)
 // ============================================================================
@@ -233,7 +233,13 @@ export async function apiMarketing(request, env, k, orgId, papel, resto) {
         return json({ ok: true, status });
       };
       if (acao === "enviar") { exigir("AGENTE"); return mudar("AGUARDANDO"); }
-      if (acao === "aprovar") { exigir("ADMIN"); return mudar("APROVADO", { aprovado_por: autor }); }
+      if (acao === "aprovar") {
+        exigir("ADMIN");
+        await mudar("APROVADO", { aprovado_por: autor });
+        const r = await aoAprovar(request, env, k, p);
+        await auditar(env, request, sessao, orgId, "MARKETING", `Post #${p.id}: ${r.resumo}`.slice(0, 400));
+        return json({ ok: true, status: r.publicado ? "PUBLICADO" : "APROVADO", publicado: r.publicado, resumo: r.resumo });
+      }
       if (acao === "rejeitar") { exigir("ADMIN"); return mudar("REJEITADO", { comentario: txt(c.comentario, 400) || "Rejeitado" }); }
       if (acao === "publicado") { exigir("AGENTE"); if (p.status !== "APROVADO") return json({ erro: "Só posts aprovados podem ser marcados como publicados." }, 409); return mudar("PUBLICADO"); }
       if (acao === "rascunho") { exigir("AGENTE"); return mudar("RASCUNHO"); }
@@ -528,6 +534,7 @@ async function executarAcao(a, { marcasOrg, contexto, txt }) {
     const id = Number(a.post_id);
     const ap = await contexto.mk("POST", `posts/${id}/acao`, { acao: "aprovar" });
     if (falhou(ap)) return { tipo, ok: false, resumo: falhou(ap) };
+    if (ap.dados?.publicado) return { tipo, ok: true, resumo: ap.dados.resumo, abrir: "#/calendario" };
     const pub = await contexto.mk("POST", `posts/${id}/publicar`, {});
     if (pub.status < 400) return { tipo, ok: true, resumo: pub.dados.resumo || `Post #${id} publicado.`, abrir: "#/calendario" };
     return { tipo, ok: true, resumo: `Post #${id} aprovado. ${pub.dados?.resumo || pub.dados?.erro || "Ele será publicado no horário marcado."}`, abrir: "#/calendario" };

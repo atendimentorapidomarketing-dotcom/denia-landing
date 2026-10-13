@@ -713,8 +713,10 @@ test("Instagram e Facebook — conectar a marca pela Meta, publicar no horário 
 
   // 3) Post aprovado com arte, no horário: o cron publica no Instagram e no Facebook.
   p.env.DB.prepare("INSERT INTO plt_mk_midias(org_id,mime,dados,prompt,criado_ms) VALUES(1,'image/jpeg',?, 'x', 1)").bind(Buffer.from("JPEGDATA").toString("base64")).run();
-  const post = (await p.req("/api/orgs/1/mk/posts", { metodo: "POST", quem: "admin", corpo: { marca_id: marca, canais: ["instagram", "facebook"], data: "2020-01-01", hora: "09:00", titulo: "Sorriso", legenda: "Cuide do seu sorriso", hashtags: "#niteroi", midia_id: 1 } })).dados.id;
-  await p.req(`/api/orgs/1/mk/posts/${post}/acao`, { metodo: "POST", quem: "admin", corpo: { acao: "aprovar" } });
+  const post = (await p.req("/api/orgs/1/mk/posts", { metodo: "POST", quem: "admin", corpo: { marca_id: marca, canais: ["instagram", "facebook"], data: "2099-03-07", hora: "09:30", titulo: "Sorriso", legenda: "Cuide do seu sorriso", hashtags: "#niteroi", midia_id: 1 } })).dados.id;
+  const aprov = await p.req(`/api/orgs/1/mk/posts/${post}/acao`, { metodo: "POST", quem: "admin", corpo: { acao: "aprovar" } });
+  assert.equal(aprov.dados.publicado, false);
+  assert.match(aprov.dados.resumo, /sai sozinho em 07\/03 às 09:30/, "ao aprovar, diz quando vai sair");
   let imagem = "";
   p.meta = (url, metodo, corpo) => {
     if (url.includes("/IG1/media_publish")) return { id: "IGPOST1" };
@@ -749,6 +751,28 @@ test("Instagram e Facebook — conectar a marca pela Meta, publicar no horário 
   assert.equal(falha.status, 502);
   assert.match(falha.dados.resumo, /expirou ou foi removido/);
   assert.equal(p.env.DB.q("SELECT status FROM plt_mk_posts WHERE id=?", outro)[0].status, "APROVADO");
+
+  // 6) Aprovar um post cujo horário já chegou: publica na hora e diz o resultado.
+  p.meta = (url) => {
+    if (url.includes("/PAG1/photos")) return { id: "FOTO2", post_id: "PAG1_100" };
+    return { error: { message: "inesperado " + url } };
+  };
+  const jaPassou = (await p.req("/api/orgs/1/mk/posts", { metodo: "POST", quem: "admin", corpo: { marca_id: marca, canais: ["facebook"], data: "2020-01-01", hora: "09:00", titulo: "Atrasado", legenda: "y", midia_id: 1 } })).dados.id;
+  const na_hora = await p.req(`/api/orgs/1/mk/posts/${jaPassou}/acao`, { metodo: "POST", quem: "admin", corpo: { acao: "aprovar" } });
+  assert.equal(na_hora.dados.publicado, true);
+  assert.match(na_hora.dados.resumo, /^Post aprovado e publicado\. Facebook: https:\/\/www\.facebook\.com\/PAG1_100/);
+  assert.equal(p.env.DB.q("SELECT status FROM plt_mk_posts WHERE id=?", jaPassou)[0].status, "PUBLICADO");
+});
+
+test("Aprovar sem a marca conectada avisa que falta conectar", async () => {
+  const p = await criarPlataforma({ META_APP_ID: "123456", META_APP_SECRET: "segredo-do-app" });
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  const marca = (await p.req("/api/orgs/1/mk/marcas", { metodo: "POST", quem: "admin", corpo: { nome: "Clínica Sol" } })).dados.id;
+  const post = (await p.req("/api/orgs/1/mk/posts", { metodo: "POST", quem: "admin", corpo: { marca_id: marca, canais: ["instagram"], data: "2020-01-01", hora: "09:00", titulo: "x", legenda: "x" } })).dados.id;
+  const r = await p.req(`/api/orgs/1/mk/posts/${post}/acao`, { metodo: "POST", quem: "admin", corpo: { acao: "aprovar" } });
+  assert.equal(r.dados.publicado, false);
+  assert.match(r.dados.resumo, /ainda não está conectada/);
+  assert.equal(p.env.DB.q("SELECT status FROM plt_mk_posts WHERE id=?", post)[0].status, "APROVADO");
 });
 
 test("Instagram e Facebook — sem os secrets da Meta, a plataforma explica o que falta", async () => {

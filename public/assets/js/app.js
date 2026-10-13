@@ -47,7 +47,7 @@
     if (tipo === "erro" && piloto.ativo) piloto.erros.push(texto);
     const el = h("div", { class: "aviso" + (tipo ? " aviso-" + tipo : ""), role: tipo === "erro" ? "alert" : "status", text: texto });
     $("avisos").appendChild(el);
-    setTimeout(() => el.remove(), tipo === "erro" ? 7000 : 4200);
+    setTimeout(() => el.remove(), Math.max(tipo === "erro" ? 7000 : 4200, String(texto).length * 70));
   }
 
   let fecharModal = null;
@@ -1408,12 +1408,12 @@
     const revisao = h("div", {}, p.revisao ? h("p", { class: "nota" + (p.revisao.nota >= 8 ? "" : " nota-alerta"), text: `Revisão da IA: nota ${p.revisao.nota}/10 — ${p.revisao.comentario}` }) : null, p.comentario ? h("p", { class: "nota nota-alerta", text: "Comentário: " + p.comentario }) : null);
     const dados = () => ({ id: p.id, marca_id: marca.value, canais: [...canais.querySelectorAll("input:checked")].map(i => i.value), formato: formato.value, data: data.value, hora: hora.value, titulo: tituloP.value, legenda: legenda.value, hashtags: hashtags.value, chamada: chamada.value, ideia_imagem: ideia.value });
     const salvar = async (silencioso) => { const r = await mk("posts", { metodo: "POST", corpo: dados() }); p.id = r.id; if (!silencioso) aviso("Post salvo.", "ok"); return r.id; };
-    const acao = async (a, extra = {}) => { await salvar(true); await mk(`posts/${p.id}/acao`, { metodo: "POST", corpo: { acao: a, ...extra } }); fechar(); recarregar && recarregar(); atualizarAprovacoes(); };
+    const acao = async (a, extra = {}) => { await salvar(true); const r = await mk(`posts/${p.id}/acao`, { metodo: "POST", corpo: { acao: a, ...extra } }); fechar(); recarregar && recarregar(); atualizarAprovacoes(); return r; };
     const editar = pode("AGENTE") && p.status !== "PUBLICADO";
     const botoes = h("div", { class: "acoes" },
       editar ? botao("Salvar", async () => { try { await salvar(); recarregar && recarregar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario") : null,
       editar && ["RASCUNHO", "REJEITADO"].includes(p.status || "RASCUNHO") ? botao("Enviar para aprovação", async () => { try { await acao("enviar"); aviso("Enviado para aprovação.", "ok"); } catch (e) { aviso(e.message, "erro"); } }) : null,
-      pode("ADMIN") && p.id && ["AGUARDANDO", "RASCUNHO", "REJEITADO"].includes(p.status) ? botao("Aprovar", async () => { try { await acao("aprovar"); aviso("Post aprovado.", "ok"); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario") : null,
+      pode("ADMIN") && p.id && ["AGUARDANDO", "RASCUNHO", "REJEITADO"].includes(p.status) ? botao("Aprovar", async (_e, b) => { b.textContent = "Aprovando…"; try { const r = await acao("aprovar"); aviso(r.resumo || "Post aprovado.", r.resumo && /falhou/.test(r.resumo) ? "erro" : "ok"); } catch (e) { aviso(e.message, "erro"); } finally { b.textContent = "Aprovar"; } }, "btn-primario") : null,
       pode("ADMIN") && p.id && p.status === "AGUARDANDO" ? botao("Pedir ajuste", async () => {
         const motivo = h("textarea", { class: "entrada", placeholder: "O que precisa mudar?", maxlength: "400" });
         if (!(await modal({ titulo: "Pedir ajuste", conteudo: [motivo], confirmar: "Enviar" }))) return;
@@ -1488,7 +1488,7 @@
           h("p", { class: "aprovacao-legenda", text: p.legenda || "" }),
           p.revisao ? h("p", { class: "evidencia", text: `Revisão da IA: ${p.revisao.nota}/10 — ${p.revisao.comentario}` }) : null,
           h("div", { class: "acoes" },
-            pode("ADMIN") ? botao("Aprovar", async () => { try { await mk(`posts/${p.id}/acao`, { metodo: "POST", corpo: { acao: "aprovar" } }); aviso("Aprovado.", "ok"); navegar(); atualizarAprovacoes(); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario btn-pequeno") : null,
+            pode("ADMIN") ? botao("Aprovar", async (_e, b) => { b.textContent = "Aprovando…"; try { const r = await mk(`posts/${p.id}/acao`, { metodo: "POST", corpo: { acao: "aprovar" } }); aviso(r.resumo || "Aprovado.", r.resumo && /falhou/.test(r.resumo) ? "erro" : "ok"); navegar(); atualizarAprovacoes(); } catch (e) { aviso(e.message, "erro"); b.textContent = "Aprovar"; } }, "btn-primario btn-pequeno") : null,
             botao("Abrir e editar", () => editorPost(p, lista, () => navegar()), "btn-secundario btn-pequeno"))));
     })));
   }

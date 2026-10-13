@@ -1299,7 +1299,9 @@
   "O Instagram não conseguiu baixar a imagem do post. Gere a arte de novo e tente outra vez.": "Instagram konnte das Bild des Posts nicht herunterladen. Erstellen Sie die Grafik neu und versuchen Sie es noch einmal.",
   "O acesso à conta da Meta expirou ou foi removido. Conecte de novo em Marcas.": "Der Zugriff auf das Meta-Konto ist abgelaufen oder wurde entfernt. Verbinden Sie erneut unter Marken.",
   "O pedido de conexão expirou. Volte à plataforma e clique em Conectar de novo.": "Die Verbindungsanfrage ist abgelaufen. Kehren Sie zur Plattform zurück und klicken Sie erneut auf Verbinden.",
-  "Quase pronto": "Fast fertig"
+  "Quase pronto": "Fast fertig",
+  "Aprovando…": "Wird freigegeben…",
+  "Post aprovado. A marca ainda não está conectada ao Instagram/Facebook: vá em Marcas → Conectar para ele sair sozinho.": "Beitrag freigegeben. Die Marke ist noch nicht mit Instagram/Facebook verbunden: Gehe zu Marken → Verbinden, damit er automatisch erscheint."
  },
  "h": {
   "1 lugarpara toda a operação": "<strong>1 Ort</strong><span>für den gesamten Betrieb</span>",
@@ -1425,6 +1427,7 @@
   "Desconectar {0}?": "{0} trennen?",
   "Instagram @{0}": "Instagram @{0}",
   "Post #{0} aprovado. {1}": "Post #{0} freigegeben. {1}",
-  "{0}: publicado": "{0}: veröffentlicht"
+  "{0}: publicado": "{0}: veröffentlicht",
+  "Post aprovado. Ele sai sozinho em {0}/{1} às {2} (horário de Brasília). Para publicar já, abra o post e clique em Publicar agora.": "Beitrag freigegeben. Er erscheint automatisch am {0}.{1}. um {2} (Brasília-Zeit). Um sofort zu veröffentlichen, öffne den Beitrag und klicke auf Jetzt veröffentlichen."
  }
 }
