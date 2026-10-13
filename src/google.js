@@ -22,7 +22,7 @@ const IDIOMA_GOOGLE = { "pt-BR": "pt-BR", en: "en", es: "es", de: "de", it: "it"
 const DDL = [
   `CREATE TABLE IF NOT EXISTS plt_mk_google (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, marca_id INTEGER NOT NULL, conta_nome TEXT NOT NULL, local_nome TEXT NOT NULL, local_titulo TEXT, token_cifrado TEXT NOT NULL, criado_por TEXT, criado_ms INTEGER NOT NULL, atualizado_ms INTEGER NOT NULL, sincronizado_ms INTEGER, UNIQUE(org_id, marca_id))`
 ];
-const ALTERS = ["ALTER TABLE plt_mk_google ADD COLUMN desempenho_ms INTEGER"];
+const ALTERS = ["ALTER TABLE plt_mk_google ADD COLUMN desempenho_ms INTEGER", "ALTER TABLE plt_mk_google ADD COLUMN erro TEXT"];
 const prontos = new WeakSet();
 async function garantir(env) {
   if (prontos.has(env.DB)) return;
@@ -108,7 +108,7 @@ export async function rotasGoogle(request, env, k, orgId, papel, resto) {
   const url = new URL(request.url);
 
   if (resto === "google/estado" && metodo === "GET") {
-    const contas = (await env.DB.prepare("SELECT marca_id, local_titulo, atualizado_ms, sincronizado_ms FROM plt_mk_google WHERE org_id=?").bind(orgId).all())?.results || [];
+    const contas = (await env.DB.prepare("SELECT marca_id, local_titulo, atualizado_ms, sincronizado_ms, erro FROM plt_mk_google WHERE org_id=?").bind(orgId).all())?.results || [];
     return json({ configurada: googleConfigurada(env), faltando: faltando(env), contas });
   }
   if (resto === "google/conectar" && metodo === "GET") {
@@ -170,7 +170,10 @@ export async function rotasGoogle(request, env, k, orgId, papel, resto) {
     const conta = await contaGoogleDe(env, orgId, Number(corpo.marca_id));
     if (!conta) return json({ erro: "Esta marca ainda não está conectada ao Google (Marcas → Conectar Google)." }, 409);
     try { return json({ ok: true, ...(await sincronizarConta(env, k, conta)) }); }
-    catch (e) { return json({ erro: e.message }, 502); }
+    catch (e) {
+      await env.DB.prepare("UPDATE plt_mk_google SET erro=? WHERE id=?").bind(String(e?.message || e).slice(0, 400), conta.id).run();
+      return json({ erro: e.message }, 502);
+    }
   }
   // Desempenho ao vivo: últimos 30 dias e as buscas que mais levaram ao perfil no último mês.
   if (resto === "google/desempenho" && metodo === "GET") {
@@ -319,7 +322,7 @@ export async function sincronizarConta(env, k, conta, { forcarDesempenho = true 
     try { await gravarSemanas(env, k, conta, token); desempenho = true; await env.DB.prepare("UPDATE plt_mk_google SET desempenho_ms=? WHERE id=?").bind(k.agora(env), conta.id).run(); }
     catch (e) { desempenho = false; console.error("google desempenho", e?.message); }
   }
-  await env.DB.prepare("UPDATE plt_mk_google SET sincronizado_ms=? WHERE id=?").bind(k.agora(env), conta.id).run();
+  await env.DB.prepare("UPDATE plt_mk_google SET sincronizado_ms=?, erro=NULL WHERE id=?").bind(k.agora(env), conta.id).run();
   return { avaliacoes_novas: av.novas, avaliacoes_total: av.total, desempenho };
 }
 
@@ -333,7 +336,8 @@ export async function sincronizarGooglePendentes(env, k) {
     try { await sincronizarConta(env, k, c, { forcarDesempenho: false }); n++; }
     catch (e) {
       console.error("google sync", c.id, e?.message);
-      await env.DB.prepare("UPDATE plt_mk_google SET sincronizado_ms=? WHERE id=?").bind(k.agora(env), c.id).run(); // tenta de novo na próxima hora
+      // Guarda o motivo para aparecer no painel; tenta de novo na próxima rodada.
+      await env.DB.prepare("UPDATE plt_mk_google SET sincronizado_ms=?, erro=? WHERE id=?").bind(k.agora(env), String(e?.message || e).slice(0, 400), c.id).run();
     }
   }
   return { sincronizadas: n };
