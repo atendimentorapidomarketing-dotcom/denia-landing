@@ -1,3 +1,4 @@
+import { rotasMeta } from "./meta.js";
 // ============================================================================
 // DENIA Platform — Estúdio de Marketing e Assistente DENIA (texto e voz)
 // ============================================================================
@@ -128,6 +129,8 @@ Responda em JSON: {"nota":0,"aprovado":false,"comentario":""} — nota de 0 a 10
 export async function apiMarketing(request, env, k, orgId, papel, resto) {
   const { json, lerCorpo, txt, pode, agora, auditar, sessao } = k;
   await garantir(env);
+  const daMeta = await rotasMeta(request, env, k, orgId, papel, resto);
+  if (daMeta) return daMeta;
   const metodo = request.method;
   const autor = sessao.usuario.nome || sessao.usuario.email;
   const corpoOu = async (limite) => { const l = await lerCorpo(request, limite); if (l.erro) throw Object.assign(new Error("corpo"), { resposta: l.erro }); return l.corpo; };
@@ -522,9 +525,12 @@ async function executarAcao(a, { marcasOrg, contexto, txt }) {
     return { tipo, ok: !erro, resumo: erro || `${n} post(s) aprovados${marca ? " de " + marca.nome : ""}.`, abrir: "#/calendario" };
   }
   if (tipo === "publicar_post") {
-    const r = await contexto.mk("POST", `posts/${Number(a.post_id)}/acao`, { acao: "aprovar" });
-    if (falhou(r)) return { tipo, ok: false, resumo: falhou(r) };
-    return { tipo, ok: true, resumo: `Post #${Number(a.post_id)} aprovado e pronto. A publicação automática começa depois da conexão oficial com a Meta e o Google; até lá, baixe a arte e publique.`, abrir: "#/calendario" };
+    const id = Number(a.post_id);
+    const ap = await contexto.mk("POST", `posts/${id}/acao`, { acao: "aprovar" });
+    if (falhou(ap)) return { tipo, ok: false, resumo: falhou(ap) };
+    const pub = await contexto.mk("POST", `posts/${id}/publicar`, {});
+    if (pub.status < 400) return { tipo, ok: true, resumo: pub.dados.resumo || `Post #${id} publicado.`, abrir: "#/calendario" };
+    return { tipo, ok: true, resumo: `Post #${id} aprovado. ${pub.dados?.resumo || pub.dados?.erro || "Ele será publicado no horário marcado."}`, abrir: "#/calendario" };
   }
   if (tipo === "treinar") {
     const campo = CAMPOS_TREINO.includes(a.campo) ? a.campo : "instrucoes";
@@ -588,7 +594,7 @@ Você também EXECUTA ações quando a pessoa pede claramente. Ações disponív
 - {"tipo":"criar_semana","marca":"nome da marca","canais":["instagram","facebook","google"],"quantidade":3,"semana":"esta"|"proxima","com_artes":true} — planeja e cria os posts da semana (legendas, hashtags e as imagens).
 - {"tipo":"criar_post","marca":"nome","canais":["instagram"],"tema":"sobre o que é","formato":"post"|"carrossel"|"story"|"reels","data":"AAAA-MM-DD","hora":"HH:MM","com_arte":true} — cria um post com texto e imagem.
 - {"tipo":"aprovar_posts","marca":"nome ou vazio para todas"} — aprova os posts que aguardam aprovação (perfil ADMIN ou OWNER).
-- {"tipo":"publicar_post","post_id":123} — deixa o post pronto para publicar. Explique com honestidade: a publicação automática no Instagram, Facebook e Google começa depois da conexão oficial com a Meta e o Google; até lá a equipe baixa a arte e publica.
+- {"tipo":"publicar_post","post_id":123} — aprova e publica agora no Instagram e no Facebook, se a marca estiver conectada (Marcas → Conectar Instagram e Facebook). Se não estiver, explique que o post fica aprovado e que basta conectar a marca. O Google Meu Negócio ainda não publica sozinho.
 - {"tipo":"treinar","campo":"instrucoes"|"servicos"|"regras"|"precos"|"procedimentos"|"informacoes"|"exemplos","modo":"acrescentar"|"substituir","texto":"o texto do treinamento, bem escrito, na voz de instrução para a IA do WhatsApp"} — muda o treinamento da IA que atende os clientes no WhatsApp (perfil ADMIN ou OWNER). Prefira "acrescentar". Use "substituir" só se a pessoa pedir para trocar tudo daquele campo; nesse caso o texto deve ser o campo completo, já reescrito. Cada mudança vira uma nova versão (dá para voltar).
 - {"tipo":"pausar_ia","pausar":true|false} — pausa ou retoma a IA do WhatsApp para todos os clientes (perfil ADMIN ou OWNER).
 Regras: só inclua uma ação quando o pedido for claro; se faltar algo essencial (por exemplo a marca, havendo mais de uma), pergunte em vez de agir. Marcas existentes: ${marcasOrg.map(m => m.nome).join(", ") || "nenhuma cadastrada"}. Na "resposta", diga em poucas palavras o que você está fazendo (no futuro imediato: "Vou criar..."), porque o resultado aparece logo depois.
@@ -625,7 +631,7 @@ Use os DADOS DO PAINEL para responder sobre conversas do WhatsApp, atendimentos,
 Para assuntos de fora (notícias, concorrentes, tendências, preços de mercado, qualquer dúvida do mundo), use a ferramenta pesquisar_web e conte o resultado de forma curta, citando de onde veio.
 Quando a pessoa pedir claramente uma ação, use a ferramenta certa (criar_semana, criar_post, aprovar_posts, publicar_post, treinar, pausar_ia). Antes, diga numa frase curta o que vai fazer ("Vou abrir o treinamento e acrescentar isso"); a pessoa vê você fazendo na tela e pode pausar ou parar. Quando a ferramenta devolver o resultado, conte em uma frase. Se faltar algo essencial (por exemplo qual marca, havendo mais de uma), pergunte antes.
 Treinamento: prefira acrescentar; substituir só se pedirem para trocar tudo daquele campo (aí o texto é o campo inteiro já reescrito). Escreva o texto do treinamento como instrução clara para a IA que atende os clientes no WhatsApp.
-Publicar: a publicação automática no Instagram, Facebook e Google começa depois da conexão oficial com a Meta e o Google; até lá o post fica aprovado e a equipe publica. Diga isso com honestidade.
+Publicar: com a marca conectada (Marcas → Conectar Instagram e Facebook), os posts aprovados saem sozinhos no horário marcado e publicar_post publica na hora. Sem conexão, o post fica aprovado. O Google Meu Negócio ainda não publica sozinho. Diga isso com honestidade.
 Marcas existentes: ${marcasOrg.map(m => m.nome).join(", ") || "nenhuma cadastrada"}.
 DADOS DO PAINEL (no início da conversa):
 ${contexto.dados}`;

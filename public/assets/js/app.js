@@ -1399,6 +1399,12 @@
     const hashtags = ent(p.hashtags, { maxlength: "600" }), chamada = ent(p.chamada, { maxlength: "200" });
     const ideia = h("textarea", { class: "entrada", value: p.ideia_imagem || "", maxlength: "1000", style: "min-height:90px" });
     const imagem = h("div", { class: "post-arte" }, miniatura(p, "post-arte-img") || h("span", { text: "Sem arte ainda" }));
+    let pub = {};
+    try { pub = typeof p.publicacao === "string" ? JSON.parse(p.publicacao || "{}") : (p.publicacao || {}); } catch { pub = {}; }
+    const publicacao = h("div", { class: "publicacao" }, pub.aviso ? h("p", { class: "nota nota-alerta", text: pub.aviso }) : null,
+      ["instagram", "facebook"].filter(c => pub[c]).map(c => pub[c].id
+        ? h("p", { class: "nota" }, `${NOME_CANAL[c]}: publicado `, pub[c].link ? h("a", { href: pub[c].link, target: "_blank", rel: "noopener noreferrer", text: "ver post" }) : null)
+        : h("p", { class: "nota nota-alerta", text: `${NOME_CANAL[c]}: ${pub[c].erro}` })));
     const revisao = h("div", {}, p.revisao ? h("p", { class: "nota" + (p.revisao.nota >= 8 ? "" : " nota-alerta"), text: `Revisão da IA: nota ${p.revisao.nota}/10 — ${p.revisao.comentario}` }) : null, p.comentario ? h("p", { class: "nota nota-alerta", text: "Comentário: " + p.comentario }) : null);
     const dados = () => ({ id: p.id, marca_id: marca.value, canais: [...canais.querySelectorAll("input:checked")].map(i => i.value), formato: formato.value, data: data.value, hora: hora.value, titulo: tituloP.value, legenda: legenda.value, hashtags: hashtags.value, chamada: chamada.value, ideia_imagem: ideia.value });
     const salvar = async (silencioso) => { const r = await mk("posts", { metodo: "POST", corpo: dados() }); p.id = r.id; if (!silencioso) aviso("Post salvo.", "ok"); return r.id; };
@@ -1413,6 +1419,14 @@
         if (!(await modal({ titulo: "Pedir ajuste", conteudo: [motivo], confirmar: "Enviar" }))) return;
         try { await acao("rejeitar", { comentario: motivo.value }); aviso("Ajuste pedido.", "ok"); } catch (e) { aviso(e.message, "erro"); }
       }) : null,
+      pode("AGENTE") && p.status === "APROVADO" && p.id ? botao("Publicar agora", async (_e, b) => {
+        b.textContent = "Publicando…";
+        try {
+          await salvar(true);
+          const r = await mk(`posts/${p.id}/publicar`, { metodo: "POST", corpo: {} });
+          aviso(r.resumo, "ok"); fechar(); recarregar && recarregar();
+        } catch (e) { aviso(e.message, "erro"); } finally { b.textContent = "Publicar agora"; }
+      }, "btn-primario") : null,
       pode("AGENTE") && p.status === "APROVADO" ? botao("Marcar como publicado", async () => { try { await acao("publicado"); aviso("Marcado como publicado.", "ok"); } catch (e) { aviso(e.message, "erro"); } }) : null,
       botao("Copiar legenda", () => copiar([legenda.value, hashtags.value].filter(Boolean).join("\n\n")), "btn-secundario"),
       p.midia_id ? h("a", { class: "btn btn-secundario", href: `/api/orgs/${estado.org.id}/mk/midias/${p.midia_id}`, download: `denia-post-${p.id}.jpg` }, "Baixar arte") : null,
@@ -1445,7 +1459,7 @@
       })) : null;
     const fechar = gaveta(p.id ? `Post #${p.id}` : "Novo post", [
       h("div", { class: "sugestao-topo" }, p.status ? seloStatus(p.status) : selo("Novo"), p.aprovado_por ? h("span", { class: "selo", text: "Aprovado por " + p.aprovado_por }) : null, p.criado_por ? h("span", { class: "selo", text: "Criado por " + p.criado_por }) : null),
-      revisao, ia,
+      publicacao, revisao, ia,
       h("div", { class: "editor-grade" },
         h("div", { class: "formulario" },
           h("div", { class: "linha-form" }, campo("Marca", marca), campo("Formato", formato)),
@@ -1453,7 +1467,7 @@
           h("div", { class: "linha-form" }, campo("Data", data), campo("Horário", hora)),
           campo("Título (interno)", tituloP), campo("Legenda", legenda), campo("Hashtags", hashtags), campo("Chamada para ação", chamada), campo("Ideia da arte", ideia)),
         h("div", { class: "formulario" }, h("label", { style: "font-weight:600;color:var(--texto-2);font-size:14px", text: "Arte" }), imagem,
-          h("p", { class: "nota", text: "Quando o Instagram, o Facebook e o Google estiverem conectados, os posts aprovados serão publicados sozinhos no horário. Até lá, baixe a arte e copie a legenda para publicar." }))),
+          h("p", { class: "nota", text: "Com a marca conectada (Marcas → Conectar Instagram e Facebook), os posts aprovados saem sozinhos no dia e horário marcados. Sem conexão, baixe a arte e copie a legenda para publicar." }))),
       botoes]);
   }
 
@@ -1479,22 +1493,70 @@
     })));
   }
 
-  async function paginaMarcas(el, _p, vivo) {
+  // Conexão com o Instagram e o Facebook (API oficial da Meta), por marca.
+  let cacheMeta = null;
+  async function estadoMeta(forcar) {
+    if (!forcar && cacheMeta && cacheMeta.org === estado.org.id && Date.now() - cacheMeta.em < 30000) return cacheMeta.d;
+    const d = await mk("meta/estado").catch(() => ({ configurada: false, contas: [] }));
+    cacheMeta = { org: estado.org.id, em: Date.now(), d };
+    return d;
+  }
+  const contaDa = (meta, marcaId) => (meta.contas || []).find(c => String(c.marca_id) === String(marcaId)) || null;
+  async function conectarMeta(marca) {
+    const meta = await estadoMeta(true);
+    if (!meta.configurada) {
+      await modal({ titulo: "Falta configurar a Meta", soInformar: true, conteudo: [
+        "Para a DENIA publicar sozinha, a plataforma precisa do aplicativo da Meta (é feito uma vez só):",
+        "1. Em developers.facebook.com, crie um app do tipo Empresa ligado ao portfólio empresarial da Central.",
+        "2. Adicione os produtos Login do Facebook para Empresas e API do Instagram, e informe as páginas de privacidade, termos e exclusão de dados do site.",
+        "3. Na Cloudflare, no Worker denia-landing, crie os secrets META_APP_ID e META_APP_SECRET (e META_CONFIG_ID, se usar o Login do Facebook para Empresas).",
+        "4. Volte aqui e clique em Conectar Instagram e Facebook."] });
+      return;
+    }
+    location.href = `/api/orgs/${estado.org.id}/mk/meta/conectar?marca=${marca.id}`;
+  }
+  async function escolherPaginaMeta(nonce) {
+    let d;
+    try { d = await mk(`meta/paginas?n=${encodeURIComponent(nonce)}`); }
+    catch (e) { aviso(e.message, "erro"); location.hash = "#/marcas"; return; }
+    const opcoes = h("div", { class: "lista-saude" }, d.paginas.map((p, i) => h("label", { class: "opcao-pagina" },
+      h("input", { type: "radio", name: "pagina-meta", value: p.id, checked: i === 0 }),
+      h("span", {}, h("strong", { text: p.nome }), h("span", { class: "sub", text: p.ig_usuario ? `Instagram @${p.ig_usuario}` : "Sem Instagram profissional ligado a esta página" })))));
+    if (!(await modal({ titulo: "Qual página é desta marca?", conteudo: [opcoes], confirmar: "Conectar" }))) { location.hash = "#/marcas"; return; }
+    const escolhida = opcoes.querySelector("input:checked");
+    try {
+      const r = await mk("meta/escolher", { metodo: "POST", corpo: { n: nonce, pagina_id: escolhida && escolhida.value } });
+      aviso(r.instagram ? `Conectado: ${r.pagina} · @${r.instagram}` : `Conectado: ${r.pagina}`, "ok");
+      cacheMeta = null; cacheMarcas = null;
+    } catch (e) { aviso(e.message, "erro"); }
+    location.hash = "#/marcas";
+  }
+
+  async function paginaMarcas(el, param, vivo) {
+    if (String(param || "").startsWith("meta-")) { escolherPaginaMeta(String(param).slice(5)); }
     el.appendChild(cabeca("Marcas", "Cada marca tem o seu tom de voz, o seu público e as suas contas. A Central pode cuidar de quantas marcas precisar.", pode("ADMIN") ? botao("Nova marca", () => formMarca({}), "btn-primario") : null));
     const area = h("div", { class: "grade grade-3" }, carregando());
     el.appendChild(area);
-    let lista;
-    try { lista = await marcas(true); } catch (e) { if (vivo()) falha(area, e); return; }
+    let lista, meta;
+    try { [lista, meta] = await Promise.all([marcas(true), estadoMeta(true)]); } catch (e) { if (vivo()) falha(area, e); return; }
     if (!vivo()) return;
     if (!lista.length) { area.replaceChildren(); semMarcas(el); return; }
-    area.replaceChildren(...lista.map(m => h("article", { class: "cartao vidro marca-cartao" },
-      h("div", { class: "marca-topo" }, h("span", { class: "empresa-avatar", text: iniciais(m.nome) }), h("div", {}, h("h3", { style: "margin:0", text: m.nome }), h("span", { class: "sub", text: [m.segmento, m.cidade].filter(Boolean).join(" · ") || "—" }))),
-      h("ul", { class: "lista-saude" },
-        h("li", {}, "Instagram", m.instagram ? h("span", { class: "selo", text: "@" + m.instagram }) : selo("Não informado", "alerta")),
-        h("li", {}, "Facebook", m.facebook ? h("span", { class: "selo", text: m.facebook.slice(0, 28) }) : selo("Não informado", "alerta")),
-        h("li", {}, "Google Meu Negócio", m.google ? h("span", { class: "selo", text: m.google.slice(0, 28) }) : selo("Não informado", "alerta"))),
-      pode("ADMIN") ? h("div", { class: "acoes", style: "margin-top:14px" }, botao("Editar", () => formMarca(m), "btn-secundario btn-pequeno"),
-        botao("Remover", async () => { if (!(await modal({ titulo: `Remover ${m.nome}?`, conteudo: "Os posts já criados continuam guardados.", confirmar: "Remover", perigo: true }))) return; await mk(`marcas/${m.id}/remover`, { metodo: "POST", corpo: {} }); navegar(); }, "btn-perigo btn-pequeno")) : null)));
+    area.replaceChildren(...lista.map(m => {
+      const conta = contaDa(meta, m.id);
+      return h("article", { class: "cartao vidro marca-cartao" },
+        h("div", { class: "marca-topo" }, h("span", { class: "empresa-avatar", text: iniciais(m.nome) }), h("div", {}, h("h3", { style: "margin:0", text: m.nome }), h("span", { class: "sub", text: [m.segmento, m.cidade].filter(Boolean).join(" · ") || "—" }))),
+        h("ul", { class: "lista-saude" },
+          h("li", {}, "Instagram", conta && conta.ig_usuario ? selo(`Conectado · @${conta.ig_usuario}`, "ok") : m.instagram ? h("span", { class: "selo", text: "@" + m.instagram }) : selo("Não informado", "alerta")),
+          h("li", {}, "Facebook", conta ? selo(`Conectado · ${String(conta.pagina_nome || "").slice(0, 24)}`, "ok") : m.facebook ? h("span", { class: "selo", text: m.facebook.slice(0, 28) }) : selo("Não informado", "alerta")),
+          h("li", {}, "Google Meu Negócio", m.google ? h("span", { class: "selo", text: m.google.slice(0, 28) }) : selo("Não informado", "alerta"))),
+        conta ? h("p", { class: "nota", text: "Publicação automática ligada: os posts aprovados saem sozinhos no dia e horário do calendário." })
+          : h("p", { class: "nota nota-alerta", text: "Ainda não conectada: a DENIA cria e aprova os posts, mas não publica sozinha." }),
+        pode("ADMIN") ? h("div", { class: "acoes", style: "margin-top:14px" },
+          conta ? botao("Desconectar", async () => { if (!(await modal({ titulo: `Desconectar ${m.nome}?`, conteudo: "A DENIA para de publicar sozinha nesta marca.", confirmar: "Desconectar", perigo: true }))) return; try { await mk("meta/desconectar", { metodo: "POST", corpo: { marca_id: m.id } }); cacheMeta = null; navegar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno")
+            : botao("Conectar Instagram e Facebook", () => conectarMeta(m), "btn-primario btn-pequeno"),
+          botao("Editar", () => formMarca(m), "btn-secundario btn-pequeno"),
+          botao("Remover", async () => { if (!(await modal({ titulo: `Remover ${m.nome}?`, conteudo: "Os posts já criados continuam guardados.", confirmar: "Remover", perigo: true }))) return; await mk(`marcas/${m.id}/remover`, { metodo: "POST", corpo: {} }); navegar(); }, "btn-perigo btn-pequeno")) : null);
+    }));
   }
   const IDIOMAS_CONTEUDO = [["pt-BR", "Português (Brasil)"], ["en", "English"], ["es", "Español"], ["de", "Deutsch"], ["it", "Italiano"], ["fr", "Français"], ["ja", "日本語"]];
   function formMarca(m) {
@@ -1529,15 +1591,24 @@
     try { posts = (await mk(`posts?canal=${canal}&de=${hoje}&ate=${isoLocal(somarDias(new Date(), 30))}`)).posts || []; } catch (e) { aviso(e.message, "erro"); }
     if (!vivo()) return;
     const campoConta = canal === "instagram" ? "instagram" : "facebook";
+    const meta = await estadoMeta(true);
+    if (!vivo()) return;
+    const algumaConectada = lista.some(m => contaDa(meta, m.id));
+    const estadoCanal = (m) => {
+      const c = contaDa(meta, m.id);
+      if (!c) return pode("ADMIN") ? botao("Conectar", () => conectarMeta(m), "btn-primario btn-pequeno") : selo("Não conectada", "alerta");
+      if (canal === "instagram" && !c.ig_id) return selo("Página sem Instagram profissional", "alerta");
+      return selo("Conectada · publica sozinha", "ok");
+    };
     el.appendChild(h("section", { class: "grade grade-2" },
       h("div", { class: "cartao vidro" }, h("h3", { text: "Contas por marca" }),
-        h("ul", { class: "lista-saude" }, lista.map(m => h("li", {}, h("span", {}, h("strong", { text: m.nome }), h("span", { class: "sub", text: m[campoConta] ? (canal === "instagram" ? "@" + m.instagram : m.facebook) : "Conta não informada" })), selo("Aguardando conexão oficial", "alerta")))),
+        h("ul", { class: "lista-saude" }, lista.map(m => { const c = contaDa(meta, m.id); return h("li", {}, h("span", {}, h("strong", { text: m.nome }), h("span", { class: "sub", text: c ? (canal === "instagram" ? (c.ig_usuario ? "@" + c.ig_usuario : "—") : c.pagina_nome) : m[campoConta] ? (canal === "instagram" ? "@" + m.instagram : m.facebook) : "Conta não informada" })), estadoCanal(m)); })),
         h("a", { class: "btn btn-secundario btn-pequeno", href: "#/marcas", style: "margin-top:14px;width:fit-content" }, "Editar contas nas marcas")),
       h("div", { class: "cartao vidro" }, h("h3", { text: "O que a DENIA faz neste canal" }),
         h("ul", { class: "lista-saude" },
           h("li", {}, "Planejar e criar posts, carrosséis, stories e reels", selo("Disponível", "ok")),
           h("li", {}, "Aprovação humana ou automática das artes", selo("Disponível", "ok")),
-          h("li", {}, "Publicar sozinha no horário marcado", selo("Após a conexão", "info")),
+          h("li", {}, "Publicar sozinha no horário marcado", algumaConectada ? selo("Ativo", "ok") : selo("Após a conexão", "info")),
           h("li", {}, canal === "instagram" ? "Responder mensagens diretas e comentários" : "Responder o Messenger e comentários da página", selo("Após a conexão", "info")),
           h("li", {}, "Chamar o profissional no WhatsApp sobre o atendimento", selo("Após a conexão", "info")),
           h("li", {}, "Relatório de alcance, seguidores e engajamento", selo("Após a conexão", "info"))))));

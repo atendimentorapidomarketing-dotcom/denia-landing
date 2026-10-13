@@ -22,6 +22,12 @@ async function criarPlataforma(extra = {}) {
       if (r instanceof Response) return r;
       return new Response(JSON.stringify(r), { status: 200, headers: { "content-type": "application/json" } });
     }
+    if (p && p.meta && String(url).startsWith("https://graph.facebook.com/")) {
+      const corpo = op.body ? Object.fromEntries(new URLSearchParams(String(op.body))) : null;
+      (p.metaChamadas ||= []).push({ url: String(url), metodo: op.method || "GET", corpo });
+      const r = p.meta(String(url), op.method || "GET", corpo);
+      return new Response(JSON.stringify(r), { status: r && r.error ? 400 : 200, headers: { "content-type": "application/json" } });
+    }
     if (String(url) === "https://api.resend.com/emails") { emails.push(JSON.parse(op.body)); return new Response(JSON.stringify({ id: "e1" }), { status: 200 }); }
     if (String(url).startsWith("https://engine.test/")) {
       chamadasEngine.push({ url: String(url), headers: op.headers, corpo: op.body ? JSON.parse(op.body) : null });
@@ -667,4 +673,91 @@ test("Conversas — a equipe marca um contato como profissional pela plataforma"
   assert.deepEqual([d.pessoa.tipo, d.pessoa.profissional, d.pessoa.oficial], ["TECNICO", "Anderson (chaveiro)", false]);
   const aud = p.env.DB.q("SELECT detalhe FROM plt_auditoria WHERE acao='CONVERSA'").map(x => x.detalhe);
   assert.ok(aud.some(x => /type/.test(x)), "fica na auditoria");
+});
+
+
+test("Instagram e Facebook — conectar a marca pela Meta, publicar no horário (cron) e Publicar agora", async () => {
+  const p = await criarPlataforma({ META_APP_ID: "123456", META_APP_SECRET: "segredo-do-app" });
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  const marca = (await p.req("/api/orgs/1/mk/marcas", { metodo: "POST", quem: "admin", corpo: { nome: "Clínica Sol" } })).dados.id;
+  assert.equal((await p.req("/api/orgs/1/mk/meta/estado", { quem: "admin" })).dados.configurada, true);
+
+  // 1) Conectar: vai para o diálogo da Meta com um state assinado.
+  const ida = await p.req(`/api/orgs/1/mk/meta/conectar?marca=${marca}`, { quem: "admin" });
+  assert.equal(ida.status, 302);
+  const dialogo = new URL(ida.r.headers.get("location"));
+  assert.equal(dialogo.hostname, "www.facebook.com");
+  assert.equal(dialogo.searchParams.get("redirect_uri"), "https://plataforma.test/api/meta/retorno");
+  assert.match(dialogo.searchParams.get("scope"), /instagram_content_publish/);
+  const state = dialogo.searchParams.get("state");
+
+  // 2) A Meta devolve (sem cookie: SameSite=Strict) e a plataforma troca o código pelos acessos.
+  p.meta = (url) => {
+    if (url.includes("oauth/access_token") && url.includes("code=")) return { access_token: "curto" };
+    if (url.includes("oauth/access_token")) return { access_token: "longo" };
+    if (url.includes("me/accounts")) return { data: [{ id: "PAG1", name: "Clínica Sol Niterói", access_token: "token-da-pagina", instagram_business_account: { id: "IG1", username: "clinicasol" } }] };
+    return { error: { message: "inesperado " + url } };
+  };
+  const volta = await p.req(`/api/meta/retorno?code=abc&state=${encodeURIComponent(state)}`);
+  const html = await volta.r.text();
+  const nonce = html.match(/\/app#\/marcas\/meta-([A-Za-z0-9_-]+)/)[1];
+  assert.ok(nonce, "volta para a plataforma escolher a página");
+  assert.equal((await p.req(`/api/meta/retorno?code=abc&state=${encodeURIComponent(state)}`)).r.status, 200);
+  const pags = (await p.req(`/api/orgs/1/mk/meta/paginas?n=${nonce}`, { quem: "admin" })).dados.paginas;
+  assert.deepEqual(pags, [{ id: "PAG1", nome: "Clínica Sol Niterói", ig_id: "IG1", ig_usuario: "clinicasol" }], "o token nunca vai para o navegador");
+  const esc = await p.req("/api/orgs/1/mk/meta/escolher", { metodo: "POST", quem: "admin", corpo: { n: nonce, pagina_id: "PAG1" } });
+  assert.deepEqual([esc.dados.pagina, esc.dados.instagram], ["Clínica Sol Niterói", "clinicasol"]);
+  const salvo = p.env.DB.q("SELECT token_cifrado FROM plt_mk_contas")[0].token_cifrado;
+  assert.ok(!salvo.includes("token-da-pagina"), "token guardado cifrado");
+  assert.equal((await p.req(`/api/orgs/1/mk/meta/paginas?n=${nonce}`, { quem: "admin" })).status, 410, "uso único");
+
+  // 3) Post aprovado com arte, no horário: o cron publica no Instagram e no Facebook.
+  p.env.DB.prepare("INSERT INTO plt_mk_midias(org_id,mime,dados,prompt,criado_ms) VALUES(1,'image/jpeg',?, 'x', 1)").bind(Buffer.from("JPEGDATA").toString("base64")).run();
+  const post = (await p.req("/api/orgs/1/mk/posts", { metodo: "POST", quem: "admin", corpo: { marca_id: marca, canais: ["instagram", "facebook"], data: "2020-01-01", hora: "09:00", titulo: "Sorriso", legenda: "Cuide do seu sorriso", hashtags: "#niteroi", midia_id: 1 } })).dados.id;
+  await p.req(`/api/orgs/1/mk/posts/${post}/acao`, { metodo: "POST", quem: "admin", corpo: { acao: "aprovar" } });
+  let imagem = "";
+  p.meta = (url, metodo, corpo) => {
+    if (url.includes("/IG1/media_publish")) return { id: "IGPOST1" };
+    if (url.includes("/IG1/media")) { imagem = corpo.image_url; assert.equal(corpo.caption, "Cuide do seu sorriso\n\n#niteroi"); return { id: "CONT1" }; }
+    if (url.includes("/IGPOST1")) return { permalink: "https://www.instagram.com/p/abc/" };
+    if (url.includes("/PAG1/photos")) return { id: "FOTO1", post_id: "PAG1_99" };
+    return { error: { message: "inesperado " + url } };
+  };
+  // data do post no passado distante: não sai sozinho (mais de 48 h) — ajusta para agora
+  const agora = new Date(Date.now() - 3 * 3600000).toISOString();
+  p.env.DB.prepare("UPDATE plt_mk_posts SET data=?, hora=? WHERE id=?").bind(agora.slice(0, 10), agora.slice(11, 16), post).run();
+  const mod = await import("../src/worker.js");
+  await mod.default.scheduled({}, p.env, { waitUntil: (pr) => pr });
+  await new Promise(r => setTimeout(r, 50));
+  const depois = p.env.DB.q("SELECT status, publicacao FROM plt_mk_posts WHERE id=?", post)[0];
+  assert.equal(depois.status, "PUBLICADO");
+  const pub = JSON.parse(depois.publicacao);
+  assert.deepEqual([pub.instagram.link, pub.facebook.link], ["https://www.instagram.com/p/abc/", "https://www.facebook.com/PAG1_99"]);
+
+  // 4) A imagem tem um link público e assinado que o Instagram consegue baixar; link adulterado não abre.
+  const caminho = new URL(imagem).pathname;
+  const arq = await p.req(caminho);
+  assert.equal(arq.r.headers.get("content-type"), "image/jpeg");
+  assert.equal(await arq.r.text(), "JPEGDATA");
+  assert.equal((await p.req(caminho.replace(/-[A-Za-z0-9_-]{4}/, "-XXXX"))).status, 404);
+
+  // 5) Publicar agora com erro do Instagram: post continua aprovado e o erro aparece.
+  const outro = (await p.req("/api/orgs/1/mk/posts", { metodo: "POST", quem: "admin", corpo: { marca_id: marca, canais: ["instagram"], data: "2030-01-01", hora: "09:00", titulo: "Outro", legenda: "x", midia_id: 1 } })).dados.id;
+  await p.req(`/api/orgs/1/mk/posts/${outro}/acao`, { metodo: "POST", quem: "admin", corpo: { acao: "aprovar" } });
+  p.meta = () => ({ error: { message: "Invalid OAuth access token", code: 190 } });
+  const falha = await p.req(`/api/orgs/1/mk/posts/${outro}/publicar`, { metodo: "POST", quem: "admin", corpo: {} });
+  assert.equal(falha.status, 502);
+  assert.match(falha.dados.resumo, /expirou ou foi removido/);
+  assert.equal(p.env.DB.q("SELECT status FROM plt_mk_posts WHERE id=?", outro)[0].status, "APROVADO");
+});
+
+test("Instagram e Facebook — sem os secrets da Meta, a plataforma explica o que falta", async () => {
+  const p = await criarPlataforma();
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  const marca = (await p.req("/api/orgs/1/mk/marcas", { metodo: "POST", quem: "admin", corpo: { nome: "Clínica Sol" } })).dados.id;
+  assert.equal((await p.req("/api/orgs/1/mk/meta/estado", { quem: "admin" })).dados.configurada, false);
+  const r = await p.req(`/api/orgs/1/mk/meta/conectar?marca=${marca}`, { quem: "admin" });
+  assert.equal(r.dados.codigo, "META_NAO_CONFIGURADA");
+  assert.equal((await p.req("/api/meta/retorno?code=x&state=forjado")).r.status, 200, "state forjado não conecta nada");
+  assert.equal(p.env.DB.q("SELECT COUNT(*) n FROM plt_meta WHERE chave LIKE 'meta_n_%'")[0].n, 0);
 });
