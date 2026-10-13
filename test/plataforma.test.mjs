@@ -689,7 +689,7 @@ test("Voz ao vivo — chave temporária com ferramentas, pesquisa na internet, e
   assert.deepEqual([r.dados.chave, r.dados.url], ["ek_temporaria", "https://api.openai.com/v1/realtime/calls"], "o navegador recebe só uma chave temporária");
   assert.ok(!JSON.stringify(r.dados).includes("sk-proj"), "a chave de verdade nunca vai para o navegador");
   assert.equal(sessao.audio.input.turn_detection.type, "semantic_vad", "detecta sozinho quando a pessoa terminou de falar");
-  assert.deepEqual(sessao.tools.map(t => t.name), ["criar_semana", "criar_post", "aprovar_posts", "publicar_post", "treinar", "pausar_ia", "pesquisar_web", "dados_do_painel"]);
+  assert.deepEqual(sessao.tools.map(t => t.name), ["criar_semana", "criar_post", "aprovar_posts", "publicar_post", "treinar", "pausar_ia", "google_resumo", "atualizar_google", "responder_avaliacoes", "relatorio_google", "pesquisar_web", "dados_do_painel"]);
   assert.match(sessao.instructions, /Clínica Sol/);
   assert.match(sessao.instructions, /IA do WhatsApp/);
   const busca = await p.req("/api/orgs/1/assistente/pesquisar", { metodo: "POST", quem: "admin", corpo: { pergunta: "tendências" } });
@@ -912,6 +912,46 @@ test("Google Meu Negócio — conectar o perfil, trazer avaliações e desempenh
   assert.equal(envio.corpo.summary, "Agora atendemos em Niterói!");
   assert.deepEqual(envio.corpo.callToAction, { actionType: "LEARN_MORE", url: "https://oficina.test" });
   assert.match(envio.corpo.media[0].sourceUrl, /^https:\/\/plataforma\.test\/m\/1-/);
+});
+
+test("Avaliações — a DENIA lê cada uma no contexto, avisa quando precisa de uma pessoa e nunca publica sozinha as graves", async () => {
+  const p = await criarPlataforma({ OPENAI_API_KEY: "sk-teste", RESEND_API_KEY: "re_teste", EMAIL_REMETENTE: "DENIA <nao-responda@denia.test>" });
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  const marca = (await p.req("/api/orgs/1/mk/marcas", { metodo: "POST", quem: "admin", corpo: { nome: "Oficina" } })).dados.id;
+  const boa = (await p.req("/api/orgs/1/mk/avaliacoes", { metodo: "POST", quem: "admin", corpo: { marca_id: marca, autor: "Ana", nota: 5, texto: "Atendimento rápido e muito educado!" } })).dados.id;
+  const ruim = (await p.req("/api/orgs/1/mk/avaliacoes", { metodo: "POST", quem: "admin", corpo: { marca_id: marca, autor: "Concorrente X", nota: 1, texto: "Nunca usei, mas soube que são ladrões." } })).dados.id;
+  const respostaIA = (entrada) => /ladrões/.test(entrada)
+    ? { sentimento: "GRAVE", temas: ["acusação"], resumo: "Acusa sem ter sido cliente.", urgencia: "ALTA", precisa_humano: true, motivo_humano: "Confirmar se é cliente.", viola_politica: true, politica: "conflito de interesses / avaliação falsa", como_remover: "Denunciar avaliação no Perfil da Empresa.", resposta: "Não localizamos seu atendimento; fale conosco no WhatsApp." }
+    : { sentimento: "OTIMA", temas: ["rapidez", "educação"], resumo: "Elogio à rapidez.", urgencia: "BAIXA", precisa_humano: false, viola_politica: false, resposta: "Ana, que alegria saber que o atendimento foi rápido e educado! Volte sempre." };
+  p.openai = (url, corpo) => ({ output: [{ content: [{ type: "output_text", text: JSON.stringify(respostaIA(corpo?.input?.[0]?.content?.[0]?.text || "")) }] }] });
+
+  // Cron: lê as novas, guarda a análise e a resposta sugerida, e avisa os responsáveis por e-mail.
+  const mod = await import("../src/worker.js");
+  await mod.default.scheduled({}, p.env, { waitUntil: (pr) => pr });
+  await new Promise(r => setTimeout(r, 50));
+  const avs = (await p.req(`/api/orgs/1/mk/avaliacoes?marca=${marca}`, { quem: "admin" })).dados.avaliacoes;
+  const a1 = avs.find(a => a.id === boa), a2 = avs.find(a => a.id === ruim);
+  assert.equal(JSON.parse(a1.analise).sentimento, "OTIMA");
+  assert.match(a1.resposta_sugerida, /rápido e educado/, "resposta específica à avaliação");
+  assert.equal(JSON.parse(a2.analise).viola_politica, true);
+  assert.equal((await p.req("/api/orgs/1/mk/alertas", { quem: "admin" })).dados.avaliacoes, 1);
+  assert.ok(p.emails.some(e => /precisa de você/.test(e.subject) && /Concorrente X/.test(e.text) && /regras do Google/.test(e.text)));
+
+  // Pela DENIA do painel: "responda e publique" publica a boa e segura a grave.
+  const r = await p.req("/api/orgs/1/assistente/executar", { metodo: "POST", quem: "admin", corpo: { acao: { tipo: "responder_avaliacoes", marca: "Oficina", publicar: true } } });
+  assert.match(r.dados.resumo, /1 resposta\(s\) publicada/);
+  assert.match(r.dados.resumo, /Concorrente X \(1★\): Confirmar se é cliente/);
+  const depois = (await p.req(`/api/orgs/1/mk/avaliacoes?marca=${marca}`, { quem: "admin" })).dados.avaliacoes;
+  assert.equal(depois.find(a => a.id === boa).status, "RESPONDIDA");
+  assert.equal(depois.find(a => a.id === ruim).status, "PENDENTE");
+  const resumo = await p.req("/api/orgs/1/assistente/executar", { metodo: "POST", quem: "admin", corpo: { acao: { tipo: "google_resumo", marca: "Oficina" } } });
+  assert.match(resumo.dados.resumo, /nota média 3 em 2 avaliações[\s\S]*Precisam de uma pessoa: Concorrente X/);
+
+  // Relatório de especialista sob demanda.
+  p.openai = () => ({ output: [{ content: [{ type: "output_text", text: "RESUMO DA SEMANA\nTudo certo." }] }] });
+  const rel = await p.req("/api/orgs/1/mk/relatorios/gerar", { metodo: "POST", quem: "admin", corpo: { marca_id: marca } });
+  assert.match(rel.dados.texto, /RESUMO DA SEMANA/);
+  assert.equal((await p.req(`/api/orgs/1/mk/relatorios?marca=${marca}`, { quem: "admin" })).dados.relatorios.length, 1);
 });
 
 test("Google Meu Negócio — sem os secrets, a plataforma diz o que falta", async () => {

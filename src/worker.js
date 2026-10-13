@@ -20,7 +20,7 @@
 //   CONTATO_WHATSAPP, CONTATO_EMAIL  (opcionais) botões de contato do site
 // ============================================================================
 
-import { apiMarketing, apiAssistente } from "./marketing.js";
+import { apiMarketing, apiAssistente, analisarAvaliacoesPendentes, relatoriosDaSemana } from "./marketing.js";
 import { retornoMeta, servirMidiaPublica, publicarPendentes } from "./meta.js";
 import { retornoGoogle, sincronizarGooglePendentes } from "./google.js";
 
@@ -616,6 +616,35 @@ async function comIA(env, orgId) {
   return chave ? Object.assign(Object.create(env), { OPENAI_API_KEY: chave }) : env;
 }
 
+// Cron: a DENIA lê as avaliações novas (boa, ruim, grave, possível violação), avisa por e-mail os
+// responsáveis quando uma pessoa precisa agir e, toda segunda-feira, gera o relatório semanal de cada marca.
+async function responsaveisDa(env, orgId) {
+  const r = (await env.DB.prepare("SELECT u.email FROM plt_membros m JOIN plt_usuarios u ON u.id=m.usuario_id WHERE m.org_id=? AND m.papel IN ('OWNER','ADMIN') LIMIT 5").bind(orgId).all().catch(() => null))?.results || [];
+  const emails = r.map(x => x.email).filter(Boolean);
+  if (!emails.length && emailValido(String(env.PLATFORM_ADMIN_EMAIL || ""))) emails.push(String(env.PLATFORM_ADMIN_EMAIL).trim());
+  return emails;
+}
+async function cuidarDasAvaliacoes(env, k) {
+  const orgs = (await env.DB.prepare("SELECT DISTINCT org_id FROM plt_mk_avaliacoes WHERE analise IS NULL AND status='PENDENTE' LIMIT 5").all().catch(() => null))?.results || [];
+  const base = String((await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave='base_url'").first().catch(() => null))?.valor || "").replace(/\/+$/, "");
+  for (const { org_id } of orgs) {
+    const envIA = await comIA(env, org_id);
+    const { alertas } = await analisarAvaliacoesPendentes(envIA, org_id, 10);
+    if (!alertas.length || !emailConfigurado(env)) continue;
+    const texto = `A DENIA encontrou ${alertas.length} avaliação(ões) do Google que precisam de você:\n\n` + alertas.map(x =>
+      `• ${x.marca} — ${x.autor || "Cliente"} (${x.nota}★): "${String(x.texto || "").slice(0, 300)}"\n  ${x.analise.motivo_humano || ""}${x.analise.viola_politica ? `\n  Pode violar as regras do Google (${x.analise.politica}). ${x.analise.como_remover}` : ""}`).join("\n\n") +
+      `\n\nA resposta sugerida já está pronta em Google Meu Negócio → Avaliações${base ? ": " + base + "/app#/google/avaliacoes" : ""}. Nada foi publicado sem você.`;
+    for (const para of await responsaveisDa(env, org_id)) await enviarEmail(env, para, "DENIA — avaliação do Google precisa de você", texto);
+  }
+  // Relatório semanal (segunda-feira), para as empresas com perfil do Google conectado.
+  const comGoogle = (await env.DB.prepare("SELECT DISTINCT org_id FROM plt_mk_google LIMIT 20").all().catch(() => null))?.results || [];
+  for (const { org_id } of comGoogle) {
+    const feitos = await relatoriosDaSemana(await comIA(env, org_id), k, org_id);
+    if (!feitos.length || !emailConfigurado(env)) continue;
+    for (const f of feitos) for (const para of await responsaveisDa(env, org_id)) await enviarEmail(env, para, `DENIA — relatório da semana: ${f.marca}`, f.texto + (base ? `\n\nVeja no painel: ${base}/app#/google/relatorio` : ""));
+  }
+}
+
 // O que a DENIA sabe da empresa quando conversa com a equipe no painel.
 async function contextoAssistente(env, orgId) {
   const o = await env.DB.prepare("SELECT nome FROM plt_organizacoes WHERE id=?").bind(orgId).first();
@@ -995,6 +1024,7 @@ export default {
       const k = kitBase(env);
       await publicarPendentes(env, k).catch(e => console.error("publicação agendada", e?.message));
       await sincronizarGooglePendentes(env, k).catch(e => console.error("google", e?.message));
+      await cuidarDasAvaliacoes(env, k).catch(e => console.error("avaliações", e?.message));
     })().catch(e => console.error("cron", e?.message));
     if (ctx && ctx.waitUntil) ctx.waitUntil(tarefa); else await tarefa;
   }

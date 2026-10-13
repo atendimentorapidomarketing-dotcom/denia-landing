@@ -1745,7 +1745,7 @@
     if (!vivo()) return;
     el.appendChild(cabeca("Google Meu Negócio", "Reputação, posição nas buscas e desempenho de cada perfil, acompanhados semana a semana."));
     if (!lista.length) { semMarcas(el); return; }
-    const abas = [["publicacoes", "Posts e imagens"], ["avaliacoes", "Avaliações"], ["palavras", "Palavras-chave"], ["desempenho", "Desempenho"], ["conexao", "Conexão"]];
+    const abas = [["publicacoes", "Posts e imagens"], ["avaliacoes", "Avaliações"], ["relatorio", "Relatório"], ["palavras", "Palavras-chave"], ["desempenho", "Desempenho"], ["conexao", "Conexão"]];
     const atual = abas.some(a => a[0] === aba) ? aba : "publicacoes";
     const sel = seletorMarca(lista, estado.marcaGoogle || lista[0].id);
     sel.addEventListener("change", () => { estado.marcaGoogle = sel.value; navegar(); });
@@ -1755,6 +1755,7 @@
     const marcaId = sel.value;
     try {
       if (atual === "avaliacoes") await abaAvaliacoes(area, marcaId);
+      else if (atual === "relatorio") await abaRelatorio(area, marcaId);
       else if (atual === "palavras") await abaPalavras(area, marcaId, lista.find(m => String(m.id) === String(marcaId)));
       else if (atual === "desempenho") await abaDesempenho(area, marcaId);
       else if (atual === "publicacoes") {
@@ -1784,23 +1785,43 @@
     const nota = h("select", { class: "entrada" }, [5, 4, 3, 2, 1].map(n => h("option", { value: n, text: "★".repeat(n) + " (" + n + ")" })));
     const texto = h("textarea", { class: "entrada", placeholder: "Cole aqui o texto da avaliação", style: "min-height:80px" });
     const media = lista.length ? (lista.reduce((t, a) => t + Number(a.nota || 0), 0) / lista.length).toFixed(1).replace(".", ",") : "—";
+    const lida = a => { try { return JSON.parse(a.analise || "null"); } catch { return null; } };
+    const precisaDeVoce = a => { const x = lida(a); return a.status === "PENDENTE" && x && (x.precisa_humano || x.viola_politica); };
+    const ordem = [...lista].sort((x, y) => (precisaDeVoce(y) - precisaDeVoce(x)) || (x.status === "PENDENTE" ? -1 : 0) - (y.status === "PENDENTE" ? -1 : 0));
+    const NOME_SENT = { OTIMA: ["Ótima", "ok"], POSITIVA: ["Positiva", "ok"], NEUTRA: ["Neutra", "info"], NEGATIVA: ["Negativa", "alerta"], GRAVE: ["Grave", "erro"] };
+    const blocoAnalise = (x) => x ? h("div", { class: "analise-avaliacao" },
+      h("div", { class: "acoes" }, selo(...(NOME_SENT[x.sentimento] || ["—", ""])), (x.temas || []).map(t => h("span", { class: "selo", text: t })), x.urgencia === "ALTA" ? selo("Urgente", "erro") : null),
+      x.resumo ? h("p", { class: "nota", text: x.resumo }) : null,
+      x.precisa_humano ? h("p", { class: "nota nota-alerta", text: "Precisa de você: " + (x.motivo_humano || "uma pessoa da equipe deve ler e decidir antes de responder.") }) : null,
+      x.viola_politica ? h("div", { class: "nota nota-alerta" }, h("strong", { text: "Pode violar as regras do Google" + (x.politica ? ` (${x.politica})` : "") + "." }), h("p", { style: "margin:6px 0 0", text: x.como_remover || "" })) : null) : null;
     area.replaceChildren(
-      h("section", { class: "grade grade-3" }, metrica("Nota média", media, `${lista.length} avaliação(ões) registradas`), metrica("Sem resposta", numero(lista.filter(a => a.status === "PENDENTE").length), "responda em até 24 h"), metrica("Negativas", numero(lista.filter(a => Number(a.nota) <= 3).length), "3 estrelas ou menos")),
+      h("section", { class: "grade grade-4" }, metrica("Nota média", media, `${lista.length} avaliação(ões) registradas`), metrica("Sem resposta", numero(lista.filter(a => a.status === "PENDENTE").length), "responda em até 24 h"), metrica("Precisam de você", numero(lista.filter(precisaDeVoce).length), "graves ou que podem violar as regras do Google"), metrica("Negativas", numero(lista.filter(a => Number(a.nota) <= 3).length), "3 estrelas ou menos")),
       conectada ? h("section", { class: "cartao vidro" }, h("p", { style: "margin:0", text: "Perfil conectado: as avaliações do Google chegam sozinhas, de hora em hora. A resposta salva aqui é publicada direto no Google." }),
         pode("AGENTE") ? h("div", { class: "acoes", style: "margin-top:10px" }, botao("Buscar avaliações agora", async (_e, b) => { b.textContent = "Buscando…"; try { const r = await mk("google/sincronizar", { metodo: "POST", corpo: { marca_id: marcaId } }); aviso(`${r.avaliacoes_novas} avaliação(ões) nova(s).`, "ok"); navegar(); } catch (e) { aviso(e.message, "erro"); } finally { b.textContent = "Buscar avaliações agora"; } }, "btn-secundario btn-pequeno")) : null) : null,
       pode("AGENTE") && !conectada ? h("section", { class: "cartao vidro formulario" }, h("h3", { style: "margin:0", text: "Registrar avaliação" }),
         h("div", { class: "linha-form" }, campo("Autor", autor), campo("Nota", nota)), campo("Texto", texto),
         h("div", { class: "acoes" }, botao("Registrar", async () => { try { await mk("avaliacoes", { metodo: "POST", corpo: { marca_id: marcaId, autor: autor.value, nota: nota.value, texto: texto.value } }); navegar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario"))) : null,
-      ...lista.map(a => {
+      ...ordem.map(a => {
         const resp = h("textarea", { class: "entrada", value: a.resposta || a.resposta_sugerida || "", placeholder: "Resposta da empresa", style: "min-height:80px" });
-        return h("article", { class: "sugestao vidro" },
+        const analise = h("div", {}, blocoAnalise(lida(a)));
+        return h("article", { class: "sugestao vidro" + (precisaDeVoce(a) ? " sugestao-alerta" : "") },
           h("div", { class: "sugestao-topo" }, h("strong", { text: a.autor || "Cliente" }), h("span", { class: "estrelas", text: "★".repeat(a.nota) + "☆".repeat(5 - a.nota) }), a.status === "RESPONDIDA" ? selo("Respondida", "ok") : selo("Sem resposta", Number(a.nota) <= 3 ? "erro" : "alerta")),
-          h("p", { style: "margin:0;color:var(--texto-2)", text: a.texto || "(sem texto)" }), resp,
+          h("p", { style: "margin:0;color:var(--texto-2)", text: a.texto || "(sem texto)" }), analise, resp,
           pode("AGENTE") ? h("div", { class: "acoes" },
-            botao("✦ Sugerir resposta com IA", async (_e, b) => { b.textContent = "Escrevendo…"; try { resp.value = (await mk(`avaliacoes/${a.id}/sugerir`, { metodo: "POST", corpo: {} })).resposta; } catch (e) { aviso(e.message, "erro"); } finally { b.textContent = "✦ Sugerir resposta com IA"; } }, "btn-secundario btn-pequeno"),
+            botao("✦ Analisar e sugerir resposta", async (_e, b) => { b.textContent = "Lendo a avaliação…"; try { const r = await mk(`avaliacoes/${a.id}/sugerir`, { metodo: "POST", corpo: {} }); resp.value = r.resposta; analise.replaceChildren(blocoAnalise(r.analise) || ""); } catch (e) { aviso(e.message, "erro"); } finally { b.textContent = "✦ Analisar e sugerir resposta"; } }, "btn-secundario btn-pequeno"),
             botao(a.google_id ? "Publicar resposta no Google" : "Salvar resposta", async () => { try { const r = await mk(`avaliacoes/${a.id}/responder`, { metodo: "POST", corpo: { resposta: resp.value } }); aviso(r.publicada_google ? "Resposta publicada no Google." : "Resposta salva. Publique no Google (ou automaticamente, após a conexão).", "ok"); navegar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario btn-pequeno"),
             botao("Copiar", () => copiar(resp.value), "btn-secundario btn-pequeno")) : null);
       }));
+  }
+  async function abaRelatorio(area, marcaId) {
+    const lista = (await mk(`relatorios?marca=${marcaId}`)).relatorios || [];
+    const atual = lista[0];
+    area.replaceChildren(h("section", { class: "cartao vidro" },
+      h("div", { class: "sugestao-topo" }, h("h3", { style: "margin:0", text: atual ? `Relatório da semana de ${dataCurta(atual.semana)}` : "Relatório semanal" }),
+        pode("AGENTE") ? botao("✦ Gerar relatório agora", async (_e, b) => { b.textContent = "Analisando os dados…"; try { await mk("relatorios/gerar", { metodo: "POST", corpo: { marca_id: marcaId } }); navegar(); } catch (e) { aviso(e.message, "erro"); } finally { b.textContent = "✦ Gerar relatório agora"; } }, "btn-primario btn-pequeno") : null),
+      atual ? h("div", { class: "relatorio-texto", text: atual.texto }) : vazio("Nenhum relatório ainda", "Toda segunda-feira a DENIA analisa o Google e as redes de cada marca conectada e escreve o relatório com o plano da semana. Você também pode gerar agora.", ICONES.caixa)),
+      lista.length > 1 ? h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Semanas anteriores" }),
+        lista.slice(1).map(r => h("details", {}, h("summary", { text: `Semana de ${dataCurta(r.semana)}` }), h("div", { class: "relatorio-texto", text: r.texto })))) : null);
   }
   async function abaPalavras(area, marcaId, marca) {
     const lista = (await mk(`palavras?marca=${marcaId}`)).palavras || [];
@@ -1859,6 +1880,11 @@
       c.textContent = r.aguardando > 99 ? "99+" : String(r.aguardando);
       c.classList.toggle("oculto", !r.aguardando);
     } catch { c.classList.add("oculto"); }
+    // Avaliações do Google que precisam de uma pessoa: contador vermelho no menu.
+    const g = $("contador-google");
+    if (!g) return;
+    try { const a = await mk("alertas"); g.textContent = a.avaliacoes > 99 ? "99+" : String(a.avaliacoes); g.classList.toggle("oculto", !a.avaliacoes); }
+    catch { g.classList.add("oculto"); }
   }
 
   // ---------------------------------------------------------------------------
