@@ -1779,8 +1779,15 @@
     } catch (e) { falha(area, e); }
   }
   async function abaAvaliacoes(area, marcaId) {
-    const [lista, g] = await Promise.all([mk(`avaliacoes?marca=${marcaId}`).then(r => r.avaliacoes || []), estadoGoogle()]);
+    const [lista, g, cfg] = await Promise.all([mk(`avaliacoes?marca=${marcaId}`).then(r => r.avaliacoes || []), estadoGoogle(), mk("config").catch(() => ({}))]);
     const conectada = Boolean(contaGoogleDa(g, marcaId));
+    // Como responder: uma pessoa aprova, ou a DENIA responde sozinha (as boas, ou todas menos as graves).
+    const modoAuto = h("select", { class: "entrada", disabled: !pode("ADMIN") },
+      [["DESLIGADO", "Uma pessoa aprova cada resposta"], ["BOAS", "Responder sozinha as de 4 e 5 estrelas"], ["TODAS", "Responder sozinha todas, menos as graves"]].map(([v, n]) => h("option", { value: v, text: n, selected: (cfg.avaliacoes_auto || "DESLIGADO") === v })));
+    modoAuto.addEventListener("change", async () => {
+      try { await mk("config/avaliacoes", { metodo: "POST", corpo: { modo: modoAuto.value } }); aviso(modoAuto.value === "DESLIGADO" ? "Pronto: cada resposta espera uma pessoa aprovar." : "Pronto: a DENIA responde sozinha no Google em até 15 minutos. As graves e as suspeitas continuam esperando você.", "ok"); }
+      catch (e) { aviso(e.message, "erro"); }
+    });
     const autor = h("input", { class: "entrada", placeholder: "Nome de quem avaliou" });
     const nota = h("select", { class: "entrada" }, [5, 4, 3, 2, 1].map(n => h("option", { value: n, text: "★".repeat(n) + " (" + n + ")" })));
     const texto = h("textarea", { class: "entrada", placeholder: "Cole aqui o texto da avaliação", style: "min-height:80px" });
@@ -1796,7 +1803,8 @@
       x.viola_politica ? h("div", { class: "nota nota-alerta" }, h("strong", { text: "Pode violar as regras do Google" + (x.politica ? ` (${x.politica})` : "") + "." }), h("p", { style: "margin:6px 0 0", text: x.como_remover || "" })) : null) : null;
     area.replaceChildren(
       h("section", { class: "grade grade-4" }, metrica("Nota média", media, `${lista.length} avaliação(ões) registradas`), metrica("Sem resposta", numero(lista.filter(a => a.status === "PENDENTE").length), "responda em até 24 h"), metrica("Precisam de você", numero(lista.filter(precisaDeVoce).length), "graves ou que podem violar as regras do Google"), metrica("Negativas", numero(lista.filter(a => Number(a.nota) <= 3).length), "3 estrelas ou menos")),
-      conectada ? h("section", { class: "cartao vidro" }, h("p", { style: "margin:0", text: "Perfil conectado: as avaliações do Google chegam sozinhas, de hora em hora. A resposta salva aqui é publicada direto no Google." }),
+      conectada ? h("section", { class: "cartao vidro" }, h("p", { style: "margin:0", text: "Perfil conectado: as avaliações do Google chegam sozinhas, a cada 10 minutos. A resposta salva aqui é publicada direto no Google." }),
+        h("div", { style: "margin-top:12px;max-width:440px" }, campo("Como responder as avaliações", modoAuto, "No modo automático, a DENIA lê cada avaliação, escreve a resposta no jeito da empresa e publica. Graves, suspeitas de violar as regras do Google e as que pedem contato nunca saem sozinhas: ficam aqui e você recebe o aviso.")),
         pode("AGENTE") ? h("div", { class: "acoes", style: "margin-top:10px" }, botao("Buscar avaliações agora", async (_e, b) => { b.textContent = "Buscando…"; try { const r = await mk("google/sincronizar", { metodo: "POST", corpo: { marca_id: marcaId } }); aviso(`${r.avaliacoes_novas} avaliação(ões) nova(s).`, "ok"); navegar(); } catch (e) { aviso(e.message, "erro"); } finally { b.textContent = "Buscar avaliações agora"; } }, "btn-secundario btn-pequeno")) : null) : null,
       pode("AGENTE") && !conectada ? h("section", { class: "cartao vidro formulario" }, h("h3", { style: "margin:0", text: "Registrar avaliação" }),
         h("div", { class: "linha-form" }, campo("Autor", autor), campo("Nota", nota)), campo("Texto", texto),

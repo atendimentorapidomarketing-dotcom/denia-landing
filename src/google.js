@@ -10,7 +10,8 @@
 
 const ESCOPO = "https://www.googleapis.com/auth/business.manage";
 const VALIDADE_STATE_MS = 15 * 60000;
-const SINCRONIZAR_A_CADA_MS = 60 * 60000; // avaliações e desempenho: no máximo uma vez por hora
+const SINCRONIZAR_A_CADA_MS = 10 * 60000; // avaliações: a cada 10 minutos
+const DESEMPENHO_A_CADA_MS = 6 * 3600000; // desempenho: a cada 6 horas (o Google consolida com dias de atraso)
 const API_CONTAS = "https://mybusinessaccountmanagement.googleapis.com/v1";
 const API_INFO = "https://mybusinessbusinessinformation.googleapis.com/v1";
 const API_V4 = "https://mybusiness.googleapis.com/v4";
@@ -21,11 +22,13 @@ const IDIOMA_GOOGLE = { "pt-BR": "pt-BR", en: "en", es: "es", de: "de", it: "it"
 const DDL = [
   `CREATE TABLE IF NOT EXISTS plt_mk_google (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, marca_id INTEGER NOT NULL, conta_nome TEXT NOT NULL, local_nome TEXT NOT NULL, local_titulo TEXT, token_cifrado TEXT NOT NULL, criado_por TEXT, criado_ms INTEGER NOT NULL, atualizado_ms INTEGER NOT NULL, sincronizado_ms INTEGER, UNIQUE(org_id, marca_id))`
 ];
+const ALTERS = ["ALTER TABLE plt_mk_google ADD COLUMN desempenho_ms INTEGER"];
 const prontos = new WeakSet();
 async function garantir(env) {
   if (prontos.has(env.DB)) return;
   await env.DB.batch(DDL.map(s => env.DB.prepare(s)));
   await env.DB.prepare("ALTER TABLE plt_mk_avaliacoes ADD COLUMN google_id TEXT").run().catch(() => { }); // coluna já existe
+  for (const a of ALTERS) await env.DB.prepare(a).run().catch(() => { });
   prontos.add(env.DB);
 }
 
@@ -308,23 +311,26 @@ export async function desempenhoAoVivo(env, k, conta) {
   return { perfil: conta.local_titulo, de: ini.toISOString().slice(0, 10), ate: fim.toISOString().slice(0, 10), totais, palavras };
 }
 
-export async function sincronizarConta(env, k, conta) {
+export async function sincronizarConta(env, k, conta, { forcarDesempenho = true } = {}) {
   const token = await tokenDa(env, k, conta);
   const av = await sincronizarAvaliacoes(env, k, conta, token);
-  let desempenho = true;
-  try { await gravarSemanas(env, k, conta, token); } catch (e) { desempenho = false; console.error("google desempenho", e?.message); }
+  let desempenho = null;
+  if (forcarDesempenho || !conta.desempenho_ms || conta.desempenho_ms < k.agora(env) - DESEMPENHO_A_CADA_MS) {
+    try { await gravarSemanas(env, k, conta, token); desempenho = true; await env.DB.prepare("UPDATE plt_mk_google SET desempenho_ms=? WHERE id=?").bind(k.agora(env), conta.id).run(); }
+    catch (e) { desempenho = false; console.error("google desempenho", e?.message); }
+  }
   await env.DB.prepare("UPDATE plt_mk_google SET sincronizado_ms=? WHERE id=?").bind(k.agora(env), conta.id).run();
   return { avaliacoes_novas: av.novas, avaliacoes_total: av.total, desempenho };
 }
 
-// Cron: de hora em hora, traz avaliações novas e atualiza o desempenho de cada perfil conectado.
+// Cron: a cada 10 minutos traz as avaliações novas; o desempenho, a cada 6 horas.
 export async function sincronizarGooglePendentes(env, k) {
   if (!googleConfigurada(env)) return { sincronizadas: 0 };
   await garantir(env);
   const contas = (await env.DB.prepare("SELECT * FROM plt_mk_google WHERE sincronizado_ms IS NULL OR sincronizado_ms < ? ORDER BY sincronizado_ms LIMIT 5").bind(k.agora(env) - SINCRONIZAR_A_CADA_MS).all())?.results || [];
   let n = 0;
   for (const c of contas) {
-    try { await sincronizarConta(env, k, c); n++; }
+    try { await sincronizarConta(env, k, c, { forcarDesempenho: false }); n++; }
     catch (e) {
       console.error("google sync", c.id, e?.message);
       await env.DB.prepare("UPDATE plt_mk_google SET sincronizado_ms=? WHERE id=?").bind(k.agora(env), c.id).run(); // tenta de novo na próxima hora

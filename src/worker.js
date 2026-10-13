@@ -629,7 +629,7 @@ async function cuidarDasAvaliacoes(env, k) {
   const base = String((await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave='base_url'").first().catch(() => null))?.valor || "").replace(/\/+$/, "");
   for (const { org_id } of orgs) {
     const envIA = await comIA(env, org_id);
-    const { alertas } = await analisarAvaliacoesPendentes(envIA, org_id, 10);
+    const { alertas } = await analisarAvaliacoesPendentes(envIA, org_id, 10, k);
     if (!alertas.length || !emailConfigurado(env)) continue;
     const texto = `A DENIA encontrou ${alertas.length} avaliação(ões) do Google que precisam de você:\n\n` + alertas.map(x =>
       `• ${x.marca} — ${x.autor || "Cliente"} (${x.nota}★): "${String(x.texto || "").slice(0, 300)}"\n  ${x.analise.motivo_humano || ""}${x.analise.viola_politica ? `\n  Pode violar as regras do Google (${x.analise.politica}). ${x.analise.como_remover}` : ""}`).join("\n\n") +

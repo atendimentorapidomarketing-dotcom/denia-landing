@@ -961,6 +961,41 @@ test("Avaliações — a DENIA lê cada uma no contexto, avisa quando precisa de
   assert.equal((await p.req(`/api/orgs/1/mk/relatorios?marca=${marca}`, { quem: "admin" })).dados.relatorios.length, 1);
 });
 
+test("Avaliações no automático — a DENIA responde sozinha no Google as normais e segura as graves", async () => {
+  const p = await criarPlataforma({ OPENAI_API_KEY: "sk-teste", GOOGLE_CLIENT_ID: "c", GOOGLE_CLIENT_SECRET: "s" });
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  const marca = (await p.req("/api/orgs/1/mk/marcas", { metodo: "POST", quem: "admin", corpo: { nome: "Oficina" } })).dados.id;
+  // Perfil já conectado (como depois de "Conectar Google").
+  await p.req("/api/orgs/1/mk/google/estado", { quem: "admin" });
+  const mod = await import("../src/worker.js");
+  p.env.DB.prepare("INSERT INTO plt_mk_google(org_id,marca_id,conta_nome,local_nome,local_titulo,token_cifrado,criado_ms,atualizado_ms) VALUES(1,?,?,?,?,?,1,1)").bind(marca, "accounts/1", "locations/2", "Oficina", "x").run();
+  assert.equal((await p.req("/api/orgs/1/mk/config/avaliacoes", { metodo: "POST", quem: "admin", corpo: { modo: "TODAS" } })).dados.avaliacoes_auto, "TODAS");
+  assert.equal((await p.req("/api/orgs/1/mk/config", { quem: "admin" })).dados.avaliacoes_auto, "TODAS");
+  const publicadas = [];
+  p.google = (url, metodo, corpo) => {
+    if (url.startsWith("https://oauth2.googleapis.com/token")) return { access_token: "t", expires_in: 3599 };
+    if (url.includes("/reviews/") && metodo === "PUT") { publicadas.push({ url, comment: corpo.comment }); return {}; }
+    if (url.includes("/reviews?")) return { reviews: [
+      { reviewId: "boa", reviewer: { displayName: "Ana" }, starRating: "THREE", comment: "Foi ok, mas demorou um pouco." },
+      { reviewId: "grave", reviewer: { displayName: "Rui" }, starRating: "ONE", comment: "Vou processar vocês!" }] };
+    return { multiDailyMetricTimeSeries: [] };
+  };
+  p.openai = (url, corpo) => {
+    const t = corpo?.input?.[0]?.content?.[0]?.text || "";
+    const r = /processar/.test(t) ? { sentimento: "GRAVE", urgencia: "ALTA", precisa_humano: true, motivo_humano: "Ameaça de processo.", resposta: "Lamentamos. Fale conosco." }
+      : { sentimento: "NEUTRA", urgencia: "MEDIA", precisa_humano: false, viola_politica: false, resposta: "Ana, obrigada! Sentimos pela demora e já ajustamos a agenda." };
+    return { output: [{ content: [{ type: "output_text", text: JSON.stringify(r) }] }] };
+  };
+  await mod.default.scheduled({}, p.env, { waitUntil: (pr) => pr });
+  await new Promise(r => setTimeout(r, 50));
+  const avs = (await p.req(`/api/orgs/1/mk/avaliacoes?marca=${marca}`, { quem: "admin" })).dados.avaliacoes;
+  assert.equal(avs.length, 2, JSON.stringify(p.googleChamadas?.map(c => c.url)));
+  assert.equal(publicadas.length, 1, "só a normal sai sozinha");
+  assert.match(publicadas[0].url, /reviews\/boa\/reply$/);
+  assert.equal(avs.find(a => a.autor === "Ana").status, "RESPONDIDA");
+  assert.equal(avs.find(a => a.autor === "Rui").status, "PENDENTE");
+});
+
 test("Google Meu Negócio — sem os secrets, a plataforma diz o que falta", async () => {
   const p = await criarPlataforma();
   await p.entrar("admin", ADMIN, SENHA_ADMIN);
