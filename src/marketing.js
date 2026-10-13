@@ -32,7 +32,7 @@ const prontos = new WeakSet();
 async function garantir(env) {
   if (prontos.has(env.DB)) return;
   await env.DB.batch(DDL.map(s => env.DB.prepare(s)));
-  for (const alter of ["ALTER TABLE plt_mk_marcas ADD COLUMN idioma TEXT", "ALTER TABLE plt_mk_marcas ADD COLUMN horarios TEXT", "ALTER TABLE plt_mk_marcas ADD COLUMN logo_midia_id INTEGER", "ALTER TABLE plt_mk_posts ADD COLUMN texto_arte TEXT"])
+  for (const alter of ["ALTER TABLE plt_mk_marcas ADD COLUMN idioma TEXT", "ALTER TABLE plt_mk_marcas ADD COLUMN horarios TEXT", "ALTER TABLE plt_mk_marcas ADD COLUMN logo_midia_id INTEGER", "ALTER TABLE plt_mk_posts ADD COLUMN texto_arte TEXT", "ALTER TABLE plt_mk_marcas ADD COLUMN ofertas TEXT"])
     await env.DB.prepare(alter).run().catch(() => { }); // coluna já existe
   prontos.add(env.DB);
 }
@@ -107,13 +107,21 @@ function linhaPost(p) {
   return { ...p, canais, revisao };
 }
 // Idiomas da plataforma (interface, conteúdo das marcas e conversa com a DENIA).
-export const IDIOMAS = { "pt-BR": "português do Brasil", en: "inglês (English)", es: "espanhol (español)", de: "alemão (Deutsch)", it: "italiano", fr: "francês (français)", ja: "japonês (日本語)" };
+export const IDIOMAS = { "pt-BR": "português do Brasil", en: "inglês (English)", es: "espanhol (español)", de: "alemão (Deutsch)", it: "italiano", fr: "francês (français)", ja: "japonês (日本語)", hi: "hindi (हिन्दी)" };
 export const idiomaDe = v => (IDIOMAS[String(v || "")] ? String(v) : "pt-BR");
 function resumoMarca(m) {
   return [`Marca: ${m.nome}`, `IDIOMA DO CONTEÚDO: ${IDIOMAS[idiomaDe(m.idioma)]} (escreva tudo neste idioma)`, m.segmento && `Segmento: ${m.segmento}`, m.cidade && `Cidade/região: ${m.cidade}`, m.publico && `Público: ${m.publico}`, m.tom && `Tom de voz: ${m.tom}`,
-    m.diferenciais && `Diferenciais: ${m.diferenciais}`, m.cores && `Cores da marca: ${m.cores}`, m.horarios && `Dias e horários preferidos para publicar: ${m.horarios}`, m.whatsapp && `WhatsApp para contato: ${m.whatsapp}`, m.site && `Site: ${m.site}`].filter(Boolean).join("\n");
+    m.diferenciais && `Diferenciais: ${m.diferenciais}`, m.ofertas && `Produtos, serviços e ofertas para divulgar: ${m.ofertas}`, m.cores && `Cores da marca: ${m.cores}`, m.horarios && `Dias e horários preferidos para publicar: ${m.horarios}`, m.whatsapp && `WhatsApp para contato: ${m.whatsapp}`, m.site && `Site: ${m.site}`].filter(Boolean).join("\n");
 }
 const REGRAS_CONTEUDO = `Regras: escrita impecável (ortografia, acentos e pontuação revisados palavra por palavra), sem erros, no IDIOMA DO CONTEÚDO da marca (inclusive hashtags e chamadas); nada de promessas que a empresa não pode cumprir; não invente preços, descontos, prêmios, números ou depoimentos; nada de conteúdo enganoso; respeite as políticas do Instagram, Facebook e Google; chamadas para ação claras (ex.: "Chame no WhatsApp"); hashtags relevantes e locais, no máximo 12.`;
+// Legenda que vende: estrutura de copywriting de agência, específica da marca (nada genérico).
+const COPY_QUE_VENDE = `Legenda que VENDE (siga sempre):
+1) Primeira linha = gancho forte que faz a pessoa parar de rolar: uma dor, um desejo ou uma curiosidade do cliente (nunca comece com o nome da marca nem com "Você sabia").
+2) Benefício concreto para o cliente — o que ele ganha ou evita — citando o produto/serviço específico da marca (use os "Produtos, serviços e ofertas" e os "Diferenciais"; nada que serviria para qualquer empresa).
+3) Um motivo real para confiar (diferencial verdadeiro da marca, garantia, experiência, atendimento) — sem inventar números ou depoimentos.
+4) Oferta ou próximo passo claro, com urgência honesta (ex.: "agenda desta semana", "enquanto durar o estoque" só se for verdade).
+5) Chamada final direta com o contato real da marca: WhatsApp com o número, site ou bairro/cidade. Ex.: "Chame no WhatsApp (21) 99999-9999 e peça seu orçamento".
+Estilo: fale com o cliente ("você"), frases curtas, parágrafos de 1 ou 2 linhas, emojis com moderação; cite a cidade/bairro para atrair clientes da região.`;
 
 // ---------------------------------------------------------------------------
 // Artes: qualidade alta, logo verdadeira e texto conferido
@@ -206,7 +214,8 @@ async function criarArte(env, { marca, ideia, textoArte, logo, tamanho }) {
 
 // Revisão da IA (modo automático): dá nota de 0 a 10 e diz o que melhorar.
 async function revisar(env, marca, post) {
-  const r = await iaJSON(env, `Você é a diretora de criação de uma agência. Avalie um post antes da publicação. ${REGRAS_CONTEUDO}
+  const r = await iaJSON(env, `Você é a diretora de criação de uma agência. Avalie um post antes da publicação: escrita, poder de venda (gancho, benefício específico, chamada com contato real) e respeito às regras. ${REGRAS_CONTEUDO}
+${COPY_QUE_VENDE}
 Responda em JSON: {"nota":0,"aprovado":false,"comentario":""} — nota de 0 a 10; aprovado=true só se estiver pronto para publicar sem nenhum ajuste; comentario em 1 ou 2 frases.`,
   `${resumoMarca(marca)}\n\nPOST (${post.formato}, canais ${post.canais.join(", ")}):\nTítulo: ${post.titulo || "-"}\nLegenda: ${post.legenda || "-"}\nHashtags: ${post.hashtags || "-"}\nChamada: ${post.chamada || "-"}\nTexto escrito na arte: ${post.texto_arte || "-"}\nIdeia da imagem: ${post.ideia_imagem || "-"}`, 400);
   return { nota: Math.max(0, Math.min(10, Math.round(Number(r?.nota) || 0))), aprovado: r?.aprovado === true, comentario: String(r?.comentario || "").slice(0, 400) };
@@ -236,8 +245,8 @@ export async function apiMarketing(request, env, k, orgId, papel, resto) {
     if (resto === "marcas" && metodo === "POST") {
       exigir("ADMIN");
       const c = await corpoOu(8000);
-      const campos = ["nome", "segmento", "cidade", "instagram", "facebook", "google", "site", "whatsapp", "tom", "publico", "cores", "diferenciais", "idioma", "horarios"];
-      const v = Object.fromEntries(campos.map(x => [x, txt(c[x], x === "diferenciais" || x === "publico" ? 600 : 200)]));
+      const campos = ["nome", "segmento", "cidade", "instagram", "facebook", "google", "site", "whatsapp", "tom", "publico", "cores", "diferenciais", "idioma", "horarios", "ofertas"];
+      const v = Object.fromEntries(campos.map(x => [x, txt(c[x], x === "ofertas" ? 1500 : x === "diferenciais" || x === "publico" ? 600 : 200)]));
       v.idioma = idiomaDe(c.idioma);
       v.instagram = v.instagram.replace(/^@+/, "").replace(/^https?:\/\/(www\.)?instagram\.com\//i, "").replace(/\/.*$/, "");
       if (v.nome.length < 2) return json({ erro: "Informe o nome da marca." }, 400);
@@ -390,11 +399,12 @@ export async function apiMarketing(request, env, k, orgId, papel, resto) {
         const qtd = Math.max(1, Math.min(14, Number(c.quantidade) || cfg.posts_semana || 3));
         const canais = canaisOk(c.canais && c.canais.length ? c.canais : ["instagram", "facebook"]);
         const anteriores = ((await env.DB.prepare("SELECT titulo FROM plt_mk_posts WHERE marca_id=? ORDER BY id DESC LIMIT 20").bind(marca.id).all())?.results || []).map(x => x.titulo).filter(Boolean);
-        const r = await iaJSON(env, `Você é a estrategista de conteúdo de uma agência de marketing digital de alto nível. Crie o calendário de posts de UMA semana para a marca, variado (dicas, bastidores, prova social sem inventar depoimentos, oferta de serviço, educativo, sazonal), com foco em gerar contatos pelo WhatsApp. ${REGRAS_CONTEUDO}
+        const r = await iaJSON(env, `Você é a estrategista de conteúdo de uma agência de marketing digital de alto nível. Crie o calendário de posts de UMA semana para a marca, com foco em VENDER e gerar contatos pelo WhatsApp: pelo menos metade dos posts deve oferecer diretamente um produto, serviço ou oferta específica da marca; os demais variam entre dica útil ligada ao que a marca vende, bastidores, autoridade e datas sazonais. ${REGRAS_CONTEUDO}
+${COPY_QUE_VENDE}
 Responda em JSON: {"posts":[{"dia":0,"hora":"18:00","formato":"post","titulo":"","legenda":"","hashtags":"","chamada":"","texto_arte":"","ideia_imagem":""}]}
 - dia: 0=segunda … 6=domingo; hora no formato HH:MM. Se a marca tiver "Dias e horários preferidos", use SOMENTE esses dias e horários; senão, distribua bem na semana nos horários de maior alcance.
 - formato: post, carrossel, story ou reels.
-- legenda: pronta para publicar (pode usar emojis com moderação e quebras de linha).
+- legenda: pronta para publicar, seguindo a "Legenda que VENDE", com quebras de linha.
 - texto_arte: a frase curta (até 6 palavras) que aparece escrita na arte, com ortografia e acentos perfeitos; vazio se a arte não deve ter texto.
 - ideia_imagem: descrição visual detalhada da cena (assunto, ambiente, composição, luz, cores da marca), SEM texto escrito — o texto vai em texto_arte.`,
         `${resumoMarca(marca)}\n\nSemana que começa em ${inicio}. Quantidade de posts: ${qtd}. Canais: ${canais.join(", ")}.\nTemas já usados recentemente (evite repetir): ${anteriores.join("; ") || "nenhum"}.\nResponda em JSON.`, 4000);
@@ -420,7 +430,8 @@ Responda em JSON: {"posts":[{"dia":0,"hora":"18:00","formato":"post","titulo":""
         const c = await corpoOu(4000);
         const marca = await marcaDa(c.marca_id);
         if (!marca) return json({ erro: "Escolha a marca." }, 400);
-        const r = await iaJSON(env, `Você é redatora publicitária sênior. Escreva um post a partir do tema pedido. ${REGRAS_CONTEUDO}
+        const r = await iaJSON(env, `Você é redatora publicitária sênior, especialista em vender pelas redes sociais. Escreva um post a partir do tema pedido. ${REGRAS_CONTEUDO}
+${COPY_QUE_VENDE}
 Responda em JSON: {"titulo":"","legenda":"","hashtags":"","chamada":"","texto_arte":"","ideia_imagem":""} — texto_arte: frase curta (até 6 palavras) escrita na arte, com acentos perfeitos; ideia_imagem: a cena, sem texto escrito.`, `${resumoMarca(marca)}\n\nTema: ${txt(c.tema, 600)}\nFormato: ${FORMATOS.includes(c.formato) ? c.formato : "post"}\nCanal: ${CANAIS.includes(c.canal) ? c.canal : "instagram"}\nResponda em JSON.`, 1500);
         return json({ ok: true, sugestao: { titulo: txt(r.titulo, 200), legenda: txt(r.legenda, 2200), hashtags: txt(r.hashtags, 600), chamada: txt(r.chamada, 200), texto_arte: txt(r.texto_arte, 80), ideia_imagem: txt(r.ideia_imagem, 1000) } });
       }

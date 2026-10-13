@@ -457,7 +457,7 @@ test("Estúdio — marcas, semana criada pela IA, aprovação humana e imagem", 
 test("Artes — logo oficial vai junto, qualidade alta, texto da arte conferido e refeito se vier errado; horários preferidos", async () => {
   const p = await criarPlataforma({ OPENAI_API_KEY: "sk-teste" });
   await p.entrar("admin", ADMIN, SENHA_ADMIN);
-  const marca = (await p.req("/api/orgs/1/mk/marcas", { metodo: "POST", quem: "admin", corpo: { nome: "Clínica Sol", cores: "azul e dourado", horarios: "terça e quinta às 19h" } })).dados.id;
+  const marca = (await p.req("/api/orgs/1/mk/marcas", { metodo: "POST", quem: "admin", corpo: { nome: "Clínica Sol", cores: "azul e dourado", horarios: "terça e quinta às 19h", ofertas: "Clareamento dental em 3x sem juros" } })).dados.id;
 
   // Logo: só imagem de verdade (PNG/JPG/WEBP); aparece na marca.
   const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from("resto-do-png")]).toString("base64");
@@ -470,7 +470,10 @@ test("Artes — logo oficial vai junto, qualidade alta, texto da arte conferido 
   // Semana: os horários preferidos e o texto da arte entram no pedido à IA.
   p.openai = () => ({ output: [{ content: [{ type: "output_text", text: JSON.stringify({ posts: [{ dia: 1, hora: "19:00", formato: "post", titulo: "Sorriso", legenda: "L", hashtags: "", chamada: "", texto_arte: "Seu sorriso merece cuidado", ideia_imagem: "Dentista sorrindo" }] }) }] }] });
   const sem = await p.req("/api/orgs/1/mk/ia/semana", { metodo: "POST", quem: "admin", corpo: { marca_id: marca, inicio: "2030-01-07" } });
-  assert.match(JSON.stringify(p.openaiChamadas.at(-1).corpo), /terça e quinta às 19h/);
+  const pedido = JSON.stringify(p.openaiChamadas.at(-1).corpo);
+  assert.match(pedido, /terça e quinta às 19h/);
+  assert.match(pedido, /Clareamento dental em 3x sem juros/, "as ofertas reais da marca entram na legenda");
+  assert.match(pedido, /Legenda que VENDE/);
   const post = sem.dados.criados[0].id;
   assert.equal(p.env.DB.q("SELECT texto_arte FROM plt_mk_posts WHERE id=?", post)[0].texto_arte, "Seu sorriso merece cuidado");
 

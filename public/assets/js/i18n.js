@@ -1,11 +1,11 @@
-// DENIA — idiomas do site e da plataforma (pt-BR, en, es, de, it, fr, ja).
+// DENIA — idiomas do site e da plataforma (pt-BR, en, es, de, it, fr, ja, hi).
 // O texto original em português é a chave; os dicionários ficam em /assets/i18n/<idioma>.json.
 // Traduz o que já está na página e tudo o que aparecer depois (telas, avisos, erros do servidor).
 (function () {
   "use strict";
-  var IDIOMAS = [["pt-BR", "Português"], ["en", "English"], ["es", "Español"], ["de", "Deutsch"], ["it", "Italiano"], ["fr", "Français"], ["ja", "日本語"]];
-  var CURTO = { "pt-BR": "PT", en: "EN", es: "ES", de: "DE", it: "IT", fr: "FR", ja: "JA" };
-  var LOCALES = { "pt-BR": "pt-BR", en: "en-US", es: "es-ES", de: "de-DE", it: "it-IT", fr: "fr-FR", ja: "ja-JP" };
+  var IDIOMAS = [["pt-BR", "Português"], ["en", "English"], ["es", "Español"], ["de", "Deutsch"], ["it", "Italiano"], ["fr", "Français"], ["ja", "日本語"], ["hi", "हिन्दी"]];
+  var CURTO = { "pt-BR": "PT", en: "EN", es: "ES", de: "DE", it: "IT", fr: "FR", ja: "JA", hi: "HI" };
+  var LOCALES = { "pt-BR": "pt-BR", en: "en-US", es: "es-ES", de: "de-DE", it: "it-IT", fr: "fr-FR", ja: "ja-JP", hi: "hi-IN" };
   var valido = function (c) { return IDIOMAS.some(function (x) { return x[0] === c; }); };
   function normalizar(c) {
     c = String(c || "").toLowerCase();
@@ -113,7 +113,7 @@
   }
 
   // A versão muda sempre que um dicionário muda (scripts/i18n.mjs atualiza): o navegador nunca fica com tradução velha.
-  var VERSAO_DICIONARIOS = "c0c1f7e3d8";
+  var VERSAO_DICIONARIOS = "d92fa1c667";
   var pronto = fetch("/assets/i18n/" + idioma + ".json?v=" + VERSAO_DICIONARIOS).then(function (r) { return r.ok ? r.json() : {}; }).catch(function () { return {}; });
   var comecar = function () {
     pronto.then(function (d) {

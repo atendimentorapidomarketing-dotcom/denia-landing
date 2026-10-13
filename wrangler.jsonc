@@ -23,5 +23,7 @@
   ],
   // Publicação automática no Instagram e no Facebook (posts aprovados cujo horário chegou).
   "triggers": { "crons": ["*/5 * * * *"] },
-  "observability": { "enabled": true }
+  "observability": { "enabled": true },
+  // Mantém as variáveis criadas no painel da Cloudflare (ex.: META_APP_ID) a cada deploy.
+  "keep_vars": true
 }
