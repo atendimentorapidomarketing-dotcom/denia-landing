@@ -7,6 +7,8 @@
 // O cookie de sessão da plataforma é SameSite=Strict, então a volta da Meta não traz a sessão:
 // ela é validada por um "state" assinado e de uso único.
 
+import { contaGoogleDe, publicarGoogle, googleConfigurada } from "./google.js";
+
 const GRAPH_PADRAO = "v25.0";
 const PERMISSOES = ["pages_show_list", "pages_read_engagement", "pages_manage_posts", "instagram_basic", "instagram_content_publish", "business_management"];
 const VALIDADE_STATE_MS = 15 * 60000;
@@ -228,33 +230,43 @@ async function publicarFacebook(env, conta, token, p, imagem) {
   return { id, link: id ? `https://www.facebook.com/${id}` : null };
 }
 
-// Publica um post aprovado em cada canal conectado. Canais já publicados não se repetem.
+const NOME_CANAL = { instagram: "Instagram", facebook: "Facebook", google: "Google" };
+// Publica um post aprovado em cada canal conectado (Instagram e Facebook pela Meta, Google pelo Perfil da Empresa).
+// Canais já publicados não se repetem; canais sem conexão ficam de fora.
 export async function publicarPost(env, k, p, base) {
   await garantir(env);
-  const conta = await env.DB.prepare("SELECT * FROM plt_mk_contas WHERE org_id=? AND marca_id=?").bind(p.org_id, p.marca_id).first();
-  if (!conta) return { ok: false, resumo: "A marca deste post ainda não está conectada ao Instagram/Facebook (Marcas → Conectar)." };
-  const token = await k.decifrar(env, conta.token_cifrado);
-  if (!token) return { ok: false, resumo: "O acesso à Meta desta marca não pôde ser lido. Conecte de novo." };
+  const conta = await env.DB.prepare("SELECT * FROM plt_mk_contas WHERE org_id=? AND marca_id=?").bind(p.org_id, p.marca_id).first(); // o token da página não depende dos secrets do app
+  const contaG = googleConfigurada(env) ? await contaGoogleDe(env, p.org_id, p.marca_id) : null;
+  if (!conta && !contaG) return { ok: false, resumo: "A marca deste post ainda não está conectada (Marcas → Conectar Instagram e Facebook ou Conectar Google)." };
+  const token = conta ? await k.decifrar(env, conta.token_cifrado) : null;
+  if (conta && !token) return { ok: false, resumo: "O acesso à Meta desta marca não pôde ser lido. Conecte de novo." };
   let feito = {};
   try { feito = JSON.parse(p.publicacao || "{}") || {}; } catch { feito = {}; }
+  delete feito.aviso;
   const imagem = p.midia_id && base ? await urlPublicaMidia(k, base, p.midia_id) : null;
-  const alvo = canaisDe(p).filter(c => c === "instagram" || c === "facebook").filter(c => !(c === "facebook" && p.formato === "story"));
-  if (!alvo.length) return { ok: false, resumo: "Este post não está marcado para Instagram nem Facebook." };
+  const marcados = canaisDe(p);
+  const alvo = marcados.filter(c => ((c === "instagram" || c === "facebook") && conta) || (c === "google" && contaG)).filter(c => !(c === "facebook" && p.formato === "story"));
+  if (!alvo.length) {
+    const falta = marcados.filter(c => NOME_CANAL[c]).map(c => NOME_CANAL[c]).join(" e ");
+    return { ok: false, resumo: falta ? `Este post é para ${falta}, mas esse canal ainda não está conectado nesta marca (Marcas → Conectar).` : "Este post não está marcado para nenhum canal." };
+  }
   const erros = [];
   for (const canal of alvo) {
     if (feito[canal]?.id) continue;
     try {
-      const r = canal === "instagram" ? await publicarInstagram(env, conta, token, p, imagem) : await publicarFacebook(env, conta, token, p, imagem);
+      const r = canal === "instagram" ? await publicarInstagram(env, conta, token, p, imagem)
+        : canal === "facebook" ? await publicarFacebook(env, conta, token, p, imagem)
+          : await publicarGoogle(env, k, contaG, p, imagem);
       feito[canal] = { id: r.id, link: r.link, em: k.agora(env) };
     } catch (e) {
       feito[canal] = { erro: String(e.message || e).slice(0, 300), em: k.agora(env) };
-      erros.push(`${canal === "instagram" ? "Instagram" : "Facebook"}: ${feito[canal].erro}`);
+      erros.push(`${NOME_CANAL[canal]}: ${feito[canal].erro}`);
     }
   }
   const tudo = alvo.every(c => feito[c]?.id);
   await env.DB.prepare("UPDATE plt_mk_posts SET publicacao=?, status=?, tentativas=?, atualizado_ms=? WHERE id=?")
     .bind(JSON.stringify(feito), tudo ? "PUBLICADO" : p.status, tudo ? Number(p.tentativas || 0) : Number(p.tentativas || 0) + 1, k.agora(env), p.id).run();
-  const links = alvo.filter(c => feito[c]?.link).map(c => `${c === "instagram" ? "Instagram" : "Facebook"}: ${feito[c].link}`);
+  const links = alvo.filter(c => feito[c]?.link).map(c => `${NOME_CANAL[c]}: ${feito[c].link}`);
   return { ok: tudo, publicacao: feito, resumo: tudo ? `Publicado. ${links.join(" · ")}`.trim() : erros.join(" | ") };
 }
 
@@ -263,7 +275,8 @@ export async function publicarPost(env, k, p, base) {
 export async function aoAprovar(request, env, k, p) {
   await garantir(env);
   const conta = await env.DB.prepare("SELECT id FROM plt_mk_contas WHERE org_id=? AND marca_id=?").bind(p.org_id, p.marca_id).first();
-  if (!metaConfigurada(env) || !conta) return { publicado: false, resumo: "Post aprovado. A marca ainda não está conectada ao Instagram/Facebook: vá em Marcas → Conectar para ele sair sozinho." };
+  const contaG = googleConfigurada(env) ? await contaGoogleDe(env, p.org_id, p.marca_id) : null;
+  if (!conta && !contaG) return { publicado: false, resumo: "Post aprovado. A marca ainda não está conectada ao Instagram/Facebook: vá em Marcas → Conectar para ele sair sozinho." };
   const quando = p.data ? Date.parse(`${p.data}T${p.hora || "00:00"}:00-03:00`) : NaN;
   if (Number.isFinite(quando) && quando > k.agora(env)) {
     const [, mes, dia] = p.data.split("-");
@@ -283,8 +296,10 @@ export async function publicarPendentes(env, k) {
   const agoraMs = k.agora(env);
   const local = new Date(agoraMs - 3 * 3600000).toISOString(); // horário de Brasília (sem horário de verão)
   const hoje = local.slice(0, 10), hora = local.slice(11, 16);
-  const r = await env.DB.prepare(`SELECT p.* FROM plt_mk_posts p JOIN plt_mk_contas c ON c.org_id=p.org_id AND c.marca_id=p.marca_id
-    WHERE p.status='APROVADO' AND p.data IS NOT NULL AND (p.data < ? OR (p.data = ? AND COALESCE(p.hora,'00:00') <= ?)) AND COALESCE(p.tentativas,0) < ? ORDER BY p.data, p.hora LIMIT 10`)
+  if (googleConfigurada(env)) await contaGoogleDe(env, 0, 0); // garante a tabela do Google
+  const r = await env.DB.prepare(`SELECT p.* FROM plt_mk_posts p
+    WHERE (EXISTS (SELECT 1 FROM plt_mk_contas c WHERE c.org_id=p.org_id AND c.marca_id=p.marca_id) ${googleConfigurada(env) ? "OR EXISTS (SELECT 1 FROM plt_mk_google g WHERE g.org_id=p.org_id AND g.marca_id=p.marca_id)" : ""})
+    AND p.status='APROVADO' AND p.data IS NOT NULL AND (p.data < ? OR (p.data = ? AND COALESCE(p.hora,'00:00') <= ?)) AND COALESCE(p.tentativas,0) < ? ORDER BY p.data, p.hora LIMIT 10`)
     .bind(hoje, hoje, hora, MAX_TENTATIVAS).all();
   let publicados = 0;
   for (const p of r?.results || []) {

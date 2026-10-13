@@ -1,4 +1,5 @@
 import { rotasMeta, aoAprovar } from "./meta.js";
+import { rotasGoogle, responderAvaliacaoGoogle } from "./google.js";
 // ============================================================================
 // DENIA Platform — Estúdio de Marketing e Assistente DENIA (texto e voz)
 // ============================================================================
@@ -239,6 +240,8 @@ export async function apiMarketing(request, env, k, orgId, papel, resto) {
   await garantir(env);
   const daMeta = await rotasMeta(request, env, k, orgId, papel, resto);
   if (daMeta) return daMeta;
+  const doGoogle = await rotasGoogle(request, env, k, orgId, papel, resto);
+  if (doGoogle) return doGoogle;
   const metodo = request.method;
   const autor = sessao.usuario.nome || sessao.usuario.email;
   const corpoOu = async (limite) => { const l = await lerCorpo(request, limite); if (l.erro) throw Object.assign(new Error("corpo"), { resposta: l.erro }); return l.corpo; };
@@ -490,9 +493,17 @@ Responda em JSON: {"titulo":"","legenda":"","hashtags":"","chamada":"","texto_ar
       if (m[2] === "remover") { await env.DB.prepare("DELETE FROM plt_mk_avaliacoes WHERE id=?").bind(a.id).run(); return json({ ok: true }); }
       if (m[2] === "responder") {
         const c = await corpoOu(4000);
-        await env.DB.prepare("UPDATE plt_mk_avaliacoes SET resposta=?, status='RESPONDIDA' WHERE id=?").bind(txt(c.resposta, 2000), a.id).run();
-        await auditar(env, request, sessao, orgId, "MARKETING", `Respondeu a avaliação de ${a.autor} (${a.nota}★)`);
-        return json({ ok: true });
+        const resposta = txt(c.resposta, 2000);
+        if (!resposta) return json({ erro: "Escreva a resposta." }, 400);
+        // Avaliação que veio do Google: a resposta é publicada direto no perfil.
+        let google = { publicada: false };
+        if (a.google_id) {
+          try { google = await responderAvaliacaoGoogle(env, k, a, resposta); }
+          catch (e) { return json({ erro: "A resposta não foi publicada no Google: " + e.message }, 502); }
+        }
+        await env.DB.prepare("UPDATE plt_mk_avaliacoes SET resposta=?, status='RESPONDIDA' WHERE id=?").bind(resposta, a.id).run();
+        await auditar(env, request, sessao, orgId, "MARKETING", `Respondeu a avaliação de ${a.autor} (${a.nota}★)${google.publicada ? " — publicada no Google" : ""}`);
+        return json({ ok: true, publicada_google: Boolean(google.publicada) });
       }
       if (!chave(env)) { const s = semChave(); return json(s.corpo, s.status); }
       const marca = await marcaDa(a.marca_id);
@@ -727,7 +738,7 @@ Você também EXECUTA ações quando a pessoa pede claramente. Ações disponív
 - {"tipo":"criar_semana","marca":"nome da marca","canais":["instagram","facebook","google"],"quantidade":3,"semana":"esta"|"proxima","com_artes":true} — planeja e cria os posts da semana (legendas, hashtags e as imagens).
 - {"tipo":"criar_post","marca":"nome","canais":["instagram"],"tema":"sobre o que é","formato":"post"|"carrossel"|"story"|"reels","data":"AAAA-MM-DD","hora":"HH:MM","com_arte":true} — cria um post com texto e imagem.
 - {"tipo":"aprovar_posts","marca":"nome ou vazio para todas"} — aprova os posts que aguardam aprovação (perfil ADMIN ou OWNER).
-- {"tipo":"publicar_post","post_id":123} — aprova e publica agora no Instagram e no Facebook, se a marca estiver conectada (Marcas → Conectar Instagram e Facebook). Se não estiver, explique que o post fica aprovado e que basta conectar a marca. O Google Meu Negócio ainda não publica sozinho.
+- {"tipo":"publicar_post","post_id":123} — aprova e publica agora no Instagram e no Facebook, se a marca estiver conectada (Marcas → Conectar Instagram e Facebook). Se não estiver, explique que o post fica aprovado e que basta conectar a marca. No Google Meu Negócio é igual: com a marca conectada (Marcas → Conectar Google) os posts saem no perfil e as respostas às avaliações são publicadas direto no Google.
 - {"tipo":"treinar","campo":"instrucoes"|"servicos"|"regras"|"precos"|"procedimentos"|"informacoes"|"exemplos","modo":"acrescentar"|"substituir","texto":"o texto do treinamento, bem escrito, na voz de instrução para a IA do WhatsApp"} — muda o treinamento da IA que atende os clientes no WhatsApp (perfil ADMIN ou OWNER). Prefira "acrescentar". Use "substituir" só se a pessoa pedir para trocar tudo daquele campo; nesse caso o texto deve ser o campo completo, já reescrito. Cada mudança vira uma nova versão (dá para voltar).
 - {"tipo":"pausar_ia","pausar":true|false} — pausa ou retoma a IA do WhatsApp para todos os clientes (perfil ADMIN ou OWNER).
 Regras: só inclua uma ação quando o pedido for claro; se faltar algo essencial (por exemplo a marca, havendo mais de uma), pergunte em vez de agir. Marcas existentes: ${marcasOrg.map(m => m.nome).join(", ") || "nenhuma cadastrada"}. Na "resposta", diga em poucas palavras o que você está fazendo (no futuro imediato: "Vou criar..."), porque o resultado aparece logo depois.
@@ -765,7 +776,7 @@ ${ESPECIALISTA_DIGITAL}
 Para assuntos de fora (notícias, concorrentes, tendências, preços de mercado, qualquer dúvida do mundo), use a ferramenta pesquisar_web e conte o resultado de forma curta, citando de onde veio.
 Quando a pessoa pedir claramente uma ação, use a ferramenta certa (criar_semana, criar_post, aprovar_posts, publicar_post, treinar, pausar_ia). Antes, diga numa frase curta o que vai fazer ("Vou abrir o treinamento e acrescentar isso"); a pessoa vê você fazendo na tela e pode pausar ou parar. Quando a ferramenta devolver o resultado, conte em uma frase. Se faltar algo essencial (por exemplo qual marca, havendo mais de uma), pergunte antes.
 Treinamento: prefira acrescentar; substituir só se pedirem para trocar tudo daquele campo (aí o texto é o campo inteiro já reescrito). Escreva o texto do treinamento como instrução clara para a IA que atende os clientes no WhatsApp.
-Publicar: com a marca conectada (Marcas → Conectar Instagram e Facebook), os posts aprovados saem sozinhos no horário marcado e publicar_post publica na hora. Sem conexão, o post fica aprovado. O Google Meu Negócio ainda não publica sozinho. Diga isso com honestidade.
+Publicar: com a marca conectada (Marcas → Conectar Instagram e Facebook), os posts aprovados saem sozinhos no horário marcado e publicar_post publica na hora. Sem conexão, o post fica aprovado. No Google Meu Negócio é igual: com a marca conectada (Marcas → Conectar Google) os posts saem no perfil e as respostas às avaliações são publicadas direto no Google. Diga isso com honestidade.
 Marcas existentes: ${marcasOrg.map(m => m.nome).join(", ") || "nenhuma cadastrada"}.
 DADOS DO PAINEL (no início da conversa):
 ${contexto.dados}`;
