@@ -969,6 +969,9 @@ test("Avaliações no automático — a DENIA responde sozinha no Google as norm
   await p.req("/api/orgs/1/mk/google/estado", { quem: "admin" });
   const mod = await import("../src/worker.js");
   p.env.DB.prepare("INSERT INTO plt_mk_google(org_id,marca_id,conta_nome,local_nome,local_titulo,token_cifrado,criado_ms,atualizado_ms) VALUES(1,?,?,?,?,?,1,1)").bind(marca, "accounts/1", "locations/2", "Oficina", "x").run();
+  // Uma avaliação que já estava lida e esperando, de antes de ligar o automático, também sai.
+  p.env.DB.prepare("INSERT INTO plt_mk_avaliacoes(org_id,marca_id,autor,nota,texto,resposta_sugerida,status,criado_ms,google_id,analise) VALUES(1,?,?,?,?,?,'PENDENTE',1,?,?)")
+    .bind(marca, "Bia", 5, "Amei!", "Bia, que bom que amou! Volte sempre.", "antiga", JSON.stringify({ sentimento: "OTIMA", urgencia: "BAIXA", precisa_humano: false, viola_politica: false })).run();
   assert.equal((await p.req("/api/orgs/1/mk/config/avaliacoes", { metodo: "POST", quem: "admin", corpo: { modo: "TODAS" } })).dados.avaliacoes_auto, "TODAS");
   assert.equal((await p.req("/api/orgs/1/mk/config", { quem: "admin" })).dados.avaliacoes_auto, "TODAS");
   const publicadas = [];
@@ -989,9 +992,9 @@ test("Avaliações no automático — a DENIA responde sozinha no Google as norm
   await mod.default.scheduled({}, p.env, { waitUntil: (pr) => pr });
   await new Promise(r => setTimeout(r, 50));
   const avs = (await p.req(`/api/orgs/1/mk/avaliacoes?marca=${marca}`, { quem: "admin" })).dados.avaliacoes;
-  assert.equal(avs.length, 2, JSON.stringify(p.googleChamadas?.map(c => c.url)));
-  assert.equal(publicadas.length, 1, "só a normal sai sozinha");
-  assert.match(publicadas[0].url, /reviews\/boa\/reply$/);
+  assert.equal(avs.length, 3, JSON.stringify(p.googleChamadas?.map(c => c.url)));
+  assert.deepEqual(publicadas.map(x => x.url.match(/reviews\/(\w+)\/reply$/)[1]).sort(), ["antiga", "boa"], "a normal nova e a que já esperava saem sozinhas; a grave não");
+  assert.equal(avs.find(a => a.autor === "Bia").status, "RESPONDIDA");
   assert.equal(avs.find(a => a.autor === "Ana").status, "RESPONDIDA");
   assert.equal(avs.find(a => a.autor === "Rui").status, "PENDENTE");
 });
