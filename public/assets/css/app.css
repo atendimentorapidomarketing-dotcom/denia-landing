@@ -406,3 +406,10 @@ body.ao-vivo .denia-orbe span { animation-duration: 0.9s; box-shadow: 0 0 26px r
 .logo-linha { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
 .logo-previa { width: 84px; height: 84px; border-radius: 14px; border: 1px dashed var(--borda); display: grid; place-items: center; overflow: hidden; background: repeating-conic-gradient(rgba(127,127,127,.12) 0 25%, transparent 0 50%) 0 0 / 14px 14px; font-size: 12px; color: var(--texto-3); }
 .logo-previa img { max-width: 100%; max-height: 100%; object-fit: contain; }
+
+/* Avaliações: análise da DENIA e relatório */
+.analise-avaliacao { display: grid; gap: 6px; }
+.analise-avaliacao .acoes { gap: 6px; }
+.sugestao-alerta { border-color: rgba(239, 68, 68, 0.55); box-shadow: 0 0 0 1px rgba(239, 68, 68, 0.25); }
+.relatorio-texto { white-space: pre-wrap; line-height: 1.6; font-size: 14.5px; margin-top: 12px; }
+.contador-alerta { background: #ef4444; color: #fff; }

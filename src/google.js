@@ -173,14 +173,10 @@ export async function rotasGoogle(request, env, k, orgId, papel, resto) {
   if (resto === "google/desempenho" && metodo === "GET") {
     const conta = await contaGoogleDe(env, orgId, Number(url.searchParams.get("marca")));
     if (!conta) return json({ conectada: false });
-    try {
-      const token = await tokenDa(env, k, conta);
-      const fim = new Date(agora(env) - 2 * 86400000), ini = new Date(fim.getTime() - 29 * 86400000);
-      const [totais, palavras] = await Promise.all([metricas(conta, token, ini, fim), palavrasDoMes(conta, token, agora(env)).catch(() => [])]);
-      return json({ conectada: true, perfil: conta.local_titulo, de: ini.toISOString().slice(0, 10), ate: fim.toISOString().slice(0, 10), totais, palavras });
-    } catch (e) { return json({ conectada: true, erro: e.message }); }
+    try { return json({ conectada: true, ...(await desempenhoAoVivo(env, k, conta)) }); }
+    catch (e) { return json({ conectada: true, erro: e.message }); }
   }
-  return json({ erro: "Rota não encontrada." }, 404);
+  return null; // outras rotas google/* ficam no marketing.js (resumo)
 }
 
 // ----- Volta do Google: /api/google/retorno?code&state (sem sessão)
@@ -302,6 +298,14 @@ async function gravarSemanas(env, k, conta, token) {
     const dados = { ...t, nota_media: nota?.n ? Math.round(nota.m * 10) / 10 : null, total_avaliacoes: nota?.n || 0, origem: "google" };
     await env.DB.prepare("INSERT OR REPLACE INTO plt_mk_metricas(org_id,marca_id,semana,dados,criado_ms) VALUES(?,?,?,?,?)").bind(conta.org_id, conta.marca_id, ini.toISOString().slice(0, 10), JSON.stringify(dados), k.agora(env)).run();
   }
+}
+
+// Últimos 30 dias (o Google consolida com ~2 dias de atraso) e as buscas do mês passado.
+export async function desempenhoAoVivo(env, k, conta) {
+  const token = await tokenDa(env, k, conta);
+  const fim = new Date(k.agora(env) - 2 * 86400000), ini = new Date(fim.getTime() - 29 * 86400000);
+  const [totais, palavras] = await Promise.all([metricas(conta, token, ini, fim), palavrasDoMes(conta, token, k.agora(env)).catch(() => [])]);
+  return { perfil: conta.local_titulo, de: ini.toISOString().slice(0, 10), ate: fim.toISOString().slice(0, 10), totais, palavras };
 }
 
 export async function sincronizarConta(env, k, conta) {

@@ -1,5 +1,5 @@
 import { rotasMeta, aoAprovar } from "./meta.js";
-import { rotasGoogle, responderAvaliacaoGoogle } from "./google.js";
+import { rotasGoogle, responderAvaliacaoGoogle, contaGoogleDe, desempenhoAoVivo, sincronizarConta } from "./google.js";
 // ============================================================================
 // DENIA Platform — Estúdio de Marketing e Assistente DENIA (texto e voz)
 // ============================================================================
@@ -27,13 +27,14 @@ const DDL = [
   `CREATE TABLE IF NOT EXISTS plt_mk_avaliacoes (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, marca_id INTEGER NOT NULL, autor TEXT, nota INTEGER, texto TEXT, data TEXT, resposta_sugerida TEXT, resposta TEXT, status TEXT NOT NULL DEFAULT 'PENDENTE', criado_ms INTEGER NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS plt_mk_palavras (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, marca_id INTEGER NOT NULL, palavra TEXT NOT NULL, cidade TEXT, criado_ms INTEGER NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS plt_mk_posicoes (palavra_id INTEGER NOT NULL, semana TEXT NOT NULL, posicao INTEGER, criado_ms INTEGER NOT NULL, PRIMARY KEY (palavra_id, semana))`,
+  `CREATE TABLE IF NOT EXISTS plt_mk_relatorios (org_id INTEGER NOT NULL, marca_id INTEGER NOT NULL, semana TEXT NOT NULL, texto TEXT NOT NULL, criado_ms INTEGER NOT NULL, PRIMARY KEY (org_id, marca_id, semana))`,
   `CREATE TABLE IF NOT EXISTS plt_mk_metricas (org_id INTEGER NOT NULL, marca_id INTEGER NOT NULL, semana TEXT NOT NULL, dados TEXT NOT NULL, criado_ms INTEGER NOT NULL, PRIMARY KEY (org_id, marca_id, semana))`
 ];
 const prontos = new WeakSet();
 async function garantir(env) {
   if (prontos.has(env.DB)) return;
   await env.DB.batch(DDL.map(s => env.DB.prepare(s)));
-  for (const alter of ["ALTER TABLE plt_mk_marcas ADD COLUMN idioma TEXT", "ALTER TABLE plt_mk_marcas ADD COLUMN horarios TEXT", "ALTER TABLE plt_mk_marcas ADD COLUMN logo_midia_id INTEGER", "ALTER TABLE plt_mk_posts ADD COLUMN texto_arte TEXT", "ALTER TABLE plt_mk_marcas ADD COLUMN ofertas TEXT"])
+  for (const alter of ["ALTER TABLE plt_mk_marcas ADD COLUMN idioma TEXT", "ALTER TABLE plt_mk_marcas ADD COLUMN horarios TEXT", "ALTER TABLE plt_mk_marcas ADD COLUMN logo_midia_id INTEGER", "ALTER TABLE plt_mk_posts ADD COLUMN texto_arte TEXT", "ALTER TABLE plt_mk_marcas ADD COLUMN ofertas TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN analise TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN google_id TEXT"])
     await env.DB.prepare(alter).run().catch(() => { }); // coluna já existe
   prontos.add(env.DB);
 }
@@ -221,6 +222,92 @@ const ESPECIALISTA_DIGITAL = `ESPECIALIDADE: você é também uma estrategista s
 - Instagram e Facebook: constância, Reels curtos com gancho nos 2 primeiros segundos, bastidores e antes/depois reais, prova social real, chamada clara para o WhatsApp, responder comentários e directs rápido; anúncios da Meta com público local e objetivo de mensagens.
 - Métricas que importam: contatos gerados (WhatsApp/ligações), custo por contato, taxa de fechamento, avaliações e nota média, posição nas buscas principais.
 Honestidade: nunca prometa posição no Google nem resultado garantido; números de mercado são estimativas (diga que são); se não souber algo atual, use a pesquisa na web (no modo de voz) ou diga que vai confirmar.`;
+
+// ---------------------------------------------------------------------------
+// Avaliações do Google: a DENIA lê cada uma como uma gerente de reputação
+// ---------------------------------------------------------------------------
+
+const SENTIMENTOS = ["OTIMA", "POSITIVA", "NEUTRA", "NEGATIVA", "GRAVE"];
+const INSTRUCOES_AVALIACAO = `Você é a gerente de reputação online da empresa, especialista em Google Perfil da Empresa. Leia UMA avaliação com atenção ao contexto (o que aconteceu, o tom, a nota, o que a pessoa quer) e decida como tratá-la.
+Classifique:
+- sentimento: OTIMA (elogio forte), POSITIVA, NEUTRA, NEGATIVA (reclamação comum: atraso, preço, atendimento) ou GRAVE (acusação séria, risco à segurança, ameaça de processo, ofensa, dado pessoal exposto, fraude).
+- temas: até 4 palavras-chave do assunto (ex.: "atraso", "preço", "educação do técnico", "rapidez").
+- urgencia: ALTA (GRAVE, ou negativa que pode afastar clientes e pede resposta hoje), MEDIA (negativa comum ou neutra com crítica) ou BAIXA (positiva).
+- precisa_humano: true quando uma pessoa da equipe precisa agir antes de responder (GRAVE; o cliente pede contato ou reembolso; fatos que só a equipe pode confirmar; suspeita de avaliação falsa). motivo_humano: em 1 frase, o que a pessoa deve fazer.
+- viola_politica: true só quando há sinais claros de que a avaliação viola as regras de conteúdo do Google: spam ou avaliação falsa (quem nunca foi cliente, várias avaliações iguais, concorrente), conflito de interesses (ex-funcionário, concorrente), conteúdo fora do tema (política, assunto que não é a experiência com a empresa), conteúdo ofensivo/assédio/discurso de ódio, informação pessoal de terceiros, conteúdo sexual, ilegal ou perigoso, falsificação de identidade. Nota baixa ou crítica justa NÃO é violação. politica: qual regra. como_remover: passos curtos — no Perfil da Empresa (Google Maps ou Pesquisa) abrir Avaliações, nos três pontos da avaliação clicar em "Denunciar avaliação" e escolher o motivo; acompanhar o pedido na ferramenta de gerenciamento de avaliações do Google; se for recusado, dá para pedir uma nova análise uma vez, com provas. Avise que a remoção não é garantida, que nunca se deve oferecer vantagem para o cliente apagar e que vale responder com educação enquanto isso.
+- resposta: a resposta pública da empresa, ESPECÍFICA a esta avaliação (cite o que a pessoa disse; nada genérico nem repetido entre avaliações), como o dono responderia, 2 a 4 frases, escrita impecável, no idioma da avaliação. Elogio: agradeça de forma calorosa e pessoal, reforce o que ela elogiou e convide a voltar. Negativa: agradeça o retorno, peça desculpas pelo transtorno sem se defender nem culpar o cliente, diga o que será feito e convide para resolver no WhatsApp ou telefone. GRAVE: resposta curta, calma e neutra, sem admitir culpa nem discutir os fatos, convidando para o contato privado. Nunca exponha dados do cliente, nunca invente fatos, nunca prometa reembolso ou desconto.
+Responda em JSON: {"sentimento":"","temas":[],"resumo":"","urgencia":"","precisa_humano":false,"motivo_humano":"","viola_politica":false,"politica":"","como_remover":"","resposta":""}`;
+
+async function analisarUmaAvaliacao(env, marca, a) {
+  const r = await iaJSON(env, INSTRUCOES_AVALIACAO, `${resumoMarca(marca)}\n\nAvaliação de ${a.autor || "Cliente"} — ${a.nota} de 5 estrelas${a.data ? ", em " + a.data : ""}:\n"${a.texto || "(sem texto, só a nota)"}"\nResponda em JSON.`, 900);
+  const sent = SENTIMENTOS.includes(String(r.sentimento).toUpperCase()) ? String(r.sentimento).toUpperCase() : (a.nota >= 5 ? "OTIMA" : a.nota >= 4 ? "POSITIVA" : a.nota === 3 ? "NEUTRA" : "NEGATIVA");
+  const analise = {
+    sentimento: sent, temas: (Array.isArray(r.temas) ? r.temas : []).map(t => String(t).slice(0, 40)).slice(0, 4), resumo: String(r.resumo || "").slice(0, 300),
+    urgencia: ["ALTA", "MEDIA", "BAIXA"].includes(String(r.urgencia).toUpperCase()) ? String(r.urgencia).toUpperCase() : (sent === "GRAVE" ? "ALTA" : sent === "NEGATIVA" ? "MEDIA" : "BAIXA"),
+    precisa_humano: r.precisa_humano === true || sent === "GRAVE", motivo_humano: String(r.motivo_humano || (sent === "GRAVE" ? "Avaliação grave: uma pessoa da equipe precisa ler e decidir antes de responder." : "")).slice(0, 300),
+    viola_politica: r.viola_politica === true, politica: String(r.politica || "").slice(0, 200), como_remover: String(r.como_remover || "").slice(0, 900)
+  };
+  const resposta = String(r.resposta || "").slice(0, 2000);
+  await env.DB.prepare("UPDATE plt_mk_avaliacoes SET analise=?, resposta_sugerida=COALESCE(NULLIF(?,''), resposta_sugerida) WHERE id=?").bind(JSON.stringify(analise), resposta, a.id).run();
+  return { analise, resposta };
+}
+
+// Cron: analisa as avaliações ainda não lidas e devolve as que precisam de uma pessoa (para avisar a equipe).
+export async function analisarAvaliacoesPendentes(env, orgId, limite = 10) {
+  if (!chave(env)) return { analisadas: 0, alertas: [] };
+  await garantir(env);
+  const lista = (await env.DB.prepare("SELECT a.*, m.nome AS marca_nome FROM plt_mk_avaliacoes a JOIN plt_mk_marcas m ON m.id=a.marca_id WHERE a.org_id=? AND a.analise IS NULL AND a.status='PENDENTE' ORDER BY a.id DESC LIMIT ?").bind(orgId, limite).all())?.results || [];
+  const alertas = [];
+  for (const a of lista) {
+    const marca = await env.DB.prepare("SELECT * FROM plt_mk_marcas WHERE id=?").bind(a.marca_id).first();
+    try {
+      const { analise } = await analisarUmaAvaliacao(env, marca, a);
+      if (analise.precisa_humano || analise.viola_politica || analise.urgencia === "ALTA") alertas.push({ marca: a.marca_nome, autor: a.autor, nota: a.nota, texto: a.texto, analise });
+    } catch (e) { console.error("análise de avaliação", a.id, e?.message); break; }
+  }
+  return { analisadas: lista.length, alertas };
+}
+
+// Relatório semanal de especialista (Google Meu Negócio + Instagram/Facebook), por marca.
+async function gerarRelatorio(env, k, orgId, marca) {
+  const sem = (await env.DB.prepare("SELECT semana, dados FROM plt_mk_metricas WHERE org_id=? AND marca_id=? ORDER BY semana DESC LIMIT 6").bind(orgId, marca.id).all())?.results || [];
+  const desde = new Date(k.agora(env) - 30 * 86400000).toISOString().slice(0, 10);
+  const av = (await env.DB.prepare("SELECT autor, nota, texto, status, analise, data FROM plt_mk_avaliacoes WHERE org_id=? AND marca_id=? ORDER BY id DESC LIMIT 60").bind(orgId, marca.id).all())?.results || [];
+  const media = av.length ? (av.reduce((t, a) => t + Number(a.nota || 0), 0) / av.length).toFixed(1) : "-";
+  const recentes = av.filter(a => String(a.data || "") >= desde);
+  const pendentes = av.filter(a => a.status === "PENDENTE");
+  const alertas = av.map(a => ({ ...a, an: (() => { try { return JSON.parse(a.analise || "null"); } catch { return null; } })() })).filter(a => a.an && (a.an.precisa_humano || a.an.viola_politica) && a.status === "PENDENTE");
+  const posts = (await env.DB.prepare("SELECT status, canais, data, titulo FROM plt_mk_posts WHERE org_id=? AND marca_id=? AND data >= ? ORDER BY data").bind(orgId, marca.id, desde).all())?.results || [];
+  let vivo = null;
+  const conta = await contaGoogleDe(env, orgId, marca.id);
+  if (conta) vivo = await desempenhoAoVivo(env, k, conta).catch(() => null);
+  const dados = [
+    `SEMANAS (mais recente primeiro): ${sem.map(x => `${x.semana}: ${x.dados}`).join(" | ") || "sem dados"}`,
+    vivo ? `ÚLTIMOS 30 DIAS NO GOOGLE (${vivo.de} a ${vivo.ate}): ${JSON.stringify(vivo.totais)}. BUSCAS QUE LEVARAM AO PERFIL NO MÊS PASSADO: ${vivo.palavras.map(p => `${p.palavra} (${p.buscas ?? "<" + p.menos_de})`).join("; ") || "nenhuma"}` : "Perfil do Google ainda não conectado.",
+    `AVALIAÇÕES: nota média ${media} em ${av.length} avaliações; ${recentes.length} nos últimos 30 dias (${recentes.filter(a => a.nota <= 3).length} com 3 estrelas ou menos); ${pendentes.length} sem resposta; ${alertas.length} precisam de uma pessoa. Recentes: ${recentes.slice(0, 8).map(a => `${a.nota}★ "${String(a.texto || "").slice(0, 120)}"`).join(" / ") || "-"}`,
+    `POSTS NOS ÚLTIMOS 30 DIAS E PROGRAMADOS: ${posts.map(p => `${p.data} [${p.status}] ${p.canais} "${p.titulo || ""}"`).join("; ") || "nenhum"}`
+  ].join("\n");
+  const texto = await iaTexto(env, `${ESPECIALISTA_DIGITAL}
+Escreva o RELATÓRIO SEMANAL desta marca para o dono do negócio, em português do Brasil simples, sem jargão, como uma consultora sênior escreveria. Use somente os DADOS; não invente números. Sem markdown, sem asteriscos; títulos em linhas próprias, em maiúsculas.
+Seções: RESUMO DA SEMANA (3 frases), O QUE MELHOROU, O QUE PRECISA DE ATENÇÃO (inclua avaliações que precisam de uma pessoa), O QUE AS PESSOAS PESQUISAM (o que isso diz sobre oportunidades), PLANO PARA ESTA SEMANA (5 ações concretas e numeradas; diga quais a DENIA pode fazer sozinha com aprovação — posts, respostas, legendas — e quais dependem da equipe — fotos reais, pedir avaliações, ajustar horários, Google Ads).`,
+    [{ papel: "usuario", texto: `${resumoMarca(marca)}\n\nDADOS:\n${dados}` }], 1800);
+  const semana = semanaDe(new Date(k.agora(env)).toISOString().slice(0, 10));
+  await env.DB.prepare("INSERT OR REPLACE INTO plt_mk_relatorios(org_id,marca_id,semana,texto,criado_ms) VALUES(?,?,?,?,?)").bind(orgId, marca.id, semana, texto.slice(0, 12000), k.agora(env)).run();
+  return { semana, texto };
+}
+// Cron: toda segunda-feira (a partir das 8h de Brasília), um relatório por marca com perfil do Google conectado.
+export async function relatoriosDaSemana(env, k, orgId) {
+  if (!chave(env)) return [];
+  await garantir(env);
+  const local = new Date(k.agora(env) - 3 * 3600000);
+  if (local.getUTCDay() !== 1 || local.getUTCHours() < 8) return [];
+  const semana = semanaDe(local.toISOString().slice(0, 10));
+  const marcas = (await env.DB.prepare(`SELECT m.* FROM plt_mk_marcas m JOIN plt_mk_google g ON g.org_id=m.org_id AND g.marca_id=m.id
+    WHERE m.org_id=? AND m.ativa=1 AND NOT EXISTS (SELECT 1 FROM plt_mk_relatorios r WHERE r.org_id=m.org_id AND r.marca_id=m.id AND r.semana=?) LIMIT 2`).bind(orgId, semana).all().catch(() => null))?.results || [];
+  const feitos = [];
+  for (const m of marcas) { try { feitos.push({ marca: m.nome, ...(await gerarRelatorio(env, k, orgId, m)) }); } catch (e) { console.error("relatório", m.id, e?.message); } }
+  return feitos;
+}
 
 // Revisão da IA (modo automático): dá nota de 0 a 10 e diz o que melhorar.
 async function revisar(env, marca, post) {
@@ -507,6 +594,8 @@ Responda em JSON: {"titulo":"","legenda":"","hashtags":"","chamada":"","texto_ar
       }
       if (!chave(env)) { const s = semChave(); return json(s.corpo, s.status); }
       const marca = await marcaDa(a.marca_id);
+      // A DENIA lê a avaliação no contexto (boa, ruim, grave, possível violação) e escreve uma resposta própria para ela.
+      if (m[2] === "sugerir") { const r = await analisarUmaAvaliacao(env, marca, a); return json({ ok: true, resposta: r.resposta, analise: r.analise }); }
       const r = await iaJSON(env, `Você responde avaliações do Google em nome da empresa, como o dono responderia: cordial, humano, específico ao que o cliente escreveu, curto (2 a 4 frases). Agradeça sempre. Em avaliação negativa: peça desculpas sem se defender, mostre que vai resolver e convide para falar no WhatsApp; nunca exponha dados do cliente nem discuta. Não invente fatos. Responda no mesmo idioma em que a avaliação foi escrita, com escrita impecável.
 Responda em JSON: {"resposta":""}`, `${resumoMarca(marca)}\n\nAvaliação de ${a.autor} (${a.nota} de 5 estrelas):\n"${a.texto || "(sem texto)"}"\nResponda em JSON.`, 600);
       const resp = txt(r.resposta, 2000);
@@ -514,6 +603,40 @@ Responda em JSON: {"resposta":""}`, `${resumoMarca(marca)}\n\nAvaliação de ${a
       return json({ ok: true, resposta: resp });
     }
 
+    // ----- Alertas para o menu: avaliações que precisam de uma pessoa
+    if (resto === "alertas" && metodo === "GET") {
+      const r = await env.DB.prepare("SELECT analise FROM plt_mk_avaliacoes WHERE org_id=? AND status='PENDENTE' AND analise IS NOT NULL").bind(orgId).all();
+      const n = (r?.results || []).filter(x => { try { const a = JSON.parse(x.analise); return a.precisa_humano || a.viola_politica || a.urgencia === "ALTA"; } catch { return false; } }).length;
+      return json({ avaliacoes: n });
+    }
+    // ----- Relatório semanal de especialista
+    if (resto === "relatorios" && metodo === "GET") {
+      const marca = Number(new URL(request.url).searchParams.get("marca") || 0);
+      const r = await env.DB.prepare("SELECT semana, texto, criado_ms FROM plt_mk_relatorios WHERE org_id=? AND marca_id=? ORDER BY semana DESC LIMIT 8").bind(orgId, marca).all();
+      return json({ relatorios: r?.results || [] });
+    }
+    if (resto === "relatorios/gerar" && metodo === "POST") {
+      exigir("AGENTE");
+      if (!chave(env)) { const s = semChave(); return json(s.corpo, s.status); }
+      const c = await corpoOu(1000);
+      const marca = await marcaDa(c.marca_id);
+      if (!marca) return json({ erro: "Escolha a marca." }, 400);
+      return json({ ok: true, ...(await gerarRelatorio(env, k, orgId, marca)) });
+    }
+    // Resumo do Google de uma marca (para a DENIA falar e para o painel).
+    if (resto === "google/resumo" && metodo === "GET") {
+      const marca = await marcaDa(new URL(request.url).searchParams.get("marca"));
+      if (!marca) return json({ erro: "Escolha a marca." }, 400);
+      const av = (await env.DB.prepare("SELECT id, autor, nota, texto, status, analise FROM plt_mk_avaliacoes WHERE org_id=? AND marca_id=? ORDER BY id DESC LIMIT 200").bind(orgId, marca.id).all())?.results || [];
+      const lidas = av.map(a => ({ ...a, analise: (() => { try { return JSON.parse(a.analise || "null"); } catch { return null; } })() }));
+      const conta = await contaGoogleDe(env, orgId, marca.id);
+      const vivo = conta ? await desempenhoAoVivo(env, k, conta).catch(e => ({ erro: e.message })) : null;
+      const rel = await env.DB.prepare("SELECT semana, texto FROM plt_mk_relatorios WHERE org_id=? AND marca_id=? ORDER BY semana DESC LIMIT 1").bind(orgId, marca.id).first();
+      return json({ marca: marca.nome, conectada: Boolean(conta), nota_media: av.length ? Math.round(av.reduce((t, a) => t + Number(a.nota || 0), 0) / av.length * 10) / 10 : null, total: av.length,
+        sem_resposta: lidas.filter(a => a.status === "PENDENTE").length, negativas: av.filter(a => Number(a.nota) <= 3).length,
+        precisam_de_voce: lidas.filter(a => a.status === "PENDENTE" && a.analise && (a.analise.precisa_humano || a.analise.viola_politica)).map(a => ({ id: a.id, autor: a.autor, nota: a.nota, texto: String(a.texto || "").slice(0, 200), motivo: a.analise.motivo_humano || (a.analise.viola_politica ? "Pode violar as regras do Google: " + a.analise.politica : "") })),
+        desempenho_30_dias: vivo, ultimo_relatorio: rel || null });
+    }
     // ----- Google Meu Negócio: palavras-chave e posição semanal
     if (resto === "palavras" && metodo === "GET") {
       const marca = Number(new URL(request.url).searchParams.get("marca") || 0);
@@ -610,7 +733,8 @@ function marcaPorNome(marcasOrg, nome, obrigatoria = true) {
   if (!m && obrigatoria) throw new Error(marcasOrg.length ? `Não encontrei a marca "${nome || ""}". Diga qual: ${marcasOrg.map(x => x.nome).join(", ")}.` : "Cadastre uma marca primeiro, em Marketing → Marcas.");
   return m;
 }
-const TIPOS_ACAO = ["criar_semana", "criar_post", "aprovar_posts", "publicar_post", "treinar", "pausar_ia"];
+const TIPOS_ACAO = ["criar_semana", "criar_post", "aprovar_posts", "publicar_post", "treinar", "pausar_ia", "google_resumo", "atualizar_google", "responder_avaliacoes", "relatorio_google"];
+const ACOES_GOOGLE = ["google_resumo", "atualizar_google", "responder_avaliacoes", "relatorio_google"];
 // Deixa a ação pronta para a tela executar: marca resolvida, campos conferidos.
 function prepararAcao(a, marcasOrg, txt) {
   const tipo = String(a?.tipo || "");
@@ -633,6 +757,8 @@ function prepararAcao(a, marcasOrg, txt) {
     if (!p.texto) throw new Error("Faltou dizer o que a IA deve aprender.");
   }
   if (tipo === "pausar_ia") p.pausar = a.pausar !== false;
+  if (ACOES_GOOGLE.includes(tipo)) { const m = marcaPorNome(marcasOrg, a.marca); Object.assign(p, { marca: m.nome, marca_id: m.id }); }
+  if (tipo === "responder_avaliacoes") p.publicar = a.publicar === true;
   return p;
 }
 
@@ -692,6 +818,56 @@ async function executarAcao(a, { marcasOrg, contexto, txt }) {
     if (falhou(r)) return { tipo, ok: false, resumo: falhou(r) };
     return { tipo, ok: true, resumo: a.pausar !== false ? "IA do WhatsApp pausada para todos os clientes." : "IA do WhatsApp retomada." };
   }
+  if (ACOES_GOOGLE.includes(tipo)) {
+    const marca = acharMarca(a.marca);
+    if (tipo === "atualizar_google") {
+      const r = await contexto.mk("POST", "google/sincronizar", { marca_id: marca.id });
+      if (falhou(r)) return { tipo, ok: false, resumo: falhou(r) };
+      return { tipo, ok: true, resumo: `Google de ${marca.nome} atualizado: ${r.dados.avaliacoes_novas} avaliação(ões) nova(s), ${r.dados.avaliacoes_total} no total.`, abrir: "#/google/avaliacoes" };
+    }
+    if (tipo === "relatorio_google") {
+      const r = await contexto.mk("POST", "relatorios/gerar", { marca_id: marca.id });
+      if (falhou(r)) return { tipo, ok: false, resumo: falhou(r) };
+      return { tipo, ok: true, resumo: `Relatório de ${marca.nome} pronto:\n${String(r.dados.texto || "").slice(0, 2500)}`, abrir: "#/google/relatorio" };
+    }
+    if (tipo === "google_resumo") {
+      const r = await contexto.mk("GET", `google/resumo?marca=${marca.id}`);
+      if (falhou(r)) return { tipo, ok: false, resumo: falhou(r) };
+      const d = r.dados, v = d.desempenho_30_dias;
+      const partes = [`${marca.nome}: ${d.total ? `nota média ${String(d.nota_media).replace(".", ",")} em ${d.total} avaliações, ${d.sem_resposta} sem resposta e ${d.negativas} com 3 estrelas ou menos.` : "nenhuma avaliação registrada ainda."}`];
+      if (d.precisam_de_voce.length) partes.push(`Precisam de uma pessoa: ${d.precisam_de_voce.map(x => `${x.autor} (${x.nota}★) — ${x.motivo}`).join("; ")}.`);
+      if (!d.conectada) partes.push("O perfil do Google desta marca ainda não está conectado (Marcas → Conectar Google).");
+      else if (v && !v.erro) partes.push(`Últimos 30 dias: o perfil apareceu ${v.totais.visualizacoes} vezes, ${v.totais.ligacoes} ligações, ${v.totais.rotas} pedidos de rota, ${v.totais.cliques_site} cliques no site e ${v.totais.mensagens} mensagens.${v.palavras.length ? " Buscas que mais trouxeram pessoas: " + v.palavras.slice(0, 5).map(p => p.palavra).join(", ") + "." : ""}`);
+      else if (v && v.erro) partes.push(`Não consegui ler o desempenho agora: ${v.erro}`);
+      if (d.ultimo_relatorio) partes.push(`Último relatório (semana de ${d.ultimo_relatorio.semana}): ${String(d.ultimo_relatorio.texto).slice(0, 700)}`);
+      return { tipo, ok: true, resumo: partes.join("\n"), abrir: "#/google/avaliacoes" };
+    }
+    // responder_avaliacoes: escreve a resposta de cada avaliação sem resposta; publica só se a pessoa pediu
+    // (e nunca publica sozinha as que precisam de uma pessoa).
+    const l = await contexto.mk("GET", `avaliacoes?marca=${marca.id}`);
+    if (falhou(l)) return { tipo, ok: false, resumo: falhou(l) };
+    const pend = (l.dados.avaliacoes || []).filter(x => x.status === "PENDENTE").slice(0, 15);
+    if (!pend.length) return { tipo, ok: true, resumo: `Nenhuma avaliação sem resposta em ${marca.nome}.`, abrir: "#/google/avaliacoes" };
+    let prontas = 0, publicadas = 0; const paraVoce = [], erros = [];
+    for (const x of pend) {
+      let analise = null; try { analise = JSON.parse(x.analise || "null"); } catch { analise = null; }
+      let resposta = x.resposta_sugerida;
+      if (!resposta || !analise) {
+        const s = await contexto.mk("POST", `avaliacoes/${x.id}/sugerir`, {});
+        if (falhou(s)) { erros.push(falhou(s)); break; }
+        resposta = s.dados.resposta; analise = s.dados.analise;
+      }
+      prontas++;
+      if (analise && (analise.precisa_humano || analise.viola_politica)) { paraVoce.push(`${x.autor} (${x.nota}★): ${analise.motivo_humano || "pode violar as regras do Google — " + analise.politica}`); continue; }
+      if (a.publicar === true && resposta) {
+        const r = await contexto.mk("POST", `avaliacoes/${x.id}/responder`, { resposta });
+        if (falhou(r)) erros.push(falhou(r)); else publicadas++;
+      }
+    }
+    const resumo = [a.publicar === true ? `${publicadas} resposta(s) publicada(s) em ${marca.nome}.` : `${prontas} resposta(s) prontas para revisão em ${marca.nome} (Google Meu Negócio → Avaliações).`,
+      paraVoce.length ? `Estas precisam de uma pessoa antes: ${paraVoce.join("; ")}.` : "", erros.length ? `Problema: ${erros[0]}` : ""].filter(Boolean).join(" ");
+    return { tipo, ok: !erros.length, resumo, abrir: "#/google/avaliacoes" };
+  }
   return { tipo: tipo || "acao", ok: false, resumo: "Ação desconhecida." };
 }
 
@@ -741,6 +917,10 @@ Você também EXECUTA ações quando a pessoa pede claramente. Ações disponív
 - {"tipo":"publicar_post","post_id":123} — aprova e publica agora no Instagram e no Facebook, se a marca estiver conectada (Marcas → Conectar Instagram e Facebook). Se não estiver, explique que o post fica aprovado e que basta conectar a marca. No Google Meu Negócio é igual: com a marca conectada (Marcas → Conectar Google) os posts saem no perfil e as respostas às avaliações são publicadas direto no Google.
 - {"tipo":"treinar","campo":"instrucoes"|"servicos"|"regras"|"precos"|"procedimentos"|"informacoes"|"exemplos","modo":"acrescentar"|"substituir","texto":"o texto do treinamento, bem escrito, na voz de instrução para a IA do WhatsApp"} — muda o treinamento da IA que atende os clientes no WhatsApp (perfil ADMIN ou OWNER). Prefira "acrescentar". Use "substituir" só se a pessoa pedir para trocar tudo daquele campo; nesse caso o texto deve ser o campo completo, já reescrito. Cada mudança vira uma nova versão (dá para voltar).
 - {"tipo":"pausar_ia","pausar":true|false} — pausa ou retoma a IA do WhatsApp para todos os clientes (perfil ADMIN ou OWNER).
+- {"tipo":"google_resumo","marca":"nome"} — lê o Google Meu Negócio da marca: nota, avaliações sem resposta, as que precisam de uma pessoa, desempenho dos últimos 30 dias, buscas e o último relatório. Use para responder perguntas sobre o Google com dados reais.
+- {"tipo":"atualizar_google","marca":"nome"} — busca agora as avaliações e o desempenho no Google.
+- {"tipo":"responder_avaliacoes","marca":"nome","publicar":false} — escreve uma resposta específica para cada avaliação sem resposta. publicar=true só quando a pessoa pedir claramente para publicar; as avaliações graves ou que podem violar as regras do Google nunca são publicadas sozinhas — avise quais precisam de uma pessoa e o motivo.
+- {"tipo":"relatorio_google","marca":"nome"} — gera agora o relatório de especialista da marca (o que melhorou, o que precisa de atenção, buscas e plano da semana).
 Regras: só inclua uma ação quando o pedido for claro; se faltar algo essencial (por exemplo a marca, havendo mais de uma), pergunte em vez de agir. Marcas existentes: ${marcasOrg.map(m => m.nome).join(", ") || "nenhuma cadastrada"}. Na "resposta", diga em poucas palavras o que você está fazendo (no futuro imediato: "Vou criar..."), porque o resultado aparece logo depois.
 Responda SEMPRE em JSON: {"resposta":"texto para falar","acoes":[]}
 DADOS DO PAINEL (agora):
@@ -774,7 +954,7 @@ Fale como uma colega brilhante ao telefone: natural, calorosa e direta. ${falaEm
 Use os DADOS DO PAINEL para responder sobre conversas do WhatsApp, atendimentos, profissionais, treinamento, aprendizados, marcas e perfis de Instagram, Facebook e Google, posts e aprovações. Nunca invente números ou fatos que não estão nos dados; se precisar de dados mais novos, use a ferramenta dados_do_painel.
 ${ESPECIALISTA_DIGITAL}
 Para assuntos de fora (notícias, concorrentes, tendências, preços de mercado, qualquer dúvida do mundo), use a ferramenta pesquisar_web e conte o resultado de forma curta, citando de onde veio.
-Quando a pessoa pedir claramente uma ação, use a ferramenta certa (criar_semana, criar_post, aprovar_posts, publicar_post, treinar, pausar_ia). Antes, diga numa frase curta o que vai fazer ("Vou abrir o treinamento e acrescentar isso"); a pessoa vê você fazendo na tela e pode pausar ou parar. Quando a ferramenta devolver o resultado, conte em uma frase. Se faltar algo essencial (por exemplo qual marca, havendo mais de uma), pergunte antes.
+Quando a pessoa pedir claramente uma ação, use a ferramenta certa (criar_semana, criar_post, aprovar_posts, publicar_post, treinar, pausar_ia, google_resumo, atualizar_google, responder_avaliacoes, relatorio_google). Para perguntas sobre o Google de uma marca (avaliações, nota, ligações, buscas, posição), use google_resumo antes de responder. Antes, diga numa frase curta o que vai fazer ("Vou abrir o treinamento e acrescentar isso"); a pessoa vê você fazendo na tela e pode pausar ou parar. Quando a ferramenta devolver o resultado, conte em uma frase. Se faltar algo essencial (por exemplo qual marca, havendo mais de uma), pergunte antes.
 Treinamento: prefira acrescentar; substituir só se pedirem para trocar tudo daquele campo (aí o texto é o campo inteiro já reescrito). Escreva o texto do treinamento como instrução clara para a IA que atende os clientes no WhatsApp.
 Publicar: com a marca conectada (Marcas → Conectar Instagram e Facebook), os posts aprovados saem sozinhos no horário marcado e publicar_post publica na hora. Sem conexão, o post fica aprovado. No Google Meu Negócio é igual: com a marca conectada (Marcas → Conectar Google) os posts saem no perfil e as respostas às avaliações são publicadas direto no Google. Diga isso com honestidade.
 Marcas existentes: ${marcasOrg.map(m => m.nome).join(", ") || "nenhuma cadastrada"}.
@@ -789,6 +969,10 @@ ${contexto.dados}`;
         { type: "function", name: "publicar_post", description: "Deixa um post aprovado e pronto para publicar.", parameters: { type: "object", properties: { post_id: { type: "integer" } }, required: ["post_id"] } },
         { type: "function", name: "treinar", description: "Muda o treinamento da IA que atende os clientes no WhatsApp.", parameters: { type: "object", properties: { campo: { type: "string", enum: ["instrucoes", "servicos", "regras", "precos", "procedimentos", "informacoes", "exemplos"] }, modo: { type: "string", enum: ["acrescentar", "substituir"] }, texto: { type: "string" } }, required: ["campo", "texto"] } },
         { type: "function", name: "pausar_ia", description: "Pausa (pausar=true) ou retoma (pausar=false) a IA do WhatsApp para todos os clientes.", parameters: { type: "object", properties: { pausar: { type: "boolean" } }, required: ["pausar"] } },
+        { type: "function", name: "google_resumo", description: "Lê o Google Meu Negócio de uma marca: nota, avaliações sem resposta, as que precisam de uma pessoa, desempenho dos últimos 30 dias, buscas e o último relatório.", parameters: { type: "object", properties: { marca }, required: ["marca"] } },
+        { type: "function", name: "atualizar_google", description: "Busca agora as avaliações e o desempenho no Google de uma marca.", parameters: { type: "object", properties: { marca }, required: ["marca"] } },
+        { type: "function", name: "responder_avaliacoes", description: "Escreve uma resposta específica para cada avaliação sem resposta. publicar=true só se a pessoa pedir claramente; as graves ou que podem violar as regras do Google nunca são publicadas sozinhas.", parameters: { type: "object", properties: { marca, publicar: { type: "boolean" } }, required: ["marca"] } },
+        { type: "function", name: "relatorio_google", description: "Gera agora o relatório de especialista da marca (Google Meu Negócio e redes).", parameters: { type: "object", properties: { marca }, required: ["marca"] } },
         { type: "function", name: "pesquisar_web", description: "Pesquisa na internet, ao vivo, e devolve um resumo com as fontes.", parameters: { type: "object", properties: { pergunta: { type: "string" } }, required: ["pergunta"] } },
         { type: "function", name: "dados_do_painel", description: "Busca os dados mais recentes do painel (conversas, atendimentos, posts, treinamento).", parameters: { type: "object", properties: {} } }
       ];
