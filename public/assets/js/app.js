@@ -1577,9 +1577,11 @@
       linha("tom", "Tom de voz", "Ex.: próximo, acolhedor, sem gírias"), linha("publico", "Público", "Quem são os clientes", true), linha("diferenciais", "Diferenciais", "O que a marca faz melhor que os concorrentes", true),
       campo("Produtos, serviços e ofertas para divulgar", c.ofertas = h("textarea", { class: "entrada", value: m.ofertas || "", maxlength: "1500", style: "min-height:100px", placeholder: "Ex.: Conserto de geladeira com garantia de 90 dias; visita técnica grátis no bairro; peças originais. Promoção: 10% no Pix até sexta." }), "Quanto mais detalhes reais (produtos, preços, promoções, garantias), mais as legendas vendem. A IA nunca inventa preço ou promoção."),
       campo("Dias e horários preferidos para publicar", c.horarios = h("input", { class: "entrada", value: m.horarios || "", maxlength: "200", placeholder: "Ex.: segunda, quarta e sexta às 18h, sábado às 10h" }), "A IA monta a semana só nesses dias e horários. Você ainda pode mudar a data e a hora de cada post."),
-      m.id ? campoLogo(m) : h("p", { class: "nota", text: "Depois de salvar, clique em Editar para enviar a logo da marca." }),
+      m.id ? campoLogo(m) : h("p", { class: "nota", text: "A logo da marca é enviada logo depois de salvar (o campo aparece na sequência)." }),
       h("div", { class: "acoes" }, botao("Salvar marca", async () => {
-        try { const corpo = { id: m.id }; Object.keys(c).forEach(k => { corpo[k] = c[k].value; }); await mk("marcas", { metodo: "POST", corpo }); aviso("Marca salva.", "ok"); fechar(); cacheMarcas = null; navegar(); }
+        try { const corpo = { id: m.id }; Object.keys(c).forEach(k => { corpo[k] = c[k].value; }); const r = await mk("marcas", { metodo: "POST", corpo }); fechar(); cacheMarcas = null; navegar();
+          // Marca nova: reabre já com o campo da logo, para enviar na hora.
+          if (!m.id && r.id) { aviso("Marca salva. Agora envie a logo da marca.", "ok"); formMarca({ ...corpo, id: r.id }); } else aviso("Marca salva.", "ok"); }
         catch (e) { aviso(e.message, "erro"); }
       }, "btn-primario")))]);
   }
