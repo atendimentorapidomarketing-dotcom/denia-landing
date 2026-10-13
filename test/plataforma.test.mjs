@@ -944,6 +944,13 @@ test("Avaliações — a DENIA lê cada uma no contexto, avisa quando precisa de
   const depois = (await p.req(`/api/orgs/1/mk/avaliacoes?marca=${marca}`, { quem: "admin" })).dados.avaliacoes;
   assert.equal(depois.find(a => a.id === boa).status, "RESPONDIDA");
   assert.equal(depois.find(a => a.id === ruim).status, "PENDENTE");
+  // As próximas aprendem com as respostas já dadas pela empresa.
+  let pedido = "";
+  p.openai = (url, corpo) => { pedido = corpo?.input?.[0]?.content?.[0]?.text || ""; return { output: [{ content: [{ type: "output_text", text: JSON.stringify(respostaIA(pedido)) }] }] }; };
+  const nova = (await p.req("/api/orgs/1/mk/avaliacoes", { metodo: "POST", quem: "admin", corpo: { marca_id: marca, autor: "Carla", nota: 4, texto: "Bom serviço." } })).dados.id;
+  await p.req(`/api/orgs/1/mk/avaliacoes/${nova}/sugerir`, { metodo: "POST", quem: "admin", corpo: {} });
+  assert.match(pedido, /RESPOSTAS QUE A EMPRESA JÁ DEU[\s\S]*Ana, que alegria/);
+  await p.req(`/api/orgs/1/mk/avaliacoes/${nova}/remover`, { metodo: "POST", quem: "admin", corpo: {} });
   const resumo = await p.req("/api/orgs/1/assistente/executar", { metodo: "POST", quem: "admin", corpo: { acao: { tipo: "google_resumo", marca: "Oficina" } } });
   assert.match(resumo.dados.resumo, /nota média 3 em 2 avaliações[\s\S]*Precisam de uma pessoa: Concorrente X/);
 
