@@ -890,6 +890,10 @@ test("Google Meu Negócio — conectar o perfil, trazer avaliações e desempenh
   const resp = await p.req(`/api/orgs/1/mk/avaliacoes/${ana.id}/responder`, { metodo: "POST", quem: "admin", corpo: { resposta: "Obrigada, Ana!" } });
   assert.equal(resp.dados.publicada_google, true);
   assert.equal(respondida, "Obrigada, Ana!");
+  // "Buscar e responder agora" sem a chave da OpenAI: traz as avaliações e explica o que falta.
+  const agoraR = await p.req("/api/orgs/1/mk/google/agora", { metodo: "POST", quem: "admin", corpo: { marca_id: marca } });
+  assert.equal(agoraR.dados.avaliacoes_total, 2);
+  assert.match(agoraR.dados.aviso, /falta a chave da OpenAI/);
   // Sincronizar de novo não duplica.
   await p.req("/api/orgs/1/mk/google/sincronizar", { metodo: "POST", quem: "admin", corpo: { marca_id: marca } });
   assert.equal((await p.req(`/api/orgs/1/mk/avaliacoes?marca=${marca}`, { quem: "admin" })).dados.avaliacoes.length, 2);
@@ -989,6 +993,8 @@ test("Avaliações no automático — a DENIA responde sozinha no Google as norm
       : { sentimento: "NEUTRA", urgencia: "MEDIA", precisa_humano: false, viola_politica: false, resposta: "Ana, obrigada! Sentimos pela demora e já ajustamos a agenda." };
     return { output: [{ content: [{ type: "output_text", text: JSON.stringify(r) }] }] };
   };
+  const ja = await p.req("/api/orgs/1/mk/google/agora", { metodo: "POST", quem: "admin", corpo: { marca_id: marca } });
+  assert.deepEqual([ja.dados.analisadas, ja.dados.publicadas, ja.dados.precisam_de_voce], [2, 2, 1], "buscar e responder agora, sem esperar a rodada");
   await mod.default.scheduled({}, p.env, { waitUntil: (pr) => pr });
   await new Promise(r => setTimeout(r, 50));
   const avs = (await p.req(`/api/orgs/1/mk/avaliacoes?marca=${marca}`, { quem: "admin" })).dados.avaliacoes;

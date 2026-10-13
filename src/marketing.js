@@ -361,6 +361,23 @@ export async function apiMarketing(request, env, k, orgId, papel, resto) {
   await garantir(env);
   const daMeta = await rotasMeta(request, env, k, orgId, papel, resto);
   if (daMeta) return daMeta;
+  // "Buscar avaliações agora": traz do Google, lê e (no automático) responde na hora — sem esperar a rodada de 10 minutos.
+  if (resto === "google/agora" && request.method === "POST") {
+    if (!pode(papel, "AGENTE")) return json({ erro: "Seu perfil não tem permissão para esta ação." }, 403);
+    const { corpo, erro } = await lerCorpo(request, 1000);
+    if (erro) return erro;
+    const conta = await contaGoogleDe(env, orgId, Number(corpo.marca_id));
+    if (!conta) return json({ erro: "Esta marca ainda não está conectada ao Google (Marcas → Conectar Google)." }, 409);
+    let sinc;
+    try { sinc = await sincronizarConta(env, k, conta, { forcarDesempenho: false }); }
+    catch (e) {
+      await env.DB.prepare("UPDATE plt_mk_google SET erro=? WHERE id=?").bind(String(e?.message || e).slice(0, 400), conta.id).run();
+      return json({ erro: "O Google recusou a busca: " + e.message }, 502);
+    }
+    if (!chave(env)) return json({ ok: true, ...sinc, analisadas: 0, publicadas: 0, aviso: "As avaliações chegaram, mas a DENIA não consegue lê-las: falta a chave da OpenAI (Integrações)." });
+    const r = await analisarAvaliacoesPendentes(env, orgId, 10, k);
+    return json({ ok: true, ...sinc, analisadas: r.analisadas, publicadas: r.publicadas || 0, precisam_de_voce: r.alertas.length });
+  }
   const doGoogle = await rotasGoogle(request, env, k, orgId, papel, resto);
   if (doGoogle) return doGoogle;
   const metodo = request.method;

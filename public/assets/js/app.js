@@ -1805,7 +1805,15 @@
       h("section", { class: "grade grade-4" }, metrica("Nota média", media, `${lista.length} avaliação(ões) registradas`), metrica("Sem resposta", numero(lista.filter(a => a.status === "PENDENTE").length), "responda em até 24 h"), metrica("Precisam de você", numero(lista.filter(precisaDeVoce).length), "graves ou que podem violar as regras do Google"), metrica("Negativas", numero(lista.filter(a => Number(a.nota) <= 3).length), "3 estrelas ou menos")),
       conectada ? h("section", { class: "cartao vidro" }, h("p", { style: "margin:0", text: "Perfil conectado: as avaliações do Google chegam sozinhas, a cada 10 minutos. A resposta salva aqui é publicada direto no Google." }),
         h("div", { style: "margin-top:12px;max-width:440px" }, campo("Como responder as avaliações", modoAuto, "No modo automático, a DENIA lê cada avaliação, escreve a resposta no jeito da empresa e publica. Graves, suspeitas de violar as regras do Google e as que pedem contato nunca saem sozinhas: ficam aqui e você recebe o aviso.")),
-        pode("AGENTE") ? h("div", { class: "acoes", style: "margin-top:10px" }, botao("Buscar avaliações agora", async (_e, b) => { b.textContent = "Buscando…"; try { const r = await mk("google/sincronizar", { metodo: "POST", corpo: { marca_id: marcaId } }); aviso(`${r.avaliacoes_novas} avaliação(ões) nova(s).`, "ok"); navegar(); } catch (e) { aviso(e.message, "erro"); } finally { b.textContent = "Buscar avaliações agora"; } }, "btn-secundario btn-pequeno")) : null) : null,
+        contaGoogleDa(g, marcaId) && contaGoogleDa(g, marcaId).erro ? h("p", { class: "nota nota-alerta", text: "Última tentativa com o Google falhou: " + contaGoogleDa(g, marcaId).erro }) : null,
+        pode("AGENTE") ? h("div", { class: "acoes", style: "margin-top:10px" }, botao("Buscar e responder agora", async (_e, b) => {
+          b.textContent = "Buscando no Google…";
+          try {
+            const r = await mk("google/agora", { metodo: "POST", corpo: { marca_id: marcaId } });
+            aviso(r.aviso || `Google: ${r.avaliacoes_total} avaliação(ões) no perfil, ${r.avaliacoes_novas} nova(s). Lidas agora: ${r.analisadas}. Respondidas sozinha: ${r.publicadas}.${r.precisam_de_voce ? ` Precisam de você: ${r.precisam_de_voce}.` : ""}`, r.aviso ? "erro" : "ok");
+            cacheGoogle = null; navegar();
+          } catch (e) { aviso(e.message, "erro"); cacheGoogle = null; } finally { b.textContent = "Buscar e responder agora"; }
+        }, "btn-primario btn-pequeno")) : null) : null,
       pode("AGENTE") && !conectada ? h("section", { class: "cartao vidro formulario" }, h("h3", { style: "margin:0", text: "Registrar avaliação" }),
         h("div", { class: "linha-form" }, campo("Autor", autor), campo("Nota", nota)), campo("Texto", texto),
         h("div", { class: "acoes" }, botao("Registrar", async () => { try { await mk("avaliacoes", { metodo: "POST", corpo: { marca_id: marcaId, autor: autor.value, nota: nota.value, texto: texto.value } }); navegar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario"))) : null,
