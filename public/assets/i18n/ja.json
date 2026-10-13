@@ -1324,7 +1324,9 @@
   "O site e a plataforma estão em português, inglês, espanhol, alemão, italiano, francês, japonês e hindi. A DENIA cria conteúdo no idioma de cada marca e conversa com você no idioma escolhido.": "サイトとプラットフォームは、ポルトガル語、英語、スペイン語、ドイツ語、イタリア語、フランス語、日本語、ヒンディー語に対応しています。DENIAは各ブランドの言語でコンテンツを作成し、選んだ言語であなたと会話します。",
   "Produtos, serviços e ofertas para divulgar": "宣伝する商品・サービス・キャンペーン",
   "Quanto mais detalhes reais (produtos, preços, promoções, garantias), mais as legendas vendem. A IA nunca inventa preço ou promoção.": "実際の情報（商品、価格、キャンペーン、保証）が多いほど、キャプションの販売力が上がります。AIが価格やキャンペーンを勝手に作ることはありません。",
-  "Ex.: segunda, quarta e sexta às 18h, sábado às 10h": "例：月・水・金の18時、土曜の10時"
+  "Ex.: segunda, quarta e sexta às 18h, sábado às 10h": "例：月・水・金の18時、土曜の10時",
+  "A logo da marca é enviada logo depois de salvar (o campo aparece na sequência).": "ブランドのロゴは保存後すぐにアップロードできます（次に欄が表示されます）。",
+  "Marca salva. Agora envie a logo da marca.": "ブランドを保存しました。次にブランドのロゴをアップロードしてください。"
  },
  "h": {
   "1 lugarpara toda a operação": "<strong>1か所</strong><span>で業務全体を管理</span>",
