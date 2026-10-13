@@ -1329,7 +1329,16 @@
   "Marca salva. Agora envie a logo da marca.": "ब्रांड सेव हो गया। अब ब्रांड का लोगो अपलोड करें।",
   "Revisor de aprendizados": "लर्निंग समीक्षक",
   "Seu perfil só tem acesso aos aprendizados da IA.": "आपकी प्रोफ़ाइल को केवल AI की सीख तक पहुँच है।",
-  "Vá em Workers e Pages → denia-landing → Settings → Variables and Secrets → Add, escolha o tipo Secret, crie com o nome exato e clique em Deploy. Depois volte aqui e clique em Conectar de novo.": "Workers & Pages → denia-landing → Settings → Variables and Secrets → Add पर जाएँ, Secret टाइप चुनें, बिल्कुल सही नाम से बनाएँ और Deploy पर क्लिक करें। फिर यहाँ लौटकर दोबारा कनेक्ट पर क्लिक करें।"
+  "Vá em Workers e Pages → denia-landing → Settings → Variables and Secrets → Add, escolha o tipo Secret, crie com o nome exato e clique em Deploy. Depois volte aqui e clique em Conectar de novo.": "Workers & Pages → denia-landing → Settings → Variables and Secrets → Add पर जाएँ, Secret टाइप चुनें, बिल्कुल सही नाम से बनाएँ और Deploy पर क्लिक करें। फिर यहाँ लौटकर दोबारा कनेक्ट पर क्लिक करें।",
+  "Escreva (ou dite pelo microfone do teclado) o que foi conversado por telefone. A DENIA passa a considerar isso como informação confirmada nesta conversa.": "फ़ोन पर जो बात हुई, उसे लिखें (या कीबोर्ड के माइक से बोलकर लिखें)। DENIA इस बातचीत में इसे पक्की जानकारी मानेगी।",
+  "Escreva o resumo da ligação.": "कॉल का सारांश लिखें।",
+  "Ex.: Liguei para o cliente. Ele prefere atendimento depois das 14h, o portão é azul e já tem a peça em casa.": "उदा.: मैंने ग्राहक को कॉल किया। उन्हें दोपहर 2 बजे के बाद विज़िट चाहिए, गेट नीला है और पार्ट उनके पास पहले से है।",
+  "Resumo da ligação": "कॉल का सारांश",
+  "Resumo de ligação ·": "कॉल सारांश ·",
+  "Resumo salvo. A DENIA já considera o que foi combinado.": "सारांश सेव हो गया। DENIA अब तय की गई बातों को ध्यान में रखेगी।",
+  "Salvar resumo": "सारांश सेव करें",
+  "msg msg-ligacao": "msg msg-ligacao",
+  "📞 Registrar ligação": "📞 कॉल दर्ज करें"
  },
  "h": {
   "1 lugarpara toda a operação": "<strong>1 जगह</strong><span>पूरे ऑपरेशन के लिए</span>",
