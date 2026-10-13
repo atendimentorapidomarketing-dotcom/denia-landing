@@ -1299,7 +1299,9 @@
   "O Instagram não conseguiu baixar a imagem do post. Gere a arte de novo e tente outra vez.": "Instagramが投稿の画像をダウンロードできませんでした。画像をもう一度生成して、再度お試しください。",
   "O acesso à conta da Meta expirou ou foi removido. Conecte de novo em Marcas.": "Metaアカウントへのアクセスの有効期限が切れたか、削除されました。「ブランド」でもう一度接続してください。",
   "O pedido de conexão expirou. Volte à plataforma e clique em Conectar de novo.": "接続リクエストの有効期限が切れました。プラットフォームに戻り、もう一度「接続」をクリックしてください。",
-  "Quase pronto": "あと少しです"
+  "Quase pronto": "あと少しです",
+  "Aprovando…": "承認中…",
+  "Post aprovado. A marca ainda não está conectada ao Instagram/Facebook: vá em Marcas → Conectar para ele sair sozinho.": "投稿を承認しました。ブランドはまだInstagram/Facebookに接続されていません。自動で公開するには「ブランド → 接続」へ進んでください。"
  },
  "h": {
   "1 lugarpara toda a operação": "<strong>1か所</strong><span>で業務全体を管理</span>",
@@ -1425,6 +1427,7 @@
   "Desconectar {0}?": "{0}の接続を解除しますか？",
   "Instagram @{0}": "Instagram @{0}",
   "Post #{0} aprovado. {1}": "投稿 #{0} を承認しました。{1}",
-  "{0}: publicado": "{0}：公開済み"
+  "{0}: publicado": "{0}：公開済み",
+  "Post aprovado. Ele sai sozinho em {0}/{1} às {2} (horário de Brasília). Para publicar já, abra o post e clique em Publicar agora.": "投稿を承認しました。{0}/{1} {2}（ブラジリア時間）に自動で公開されます。今すぐ公開するには、投稿を開いて「今すぐ公開」をクリックしてください。"
  }
 }

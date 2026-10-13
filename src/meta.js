@@ -258,6 +258,23 @@ export async function publicarPost(env, k, p, base) {
   return { ok: tudo, publicacao: feito, resumo: tudo ? `Publicado. ${links.join(" · ")}`.trim() : erros.join(" | ") };
 }
 
+// Logo após aprovar: se o dia e a hora do post já chegaram (ou não há data), publica na hora;
+// senão, diz quando vai sair. Sem marca conectada, avisa o que falta.
+export async function aoAprovar(request, env, k, p) {
+  await garantir(env);
+  const conta = await env.DB.prepare("SELECT id FROM plt_mk_contas WHERE org_id=? AND marca_id=?").bind(p.org_id, p.marca_id).first();
+  if (!metaConfigurada(env) || !conta) return { publicado: false, resumo: "Post aprovado. A marca ainda não está conectada ao Instagram/Facebook: vá em Marcas → Conectar para ele sair sozinho." };
+  const quando = p.data ? Date.parse(`${p.data}T${p.hora || "00:00"}:00-03:00`) : NaN;
+  if (Number.isFinite(quando) && quando > k.agora(env)) {
+    const [, mes, dia] = p.data.split("-");
+    return { publicado: false, resumo: `Post aprovado. Ele sai sozinho em ${dia}/${mes} às ${p.hora || "00:00"} (horário de Brasília). Para publicar já, abra o post e clique em Publicar agora.` };
+  }
+  const base = baseDe(request);
+  await guardarBase(env, base);
+  const r = await publicarPost(env, k, { ...p, status: "APROVADO" }, base).catch(e => ({ ok: false, resumo: e.message }));
+  return { publicado: r.ok, resumo: r.ok ? `Post aprovado e ${r.resumo.charAt(0).toLowerCase()}${r.resumo.slice(1)}` : `Post aprovado, mas a publicação falhou: ${r.resumo}` };
+}
+
 // Cron (a cada 5 min): publica os posts aprovados cujo dia e hora já chegaram.
 export async function publicarPendentes(env, k) {
   await garantir(env);
