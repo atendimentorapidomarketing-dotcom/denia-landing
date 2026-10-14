@@ -898,6 +898,15 @@ test("Google Meu Negócio — conectar o perfil, trazer avaliações e desempenh
   await p.req("/api/orgs/1/mk/google/sincronizar", { metodo: "POST", quem: "admin", corpo: { marca_id: marca } });
   assert.equal((await p.req(`/api/orgs/1/mk/avaliacoes?marca=${marca}`, { quem: "admin" })).dados.avaliacoes.length, 2);
 
+  // Avaliação que some do Google (denúncia aceita) fica marcada como removida.
+  const googleAntes = p.google;
+  p.google = (url, metodo, corpo) => url.includes("/reviews?") ? { reviews: [{ reviewId: "r2", reviewer: { displayName: "Bruno" }, starRating: "TWO", comment: "Demorou.", reviewReply: { comment: "Sentimos muito, Bruno." } }] } : googleAntes(url, metodo, corpo);
+  const sinc2 = await p.req("/api/orgs/1/mk/google/sincronizar", { metodo: "POST", quem: "admin", corpo: { marca_id: marca } });
+  assert.equal(sinc2.dados.avaliacoes_removidas, 1);
+  assert.ok((await p.req(`/api/orgs/1/mk/avaliacoes?marca=${marca}`, { quem: "admin" })).dados.avaliacoes.find(a => a.autor === "Ana").removida_ms);
+  p.google = googleAntes;
+  await p.req("/api/orgs/1/mk/google/sincronizar", { metodo: "POST", quem: "admin", corpo: { marca_id: marca } });
+  assert.equal((await p.req(`/api/orgs/1/mk/avaliacoes?marca=${marca}`, { quem: "admin" })).dados.avaliacoes.find(a => a.autor === "Ana").removida_ms, null, "se voltar a aparecer, deixa de contar como removida");
   // Desempenho: semanas gravadas e números ao vivo com as buscas do mês.
   const sem = (await p.req(`/api/orgs/1/mk/metricas?marca=${marca}`, { quem: "admin" })).dados.metricas;
   assert.equal(sem.length, 2);
@@ -1003,6 +1012,34 @@ test("Avaliações no automático — a DENIA responde sozinha no Google as norm
   assert.equal(avs.find(a => a.autor === "Bia").status, "RESPONDIDA");
   assert.equal(avs.find(a => a.autor === "Ana").status, "RESPONDIDA");
   assert.equal(avs.find(a => a.autor === "Rui").status, "PENDENTE");
+});
+
+test("Triagem 1★ — confere a base de clientes, aponta o tópico de denúncia e acompanha a remoção", async () => {
+  const p = await criarPlataforma({ OPENAI_API_KEY: "sk-teste" });
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  await p.req("/api/orgs/1/integracao", { metodo: "POST", quem: "admin", corpo: { engine_url: "https://engine.test", token: TOKEN_ENGINE } });
+  p.engine.llmCliente = () => ({ resposta: "Oi!", intencao: "CONVERSA", fatos: {} });
+  await p.engine.cliente("5521911112222", "Oi", { nome: "Márcia Ferreira" });
+  const marca = (await p.req("/api/orgs/1/mk/marcas", { metodo: "POST", quem: "admin", corpo: { nome: "Oficina" } })).dados.id;
+  const real = (await p.req("/api/orgs/1/mk/avaliacoes", { metodo: "POST", quem: "admin", corpo: { marca_id: marca, autor: "Márcia Ferreira", nota: 1, texto: "O técnico atrasou 2 horas." } })).dados.id;
+  const falsa = (await p.req("/api/orgs/1/mk/avaliacoes", { metodo: "POST", quem: "admin", corpo: { marca_id: marca, autor: "Carlos Mendes Rocha", nota: 1, texto: "Péssimo, não recomendo." } })).dados.id;
+  const pedidos = [];
+  p.openai = (url, corpo) => {
+    const t = corpo?.input?.[0]?.content?.[0]?.text || ""; pedidos.push(t);
+    const r = /NÃO está na base/.test(t) ? { veredito: "PROVAVEL_FALSA", categoria: "Spam", evidencias: ["não é cliente"], motivo: "Não está na base e o texto é genérico.", justificativa: "Não há registro desta pessoa como cliente." }
+      : { veredito: "PARECE_REAL", categoria: "", motivo: "Cliente real reclamando de atraso." };
+    return { output: [{ content: [{ type: "output_text", text: JSON.stringify(r) }] }] };
+  };
+  const tri = await p.req("/api/orgs/1/mk/avaliacoes/triagem", { metodo: "POST", quem: "admin", corpo: { marca_id: marca } });
+  assert.deepEqual([tri.dados.feitas, tri.dados.restantes], [2, 0]);
+  assert.ok(pedidos.some(t => /Márcia Ferreira[\s\S]*ESTÁ na base de clientes \(WhatsApp/.test(t)));
+  assert.ok(pedidos.some(t => /Carlos Mendes Rocha[\s\S]*NÃO está na base de clientes/.test(t)));
+  const avs = (await p.req(`/api/orgs/1/mk/avaliacoes?marca=${marca}`, { quem: "admin" })).dados.avaliacoes;
+  const tf = JSON.parse(avs.find(a => a.id === falsa).triagem), tr = JSON.parse(avs.find(a => a.id === real).triagem);
+  assert.deepEqual([tf.veredito, tf.categoria, tr.veredito, tr.categoria], ["PROVAVEL_FALSA", "Spam", "PARECE_REAL", ""]);
+  const den = await p.req(`/api/orgs/1/mk/avaliacoes/${falsa}/denuncia`, { metodo: "POST", quem: "admin", corpo: { status: "DENUNCIADA", categoria: "Spam" } });
+  assert.equal(den.dados.denuncia.status, "DENUNCIADA");
+  assert.equal((await p.req("/api/orgs/1/mk/avaliacoes/triagem", { metodo: "POST", quem: "admin", corpo: { marca_id: marca } })).dados.feitas, 0, "não refaz o que já foi analisado");
 });
 
 test("Google Meu Negócio — sem os secrets, a plataforma diz o que falta", async () => {

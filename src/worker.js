@@ -49,6 +49,7 @@ const ROTAS_ENGINE = [
   ["POST", /^conversations\/\d{1,12}\/(send|takeover|release)$/, "AGENTE", "CONVERSA"],
   ["POST", /^conversations\/\d{1,12}\/type$/, "AGENTE", "CONVERSA"],
   ["POST", /^conversations\/\d{1,12}\/note$/, "AGENTE", "CONVERSA"],
+  ["POST", /^clients\/match$/, "AGENTE"],
   ["GET", /^cases$/, "VISUALIZADOR"],
   ["POST", /^cases\/\d{1,12}\/status$/, "AGENTE", "ATENDIMENTO"],
   ["GET", /^professionals$/, "VISUALIZADOR"],
@@ -723,7 +724,15 @@ async function apiOrg(request, env, sessao, orgId, resto) {
       return json({ ok: false, erro: msg });
     } catch (e) { return json({ ok: false, erro: "Não consegui falar com a OpenAI: " + txt(e?.message, 120) }); }
   }
-  if (resto.startsWith("mk/")) return apiMarketing(request, await comIA(env, orgId), kit, orgId, papel, resto.slice(3));
+  if (resto.startsWith("mk/")) {
+    // O marketing também consulta a IA do WhatsApp (ex.: a triagem das avaliações confere a base de clientes).
+    const engine = async (metodo, caminho, corpo) => {
+      const req = new Request(new URL(`/api/orgs/${orgId}/engine/${caminho}`, request.url), { method: metodo, headers: { "content-type": "application/json", origin: new URL(request.url).origin }, body: metodo === "POST" ? JSON.stringify(corpo || {}) : undefined });
+      const r = await proxyEngine(req, env, sessao, orgId, papel, caminho);
+      return { status: r.status, dados: await r.json().catch(() => ({})) };
+    };
+    return apiMarketing(request, await comIA(env, orgId), { ...kit, engine }, orgId, papel, resto.slice(3));
+  }
   if (resto.startsWith("assistente/")) {
     // A DENIA age pelo comando de voz usando as mesmas rotas (e permissões) do painel.
     const interno = (base) => async (metodo, caminho, corpo) => {
