@@ -440,3 +440,5 @@ body.ao-vivo .denia-orbe span { animation-duration: 0.9s; box-shadow: 0 0 26px r
 .cor-amarelo { border-left: 4px solid #facc15 !important; }
 .cor-verde { border-left: 4px solid #22c55e !important; }
 .cor-cinza { border-left: 4px solid rgba(127, 127, 127, 0.4) !important; }
+.plano-avaliacao { border: 1px solid rgba(79, 140, 255, 0.35); background: rgba(79, 140, 255, 0.07); border-radius: 10px; padding: 8px 12px; font-size: 14px; }
+.plano-avaliacao ol { margin: 6px 0 0; }

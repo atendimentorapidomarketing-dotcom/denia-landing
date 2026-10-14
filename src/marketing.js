@@ -743,7 +743,8 @@ Responda em JSON: {"resposta":""}`, `${resumoMarca(marca)}\n\nAvaliação de ${a
       const c = await corpoOu(1000);
       const marca = await marcaDa(c.marca_id);
       if (!marca) return json({ erro: "Escolha a marca." }, 400);
-      const todas = (await env.DB.prepare("SELECT * FROM plt_mk_avaliacoes WHERE org_id=? AND marca_id=? AND nota<=2 AND removida_ms IS NULL ORDER BY id DESC LIMIT 5000").bind(orgId, marca.id).all())?.results || [];
+      // Uma avaliação escolhida pode ser de até 3 estrelas ("O que fazer com esta avaliação?"); a triagem geral é das de 1 e 2.
+      const todas = (await env.DB.prepare("SELECT * FROM plt_mk_avaliacoes WHERE org_id=? AND marca_id=? AND nota<=? AND removida_ms IS NULL ORDER BY id DESC LIMIT 5000").bind(orgId, marca.id, Array.isArray(c.ids) ? 3 : 2).all())?.results || [];
       const escolhidas = Array.isArray(c.ids) ? new Set(c.ids.map(Number)) : null;
       const pendentes = escolhidas ? todas.filter(a => escolhidas.has(a.id) && !String(a.triagem || "").includes(`"lote":"${c.lote || ""}"`))
         : todas.filter(a => c.refazer ? !String(a.triagem || "").includes(`"lote":"${c.lote || ""}"`) : !a.triagem);
@@ -760,6 +761,7 @@ Responda em JSON: {"resposta":""}`, `${resumoMarca(marca)}\n\nAvaliação de ${a
       const repetidos = {};
       for (const a of todas) { const t = normal(a.texto); if (t.length > 8) repetidos[t] = (repetidos[t] || 0) + 1; }
       let feitas = 0;
+      const resultados = {};
       for (const a of lote) {
         const sinais = [];
         const m = base?.resultado?.[a.autor || ""];
@@ -777,11 +779,13 @@ Responda em JSON: {"resposta":""}`, `${resumoMarca(marca)}\n\nAvaliação de ${a
         else if ((repetidos[normal(a.texto)] || 0) > 1) sinais.push(`O mesmo texto aparece em ${repetidos[normal(a.texto)]} avaliações.`);
         try {
           const t = await triarAvaliacao(env, marca, a, sinais);
-          await env.DB.prepare("UPDATE plt_mk_avaliacoes SET triagem=? WHERE id=?").bind(JSON.stringify({ ...t, lote: c.lote || "", em: agora(env) }), a.id).run();
+          const tri = { ...t, lote: c.lote || "", em: agora(env) };
+          await env.DB.prepare("UPDATE plt_mk_avaliacoes SET triagem=? WHERE id=?").bind(JSON.stringify(tri), a.id).run();
+          resultados[a.id] = tri;
           feitas++;
         } catch (e) { return json({ erro: e.message, feitas, restantes: pendentes.length - feitas }, 502); }
       }
-      return json({ ok: true, feitas, restantes: Math.max(0, pendentes.length - feitas), total: todas.length, base_clientes: base ? base.base : null });
+      return json({ ok: true, feitas, restantes: Math.max(0, pendentes.length - feitas), total: todas.length, base_clientes: base ? base.base : null, resultados });
     }
     if ((m = resto.match(/^avaliacoes\/(\d{1,12})\/denuncia$/)) && metodo === "POST") {
       exigir("AGENTE");
