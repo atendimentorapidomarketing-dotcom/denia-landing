@@ -24,7 +24,7 @@ const DDL = [
 ];
 const ALTERS = ["ALTER TABLE plt_mk_google ADD COLUMN desempenho_ms INTEGER", "ALTER TABLE plt_mk_google ADD COLUMN erro TEXT", "ALTER TABLE plt_mk_google ADD COLUMN maps_uri TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN removida_ms INTEGER",
   "ALTER TABLE plt_mk_avaliacoes ADD COLUMN visto_ms INTEGER", "ALTER TABLE plt_mk_google ADD COLUMN sync_token TEXT", "ALTER TABLE plt_mk_google ADD COLUMN sync_inicio_ms INTEGER",
-  "ALTER TABLE plt_mk_google ADD COLUMN total_google INTEGER", "ALTER TABLE plt_mk_google ADD COLUMN media_google REAL"];
+  "ALTER TABLE plt_mk_google ADD COLUMN total_google INTEGER", "ALTER TABLE plt_mk_google ADD COLUMN media_google REAL", "ALTER TABLE plt_mk_google ADD COLUMN completo_ms INTEGER"];
 const prontos = new WeakSet();
 async function garantir(env) {
   if (prontos.has(env.DB)) return;
@@ -110,7 +110,8 @@ export async function rotasGoogle(request, env, k, orgId, papel, resto) {
   const url = new URL(request.url);
 
   if (resto === "google/estado" && metodo === "GET") {
-    const contas = (await env.DB.prepare("SELECT marca_id, local_titulo, atualizado_ms, sincronizado_ms, erro, total_google, media_google, sync_token IS NOT NULL AS lendo FROM plt_mk_google WHERE org_id=?").bind(orgId).all())?.results || [];
+    const contas = (await env.DB.prepare(`SELECT marca_id, local_titulo, atualizado_ms, sincronizado_ms, erro, total_google, media_google, sync_token IS NOT NULL AS lendo,
+      (SELECT COUNT(*) FROM plt_mk_avaliacoes a WHERE a.org_id=g.org_id AND a.marca_id=g.marca_id AND a.google_id IS NOT NULL AND a.removida_ms IS NULL) AS na_denia FROM plt_mk_google g WHERE org_id=?`).bind(orgId).all())?.results || [];
     return json({ configurada: googleConfigurada(env), faltando: faltando(env), contas });
   }
   if (resto === "google/conectar" && metodo === "GET") {
@@ -277,7 +278,7 @@ async function sincronizarAvaliacoes(env, k, conta, token, { paginas = 20, conti
       WHERE org_id=?2 AND marca_id=?3 AND google_id IN (SELECT json_extract(value,'$.id') FROM json_each(?1))`).bind(JSON.stringify(mudouResposta.slice(i, i + 150).map(r => ({ id: r.id, r: r.r }))), conta.org_id, conta.marca_id));
   // Vistas agora no Google: não estão removidas.
   for (let i = 0; i < ids.length; i += 400) st.push(env.DB.prepare("UPDATE plt_mk_avaliacoes SET visto_ms=?, removida_ms=NULL WHERE org_id=? AND marca_id=? AND google_id IN (SELECT value FROM json_each(?))").bind(agoraMs, conta.org_id, conta.marca_id, JSON.stringify(ids.slice(i, i + 400))));
-  if (!rapida) st.push(env.DB.prepare("UPDATE plt_mk_google SET sync_token=?, sync_inicio_ms=? WHERE id=?").bind(completo ? null : pagina, completo ? null : inicioPassada, conta.id));
+  if (!rapida) st.push(env.DB.prepare("UPDATE plt_mk_google SET sync_token=?, sync_inicio_ms=?, completo_ms=COALESCE(?, completo_ms) WHERE id=?").bind(completo ? null : pagina, completo ? null : inicioPassada, completo ? agoraMs : null, conta.id));
   if (info.total != null) st.push(env.DB.prepare("UPDATE plt_mk_google SET total_google=?, media_google=? WHERE id=?").bind(info.total, info.media, conta.id));
   if (st.length) await env.DB.batch(st);
   let removidas = 0;
@@ -381,10 +382,16 @@ export async function sincronizarConta(env, k, conta, { forcarDesempenho = true,
 export async function sincronizarGooglePendentes(env, k) {
   if (!googleConfigurada(env)) return { sincronizadas: 0 };
   await garantir(env);
-  const contas = (await env.DB.prepare("SELECT * FROM plt_mk_google WHERE sincronizado_ms IS NULL OR sincronizado_ms < ? ORDER BY sincronizado_ms LIMIT 5").bind(k.agora(env) - SINCRONIZAR_A_CADA_MS).all())?.results || [];
-  let n = 0;
+  const contas = (await env.DB.prepare(`SELECT g.*, (SELECT COUNT(*) FROM plt_mk_avaliacoes a WHERE a.org_id=g.org_id AND a.marca_id=g.marca_id AND a.google_id IS NOT NULL AND a.removida_ms IS NULL) AS na_denia
+    FROM plt_mk_google g WHERE g.sincronizado_ms IS NULL OR g.sincronizado_ms < ? ORDER BY g.sincronizado_ms LIMIT 5`).bind(k.agora(env) - SINCRONIZAR_A_CADA_MS).all())?.results || [];
+  let n = 0, completas = 0;
   for (const c of contas) {
-    try { await sincronizarConta(env, k, c, { forcarDesempenho: false, completa: false }); n++; }
+    // Faltando avaliações (perfil grande, leitura interrompida) ou uma vez por dia: continua a leitura completa,
+    // em partes, uma conta por rodada. Nas outras rodadas, só as novas.
+    const faltam = c.sync_token || c.total_google == null || Number(c.na_denia) < Number(c.total_google) || !c.completo_ms || c.completo_ms < k.agora(env) - 86400000;
+    const completa = faltam && completas === 0;
+    if (completa) completas++;
+    try { await sincronizarConta(env, k, c, { forcarDesempenho: false, completa, continuar: Boolean(completa && c.sync_token) }); n++; }
     catch (e) {
       console.error("google sync", c.id, e?.message);
       // Guarda o motivo para aparecer no painel; tenta de novo na próxima rodada.
