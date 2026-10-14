@@ -1,5 +1,5 @@
 import { rotasMeta, aoAprovar } from "./meta.js";
-import { rotasGoogle, responderAvaliacaoGoogle, contaGoogleDe, desempenhoAoVivo, sincronizarConta, linkDoPerfil } from "./google.js";
+import { rotasGoogle, responderAvaliacaoGoogle, apagarRespostaGoogle, contaGoogleDe, desempenhoAoVivo, sincronizarConta, linkDoPerfil } from "./google.js";
 // ============================================================================
 // DENIA Platform — Estúdio de Marketing e Assistente DENIA (texto e voz)
 // ============================================================================
@@ -390,7 +390,7 @@ export async function apiMarketing(request, env, k, orgId, papel, resto) {
     const conta = await contaGoogleDe(env, orgId, Number(corpo.marca_id));
     if (!conta) return json({ erro: "Esta marca ainda não está conectada ao Google (Marcas → Conectar Google)." }, 409);
     let sinc;
-    try { sinc = await sincronizarConta(env, k, conta, { forcarDesempenho: false }); }
+    try { sinc = await sincronizarConta(env, k, conta, { forcarDesempenho: false, completa: false }); }
     catch (e) {
       await env.DB.prepare("UPDATE plt_mk_google SET erro=? WHERE id=?").bind(String(e?.message || e).slice(0, 400), conta.id).run();
       return json({ erro: "O Google recusou a busca: " + e.message }, 502);
@@ -655,14 +655,31 @@ Responda em JSON: {"titulo":"","legenda":"","hashtags":"","chamada":"","texto_ar
         if (filtro === "PENDENTE" || filtro === "RESPONDIDA") { conds.push("status=?"); args.push(filtro); }
         if (filtro === "PRECISAM") conds.push(`status='PENDENTE' AND ${precisa}`);
         if (nota >= 1 && nota <= 5) { conds.push("nota=?"); args.push(nota); }
+        // Filtros da triagem (avaliações negativas)
+        const notaMax = Number(q.get("nota_max") || 0);
+        if (notaMax >= 1 && notaMax <= 5) { conds.push("nota<=?"); args.push(notaMax); base.push("nota<=?"); baseArgs.push(notaMax); }
+        const veredito = String(q.get("veredito") || "");
+        if (["PROVAVEL_FALSA", "DUVIDOSA", "PARECE_REAL"].includes(veredito)) { conds.push("json_extract(triagem,'$.veredito')=?"); args.push(veredito); }
+        if (veredito === "SEM") conds.push("triagem IS NULL");
+        const resp = String(q.get("resposta") || "");
+        if (resp === "COM") conds.push("resposta IS NOT NULL AND TRIM(resposta)<>''");
+        if (resp === "SEM") conds.push("(resposta IS NULL OR TRIM(resposta)='')");
+        const den = String(q.get("denuncia") || "");
+        if (den === "NAO") conds.push("denuncia IS NULL");
+        if (den === "DENUNCIADA" || den === "RECUSADA") { conds.push("json_extract(denuncia,'$.status')=?"); args.push(den); }
         if (busca) { conds.push("(autor LIKE ? OR texto LIKE ?)"); args.push(`%${busca}%`, `%${busca}%`); }
         const [lista, achadas, resumo] = await Promise.all([
           env.DB.prepare(`SELECT * FROM plt_mk_avaliacoes WHERE ${conds.join(" AND ")} ORDER BY (status='PENDENTE' AND ${precisa}) DESC, status='RESPONDIDA', id DESC LIMIT ? OFFSET ?`).bind(...args, tam, pagina * tam).all(),
           env.DB.prepare(`SELECT COUNT(*) n FROM plt_mk_avaliacoes WHERE ${conds.join(" AND ")}`).bind(...args).first(),
           env.DB.prepare(`SELECT COUNT(*) total, AVG(nota) media, SUM(status='PENDENTE') pendentes, SUM(nota<=3) negativas, SUM(status='PENDENTE' AND ${precisa}) precisam,
-            SUM(nota=5) n5, SUM(nota=4) n4, SUM(nota=3) n3, SUM(nota=2) n2, SUM(nota=1) n1 FROM plt_mk_avaliacoes WHERE ${base.join(" AND ")}`).bind(...baseArgs).first()
+            SUM(nota=5) n5, SUM(nota=4) n4, SUM(nota=3) n3, SUM(nota=2) n2, SUM(nota=1) n1,
+            SUM(resposta IS NOT NULL AND TRIM(resposta)<>'') com_resposta, SUM(triagem IS NULL) sem_triagem,
+            SUM(json_extract(triagem,'$.veredito')='PROVAVEL_FALSA') falsas, SUM(json_extract(triagem,'$.veredito')='DUVIDOSA') duvidosas, SUM(json_extract(triagem,'$.veredito')='PARECE_REAL') reais,
+            SUM(json_extract(denuncia,'$.status')='DENUNCIADA') denunciadas, SUM(json_extract(denuncia,'$.status')='RECUSADA') recusadas
+            FROM plt_mk_avaliacoes WHERE ${base.join(" AND ")}`).bind(...baseArgs).first()
         ]);
-        return json({ avaliacoes: lista?.results || [], encontradas: achadas?.n || 0, pagina, por_pagina: tam, resumo: resumo || {} });
+        const remov = await env.DB.prepare(`SELECT COUNT(*) n FROM plt_mk_avaliacoes WHERE org_id=? ${marca ? "AND marca_id=?" : ""} ${notaMax ? "AND nota<=?" : ""} AND removida_ms IS NOT NULL`).bind(orgId, ...(marca ? [marca] : []), ...(notaMax ? [notaMax] : [])).first();
+        return json({ avaliacoes: lista?.results || [], encontradas: achadas?.n || 0, pagina, por_pagina: tam, resumo: { ...(resumo || {}), removidas: remov?.n || 0 } });
       }
       const marca = Number(q.get("marca") || 0), notaMax = Number(q.get("nota_max") || 0);
       const args = [orgId, ...(marca ? [marca] : []), ...(notaMax ? [notaMax] : [])];
@@ -715,8 +732,10 @@ Responda em JSON: {"resposta":""}`, `${resumoMarca(marca)}\n\nAvaliação de ${a
       const c = await corpoOu(1000);
       const marca = await marcaDa(c.marca_id);
       if (!marca) return json({ erro: "Escolha a marca." }, 400);
-      const todas = (await env.DB.prepare("SELECT * FROM plt_mk_avaliacoes WHERE org_id=? AND marca_id=? AND nota<=2 AND removida_ms IS NULL ORDER BY id DESC LIMIT 1000").bind(orgId, marca.id).all())?.results || [];
-      const pendentes = todas.filter(a => c.refazer ? !String(a.triagem || "").includes(`"lote":"${c.lote || ""}"`) : !a.triagem);
+      const todas = (await env.DB.prepare("SELECT * FROM plt_mk_avaliacoes WHERE org_id=? AND marca_id=? AND nota<=2 AND removida_ms IS NULL ORDER BY id DESC LIMIT 5000").bind(orgId, marca.id).all())?.results || [];
+      const escolhidas = Array.isArray(c.ids) ? new Set(c.ids.map(Number)) : null;
+      const pendentes = escolhidas ? todas.filter(a => escolhidas.has(a.id) && !String(a.triagem || "").includes(`"lote":"${c.lote || ""}"`))
+        : todas.filter(a => c.refazer ? !String(a.triagem || "").includes(`"lote":"${c.lote || ""}"`) : !a.triagem);
       const lote = pendentes.slice(0, 12);
       // Sinais que valem para todas: quem está na base de clientes, avaliações em sequência e textos repetidos.
       let base = null;
@@ -763,6 +782,30 @@ Responda em JSON: {"resposta":""}`, `${resumoMarca(marca)}\n\nAvaliação de ${a
       await env.DB.prepare("UPDATE plt_mk_avaliacoes SET denuncia=? WHERE id=?").bind(reg ? JSON.stringify(reg) : null, a.id).run();
       if (reg) await auditar(env, request, sessao, orgId, "MARKETING", `Avaliação de ${a.autor}: ${status === "DENUNCIADA" ? "denunciada ao Google" : "denúncia recusada pelo Google"}${reg.categoria ? " (" + reg.categoria + ")" : ""}`);
       return json({ ok: true, denuncia: reg });
+    }
+    if (resto === "avaliacoes/denuncia-lote" && metodo === "POST") {
+      exigir("AGENTE");
+      const c = await corpoOu(40000);
+      const ids = (Array.isArray(c.ids) ? c.ids : []).map(Number).filter(Boolean).slice(0, 500);
+      const status = ["DENUNCIADA", "RECUSADA"].includes(c.status) ? c.status : null;
+      if (!ids.length) return json({ erro: "Selecione as avaliações." }, 400);
+      // Cada uma guarda o próprio tópico indicado pela triagem.
+      await env.DB.prepare(`UPDATE plt_mk_avaliacoes SET denuncia=CASE WHEN ? IS NULL THEN NULL ELSE json_object('status', ?, 'categoria', COALESCE(json_extract(triagem,'$.categoria'),''), 'em', ?, 'por', ?) END
+        WHERE org_id=? AND id IN (SELECT value FROM json_each(?))`).bind(status, status, agora(env), autor, orgId, JSON.stringify(ids)).run();
+      await auditar(env, request, sessao, orgId, "MARKETING", `${ids.length} avaliação(ões) ${status === "DENUNCIADA" ? "marcadas como denunciadas ao Google" : status === "RECUSADA" ? "marcadas como recusadas pelo Google" : "sem marcação de denúncia"}`);
+      return json({ ok: true, marcadas: ids.length });
+    }
+    if ((m = resto.match(/^avaliacoes\/(\d{1,12})\/apagar-resposta$/)) && metodo === "POST") {
+      exigir("ADMIN");
+      const a = await env.DB.prepare("SELECT * FROM plt_mk_avaliacoes WHERE id=? AND org_id=?").bind(Number(m[1]), orgId).first();
+      if (!a) return json({ erro: "Avaliação não encontrada." }, 404);
+      if (a.google_id) {
+        try { await apagarRespostaGoogle(env, k, a); }
+        catch (e) { return json({ erro: "O Google não apagou a resposta: " + e.message }, 502); }
+      }
+      await env.DB.prepare("UPDATE plt_mk_avaliacoes SET resposta=NULL, status='PENDENTE' WHERE id=?").bind(a.id).run();
+      await auditar(env, request, sessao, orgId, "MARKETING", `Apagou a resposta da avaliação de ${a.autor} (${a.nota}★)${a.google_id ? " no Google" : ""}`);
+      return json({ ok: true });
     }
     if (resto === "google/link" && metodo === "GET") {
       const conta = await contaGoogleDe(env, orgId, Number(new URL(request.url).searchParams.get("marca")));
