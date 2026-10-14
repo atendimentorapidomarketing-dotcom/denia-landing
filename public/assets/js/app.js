@@ -227,15 +227,16 @@
     aprendizados: { titulo: "Aprendizados", render: paginaAprendizados },
     clientes: { titulo: "Base de clientes", render: paginaClientes },
     integracoes: { titulo: "Integrações", render: paginaIntegracoes },
+    consumo: { titulo: "Consumo e custos", render: paginaConsumo, minimo: "ADMIN" },
     equipe: { titulo: "Equipe", render: paginaEquipe, minimo: "ADMIN" },
     auditoria: { titulo: "Auditoria", render: paginaAuditoria, minimo: "ADMIN" },
     empresas: { titulo: "Empresas", render: paginaEmpresas, superAdmin: true },
     conta: { titulo: "Conta e segurança", render: paginaConta },
     whatsapp: { titulo: "WhatsApp", render: paginaWhatsapp },
-    instagram: { titulo: "Instagram", render: (el, _p, vivo) => paginaCanalSocial(el, "instagram", vivo) },
-    facebook: { titulo: "Facebook", render: (el, _p, vivo) => paginaCanalSocial(el, "facebook", vivo) },
+    instagram: { titulo: "Instagram", render: (el, aba, vivo) => paginaCanalSocial(el, "instagram", vivo, aba) },
+    facebook: { titulo: "Facebook", render: (el, aba, vivo) => paginaCanalSocial(el, "facebook", vivo, aba) },
     google: { titulo: "Google Meu Negócio", render: paginaGoogle },
-    social: { titulo: "Instagram", render: (el, _p, vivo) => paginaCanalSocial(el, "instagram", vivo) },
+    social: { titulo: "Instagram", render: (el, aba, vivo) => paginaCanalSocial(el, "instagram", vivo, aba) },
     estudio: { titulo: "Estúdio de Marketing", render: paginaEstudio },
     calendario: { titulo: "Calendário", render: paginaCalendario },
     aprovacoes: { titulo: "Aprovações", render: paginaAprovacoes },
@@ -1810,50 +1811,232 @@
   }
 
   // ----- Canais Instagram e Facebook
-  async function paginaCanalSocial(el, canal, vivo) {
+  // ----- Instagram e Facebook: visão geral com números, publicações, comentários, agenda, concorrentes e conexão
+  const METRICAS_IG = [["alcance", "Alcance", "Contas diferentes que viram o conteúdo"], ["visualizacoes", "Visualizações", "Vezes que o conteúdo foi visto"], ["contas_engajadas", "Contas engajadas", "Pessoas que interagiram"], ["interacoes", "Interações", "Curtidas, comentários, salvamentos, compartilhamentos e respostas"],
+    ["curtidas", "Curtidas", ""], ["comentarios", "Comentários", ""], ["compartilhamentos", "Compartilhamentos", ""], ["salvamentos", "Salvamentos", "Quem guardou para ver depois"], ["cliques_link", "Cliques no perfil", "Toques no link, telefone, e-mail ou endereço"], ["novos_seguidores", "Novos seguidores", "Nos últimos 30 dias do período (limite da Meta)"]];
+  const METRICAS_FB = [["visualizacoes", "Visualizações", "Vezes que o conteúdo da página foi visto"], ["alcance", "Alcance", "Pessoas diferentes alcançadas"], ["interacoes", "Interações nas publicações", ""], ["acoes_na_pagina", "Ações na página", "Cliques em ligar, rotas, site e botões"], ["visitas_pagina", "Visitas à página", ""], ["novos_seguidores", "Novos seguidores", ""], ["deixaram_de_seguir", "Deixaram de seguir", ""], ["seguidores", "Seguidores (total)", ""]];
+  const NOME_METRICA_MIDIA = { reach: "Alcance", views: "Visualizações", likes: "Curtidas", comments: "Comentários", shares: "Compartilhamentos", saved: "Salvamentos", total_interactions: "Interações", profile_visits: "Visitas ao perfil", follows: "Seguidores ganhos", replies: "Respostas", navigation: "Navegação", ig_reels_avg_watch_time: "Tempo médio assistido (ms)", ig_reels_video_view_total_time: "Tempo total assistido (ms)", post_impressions_unique: "Alcance", post_media_view: "Visualizações", post_clicks: "Cliques" };
+  const NOME_TIPO_COMENTARIO = { ELOGIO: ["Elogio", "ok"], DUVIDA: ["Dúvida", "info"], INTERESSE: ["Quer comprar", "ok"], RECLAMACAO: ["Reclamação", "alerta"], SPAM: ["Spam", "alerta"], OFENSIVO: ["Ofensivo", "alerta"], OUTRO: ["Outro", "info"] };
+  const NOME_ACAO_COMENTARIO = { RESPONDER: "Responder", OCULTAR: "Ocultar", APAGAR: "Apagar", LEVAR_PARA_PRIVADO: "Responder e levar para o privado" };
+  const ls = { ler(k) { try { return JSON.parse(localStorage.getItem(k) || "null"); } catch { return null; } }, gravar(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* sem espaço */ } } };
+  const dataHoraCurta = v => { const d = new Date(v); return isNaN(d) ? "" : fmtDataHora.format(d); };
+
+  async function paginaCanalSocial(el, canal, vivo, aba) {
     const nome = NOME_CANAL[canal];
     const lista = await marcas(true);
     if (!vivo()) return;
-    el.appendChild(cabeca(nome, `Contas de ${nome} de cada marca, publicações programadas e o que a DENIA vai fazer quando a conta for conectada.`));
+    el.appendChild(cabeca(nome, canal === "instagram" ? "Perfil, números, publicações, comentários, agenda e concorrentes de cada marca — tudo pela API oficial da Meta." : "Página, números, publicações, comentários e agenda de cada marca — tudo pela API oficial da Meta."));
     if (!lista.length) { semMarcas(el); return; }
-    const cfg = await mk("config").catch(() => null);
-    if (!vivo()) return;
-    const criador = criadorIA(lista, cfg, canal, () => navegar());
-    if (criador) el.appendChild(criador);
-    const hoje = isoLocal(new Date());
-    let posts = [];
-    try { posts = (await mk(`posts?canal=${canal}&de=${hoje}&ate=${isoLocal(somarDias(new Date(), 30))}`)).posts || []; } catch (e) { aviso(e.message, "erro"); }
-    if (!vivo()) return;
-    const campoConta = canal === "instagram" ? "instagram" : "facebook";
     const meta = await estadoMeta(true);
     if (!vivo()) return;
-    const algumaConectada = lista.some(m => contaDa(meta, m.id));
+    const abas = [["visao", "Visão geral"], ["publicacoes", "Publicações"], ["comentarios", "Comentários"], ["agenda", "Agenda e criação"], ...(canal === "instagram" ? [["concorrentes", "Concorrentes"]] : []), ["conexao", "Conexão"]];
+    const chaveMarca = canal === "instagram" ? "marcaInstagram" : "marcaFacebook";
+    const sel = seletorMarca(lista, estado[chaveMarca] || lista[0].id);
+    sel.addEventListener("change", () => { estado[chaveMarca] = sel.value; navegar(); });
+    const marcaId = sel.value, marca = lista.find(m => String(m.id) === String(marcaId));
+    const conta = contaDa(meta, marcaId);
+    const pronta = conta && (canal === "facebook" || conta.ig_id);
+    const atual = abas.some(a => a[0] === aba) ? aba : (pronta ? "visao" : "conexao");
+    el.appendChild(h("div", { class: "pagina-cabeca" }, h("div", { class: "abas", role: "tablist" }, abas.map(([k, n]) => h("a", { class: "aba" + (k === atual ? " ativo" : ""), href: `#/${canal}/${k}`, role: "tab" }, n))), h("div", { style: "min-width:220px" }, sel)));
+    const area = h("div", { class: "grade" }, carregando());
+    el.appendChild(area);
+    const precisaConexao = () => trocar(area, h("div", { class: "cartao vidro" }, vazio(conta ? "Esta página não tem um Instagram profissional ligado" : `${marca.nome} ainda não está conectada`, conta ? "Ligue o Instagram profissional à página do Facebook (Meta Business Suite → Configurações → Contas do Instagram) e conecte de novo." : "Conecte em Conexão para ver os números, as publicações e os comentários."),
+      h("div", { class: "acoes", style: "justify-content:center" }, h("a", { class: "btn btn-primario", href: `#/${canal}/conexao` }, "Ir para Conexão"))));
+    try {
+      if (atual === "conexao") return abaConexaoSocial(area, canal, lista, meta);
+      if (atual === "agenda") return await abaAgendaSocial(area, canal, lista);
+      if (!pronta) return precisaConexao();
+      if (atual === "visao") await abaVisaoSocial(area, canal, marcaId);
+      else if (atual === "publicacoes") await abaPublicacoesSocial(area, canal, marcaId);
+      else if (atual === "comentarios") await abaComentariosSocial(area, canal, marcaId);
+      else if (atual === "concorrentes") await abaConcorrentes(area, marcaId);
+    } catch (e) { falha(area, e); }
+  }
+
+  async function abaVisaoSocial(area, canal, marcaId) {
+    const f = estado.socialVisao = estado.socialVisao || { dias: "30", metrica: "alcance" };
+    const [perf, ins] = await Promise.all([mk(`social/perfil?marca=${marcaId}&canal=${canal}`), mk(`social/insights?marca=${marcaId}&canal=${canal}&dias=${f.dias}`).catch(e => ({ erro: e.message }))]);
+    const p = perf.perfil || {};
+    const recarregar = () => abaVisaoSocial(area, canal, marcaId).catch(e => falha(area, e));
+    const cabecaPerfil = h("section", { class: "cartao vidro perfil-social" },
+      p.foto ? h("img", { src: p.foto, alt: "", class: "perfil-foto", width: "72", height: "72", loading: "lazy" }) : null,
+      h("div", { class: "perfil-texto" }, h("h3", { style: "margin:0", text: p.nome || p.usuario || "" }), p.usuario ? h("span", { class: "sub", text: "@" + p.usuario }) : p.categoria ? h("span", { class: "sub", text: p.categoria }) : null,
+        p.bio ? h("p", { style: "margin:6px 0 0;white-space:pre-line", text: p.bio }) : null, p.link ? h("a", { href: p.link, target: "_blank", rel: "noopener", text: canal === "instagram" ? "Abrir no Instagram ↗" : "Abrir no Facebook ↗" }) : null),
+      h("div", { class: "perfil-numeros" }, [[p.seguidores, "seguidores"], canal === "instagram" ? [p.publicacoes, "publicações"] : [p.curtidas, "curtidas"], canal === "instagram" ? [p.seguindo, "seguindo"] : [p.nota, `nota (${numero(p.avaliacoes || 0)})`]].filter(([v]) => v != null).map(([v, n]) => h("div", {}, h("strong", { text: typeof v === "number" && !Number.isInteger(v) ? String(v).replace(".", ",") : numero(v) }), h("span", { text: n })))));
+    const periodo = h("section", { class: "cartao vidro filtros-desempenho" }, h("div", { class: "abas abas-chips", role: "group", "aria-label": "Período" },
+      [["7", "7 dias"], ["30", "30 dias"], ["60", "60 dias"], ["90", "90 dias"], ["180", "6 meses"], ["365", "12 meses"]].map(([v, n]) => h("button", { type: "button", class: "aba" + (f.dias === v ? " ativo" : ""), "aria-pressed": f.dias === v ? "true" : "false", onclick: () => { f.dias = v; trocar(area, carregando()); recarregar(); } }, n))));
+    if (ins.erro) { trocar(area, cabecaPerfil, periodo, h("section", { class: "cartao vidro" }, h("p", { class: "nota nota-alerta", text: ins.erro }))); return; }
+    const t = ins.totais || {}, ta = ins.anterior ? ins.anterior.totais : null;
+    const lista = (canal === "instagram" ? METRICAS_IG : METRICAS_FB).filter(([k]) => t[k] != null);
+    const cartoes = h("section", { class: "grade grade-4" }, lista.map(([k, n, ajuda]) => {
+      const v = ta && ta[k] != null && k !== "seguidores" ? variacaoPct(t[k] || 0, ta[k] || 0) : null;
+      return h("div", { class: "metrica vidro", title: ajuda }, h("span", { text: n }), h("strong", { text: numero(t[k] || 0) }), h("small", {}, v ? h("span", { class: v.zero ? "" : v.sobe ? "sobe" : "desce", text: v.texto + " " }) : null, ta && k !== "seguidores" ? `vs ${numero(ta[k] || 0)} antes` : ajuda));
+    }));
+    const series = [["alcance", "Alcance por dia"], ["novos_seguidores", "Novos seguidores por dia"], ...(canal === "facebook" ? [["visualizacoes", "Visualizações por dia"]] : [])].filter(([k]) => (ins.diario || []).some(d => d[k]));
+    if (!series.some(s => s[0] === f.metrica) && series.length) f.metrica = series[0][0];
+    const pontos = agruparSerie(ins.diario || [], (ins.diario || []).length <= 92 ? "dia" : "semana", f.metrica);
+    const grafico = h("section", { class: "cartao vidro" },
+      h("div", { class: "cabeca-grafico" }, h("h3", { style: "margin:0", text: (series.find(s => s[0] === f.metrica) || ["", "Dia a dia"])[1] }),
+        series.length > 1 ? h("div", { class: "abas abas-chips" }, series.map(([k, n]) => h("button", { type: "button", class: "aba" + (f.metrica === k ? " ativo" : ""), onclick: () => { f.metrica = k; recarregar(); } }, n))) : null),
+      pontos.some(x => x.valor) ? graficoLinha(pontos, null, (series.find(s => s[0] === f.metrica) || ["", ""])[1], "") : vazio("Sem números dia a dia neste período", "A Meta pode levar até 48 h para liberar os números."));
+    const NOMES_PUB = { city: "Cidades", country: "Países", age: "Idade", gender: "Gênero" };
+    const pub = ins.publico || {};
+    const blocoPublico = Object.values(pub).some(x => x && x.length) ? h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Quem segue a marca" }),
+      h("div", { class: "grade grade-2" }, Object.entries(NOMES_PUB).filter(([k]) => (pub[k] || []).length).map(([k, n]) => {
+        const tot = pub[k].reduce((s, x) => s + x.valor, 0) || 1;
+        return h("div", {}, h("h4", { style: "margin:0 0 8px", text: n }), pub[k].slice(0, 8).map(x => h("div", { class: "limite-linha" }, h("span", { text: k === "gender" ? ({ F: "Mulheres", M: "Homens", U: "Não informado" }[x.nome] || x.nome) : x.nome }), h("div", { class: "barra-parte barra-limite" }, h("i", { style: `width:${Math.round((x.valor / tot) * 100)}%` })), h("strong", { text: `${Math.round((x.valor / tot) * 100)}%` }))));
+      }))) : canal === "instagram" ? h("section", { class: "cartao vidro" }, h("p", { class: "sub", text: "O público (cidade, idade, gênero) aparece quando o perfil tem pelo menos 100 seguidores." })) : null;
+    trocar(area, cabecaPerfil, periodo,
+      h("p", { class: "sub", text: `${dataCompleta(ins.de)} a ${dataCompleta(ins.ate)}${ins.anterior ? ` · comparando com ${dataCompleta(ins.anterior.de)} a ${dataCompleta(ins.anterior.ate)}` : ""}` }),
+      cartoes, grafico, blocoPublico,
+      (ins.indisponiveis || []).length ? h("p", { class: "sub", text: "Alguns números não foram liberados pela Meta para esta conta. Se faltar quase tudo, conecte a marca de novo para aceitar as permissões de números (insights)." }) : null);
+  }
+
+  async function abaPublicacoesSocial(area, canal, marcaId) {
+    const f = estado.socialPubs = estado.socialPubs || { tipo: "TODOS", ordem: "recentes" };
+    let itens = [], proximo = null;
+    const grade = h("div", { class: "grade-midias" });
+    const mais = h("div", { class: "acoes", style: "justify-content:center" });
+    const desenhar = () => {
+      let vis = itens.filter(i => f.tipo === "TODOS" || i.tipo === f.tipo);
+      if (f.ordem === "melhores") vis = vis.slice().sort((a, b) => ((b.curtidas || 0) + (b.comentarios || 0) * 3) - ((a.curtidas || 0) + (a.comentarios || 0) * 3));
+      trocar(grade, ...(vis.length ? vis.map(cartaoMidia) : [vazio("Nenhuma publicação deste tipo", "")]));
+      trocar(mais, proximo ? botao("Carregar mais publicações", carregar, "btn-secundario") : null);
+    };
+    const cartaoMidia = i => {
+      const numeros = h("div", { class: "midia-numeros" });
+      return h("article", { class: "cartao vidro midia-cartao" },
+        i.imagem ? h("img", { src: i.imagem, alt: "", loading: "lazy", class: "midia-img" }) : h("div", { class: "midia-img midia-sem", text: i.tipo }),
+        h("div", { class: "midia-corpo" }, h("div", { class: "midia-topo" }, selo(i.tipo, "info"), h("span", { class: "sub", text: dataHoraCurta(i.quando) })),
+          h("p", { class: "midia-texto", text: i.texto ? i.texto.slice(0, 180) + (i.texto.length > 180 ? "…" : "") : "(sem legenda)" }),
+          h("div", { class: "midia-stats" }, h("span", { text: `♥ ${i.curtidas == null ? "—" : numero(i.curtidas)}` }), h("span", { text: `💬 ${i.comentarios == null ? "—" : numero(i.comentarios)}` }), i.compartilhamentos != null ? h("span", { text: `↗ ${numero(i.compartilhamentos)}` }) : null),
+          numeros,
+          h("div", { class: "acoes" }, botao("Ver números", async (_e, b) => { b.textContent = "Lendo…"; try { const r = await mk(`social/midias/${encodeURIComponent(i.id)}?marca=${marcaId}&canal=${canal}&tipo=${encodeURIComponent(i.tipo)}`); const m = r.metricas || {};
+            trocar(numeros, ...(Object.keys(m).length ? Object.entries(m).filter(([, v]) => typeof v === "number").map(([k, v]) => h("div", {}, h("strong", { text: numero(v) }), h("span", { text: NOME_METRICA_MIDIA[k] || k }))) : [h("span", { class: "sub", text: "A Meta não liberou números para esta publicação." })])); b.remove(); } catch (e) { aviso(e.message, "erro"); b.textContent = "Ver números"; } }, "btn-secundario btn-pequeno"),
+            i.link ? h("a", { class: "btn btn-secundario btn-pequeno", href: i.link, target: "_blank", rel: "noopener" }, "Abrir ↗") : null)));
+    };
+    async function carregar() {
+      const r = await mk(`social/midias?marca=${marcaId}&canal=${canal}${proximo ? "&depois=" + encodeURIComponent(proximo) : ""}`);
+      itens = itens.concat(r.itens || []); proximo = r.proximo; desenhar();
+    }
+    const tipos = canal === "instagram" ? [["TODOS", "Todas"], ["FOTO", "Fotos"], ["CARROSSEL", "Carrosséis"], ["REELS", "Reels"], ["VÍDEO", "Vídeos"]] : [["TODOS", "Todas"], ["FOTO", "Com foto"], ["VÍDEO", "Vídeos"], ["TEXTO", "Só texto"]];
+    const filtros = h("section", { class: "cartao vidro filtros-desempenho" }, h("div", { class: "linha-filtros" },
+      h("div", { class: "abas abas-chips" }, tipos.map(([k, n]) => h("button", { type: "button", class: "aba" + (f.tipo === k ? " ativo" : ""), onclick: e => { f.tipo = k; e.target.parentNode.querySelectorAll(".aba").forEach(x => x.classList.toggle("ativo", x === e.target)); desenhar(); } }, n))),
+      h("select", { class: "entrada entrada-pequena", "aria-label": "Ordem", onchange: e => { f.ordem = e.target.value; desenhar(); } }, [["recentes", "Mais recentes"], ["melhores", "Melhor desempenho primeiro"]].map(([v, n]) => h("option", { value: v, selected: f.ordem === v, text: n })))));
+    await carregar();
+    trocar(area, filtros, grade, mais);
+  }
+
+  async function abaComentariosSocial(area, canal, marcaId) {
+    const f = estado.socialCom = estado.socialCom || { filtro: "SEM_RESPOSTA" };
+    const r = await mk(`social/comentarios?marca=${marcaId}&canal=${canal}`);
+    const todos = r.comentarios || [];
+    const lista = h("div", { class: "grade" });
+    const contagem = { SEM_RESPOSTA: todos.filter(c => !c.respondido && !c.oculto).length, TODOS: todos.length, RESPONDIDOS: todos.filter(c => c.respondido).length, OCULTOS: todos.filter(c => c.oculto).length };
+    const filtroDe = c => f.filtro === "TODOS" ? true : f.filtro === "SEM_RESPOSTA" ? !c.respondido && !c.oculto : f.filtro === "RESPONDIDOS" ? c.respondido : c.oculto;
+    const cartoes = new Map();
+    const cartao = c => {
+      const caixa = h("textarea", { class: "entrada", rows: "2", placeholder: "Escreva a resposta pública…" });
+      const dica = h("div", {});
+      const sugerir = async (b) => {
+        if (b) b.textContent = "Pensando…";
+        try {
+          const s = await mk(`social/comentarios/${encodeURIComponent(c.id)}/sugerir`, { metodo: "POST", corpo: { marca_id: marcaId, canal, comentario: c.texto, autor: c.autor, post: c.post.texto } });
+          caixa.value = s.resposta || "";
+          const [tn, tt] = NOME_TIPO_COMENTARIO[s.tipo] || ["", "info"];
+          trocar(dica, h("p", { class: "sub", style: "margin:4px 0 0" }, selo(tn, tt), " ", `Sugestão: ${NOME_ACAO_COMENTARIO[s.acao] || s.acao}. ${s.motivo || ""}${s.precisa_humano ? " Uma pessoa deve olhar antes." : ""}`));
+        } catch (e) { aviso(e.message, "erro"); }
+        finally { if (b) b.textContent = "✦ Sugerir com IA"; }
+      };
+      const el = h("article", { class: "cartao vidro comentario-cartao" + (c.oculto ? " cor-cinza" : !c.respondido ? " cor-amarelo" : " cor-verde") },
+        h("div", { class: "midia-topo" }, h("strong", { text: (canal === "instagram" ? "@" : "") + c.autor }), h("span", { class: "sub", text: dataHoraCurta(c.quando) }), c.oculto ? selo("Oculto", "alerta") : c.respondido ? selo("Respondido", "ok") : selo("Sem resposta", "info")),
+        h("p", { style: "margin:6px 0", text: c.texto }),
+        h("p", { class: "sub", style: "margin:0" }, "Na publicação: ", c.post.link ? h("a", { href: c.post.link, target: "_blank", rel: "noopener", text: (c.post.texto || "ver publicação").slice(0, 90) + " ↗" }) : (c.post.texto || "").slice(0, 90)),
+        c.respostas.length ? h("div", { class: "respostas-comentario" }, c.respostas.map(x => h("p", { class: x.da_marca ? "resposta-publicada" : "sub", text: `${x.da_marca ? "Marca" : (canal === "instagram" ? "@" : "") + x.autor}: ${x.texto}` }))) : null,
+        pode("AGENTE") ? h("div", { class: "formulario", style: "margin-top:8px" }, caixa, dica,
+          h("div", { class: "acoes" },
+            botao("✦ Sugerir com IA", (_e, b) => sugerir(b), "btn-secundario btn-pequeno"),
+            botao("Publicar resposta", async () => { if (!caixa.value.trim()) return aviso("Escreva a resposta.", "erro"); try { await mk(`social/comentarios/${encodeURIComponent(c.id)}/responder`, { metodo: "POST", corpo: { marca_id: marcaId, canal, texto: caixa.value } }); aviso("Resposta publicada.", "ok"); c.respondido = true; c.respostas.push({ texto: caixa.value, da_marca: true }); el.replaceWith(cartao(c)); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario btn-pequeno"),
+            botao(c.oculto ? "Mostrar de novo" : "Ocultar", async () => { try { const x = await mk(`social/comentarios/${encodeURIComponent(c.id)}/ocultar`, { metodo: "POST", corpo: { marca_id: marcaId, canal, ocultar: !c.oculto } }); c.oculto = x.oculto; aviso(c.oculto ? "Comentário ocultado: só a pessoa e os amigos dela veem." : "Comentário visível de novo.", "ok"); el.replaceWith(cartao(c)); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno"),
+            botao("Apagar", async () => { if (!window.confirm("Apagar este comentário? Não dá para desfazer.")) return; try { await mk(`social/comentarios/${encodeURIComponent(c.id)}/apagar`, { metodo: "POST", corpo: { marca_id: marcaId, canal } }); aviso("Comentário apagado.", "ok"); el.remove(); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno"))) : null);
+      el.sugerir = () => sugerir(null);
+      cartoes.set(c.id, el);
+      return el;
+    };
+    const desenhar = () => { cartoes.clear(); const vis = todos.filter(filtroDe); trocar(lista, ...(vis.length ? vis.map(cartao) : [h("div", { class: "cartao vidro" }, vazio(f.filtro === "SEM_RESPOSTA" ? "Nenhum comentário esperando resposta" : "Nenhum comentário aqui", "A DENIA lê os comentários das 15 publicações mais recentes."))])); };
+    const chips = h("div", { class: "abas abas-chips" }, [["SEM_RESPOSTA", "Sem resposta"], ["TODOS", "Todos"], ["RESPONDIDOS", "Respondidos"], ["OCULTOS", "Ocultos"]].map(([k, n]) => h("button", { type: "button", class: "aba" + (f.filtro === k ? " ativo" : ""), onclick: e => { f.filtro = k; chips.querySelectorAll(".aba").forEach(x => x.classList.toggle("ativo", x === e.currentTarget)); desenhar(); } }, `${n} (${numero(contagem[k])})`)));
+    const barra = h("section", { class: "cartao vidro filtros-desempenho" }, h("div", { class: "linha-filtros" }, chips,
+      pode("AGENTE") && contagem.SEM_RESPOSTA ? botao(`✦ Sugerir respostas para os ${numero(contagem.SEM_RESPOSTA)} sem resposta`, async (_e, b) => {
+        const alvo = todos.filter(c => !c.respondido && !c.oculto);
+        let n = 0;
+        for (const c of alvo) { b.textContent = `Pensando… ${++n} de ${alvo.length}`; const elc = cartoes.get(c.id); if (elc) await elc.sugerir(); }
+        b.textContent = "Sugestões prontas: confira e publique";
+      }, "btn-primario btn-pequeno") : null,
+      botao("Atualizar", () => abaComentariosSocial(area, canal, marcaId).catch(e => falha(area, e)), "btn-secundario btn-pequeno")),
+      h("p", { class: "sub", style: "margin:0", text: "Nada é publicado sem um clique seu. Ocultar esconde o comentário de todos, menos de quem escreveu (e dos amigos dele) — ideal para spam e ofensas sem criar briga." }));
+    desenhar();
+    trocar(area, barra, lista);
+  }
+
+  async function abaConcorrentes(area, marcaId) {
+    const chave = "denia-concorrentes-" + marcaId;
+    const salvos = ls.ler(chave) || [];
+    const entrada = h("input", { class: "entrada", placeholder: "@concorrente", "aria-label": "Instagram do concorrente" });
+    const resultado = h("div", { class: "grade" });
+    const meu = await mk(`social/perfil?marca=${marcaId}&canal=instagram`).then(r => r.perfil).catch(() => null);
+    const comparar = async (usuario) => {
+      trocar(resultado, carregando("Lendo o perfil público…"));
+      try {
+        const r = await mk(`social/concorrente?marca=${marcaId}&canal=instagram&usuario=${encodeURIComponent(usuario)}`);
+        if (!salvos.includes(r.usuario)) { salvos.unshift(r.usuario); ls.gravar(chave, salvos.slice(0, 12)); }
+        const linha = (rotulo, a, b) => h("tr", {}, h("td", { text: rotulo }), h("td", { text: a == null ? "—" : typeof a === "number" ? numero(a) : a }), h("td", { text: b == null ? "—" : typeof b === "number" ? numero(b) : b }));
+        trocar(resultado, h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: `${meu ? "@" + meu.usuario : "Sua marca"} × @${r.usuario}` }),
+          r.bio ? h("p", { class: "sub", style: "white-space:pre-line", text: r.bio }) : null,
+          h("div", { class: "tabela-caixa" }, h("table", {}, h("thead", {}, h("tr", {}, h("th", { text: "" }), h("th", { text: meu ? "@" + meu.usuario : "Você" }), h("th", { text: "@" + r.usuario }))),
+            h("tbody", {}, linha("Seguidores", meu?.seguidores, r.seguidores), linha("Publicações", meu?.publicacoes, r.publicacoes), linha("Interações médias por post (últimos 12)", null, r.engajamento_medio), linha("Taxa de engajamento", null, r.taxa_engajamento != null ? String(r.taxa_engajamento).replace(".", ",") + "%" : null)))),
+          r.posts.length ? [h("h4", { text: "Últimas publicações dele (o que mais funcionou primeiro)" }), h("div", { class: "tabela-caixa" }, h("table", {}, h("thead", {}, h("tr", {}, ["Quando", "Tipo", "Curtidas", "Comentários", "Legenda"].map(t => h("th", { text: t })))),
+            h("tbody", {}, r.posts.slice().sort((a, b) => (b.curtidas + b.comentarios) - (a.curtidas + a.comentarios)).map(x => h("tr", {}, h("td", { text: dataCompleta(x.quando) }), h("td", { text: x.tipo }), h("td", { text: numero(x.curtidas) }), h("td", { text: numero(x.comentarios) }), h("td", {}, x.link ? h("a", { href: x.link, target: "_blank", rel: "noopener", text: (x.texto || "abrir").slice(0, 80) + " ↗" }) : x.texto))))))] : null));
+      } catch (e) { trocar(resultado, h("section", { class: "cartao vidro" }, h("p", { class: "nota nota-alerta", text: /business|discovery|não encontrad|inesperado|100/i.test(e.message) ? "A Meta só mostra perfis profissionais (empresa ou criador) públicos. Confira o @." : e.message }))); }
+    };
+    trocar(area, h("section", { class: "cartao vidro formulario" }, h("h3", { style: "margin:0", text: "Comparar com um concorrente" }),
+      h("p", { class: "sub", style: "margin:0", text: "Seguidores, frequência e o que mais engaja nos perfis profissionais públicos — pela API oficial (Business Discovery)." }),
+      h("div", { class: "linha-form" }, campo("Instagram do concorrente", entrada)),
+      h("div", { class: "acoes" }, botao("Comparar", () => entrada.value.trim() ? comparar(entrada.value.trim()) : aviso("Digite o @.", "erro"), "btn-primario"),
+        salvos.map(u => botao("@" + u, () => comparar(u), "btn-secundario btn-pequeno")))), resultado);
+  }
+
+  async function abaAgendaSocial(area, canal, lista) {
+    const cfg = await mk("config").catch(() => null);
+    const hoje = isoLocal(new Date());
+    const posts = (await mk(`posts?canal=${canal}&de=${hoje}&ate=${isoLocal(somarDias(new Date(), 30))}`).catch(() => ({ posts: [] }))).posts || [];
+    trocar(area, criadorIA(lista, cfg, canal, () => navegar()),
+      h("section", { class: "cartao vidro" }, h("h3", { text: "Próximas publicações (30 dias)" }),
+        posts.length ? h("div", { class: "lista-posts" }, posts.map(p => cartaoPost(p, lista, () => navegar()))) : vazio("Nenhuma publicação programada", "Use \"Criar posts da semana com IA\" acima.", ICONES.caixa)));
+  }
+
+  function abaConexaoSocial(area, canal, lista, meta) {
+    const campoConta = canal === "instagram" ? "instagram" : "facebook";
     const estadoCanal = (m) => {
       const c = contaDa(meta, m.id);
       if (!c) return pode("ADMIN") ? botao("Conectar", () => conectarMeta(m), "btn-primario btn-pequeno") : selo("Não conectada", "alerta");
       if (canal === "instagram" && !c.ig_id) return selo("Página sem Instagram profissional", "alerta");
-      return selo("Conectada · publica sozinha", "ok");
+      return h("span", { class: "acoes" }, selo("Conectada", "ok"), pode("ADMIN") ? botao("Reconectar", () => conectarMeta(m), "btn-secundario btn-pequeno") : null);
     };
-    el.appendChild(h("section", { class: "grade grade-2" },
+    trocar(area, h("section", { class: "grade grade-2" },
       h("div", { class: "cartao vidro" }, h("h3", { text: "Contas por marca" }),
         h("ul", { class: "lista-saude" }, lista.map(m => { const c = contaDa(meta, m.id); return h("li", {}, h("span", {}, h("strong", { text: m.nome }), h("span", { class: "sub", text: c ? (canal === "instagram" ? (c.ig_usuario ? "@" + c.ig_usuario : "—") : c.pagina_nome) : m[campoConta] ? (canal === "instagram" ? "@" + m.instagram : m.facebook) : "Conta não informada" })), estadoCanal(m)); })),
         h("a", { class: "btn btn-secundario btn-pequeno", href: "#/marcas", style: "margin-top:14px;width:fit-content" }, "Editar contas nas marcas")),
       h("div", { class: "cartao vidro" }, h("h3", { text: "O que a DENIA faz neste canal" }),
         h("ul", { class: "lista-saude" },
           h("li", {}, "Planejar e criar posts, carrosséis, stories e reels", selo("Disponível", "ok")),
-          h("li", {}, "Aprovação humana ou automática das artes", selo("Disponível", "ok")),
-          h("li", {}, "Publicar sozinha no horário marcado", algumaConectada ? selo("Ativo", "ok") : selo("Após a conexão", "info")),
-          h("li", {}, canal === "instagram" ? "Responder mensagens diretas e comentários" : "Responder o Messenger e comentários da página", selo("Após a conexão", "info")),
-          h("li", {}, "Chamar o profissional no WhatsApp sobre o atendimento", selo("Após a conexão", "info")),
-          h("li", {}, "Relatório de alcance, seguidores e engajamento", selo("Após a conexão", "info"))))));
-    el.appendChild(h("section", { class: "cartao vidro" }, h("h3", { text: "Próximas publicações (30 dias)" }),
-      posts.length ? h("div", { class: "lista-posts" }, posts.map(p => cartaoPost(p, lista, () => navegar()))) : vazio("Nenhuma publicação programada", "Use \"Criar posts da semana com IA\" acima.", ICONES.caixa)));
-    el.appendChild(h("section", { class: "cartao vidro" }, h("h3", { text: "Como conectar" }),
-      h("ol", { class: "passos" },
-        canal === "instagram" ? h("li", {}, "Cada Instagram precisa ser uma conta profissional (Empresa ou Criador) ligada a uma página do Facebook.") : h("li", {}, "Cada marca precisa de uma página do Facebook com você como administrador."),
-        h("li", {}, "A DENIA usa a API oficial da Meta. Para isso, cadastramos um aplicativo em developers.facebook.com e pedimos à Meta as permissões de publicar e responder mensagens."),
-        h("li", {}, "A Meta revisa o aplicativo (alguns dias a algumas semanas). Aprovado, o botão de conexão aparece aqui e cada marca é ligada com um clique.")),
-      h("p", { class: "nota", text: "Enquanto isso, todo o conteúdo é criado, aprovado e organizado aqui: é só baixar a arte e copiar a legenda." })));
+          h("li", {}, "Publicar sozinha no horário marcado", selo("Disponível", "ok")),
+          h("li", {}, "Números: alcance, visualizações, interações, seguidores e público", selo("Disponível", "ok")),
+          h("li", {}, "Comentários: responder com IA, ocultar e apagar", selo("Disponível", "ok")),
+          canal === "instagram" ? h("li", {}, "Comparar com concorrentes", selo("Disponível", "ok")) : null,
+          h("li", {}, canal === "instagram" ? "Responder o direct" : "Responder o Messenger", selo("Precisa de aprovação da Meta", "info"))))),
+      h("section", { class: "cartao vidro" }, h("h3", { text: "Permissões novas" }),
+        h("p", { text: "Os números, os comentários e as respostas usam permissões novas. Se a marca foi conectada antes desta versão, clique em Reconectar e aceite tudo na tela da Meta — nada do que já foi publicado muda." }),
+        h("p", { class: "sub", text: "Enquanto o app da Meta estiver em modo de desenvolvimento, tudo funciona para quem é administrador do app e das páginas. Para outras empresas usarem, a Meta precisa revisar o app (Análise do app no developers.facebook.com)." })));
   }
 
   // ----- Google Meu Negócio
@@ -2403,6 +2586,201 @@
         h("div", { class: "acoes" }, botao("Salvar semana", async () => { try { const corpo = { marca_id: marcaId, semana: isoLocal(new Date()) }; CAMPOS_M.forEach(([k]) => { corpo[k] = ents[k].value; }); await mk("metricas", { metodo: "POST", corpo }); aviso("Semana registrada.", "ok"); navegar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario"))) : null);
   }
 
+  // ---------------------------------------------------------------------------
+  // Consumo e custos: OpenAI (painel e WhatsApp), Meta (Instagram, Facebook, WhatsApp) e Google
+  // ---------------------------------------------------------------------------
+  const NOME_SERVICO = { openai: "OpenAI", meta: "Meta (Instagram e Facebook)", google: "Google" };
+  const NOME_OPERACAO_IA = { texto: "Texto", imagem: "Imagens", transcricao: "Transcrição de áudio", voz_falada: "Voz falada", voz_sessao: "Abrir conversa por voz", voz_ao_vivo: "Conversa por voz ao vivo", atendimento: "Respostas no WhatsApp", transcricao_audio: "Áudios do WhatsApp" };
+  const NOME_RECURSO = {
+    "": "Outros", assistente: "Assistente DENIA", "assistente/voz": "DENIA por voz", "assistente/conversa": "Assistente DENIA", "assistente/ao-vivo": "DENIA por voz",
+    "automático/avaliações": "Automático: avaliações do Google", "automático/relatórios": "Automático: relatórios semanais", "whatsapp/motor": "WhatsApp (motor)",
+    "avaliacoes/triagem": "Triagem de avaliações", "avaliacoes/analisar-lote": "Leitura de avaliações", avaliacoes: "Avaliações", "posts/gerar": "Criar posts com IA", posts: "Posts", "midias/gerar": "Criar imagens", midias: "Imagens",
+    "relatorios/gerar": "Relatório do Google", "google/agora": "Buscar e responder avaliações", "google/sincronizar": "Sincronizar Google", "google/desempenho": "Desempenho do Google", "meta/publicar": "Publicar na Meta"
+  };
+  const nomeRecurso = r => NOME_RECURSO[r] || NOME_RECURSO[String(r).split("/")[0]] || r;
+  const MOEDAS = ["BRL", "USD", "EUR", "GBP", "INR", "JPY", "MXN", "ARS", "CLP", "COP", "PEN", "CAD", "AUD", "CHF"];
+  function dinheiro(valor, moeda) {
+    const v = Number(valor) || 0;
+    try { return new Intl.NumberFormat(LOCALE, { style: "currency", currency: moeda, minimumFractionDigits: v && Math.abs(v) < 1 ? 3 : 2, maximumFractionDigits: v && Math.abs(v) < 1 ? 4 : 2 }).format(v); }
+    catch { return `${moeda} ${v.toFixed(2)}`; }
+  }
+  // Mesmo cálculo do servidor (src/uso.js) para o consumo do motor, que só devolve tokens.
+  function precoModelo(tabela, modelo) {
+    const m = String(modelo || "").toLowerCase();
+    const k = Object.keys(tabela).filter(x => x !== "*" && m.startsWith(x.toLowerCase())).sort((a, b) => b.length - a.length)[0];
+    return tabela[k] || tabela["*"] || { entrada: 1.25, cache: 0.125, saida: 10 };
+  }
+  function custoTokens(tabela, modelo, ent, cache, sai) {
+    const p = precoModelo(tabela, modelo);
+    return (Math.max(0, ent - cache) * p.entrada + cache * (p.cache ?? p.entrada) + sai * p.saida) / 1e6;
+  }
+
+  async function paginaConsumo(el, _p, vivo) {
+    const f = estado.consumo = estado.consumo || { periodo: "30", metrica: "custo" };
+    const q = new URLSearchParams();
+    if (f.periodo === "mes" || f.periodo === "mes_passado") q.set("atalho", f.periodo); else q.set("dias", f.periodo);
+    const uso = await mk("uso?" + q);
+    if (!vivo()) return;
+    // O motor do WhatsApp recebe o mesmo período que o painel (versões antigas não têm esta rota).
+    const mot = estado.org.conectada ? await eng(`usage?de=${uso.de}&ate=${uso.ate}`).catch(e => ({ erro: e.status === 404 ? "ANTIGO" : e.message })) : null;
+    if (!vivo()) return;
+    const oficial = uso.tem_chave_admin && pode("ADMIN") ? await mk(`uso/openai-oficial?de=${uso.de}&ate=${uso.ate}`).catch(e => ({ erro: e.message })) : null;
+    if (!vivo()) return;
+    const moeda = uso.moeda || "BRL", cot = moeda === "USD" ? 1 : Number(uso.cotacao) || 1;
+    const emMoeda = usd => dinheiro(usd * cot, moeda);
+    const precos = uso.precos || {};
+
+    // Linhas do painel + linhas do motor (WhatsApp) no mesmo formato.
+    const linhas = (uso.linhas || []).slice();
+    const iaMotor = mot && !mot.erro ? (mot.ia || []) : [];
+    for (const r of iaMotor) linhas.push({ dia: r.dia, servico: "openai", operacao: r.operacao, recurso: "whatsapp/motor", modelo: r.modelo, chamadas: r.chamadas, erros: r.erros, limitadas: 0, tokens_entrada: r.tokens_entrada, tokens_saida: r.tokens_saida, tokens_cache: r.tokens_cache, imagens: 0, caracteres: 0, custo_usd: custoTokens(precos, r.modelo, r.tokens_entrada, r.tokens_cache, r.tokens_saida), ms_total: 0 });
+    const soma = (filtro, campo) => linhas.filter(filtro).reduce((s, l) => s + (Number(l[campo]) || 0), 0);
+    const ehIA = l => l.servico === "openai", ehMeta = l => l.servico === "meta", ehGoogle = l => l.servico === "google";
+    const custoIA = soma(ehIA, "custo_usd");
+    const metaPontos = mot && !mot.erro && mot.meta && mot.meta.pontos ? mot.meta.pontos : [];
+    const custoWhats = metaPontos.reduce((s, p) => s + p.custo, 0);
+    const recebidas = mot && !mot.erro ? (mot.mensagens?.recebidas || []).reduce((s, x) => s + x.n, 0) : 0;
+    const enviadas = mot && !mot.erro ? (mot.mensagens?.enviadas || []).reduce((s, x) => s + x.n, 0) : 0;
+    const ant = Object.fromEntries((uso.anterior?.servicos || []).map(s => [s.servico, s]));
+
+    // Período (uma linha acima de tudo).
+    const recarregar = () => navegar();
+    const PER = [["7", "7 dias"], ["30", "30 dias"], ["60", "60 dias"], ["90", "90 dias"], ["180", "6 meses"], ["365", "12 meses"], ["mes", "Este mês"], ["mes_passado", "Mês passado"]];
+    el.appendChild(cabeca("Consumo e custos", `Quanto cada serviço usou e custou de ${dataCompleta(uso.de)} a ${dataCompleta(uso.ate)}: inteligência artificial (OpenAI), Meta (Instagram, Facebook e WhatsApp) e Google.`,
+      botao("Baixar planilha", () => baixarCsv(`consumo-${uso.de}-a-${uso.ate}.csv`, [["Dia", "Serviço", "Recurso", "Tipo", "Modelo / detalhe", "Chamadas", "Erros", "Limitadas", "Tokens de entrada", "Tokens em cache", "Tokens de saída", "Imagens", "Custo estimado (USD)", `Custo estimado (${moeda})`],
+        ...linhas.map(l => [dataCompleta(l.dia), NOME_SERVICO[l.servico] || l.servico, nomeRecurso(l.recurso), NOME_OPERACAO_IA[l.operacao] || l.operacao, l.modelo, l.chamadas, l.erros, l.limitadas, l.tokens_entrada, l.tokens_cache, l.tokens_saida, l.imagens, (Number(l.custo_usd) || 0).toFixed(6), ((Number(l.custo_usd) || 0) * cot).toFixed(4)])]), "btn-secundario btn-pequeno")));
+    el.appendChild(h("section", { class: "cartao vidro filtros-desempenho" }, h("div", { class: "abas abas-chips", role: "group", "aria-label": "Período" },
+      PER.map(([v, n]) => h("button", { type: "button", class: "aba" + (f.periodo === v ? " ativo" : ""), "aria-pressed": f.periodo === v ? "true" : "false", onclick: () => { f.periodo = v; recarregar(); } }, n)))));
+
+    // Cartões (tocar troca o gráfico).
+    const cartao = (k, rotulo, valor, sub) => h("button", { type: "button", class: "metrica vidro metrica-botao" + (f.metrica === k ? " ativo" : ""), "aria-pressed": f.metrica === k ? "true" : "false", onclick: () => { f.metrica = k; recarregar(); } }, h("span", { text: rotulo }), h("strong", { text: valor }), h("small", {}, sub));
+    const comparar = (atual, antes) => { const v = variacaoPct(atual, antes); return v ? h("span", { class: v.zero ? "" : v.sobe ? "desce" : "sobe", text: v.texto + " " }) : null; }; // gastar mais é vermelho
+    const custoAntes = ant.openai ? Number(ant.openai.custo_usd) || 0 : null;
+    el.appendChild(h("section", { class: "grade grade-4" },
+      cartao("custo", "IA — custo estimado", emMoeda(custoIA), [comparar(soma(l => ehIA(l) && l.recurso !== "whatsapp/motor", "custo_usd"), custoAntes), moeda !== "USD" ? `US$ ${custoIA.toFixed(2)} · ` : "", `${numero(soma(ehIA, "chamadas"))} chamadas`]),
+      cartao("whatsapp", "WhatsApp — Meta", metaPontos.length ? (mot.meta.moeda ? dinheiro(custoWhats, mot.meta.moeda) : numero(custoWhats)) : numero(enviadas), metaPontos.length ? `${numero(metaPontos.reduce((s, p) => s + p.volume, 0))} mensagens cobradas` : `${numero(enviadas)} enviadas · ${numero(recebidas)} recebidas`),
+      cartao("meta", "Meta — chamadas", numero(soma(ehMeta, "chamadas")), [comparar(soma(ehMeta, "chamadas"), ant.meta ? ant.meta.chamadas : null), `${numero(soma(ehMeta, "erros"))} com erro`]),
+      cartao("google", "Google — chamadas", numero(soma(ehGoogle, "chamadas")), [comparar(soma(ehGoogle, "chamadas"), ant.google ? ant.google.chamadas : null), `${numero(soma(ehGoogle, "limitadas"))} barradas pela cota`])));
+
+    // Gráfico dia a dia da métrica escolhida.
+    const dias = [];
+    for (let t = Date.parse(uso.de + "T00:00:00Z"); t <= Date.parse(uso.ate + "T00:00:00Z"); t += 86400000) dias.push(new Date(t).toISOString().slice(0, 10));
+    const porDia = (filtro, campo, fator = 1) => dias.map(d => ({ data: d, valor: Math.round(linhas.filter(l => l.dia === d && filtro(l)).reduce((s, l) => s + (Number(l[campo]) || 0), 0) * fator * 100) / 100 }));
+    const seriesDia = {
+      custo: { nome: `Custo da IA (${moeda})`, pontos: porDia(ehIA, "custo_usd", cot) },
+      whatsapp: { nome: metaPontos.length ? "Custo do WhatsApp" : "Mensagens enviadas no WhatsApp", pontos: metaPontos.length ? dias.map(d => ({ data: d, valor: Math.round(metaPontos.filter(p => p.dia === d).reduce((s, p) => s + p.custo, 0) * 100) / 100 })) : dias.map(d => ({ data: d, valor: (mot && !mot.erro ? (mot.mensagens?.enviadas || []).find(x => x.dia === d)?.n : 0) || 0 })) },
+      meta: { nome: "Chamadas à Meta", pontos: porDia(ehMeta, "chamadas") },
+      google: { nome: "Chamadas ao Google", pontos: porDia(ehGoogle, "chamadas") }
+    };
+    const s = seriesDia[f.metrica] || seriesDia.custo;
+    const pontos = agruparSerie(s.pontos.map(p => ({ data: p.data, v: p.valor })), dias.length <= 92 ? "dia" : dias.length <= 370 ? "semana" : "mes", "v");
+    el.appendChild(h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: s.nome }),
+      pontos.some(p => p.valor) ? graficoLinha(pontos, null, s.nome, "") : vazio("Nada registrado neste período", "O consumo começa a ser contado a partir desta versão da plataforma.")));
+
+    // OpenAI por recurso.
+    const grupos = new Map();
+    for (const l of linhas.filter(ehIA)) {
+      const k = [l.recurso, l.operacao, l.modelo].join("|");
+      const g = grupos.get(k) || { recurso: l.recurso, operacao: l.operacao, modelo: l.modelo, chamadas: 0, erros: 0, ent: 0, cache: 0, sai: 0, imagens: 0, custo: 0 };
+      g.chamadas += l.chamadas; g.erros += l.erros; g.ent += l.tokens_entrada; g.cache += l.tokens_cache; g.sai += l.tokens_saida; g.imagens += l.imagens; g.custo += Number(l.custo_usd) || 0;
+      grupos.set(k, g);
+    }
+    const listaIA = [...grupos.values()].sort((a, b) => b.custo - a.custo);
+    el.appendChild(h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Inteligência artificial (OpenAI) — onde foi usada" }),
+      h("p", { class: "sub", text: "Estimativa pelos tokens que a OpenAI devolve em cada resposta e pela tabela de preços abaixo. O valor cobrado de verdade aparece em \"Fatura da OpenAI\"." }),
+      listaIA.length ? h("div", { class: "tabela-caixa lista-rolavel" }, h("table", {}, h("thead", {}, h("tr", {}, ["Recurso", "Tipo", "Modelo", "Chamadas", "Tokens de entrada", "Tokens de saída", "Custo estimado"].map(t => h("th", { text: t })))),
+        h("tbody", {}, listaIA.map(g => h("tr", {}, h("td", {}, h("strong", { text: nomeRecurso(g.recurso) })), h("td", { text: NOME_OPERACAO_IA[g.operacao] || g.operacao }), h("td", { text: g.modelo || "—" }),
+          h("td", {}, numero(g.chamadas), g.erros ? h("span", { class: "sub", text: `${numero(g.erros)} com erro` }) : null), h("td", {}, numero(g.ent), g.cache ? h("span", { class: "sub", text: `${numero(g.cache)} em cache` }) : null),
+          h("td", { text: g.imagens ? `${numero(g.sai)} · ${numero(g.imagens)} imagem(ns)` : numero(g.sai) }), h("td", { text: emMoeda(g.custo) })))))) : vazio("Nenhum uso da IA registrado no período")));
+
+    // Fatura oficial da OpenAI (chave de administrador, só leitura).
+    if (pode("ADMIN")) {
+      const entrada = h("input", { class: "entrada", type: "password", placeholder: "sk-admin-…", autocomplete: "off" });
+      el.appendChild(h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Fatura da OpenAI (valor oficial)" }),
+        oficial && oficial.configurada && !oficial.erro ? [
+          h("section", { class: "grade grade-3" }, metrica("Cobrado no período", dinheiro(oficial.total_usd, "USD"), moeda !== "USD" ? `≈ ${emMoeda(oficial.total_usd)}` : ""), metrica("Estimativa da DENIA", emMoeda(custoIA), "Painel + WhatsApp"), metrica("Média por dia", dinheiro(oficial.total_usd / (uso.dias || 1), "USD"), "")),
+          oficial.por_item.length ? h("div", { class: "tabela-caixa", style: "margin-top:12px" }, h("table", {}, h("thead", {}, h("tr", {}, h("th", { text: "Item da fatura" }), h("th", { text: "Valor (USD)" }))),
+            h("tbody", {}, oficial.por_item.map(x => h("tr", {}, h("td", { text: x.item }), h("td", { text: dinheiro(x.usd, "USD") })))))) : null,
+          h("div", { class: "acoes", style: "margin-top:10px" }, botao("Remover chave de administrador", async () => { await mk("uso/chave-admin", { metodo: "POST", corpo: { remover: true } }); navegar(); }, "btn-secundario btn-pequeno"))]
+          : [oficial && oficial.erro ? h("p", { class: "nota nota-alerta", text: oficial.erro }) : null,
+            h("p", { class: "sub", text: "Para ver o valor exato cobrado (inclui o WhatsApp e tudo o que usa a sua conta), cole uma chave de administrador da OpenAI: platform.openai.com → Settings → Organization → Admin keys. Ela só lê custos e fica guardada cifrada." }),
+            h("div", { class: "linha-form" }, campo("Chave de administrador", entrada)),
+            h("div", { class: "acoes" }, botao("Salvar e ler a fatura", async () => { try { await mk("uso/chave-admin", { metodo: "POST", corpo: { chave: entrada.value } }); aviso("Chave salva.", "ok"); navegar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario"))]));
+    }
+
+    // WhatsApp (motor).
+    const blocoWhats = h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "WhatsApp" }));
+    if (!estado.org.conectada) blocoWhats.appendChild(h("p", { class: "sub", text: "A IA do WhatsApp ainda não está conectada (Integrações)." }));
+    else if (mot.erro === "ANTIGO") blocoWhats.appendChild(h("p", { class: "nota nota-alerta", text: "O motor do WhatsApp ainda está numa versão antiga. Cole a versão 31.1 no Worker \"denia\" para ver aqui o consumo da IA e as mensagens do WhatsApp." }));
+    else if (mot.erro) blocoWhats.appendChild(h("p", { class: "nota nota-alerta", text: mot.erro }));
+    else {
+      blocoWhats.appendChild(h("section", { class: "grade grade-3" }, metrica("Mensagens recebidas", numero(recebidas), "Clientes e profissionais"), metrica("Mensagens enviadas", numero(enviadas), "Pela DENIA e pela equipe"),
+        metrica("IA no WhatsApp", emMoeda(linhas.filter(l => l.recurso === "whatsapp/motor").reduce((t, l) => t + l.custo_usd, 0)), `${numero(iaMotor.reduce((t, r) => t + r.chamadas, 0))} respostas e áudios lidos`)));
+      if (metaPontos.length) {
+        const porCat = new Map();
+        for (const p of metaPontos) { const c = porCat.get(p.categoria) || { volume: 0, custo: 0 }; c.volume += p.volume; c.custo += p.custo; porCat.set(p.categoria, c); }
+        const NOME_CAT = { MARKETING: "Marketing", UTILITY: "Utilidade", AUTHENTICATION: "Autenticação", SERVICE: "Atendimento (serviço)", MARKETING_LITE: "Marketing leve", AUTHENTICATION_INTERNATIONAL: "Autenticação internacional" };
+        blocoWhats.appendChild(h("div", { class: "tabela-caixa", style: "margin-top:12px" }, h("table", {}, h("thead", {}, h("tr", {}, h("th", { text: "Categoria cobrada pela Meta" }), h("th", { text: "Mensagens" }), h("th", { text: "Custo" }))),
+          h("tbody", {}, [...porCat.entries()].map(([c, v]) => h("tr", {}, h("td", { text: NOME_CAT[c] || c }), h("td", { text: numero(v.volume) }), h("td", { text: mot.meta.moeda ? dinheiro(v.custo, mot.meta.moeda) : numero(v.custo) })))))));
+      } else if (mot.meta) blocoWhats.appendChild(h("p", { class: mot.meta.erro ? "nota nota-alerta" : "sub", style: "margin-top:10px", text: mot.meta.erro ? "A Meta não devolveu o custo do WhatsApp: " + mot.meta.erro : mot.meta.ajuda || "A Meta não cobrou mensagens neste período (respostas dentro de 24 h são grátis)." }));
+    }
+    el.appendChild(blocoWhats);
+
+    // Meta: limites (porcentagem usada na última hora) e chamadas.
+    const lims = (uso.limites || []).filter(l => l.servico === "meta");
+    const barra = (rotulo, pct) => h("div", { class: "limite-linha" }, h("span", { text: rotulo }), h("div", { class: "barra-parte barra-limite" + (pct >= 80 ? " perigo" : pct >= 50 ? " atencao" : "") }, h("i", { style: `width:${Math.min(100, Math.max(0, pct))}%` })), h("strong", { text: `${Math.round(pct)}%` }));
+    const blocoMeta = h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Meta — limites e chamadas" }),
+      h("p", { class: "sub", text: "A Meta deixa cada app fazer um número de chamadas por hora. Acima de 100% ela bloqueia por alguns minutos; a DENIA tenta de novo sozinha." }));
+    if (!lims.length) blocoMeta.appendChild(h("p", { class: "sub", text: "Ainda sem leitura de limite: aparece depois da primeira publicação ou conexão com a Meta." }));
+    for (const l of lims) {
+      const quando = fmtDataHora.format(new Date(l.atualizado_ms));
+      if (l.chave === "app" && l.dados) blocoMeta.appendChild(h("div", { class: "limite-bloco" }, h("strong", { text: `App DENIA (lido em ${quando})` }), barra("Chamadas", l.dados.call_count || 0), barra("Processamento", l.dados.total_cputime || 0), barra("Tempo", l.dados.total_time || 0)));
+      else if (l.chave.startsWith("buc:") && Array.isArray(l.dados)) for (const d of l.dados) blocoMeta.appendChild(h("div", { class: "limite-bloco" }, h("strong", { text: `${d.type || "Conta"} ${l.chave.slice(4)} (lido em ${quando})` }), barra("Chamadas", d.call_count || 0), barra("Processamento", d.total_cputime || 0), barra("Tempo", d.total_time || 0),
+        d.estimated_time_to_regain_access ? h("p", { class: "nota nota-alerta", text: `Bloqueado pela Meta: libera em cerca de ${d.estimated_time_to_regain_access} minuto(s).` }) : null));
+    }
+    const porOp = (filtro) => { const m = new Map(); for (const l of linhas.filter(filtro)) { const k = l.operacao + "|" + l.modelo; const g = m.get(k) || { operacao: l.operacao, modelo: l.modelo, chamadas: 0, erros: 0, limitadas: 0, ms: 0 }; g.chamadas += l.chamadas; g.erros += l.erros; g.limitadas += l.limitadas; g.ms += l.ms_total; m.set(k, g); } return [...m.values()].sort((a, b) => b.chamadas - a.chamadas); };
+    const listaMeta = porOp(ehMeta);
+    if (listaMeta.length) blocoMeta.appendChild(h("div", { class: "tabela-caixa", style: "margin-top:12px" }, h("table", {}, h("thead", {}, h("tr", {}, ["Chamada", "Vezes", "Erros", "Barradas por limite", "Tempo médio"].map(t => h("th", { text: t })))),
+      h("tbody", {}, listaMeta.map(g => h("tr", {}, h("td", { text: g.operacao }), h("td", { text: numero(g.chamadas) }), h("td", { text: numero(g.erros) }), h("td", { text: numero(g.limitadas) }), h("td", { text: g.chamadas ? `${numero(Math.round(g.ms / g.chamadas))} ms` : "—" })))))));
+    el.appendChild(blocoMeta);
+
+    // Google: chamadas por API e cota.
+    const cotas = uso.cotas_google || {};
+    const porApi = new Map();
+    for (const l of linhas.filter(ehGoogle)) { const g = porApi.get(l.operacao) || { chamadas: 0, erros: 0, limitadas: 0, pico: 0 }; g.chamadas += l.chamadas; g.erros += l.erros; g.limitadas += l.limitadas; porApi.set(l.operacao, g); }
+    el.appendChild(h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Google — chamadas e cotas" }),
+      h("p", { class: "sub", text: "As APIs do Google Perfil da Empresa não cobram por chamada; o limite é a cota por minuto do projeto (veja e peça aumento em console.cloud.google.com → APIs e serviços → Cotas)." }),
+      porApi.size ? h("div", { class: "tabela-caixa" }, h("table", {}, h("thead", {}, h("tr", {}, ["API", "Chamadas", "Média por dia", "Erros", "Barradas pela cota", "Cota por minuto"].map(t => h("th", { text: t })))),
+        h("tbody", {}, [...porApi.entries()].map(([api, g]) => h("tr", {}, h("td", { text: (cotas[api] || {}).nome || api }), h("td", { text: numero(g.chamadas) }), h("td", { text: numero(Math.round(g.chamadas / (uso.dias || 1))) }), h("td", { text: numero(g.erros) }),
+          h("td", {}, g.limitadas ? h("span", { class: "desce", text: numero(g.limitadas) }) : "0"), h("td", { text: (cotas[api] || {}).por_minuto ? numero(cotas[api].por_minuto) : "—" }))))))
+        : vazio("Nenhuma chamada ao Google no período")));
+
+    // Preços usados na estimativa (administradores).
+    if (pode("ADMIN")) {
+      const moedaE = h("select", { class: "entrada" }, MOEDAS.map(m => h("option", { value: m, selected: m === moeda, text: m })));
+      const cotE = h("input", { class: "entrada", type: "number", min: "0", step: "0.0001", value: String(uso.cotacao || 5.4) });
+      const linhasP = Object.entries(precos).map(([m, p]) => ({ m, p }));
+      const corpoT = h("tbody", {});
+      const linhaPreco = ({ m, p }) => {
+        const n = h("input", { class: "entrada", value: m, "aria-label": "Modelo" });
+        const c = k => h("input", { class: "entrada entrada-preco", type: "number", min: "0", step: "0.001", value: p[k] != null ? String(p[k]) : "", "aria-label": k });
+        const ent = c("entrada"), cac = c("cache"), sai = c("saida");
+        const tr = h("tr", {}, h("td", {}, n), h("td", {}, ent), h("td", {}, cac), h("td", {}, sai), h("td", {}, botao("×", () => tr.remove(), "btn-secundario btn-pequeno", { "aria-label": "Remover" })));
+        tr.ler = () => ({ nome: n.value.trim(), v: { ...p, entrada: ent.value, cache: cac.value, saida: sai.value } });
+        return tr;
+      };
+      linhasP.forEach(x => corpoT.appendChild(linhaPreco(x)));
+      el.appendChild(h("details", { class: "cartao vidro" }, h("summary", { text: "Preços e moeda usados na estimativa" }),
+        h("p", { class: "sub", text: "Dólares por 1 milhão de tokens. O modelo vale para todos os que começam com o mesmo nome (\"*\" = qualquer outro). Ajuste quando a OpenAI mudar a tabela em openai.com/api/pricing." }),
+        h("div", { class: "linha-form" }, campo("Moeda do painel", moedaE), campo("Cotação (1 dólar =)", cotE)),
+        h("div", { class: "tabela-caixa" }, h("table", {}, h("thead", {}, h("tr", {}, ["Modelo", "Entrada", "Entrada em cache", "Saída", ""].map(t => h("th", { text: t })))), corpoT)),
+        h("div", { class: "acoes", style: "margin-top:10px" },
+          botao("Adicionar modelo", () => corpoT.appendChild(linhaPreco({ m: "", p: {} })), "btn-secundario btn-pequeno"),
+          botao("Salvar preços", async () => { try { const precosN = {}; for (const tr of corpoT.children) { const { nome, v } = tr.ler(); if (nome) precosN[nome] = v; } await mk("uso/precos", { metodo: "POST", corpo: { precos: precosN, moeda: moedaE.value, cotacao: cotE.value } }); aviso("Preços salvos. Valem para as próximas chamadas.", "ok"); navegar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario btn-pequeno"),
+          botao("Voltar ao padrão", async () => { await mk("uso/precos", { metodo: "POST", corpo: { restaurar: true, moeda: moedaE.value, cotacao: cotE.value } }); navegar(); }, "btn-secundario btn-pequeno"))));
+    }
+  }
+
   async function atualizarAprovacoes() {
     const c = $("contador-aprovacoes");
     if (!c || !estado.org) return;
@@ -2603,6 +2981,7 @@
         .catch(() => { throw new Error("Permita o uso do microfone para conversar com a DENIA (no cadeado ao lado do endereço do site)."); });
       aoVivo.fluxo = fluxo;
       const s = await api(`/api/orgs/${estado.org.id}/assistente/ao-vivo`, { metodo: "POST", corpo: {} });
+      aoVivo.modelo = s.modelo || "";
       if (!aoVivo.conectando) { fluxo.getTracks().forEach(t => t.stop()); return; }
       const pc = new RTCPeerConnection();
       aoVivo.pc = pc;
@@ -2660,6 +3039,7 @@
     if (t === "input_audio_buffer.speech_started") { estadoAssistente("Ouvindo…"); return; }
     if (t === "input_audio_buffer.speech_stopped") { estadoAssistente("Pensando…"); return; }
     if (t === "output_audio_buffer.started") { estadoAssistente("Falando… (pode interromper)"); return; }
+    if (t === "response.done" && ev.response && ev.response.usage) mk("uso/realtime", { metodo: "POST", corpo: { usage: ev.response.usage, modelo: aoVivo.modelo || "" } }).catch(() => {});
     if (t === "output_audio_buffer.stopped" || t === "response.done") { if (!piloto.ativo) estadoAssistente(aoVivo.ativo ? "Ao vivo — pode falar" : ""); if (t === "output_audio_buffer.stopped") return; }
     if (t === "conversation.item.input_audio_transcription.completed" && ev.transcript && ev.transcript.trim()) {
       const texto = ev.transcript.trim();

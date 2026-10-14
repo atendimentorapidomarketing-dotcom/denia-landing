@@ -23,6 +23,7 @@
 import { apiMarketing, apiAssistente, analisarAvaliacoesPendentes, relatoriosDaSemana } from "./marketing.js";
 import { retornoMeta, servirMidiaPublica, publicarPendentes } from "./meta.js";
 import { retornoGoogle, sincronizarGooglePendentes } from "./google.js";
+import { comOrgUso, comRecurso, descarregarUso } from "./uso.js";
 
 const VERSAO = "3.1.0";
 // Versão dos Termos de uso e da Política de privacidade aceitas no cadastro.
@@ -44,6 +45,7 @@ const NOME_PAPEL = { OWNER: "Proprietário", ADMIN: "Administrador", AGENTE: "At
 // Operações do Engine liberadas, com o papel mínimo de cada uma.
 const ROTAS_ENGINE = [
   ["GET", /^status$/, "VISUALIZADOR"],
+  ["GET", /^usage$/, "ADMIN"],
   ["GET", /^conversations$/, "VISUALIZADOR"],
   ["GET", /^conversations\/\d{1,12}$/, "VISUALIZADOR"],
   ["POST", /^conversations\/\d{1,12}\/(send|takeover|release)$/, "AGENTE", "CONVERSA"],
@@ -64,7 +66,7 @@ const ROTAS_ENGINE = [
   ["POST", /^import\/clients$/, "ADMIN", "IMPORTACAO"],
   ["POST", /^pause$/, "ADMIN", "PAUSA_GERAL"]
 ];
-const PARAMS_ENGINE = { limit: /^\d{1,3}$/, status: /^(PENDENTE|APROVADA|REJEITADA)$/, completo: /^1$/ };
+const PARAMS_ENGINE = { limit: /^\d{1,3}$/, status: /^(PENDENTE|APROVADA|REJEITADA)$/, completo: /^1$/, de: /^\d{4}-\d{2}-\d{2}$/, ate: /^\d{4}-\d{2}-\d{2}$/ };
 
 // ---------------------------------------------------------------------------
 // Utilidades
@@ -615,7 +617,8 @@ async function chaveIA(env, orgId) {
 }
 async function comIA(env, orgId) {
   const { chave } = await chaveIA(env, orgId);
-  return chave ? Object.assign(Object.create(env), { OPENAI_API_KEY: chave }) : env;
+  // Leva a empresa junto para o consumo (página Consumo e custos) ficar na conta certa.
+  return Object.assign(Object.create(env), { USO_ORG: Number(orgId) || 0, ...(chave ? { OPENAI_API_KEY: chave } : {}) });
 }
 
 // Cron: a DENIA lê as avaliações novas (boa, ruim, grave, possível violação), avisa por e-mail os
@@ -633,7 +636,7 @@ async function cuidarDasAvaliacoes(env, k) {
   const base = String((await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave='base_url'").first().catch(() => null))?.valor || "").replace(/\/+$/, "");
   for (const { org_id } of orgs) {
     const envIA = await comIA(env, org_id);
-    const { alertas } = await analisarAvaliacoesPendentes(envIA, org_id, 10, k);
+    const { alertas } = await analisarAvaliacoesPendentes(comRecurso(envIA, "automático/avaliações"), org_id, 10, k);
     if (!alertas.length || !emailConfigurado(env)) continue;
     const texto = `A DENIA encontrou ${alertas.length} avaliação(ões) do Google que precisam de você:\n\n` + alertas.map(x =>
       `• ${x.marca} — ${x.autor || "Cliente"} (${x.nota}★): "${String(x.texto || "").slice(0, 300)}"\n  ${x.analise.motivo_humano || ""}${x.analise.viola_politica ? `\n  Pode violar as regras do Google (${x.analise.politica}). ${x.analise.como_remover}` : ""}`).join("\n\n") +
@@ -643,7 +646,7 @@ async function cuidarDasAvaliacoes(env, k) {
   // Relatório semanal (segunda-feira), para as empresas com perfil do Google conectado.
   const comGoogle = (await env.DB.prepare("SELECT DISTINCT org_id FROM plt_mk_google LIMIT 20").all().catch(() => null))?.results || [];
   for (const { org_id } of comGoogle) {
-    const feitos = await relatoriosDaSemana(await comIA(env, org_id), k, org_id);
+    const feitos = await relatoriosDaSemana(comRecurso(await comIA(env, org_id), "automático/relatórios"), k, org_id);
     if (!feitos.length || !emailConfigurado(env)) continue;
     for (const f of feitos) for (const para of await responsaveisDa(env, org_id)) await enviarEmail(env, para, `DENIA — relatório da semana: ${f.marca}`, f.texto + (base ? `\n\nVeja no painel: ${base}/app#/google/relatorio` : ""));
   }
@@ -732,7 +735,7 @@ async function apiOrg(request, env, sessao, orgId, resto) {
       const r = await proxyEngine(req, env, sessao, orgId, papel, caminho);
       return { status: r.status, dados: await r.json().catch(() => ({})) };
     };
-    return apiMarketing(request, await comIA(env, orgId), { ...kit, engine }, orgId, papel, resto.slice(3));
+    return apiMarketing(request, await comIA(env, orgId), { ...kit, engine, central: (await primeiraEmpresa(env)) === orgId }, orgId, papel, resto.slice(3));
   }
   if (resto.startsWith("assistente/")) {
     // A DENIA age pelo comando de voz usando as mesmas rotas (e permissões) do painel.
@@ -743,7 +746,7 @@ async function apiOrg(request, env, sessao, orgId, resto) {
       return { status: r.status, dados: await r.json().catch(() => ({})) };
     };
     const ctx = ["assistente/conversa", "assistente/ao-vivo", "assistente/contexto"].includes(resto) ? await contextoAssistente(env, orgId) : { empresa: "", dados: "" };
-    return apiAssistente(request, await comIA(env, orgId), kit, orgId, papel, resto, { ...ctx, mk: interno("mk"), engine: interno("engine") });
+    return apiAssistente(request, comRecurso(await comIA(env, orgId), "assistente"), kit, orgId, papel, resto, { ...ctx, mk: interno("mk"), engine: interno("engine") });
   }
 
   if (resto === "membros" && metodo === "GET") {
@@ -1004,7 +1007,7 @@ function comSeguranca(resposta, request) {
   const h = new Headers(resposta.headers);
   h.set("content-security-policy", [
     "default-src 'self'", "script-src 'self'", "style-src 'self' https://fonts.googleapis.com",
-    "font-src 'self' https://fonts.gstatic.com", "img-src 'self' data: blob:", "media-src 'self' blob:", "connect-src 'self' https://api.openai.com",
+    "font-src 'self' https://fonts.gstatic.com", "img-src 'self' data: blob: https://*.cdninstagram.com https://*.fbcdn.net", "media-src 'self' blob:", "connect-src 'self' https://api.openai.com",
     "manifest-src 'self'", "frame-ancestors 'none'", "base-uri 'none'", "form-action 'self'", "object-src 'none'"
   ].join("; "));
   h.set("strict-transport-security", "max-age=31536000; includeSubDomains");
@@ -1027,6 +1030,7 @@ export default {
       console.error("Erro não tratado:", e?.stack || e);
       return comSeguranca(json({ erro: "Erro interno. Tente novamente." }, 500), request);
     }
+    finally { await descarregarUso(env); } // grava o consumo somado nesta requisição
   },
   // A cada 5 minutos: publica no Instagram, Facebook e Google os posts aprovados cujo horário chegou;
   // de hora em hora, traz as avaliações e o desempenho dos perfis do Google.
@@ -1037,7 +1041,7 @@ export default {
       await publicarPendentes(env, k).catch(e => console.error("publicação agendada", e?.message));
       await sincronizarGooglePendentes(env, k).catch(e => console.error("google", e?.message));
       await cuidarDasAvaliacoes(env, k).catch(e => console.error("avaliações", e?.message));
-    })().catch(e => console.error("cron", e?.message));
+    })().catch(e => console.error("cron", e?.message)).finally(() => descarregarUso(env));
     if (ctx && ctx.waitUntil) ctx.waitUntil(tarefa); else await tarefa;
   }
 };

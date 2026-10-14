@@ -1,4 +1,6 @@
 import { rotasMeta, aoAprovar } from "./meta.js";
+import { rotasSocial } from "./social.js";
+import { rotasUso, registrarUso, custoOpenAI, tokensDe, precosDaOrg, orgDoUso, recursoDo, comRecurso } from "./uso.js";
 import { rotasGoogle, responderAvaliacaoGoogle, apagarRespostaGoogle, contaGoogleDe, desempenhoAoVivo, sincronizarConta, linkDoPerfil } from "./google.js";
 // ============================================================================
 // DENIA Platform — Estúdio de Marketing e Assistente DENIA (texto e voz)
@@ -53,18 +55,31 @@ function textoDaResposta(d) {
   for (const o of d?.output || []) for (const c of o?.content || []) if (typeof c?.text === "string") partes.push(c.text);
   return partes.join("");
 }
+// Tipo de uso de cada caminho da OpenAI (para a página Consumo).
+const OPERACAO_OPENAI = { responses: "texto", "images/edits": "imagem", "images/generations": "imagem", "audio/transcriptions": "transcricao", "audio/speech": "voz_falada", "realtime/client_secrets": "voz_sessao" };
 async function openai(env, caminho, corpo, extras = {}) {
-  const r = await fetch("https://api.openai.com/v1/" + caminho, {
-    method: "POST",
-    headers: { authorization: `Bearer ${chave(env)}`, ...(corpo instanceof FormData ? {} : { "content-type": "application/json" }) },
-    body: corpo instanceof FormData ? corpo : JSON.stringify(corpo),
-    signal: AbortSignal.timeout(extras.timeout || 60000)
-  });
+  const inicio = Date.now();
+  const modelo = String((corpo instanceof FormData ? corpo.get("model") : corpo?.model) || "");
+  const org = orgDoUso(env), operacao = OPERACAO_OPENAI[caminho] || caminho, recurso = recursoDo(env);
+  let r;
+  try {
+    r = await fetch("https://api.openai.com/v1/" + caminho, {
+      method: "POST",
+      headers: { authorization: `Bearer ${chave(env)}`, ...(corpo instanceof FormData ? {} : { "content-type": "application/json" }) },
+      body: corpo instanceof FormData ? corpo : JSON.stringify(corpo),
+      signal: AbortSignal.timeout(extras.timeout || 60000)
+    });
+  } catch (e) { registrarUso(org, "openai", operacao, modelo, { erro: true, ms: Date.now() - inicio }, recurso); throw e; }
   if (extras.binario) {
+    // Voz falada: a API não devolve tokens; o custo é estimado pelos caracteres do texto.
+    const caracteres = operacao === "voz_falada" ? String(corpo?.input || "").length : 0;
+    registrarUso(org, "openai", operacao, modelo, { erro: !r.ok, limitada: r.status === 429, caracteres, custo_usd: r.ok && caracteres ? custoOpenAI(modelo, null, await precosDaOrg(env, org), { caracteres }) : 0, ms: Date.now() - inicio }, recurso);
     if (!r.ok) throw new Error(`OpenAI HTTP ${r.status}`);
     return r;
   }
   const d = await r.json().catch(() => ({}));
+  registrarUso(org, "openai", operacao, modelo, { erro: !r.ok, limitada: r.status === 429, ...tokensDe(d?.usage), imagens: operacao === "imagem" && r.ok ? (d?.data || []).length : 0,
+    custo_usd: r.ok ? custoOpenAI(modelo, d?.usage, await precosDaOrg(env, org)) : 0, ms: Date.now() - inicio }, recurso);
   if (!r.ok) {
     const msg = d?.error?.message || `HTTP ${r.status}`;
     const e = new Error(r.status === 401 ? "A chave da OpenAI foi recusada. Cole uma chave válida em Integrações → Inteligência da DENIA (OpenAI)." : r.status === 429 ? "A OpenAI recusou por limite ou falta de crédito na conta. Confira em platform.openai.com → Billing." : "A IA não conseguiu responder agora: " + msg);
@@ -263,6 +278,28 @@ async function analisarUmaAvaliacao(env, marca, a) {
 }
 
 // ---------------------------------------------------------------------------
+// Comentários do Instagram e do Facebook: a IA lê o comentário com a publicação e a marca e sugere a resposta.
+// ---------------------------------------------------------------------------
+const INSTRUCOES_COMENTARIO = `Você é a social media sênior da marca. Leia o comentário deixado numa publicação do Instagram ou do Facebook e escreva a resposta pública da marca.
+Regras:
+- Responda no mesmo idioma do comentário. Tom humano, caloroso e profissional, como uma pessoa da equipe — nunca robótico. Use o nome (ou @) da pessoa quando fizer sentido.
+- Curta: 1 a 3 frases (o comentário é público e rápido). No máximo 1 emoji, e só se combinar com o tom da marca.
+- Elogio: agradeça de forma específica (cite o que a pessoa elogiou). Dúvida: responda com o que a marca sabe; se não souber o preço, prazo ou detalhe, convide para o direct ou o WhatsApp, sem inventar.
+- Reclamação: reconheça, peça desculpa sem culpar ninguém, e leve para o privado (direct/WhatsApp) para resolver. Nunca discuta em público, nunca exponha dados do cliente.
+- Interesse de compra ("quanto custa", "como faço", "tem horário"): responda e conduza para a ação (direct, WhatsApp, link da bio) — é venda.
+- Spam, golpe, ofensa, discurso de ódio ou link suspeito: não responda; recomende ocultar (ou apagar, se for golpe).
+- Nunca prometa o que a marca não informou, nunca invente preços, nunca peça dados pessoais em público.
+Responda em JSON: {"resposta":"texto ou vazio","tipo":"ELOGIO|DUVIDA|INTERESSE|RECLAMACAO|SPAM|OFENSIVO|OUTRO","acao":"RESPONDER|OCULTAR|APAGAR|LEVAR_PARA_PRIVADO","precisa_humano":true|false,"motivo":"uma frase explicando a sugestão"}`;
+async function sugerirRespostaComentario(env, orgId, marcaId, canal, c) {
+  if (!chave(env)) { const e = new Error("A IA está desligada: falta a chave da OpenAI em Integrações."); e.status = 409; throw e; }
+  const marca = await env.DB.prepare("SELECT * FROM plt_mk_marcas WHERE id=? AND org_id=?").bind(Number(marcaId), orgId).first();
+  if (!marca) { const e = new Error("Marca não encontrada."); e.status = 404; throw e; }
+  const r = await iaJSON(env, INSTRUCOES_COMENTARIO, `${resumoMarca(marca)}\n\nCANAL: ${canal === "instagram" ? "Instagram" : "Facebook"}\nPUBLICAÇÃO: "${c.post || "(sem legenda)"}"\nCOMENTÁRIO de ${c.autor || "uma pessoa"}: "${c.comentario}"\nResponda em JSON.`, 600);
+  const TIPOS = ["ELOGIO", "DUVIDA", "INTERESSE", "RECLAMACAO", "SPAM", "OFENSIVO", "OUTRO"], ACOES = ["RESPONDER", "OCULTAR", "APAGAR", "LEVAR_PARA_PRIVADO"];
+  return { resposta: String(r.resposta || "").slice(0, 2000), tipo: TIPOS.includes(String(r.tipo).toUpperCase()) ? String(r.tipo).toUpperCase() : "OUTRO", acao: ACOES.includes(String(r.acao).toUpperCase()) ? String(r.acao).toUpperCase() : "RESPONDER", precisa_humano: r.precisa_humano === true, motivo: String(r.motivo || "").slice(0, 300) };
+}
+
+// ---------------------------------------------------------------------------
 // Triagem das avaliações de 1 e 2 estrelas: separa as que parecem falsas (quem avaliou não está na base de
 // clientes, avaliações em sequência, textos repetidos, sem relação com a empresa) e indica o tópico certo de
 // denúncia do Google. A denúncia é feita por uma pessoa, uma a uma (o Google não permite denúncia automática).
@@ -380,6 +417,12 @@ Responda em JSON: {"nota":0,"aprovado":false,"comentario":""} — nota de 0 a 10
 export async function apiMarketing(request, env, k, orgId, papel, resto) {
   const { json, lerCorpo, txt, pode, agora, auditar, sessao } = k;
   await garantir(env);
+  // Cada chamada externa desta rota conta no recurso (ex.: "avaliacoes/triagem") na página Consumo.
+  env = comRecurso(env, resto.split("/").filter(x => x && !/^\d+$/.test(x)).slice(0, 2).join("/"));
+  const doUso = await rotasUso(request, env, k, orgId, papel, resto, { central: Boolean(k.central) });
+  if (doUso) return doUso;
+  const doSocial = await rotasSocial(request, env, k, orgId, papel, resto, { sugerir: (marcaId, canal, c) => sugerirRespostaComentario(env, orgId, marcaId, canal, c) });
+  if (doSocial) return doSocial;
   const daMeta = await rotasMeta(request, env, k, orgId, papel, resto);
   if (daMeta) return daMeta;
   // "Buscar avaliações agora": traz do Google, lê e (no automático) responde na hora — sem esperar a rodada de 10 minutos.

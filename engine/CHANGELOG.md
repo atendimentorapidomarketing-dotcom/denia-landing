@@ -1,5 +1,14 @@
 # Changelog — DENIA Engine
 
+## 31.1.0 — 2026-10-14
+
+### Novo
+- Consumo e custos: cada chamada à OpenAI (respostas do atendimento e transcrição de áudios)
+  é somada por dia e modelo (tabela `d30_uso`).
+- `/platform/usage?de&ate`: consumo da IA, mensagens recebidas e enviadas por dia e, com a
+  variável opcional `WHATSAPP_WABA_ID`, o custo do WhatsApp cobrado pela Meta (pricing_analytics,
+  por categoria: marketing, utilidade, serviço, autenticação). O painel mostra em Consumo e custos.
+
 ## 31.0.0 — 2026-10-14
 
 ### Novo
