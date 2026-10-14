@@ -1301,6 +1301,22 @@
   const segundaDe = (d) => { const x = new Date(d); x.setHours(12, 0, 0, 0); x.setDate(x.getDate() - ((x.getDay() + 6) % 7)); return x; };
   const somarDias = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
   const dataCurta = iso => { const [a, m, d] = String(iso || "").split("-"); return d ? `${d}/${m}` : "—"; };
+  const dataCompleta = iso => { const [a, m, d] = String(iso || "").slice(0, 10).split("-"); return d ? `${d}/${m}/${a}` : ""; };
+  // "O que eu faria" com uma avaliação ruim: denunciar (tópico do Google e como), responder, ou os dois.
+  function planoAvaliacao(a, t, x) {
+    const passos = [];
+    if (t && t.categoria) {
+      passos.push(`Denunciar no Google no tópico "${t.categoria}" — ${t.motivo || "há indícios de que viola as regras do Google."}`);
+      passos.push("Como: abra o perfil no Google Maps (Triagem 1★ → Denunciar no Google), procure pelo nome de quem avaliou, toque nos três pontinhos → Denunciar avaliação → escolha esse tópico. Depois marque \"Já denunciei\" na DENIA.");
+      passos.push("Enquanto o Google analisa, publique uma resposta educada (a sugerida abaixo): quem lê vê que a empresa se importa. Se o Google recusar, peça nova análise uma vez, com a justificativa da triagem.");
+    } else if (t) {
+      passos.push(`Não há base para denúncia: ${t.motivo || "parece de cliente real."}`);
+      passos.push("Responda com educação e sem discutir (a resposta sugerida abaixo), e chame o cliente no WhatsApp para resolver. Cliente bem atendido costuma mudar a nota.");
+    }
+    if (x && x.precisa_humano) passos.push("Antes de responder: " + (x.motivo_humano || "uma pessoa da equipe precisa ler e decidir."));
+    if (!passos.length) return null;
+    return h("div", { class: "plano-avaliacao" }, h("strong", { text: "O que eu faria" }), h("ol", { class: "lista-simples" }, passos.map(p => h("li", { text: p }))));
+  }
   const seloStatus = st => { const [n, c] = NOME_STATUS[st] || [st, ""]; return selo(n, c); };
   let cacheMarcas = null;
   async function marcas(forcar) {
@@ -1988,10 +2004,20 @@
         const resp = h("textarea", { class: "entrada", value: a.resposta || a.resposta_sugerida || "", placeholder: "Resposta da empresa", style: "min-height:80px" });
         const analise = h("div", {}, blocoAnalise(lida(a)));
         const x = lida(a), corCartao = !x ? "cor-cinza" : (x.sentimento === "GRAVE" || x.precisa_humano || x.viola_politica) ? "cor-vermelho" : ["OTIMA", "POSITIVA"].includes(x.sentimento) ? "cor-verde" : "cor-amarelo";
+        let tri = null; try { tri = JSON.parse(a.triagem || "null"); } catch { tri = null; }
+        const plano = h("div", {}, Number(a.nota) <= 3 ? planoAvaliacao(a, tri, x) : null);
+        const botaoPlano = pode("AGENTE") && Number(a.nota) <= 3 && !tri ? botao("✦ O que fazer com esta avaliação?", async (_e, b) => {
+          b.textContent = "Analisando…";
+          try {
+            const r = await mk("avaliacoes/triagem", { metodo: "POST", corpo: { marca_id: marcaId, ids: [a.id], lote: String(Date.now()) } });
+            const t = r.resultados && r.resultados[a.id];
+            plano.replaceChildren(planoAvaliacao(a, t, x) || h("p", { class: "nota", text: "Sem recomendação agora." })); b.remove();
+          } catch (e) { aviso(e.message, "erro"); b.textContent = "✦ O que fazer com esta avaliação?"; }
+        }, "btn-primario btn-pequeno") : null;
         return h("article", { class: "sugestao vidro " + corCartao + (precisaDeVoce(a) ? " sugestao-alerta" : "") },
-          h("div", { class: "sugestao-topo" }, h("strong", { text: a.autor || "Cliente" }), h("span", { class: "estrelas", text: "★".repeat(a.nota) + "☆".repeat(5 - a.nota) }), a.status === "RESPONDIDA" ? selo("Respondida", "ok") : selo("Sem resposta", Number(a.nota) <= 3 ? "erro" : "alerta")),
-          h("p", { style: "margin:0;color:var(--texto-2)", text: a.texto || "(sem texto)" }), analise, resp,
-          pode("AGENTE") ? h("div", { class: "acoes" },
+          h("div", { class: "sugestao-topo" }, h("strong", { text: a.autor || "Cliente" }), h("span", { class: "estrelas", text: "★".repeat(a.nota) + "☆".repeat(5 - a.nota) }), a.data ? h("span", { class: "sub", text: dataCompleta(a.data) }) : null, a.status === "RESPONDIDA" ? selo("Respondida", "ok") : selo("Sem resposta", Number(a.nota) <= 3 ? "erro" : "alerta")),
+          h("p", { style: "margin:0;color:var(--texto-2)", text: a.texto || "(sem texto)" }), analise, plano, resp,
+          pode("AGENTE") ? h("div", { class: "acoes" }, botaoPlano,
             botao("✦ Analisar e sugerir resposta", async (_e, b) => { b.textContent = "Lendo a avaliação…"; try { const r = await mk(`avaliacoes/${a.id}/sugerir`, { metodo: "POST", corpo: {} }); resp.value = r.resposta; analise.replaceChildren(blocoAnalise(r.analise) || ""); } catch (e) { aviso(e.message, "erro"); } finally { b.textContent = "✦ Analisar e sugerir resposta"; } }, "btn-secundario btn-pequeno"),
             botao(a.google_id ? "Publicar resposta no Google" : "Salvar resposta", async () => { try { const r = await mk(`avaliacoes/${a.id}/responder`, { metodo: "POST", corpo: { resposta: resp.value } }); aviso(r.publicada_google ? "Resposta publicada no Google." : "Resposta salva. Publique no Google (ou automaticamente, após a conexão).", "ok"); navegar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario btn-pequeno"),
             botao("Copiar", () => copiar(resp.value), "btn-secundario btn-pequeno")) : null);
@@ -2063,7 +2089,7 @@
         botao(a.google_id ? "Publicar no Google" : "Salvar resposta", async () => { try { const r = await mk(`avaliacoes/${a.id}/responder`, { metodo: "POST", corpo: { resposta: caixa.value } }); aviso(r.publicada_google ? "Resposta publicada no Google." : "Resposta salva.", "ok"); navegar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario btn-pequeno")));
       return h("article", { class: "sugestao vidro" + (t && t.veredito === "PROVAVEL_FALSA" ? " sugestao-alerta" : "") },
         h("div", { class: "sugestao-topo" }, pode("AGENTE") ? marca : null, h("strong", { text: a.autor || "Cliente" }), h("span", { class: "estrelas", text: "★".repeat(a.nota) + "☆".repeat(5 - a.nota) }),
-          a.data ? h("span", { class: "sub", text: dataCurta(a.data) }) : null,
+          a.data ? h("span", { class: "sub", text: dataCompleta(a.data) }) : null,
           v ? selo(v[0], v[1]) : selo("Não analisada", ""), temResposta ? selo("Respondida", "ok") : selo("Sem resposta", "alerta"),
           d && d.status === "DENUNCIADA" ? selo("Denunciada em " + new Date(d.em).toLocaleDateString(LOCALE), "info") : d && d.status === "RECUSADA" ? selo("Google recusou", "alerta") : null),
         h("p", { style: "margin:0;color:var(--texto-2)", text: a.texto || "(sem texto, só a nota)" }),
@@ -2073,6 +2099,7 @@
           (t.sinais || []).length ? h("ul", { class: "lista-simples" }, t.sinais.map(x => h("li", { text: x }))) : null,
           t.categoria ? h("p", { class: "nota nota-alerta" }, "Tópico de denúncia: ", h("strong", { text: t.categoria })) : h("p", { class: "nota", text: "Sem base para denúncia: o melhor caminho é uma boa resposta." }),
           t.justificativa && t.categoria ? h("p", { class: "nota", text: "Justificativa: " + t.justificativa }) : null) : null,
+        t ? planoAvaliacao(a, t, json_(a.analise)) : null,
         editor,
         pode("AGENTE") ? h("div", { class: "acoes" },
           t && t.categoria && !d ? botao("Denunciar no Google", () => denunciar(a, t), "btn-primario btn-pequeno") : null,
