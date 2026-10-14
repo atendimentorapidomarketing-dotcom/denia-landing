@@ -1,5 +1,5 @@
 import { rotasMeta, aoAprovar } from "./meta.js";
-import { rotasGoogle, responderAvaliacaoGoogle, contaGoogleDe, desempenhoAoVivo, sincronizarConta } from "./google.js";
+import { rotasGoogle, responderAvaliacaoGoogle, contaGoogleDe, desempenhoAoVivo, sincronizarConta, linkDoPerfil } from "./google.js";
 // ============================================================================
 // DENIA Platform — Estúdio de Marketing e Assistente DENIA (texto e voz)
 // ============================================================================
@@ -34,7 +34,7 @@ const prontos = new WeakSet();
 async function garantir(env) {
   if (prontos.has(env.DB)) return;
   await env.DB.batch(DDL.map(s => env.DB.prepare(s)));
-  for (const alter of ["ALTER TABLE plt_mk_marcas ADD COLUMN idioma TEXT", "ALTER TABLE plt_mk_marcas ADD COLUMN horarios TEXT", "ALTER TABLE plt_mk_marcas ADD COLUMN logo_midia_id INTEGER", "ALTER TABLE plt_mk_posts ADD COLUMN texto_arte TEXT", "ALTER TABLE plt_mk_marcas ADD COLUMN ofertas TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN analise TEXT", "ALTER TABLE plt_mk_config ADD COLUMN avaliacoes_auto TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN google_id TEXT"])
+  for (const alter of ["ALTER TABLE plt_mk_marcas ADD COLUMN idioma TEXT", "ALTER TABLE plt_mk_marcas ADD COLUMN horarios TEXT", "ALTER TABLE plt_mk_marcas ADD COLUMN logo_midia_id INTEGER", "ALTER TABLE plt_mk_posts ADD COLUMN texto_arte TEXT", "ALTER TABLE plt_mk_marcas ADD COLUMN ofertas TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN analise TEXT", "ALTER TABLE plt_mk_config ADD COLUMN avaliacoes_auto TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN triagem TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN denuncia TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN removida_ms INTEGER", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN google_id TEXT"])
     await env.DB.prepare(alter).run().catch(() => { }); // coluna já existe
   prontos.add(env.DB);
 }
@@ -260,6 +260,27 @@ async function analisarUmaAvaliacao(env, marca, a) {
   const resposta = String(r.resposta || "").slice(0, 2000);
   await env.DB.prepare("UPDATE plt_mk_avaliacoes SET analise=?, resposta_sugerida=COALESCE(NULLIF(?,''), resposta_sugerida) WHERE id=?").bind(JSON.stringify(analise), resposta, a.id).run();
   return { analise, resposta };
+}
+
+// ---------------------------------------------------------------------------
+// Triagem das avaliações de 1 e 2 estrelas: separa as que parecem falsas (quem avaliou não está na base de
+// clientes, avaliações em sequência, textos repetidos, sem relação com a empresa) e indica o tópico certo de
+// denúncia do Google. A denúncia é feita por uma pessoa, uma a uma (o Google não permite denúncia automática).
+// ---------------------------------------------------------------------------
+export const CATEGORIAS_DENUNCIA = ["Sem relação com o tópico", "Spam", "Conflito de interesses", "Linguagem obscena", "Nociva", "Bullying ou assédio", "Discriminação ou discurso de ódio", "Informações pessoais", "Não foi útil"];
+const INSTRUCOES_TRIAGEM = `Você é especialista em políticas de avaliações do Google Perfil da Empresa. Avalie se UMA avaliação negativa tem indícios de ser falsa ou de violar as regras do Google, usando os SINAIS fornecidos. Seja rigorosa e honesta: reclamação de cliente real, mesmo dura ou injusta, NÃO é violação — nesse caso o caminho é responder bem.
+Sinais e como pesar:
+- "não está na base de clientes": indício forte se o nome é completo; fraco se é só o primeiro nome ou apelido (o nome do Google pode ser diferente do nome usado no WhatsApp).
+- várias avaliações negativas no mesmo período curto, textos parecidos ou repetidos, avaliação sem texto em sequência: indício de ataque coordenado.
+- texto genérico que não descreve nenhum serviço, data ou situação real; fala de outra empresa ou de assunto fora da experiência; menciona concorrente; ofensas; dados pessoais.
+Categorias de denúncia do Google (use exatamente um destes nomes, ou "" se não houver base): ${CATEGORIAS_DENUNCIA.join("; ")}.
+- Spam: conta falsa, robô, quem nunca foi cliente, propaganda. Conflito de interesses: concorrente, ex-funcionário, alguém ligado à empresa. Sem relação com o tópico: não fala de uma experiência com a empresa. As demais conforme o nome.
+Responda em JSON: {"veredito":"PROVAVEL_FALSA"|"DUVIDOSA"|"PARECE_REAL","categoria":"","evidencias":["frases curtas"],"motivo":"1 frase explicando a decisão","justificativa":"texto curto e factual para usar se o Google pedir mais detalhes ou num pedido de nova análise (sem ofender, sem dados pessoais)"}`;
+
+async function triarAvaliacao(env, marca, a, sinais) {
+  const r = await iaJSON(env, INSTRUCOES_TRIAGEM, `${resumoMarca(marca)}\n\nAVALIAÇÃO de "${a.autor || "Cliente"}" — ${a.nota} estrela(s)${a.data ? ", em " + a.data : ""}:\n"${a.texto || "(sem texto, só a nota)"}"${a.resposta ? `\nResposta já dada pela empresa: "${String(a.resposta).slice(0, 300)}"` : ""}\n\nSINAIS:\n${sinais.map(x => "- " + x).join("\n")}\nResponda em JSON.`, 700);
+  const veredito = ["PROVAVEL_FALSA", "DUVIDOSA", "PARECE_REAL"].includes(r.veredito) ? r.veredito : "DUVIDOSA";
+  return { veredito, categoria: CATEGORIAS_DENUNCIA.includes(r.categoria) ? r.categoria : "", evidencias: (Array.isArray(r.evidencias) ? r.evidencias : []).map(x => String(x).slice(0, 160)).slice(0, 5), motivo: String(r.motivo || "").slice(0, 300), justificativa: String(r.justificativa || "").slice(0, 900), sinais };
 }
 
 // Cron: analisa as avaliações ainda não lidas e devolve as que precisam de uma pessoa (para avisar a equipe).
@@ -664,6 +685,67 @@ Responda em JSON: {"resposta":""}`, `${resumoMarca(marca)}\n\nAvaliação de ${a
       return json({ ok: true, resposta: resp });
     }
 
+    // ----- Triagem das avaliações negativas (lotes de até 12 por chamada; a tela repete até acabar)
+    if (resto === "avaliacoes/triagem" && metodo === "POST") {
+      exigir("AGENTE");
+      if (!chave(env)) { const s = semChave(); return json(s.corpo, s.status); }
+      const c = await corpoOu(1000);
+      const marca = await marcaDa(c.marca_id);
+      if (!marca) return json({ erro: "Escolha a marca." }, 400);
+      const todas = (await env.DB.prepare("SELECT * FROM plt_mk_avaliacoes WHERE org_id=? AND marca_id=? AND nota<=2 AND removida_ms IS NULL ORDER BY id DESC LIMIT 300").bind(orgId, marca.id).all())?.results || [];
+      const pendentes = todas.filter(a => c.refazer ? !String(a.triagem || "").includes(`"lote":"${c.lote || ""}"`) : !a.triagem);
+      const lote = pendentes.slice(0, 12);
+      // Sinais que valem para todas: quem está na base de clientes, avaliações em sequência e textos repetidos.
+      let base = null;
+      if (lote.length && k.engine) {
+        const r = await k.engine("POST", "clients/match", { nomes: [...new Set(lote.map(a => a.autor || ""))] }).catch(() => null);
+        if (r && r.status < 400 && r.dados?.resultado) base = r.dados;
+      }
+      const porDia = {};
+      for (const a of todas) { const d = String(a.data || "").slice(0, 10); if (d) porDia[d] = (porDia[d] || 0) + 1; }
+      const normal = t => String(t || "").toLowerCase().replace(/[^a-zà-ú0-9 ]/gi, "").replace(/\s+/g, " ").trim();
+      const repetidos = {};
+      for (const a of todas) { const t = normal(a.texto); if (t.length > 8) repetidos[t] = (repetidos[t] || 0) + 1; }
+      let feitas = 0;
+      for (const a of lote) {
+        const sinais = [];
+        const m = base?.resultado?.[a.autor || ""];
+        if (!base) sinais.push("Base de clientes indisponível agora (sem esse sinal).");
+        else if (m?.encontrado === "SIM") sinais.push(`Quem avaliou ESTÁ na base de clientes (${(m.onde || []).join(" e ")}${m.ultimo_contato ? ", último contato em " + String(m.ultimo_contato).slice(0, 10) : ""}).`);
+        else if (m?.encontrado === "TALVEZ") sinais.push(`Só o primeiro nome aparece no Google; há ${m.quantos} cliente(s) com esse primeiro nome na base — inconclusivo.`);
+        else if (m?.encontrado === "NAO") sinais.push(`Quem avaliou NÃO está na base de clientes (procurado em ${base.base?.whatsapp || 0} contatos do WhatsApp e ${base.base?.cadastro || 0} do cadastro).`);
+        else sinais.push("O Google não mostra um nome que dê para procurar na base.");
+        const dia = String(a.data || "").slice(0, 10);
+        if (dia) {
+          const perto = Object.entries(porDia).filter(([d]) => Math.abs(Date.parse(d) - Date.parse(dia)) <= 3 * 86400000).reduce((t, [, n]) => t + n, 0);
+          if (perto >= 3) sinais.push(`${perto} avaliações de 1 ou 2 estrelas num intervalo de 7 dias em torno desta.`);
+        }
+        if (!String(a.texto || "").trim()) sinais.push("Avaliação sem texto (só a nota).");
+        else if ((repetidos[normal(a.texto)] || 0) > 1) sinais.push(`O mesmo texto aparece em ${repetidos[normal(a.texto)]} avaliações.`);
+        try {
+          const t = await triarAvaliacao(env, marca, a, sinais);
+          await env.DB.prepare("UPDATE plt_mk_avaliacoes SET triagem=? WHERE id=?").bind(JSON.stringify({ ...t, lote: c.lote || "", em: agora(env) }), a.id).run();
+          feitas++;
+        } catch (e) { return json({ erro: e.message, feitas, restantes: pendentes.length - feitas }, 502); }
+      }
+      return json({ ok: true, feitas, restantes: Math.max(0, pendentes.length - feitas), total: todas.length, base_clientes: base ? base.base : null });
+    }
+    if ((m = resto.match(/^avaliacoes\/(\d{1,12})\/denuncia$/)) && metodo === "POST") {
+      exigir("AGENTE");
+      const a = await env.DB.prepare("SELECT id, autor FROM plt_mk_avaliacoes WHERE id=? AND org_id=?").bind(Number(m[1]), orgId).first();
+      if (!a) return json({ erro: "Avaliação não encontrada." }, 404);
+      const c = await corpoOu(1000);
+      const status = ["DENUNCIADA", "RECUSADA"].includes(c.status) ? c.status : null;
+      const reg = status ? { status, categoria: CATEGORIAS_DENUNCIA.includes(c.categoria) ? c.categoria : "", em: agora(env), por: autor } : null;
+      await env.DB.prepare("UPDATE plt_mk_avaliacoes SET denuncia=? WHERE id=?").bind(reg ? JSON.stringify(reg) : null, a.id).run();
+      if (reg) await auditar(env, request, sessao, orgId, "MARKETING", `Avaliação de ${a.autor}: ${status === "DENUNCIADA" ? "denunciada ao Google" : "denúncia recusada pelo Google"}${reg.categoria ? " (" + reg.categoria + ")" : ""}`);
+      return json({ ok: true, denuncia: reg });
+    }
+    if (resto === "google/link" && metodo === "GET") {
+      const conta = await contaGoogleDe(env, orgId, Number(new URL(request.url).searchParams.get("marca")));
+      if (!conta) return json({ erro: "Esta marca ainda não está conectada ao Google." }, 409);
+      try { return json({ url: await linkDoPerfil(env, k, conta) }); } catch (e) { return json({ erro: e.message }, 502); }
+    }
     // ----- Alertas para o menu: avaliações que precisam de uma pessoa
     if (resto === "alertas" && metodo === "GET") {
       const r = await env.DB.prepare("SELECT analise FROM plt_mk_avaliacoes WHERE org_id=? AND status='PENDENTE' AND analise IS NOT NULL").bind(orgId).all();

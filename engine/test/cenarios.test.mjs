@@ -734,3 +734,17 @@ test("V30.6 — trava: caso aberto por número de profissional nunca é repassad
   await a.cliente(OUTRO_NUM, "Limpeza de sofá");
   assert.equal(a.enviados.filter(e => e.to !== OUTRO_NUM).length, antes, "nenhum profissional recebe a mensagem de outro profissional");
 });
+
+test("V30.8 — triagem de avaliações: quem avaliou está na base de clientes? (sem expor dados)", async () => {
+  const a = await criarAmbiente({ env: { DENIA_PLATFORM_SERVICE_TOKEN: SERVICO } });
+  a.llmCliente = () => decisao({ resposta: "Oi!" });
+  await a.cliente(CLI, "Oi", { nome: "Márcia Ferreira" });
+  await (await api(a, "/platform/import/clients", { method: "POST", body: JSON.stringify({ origem: "x", linhas: [{ telefone: "21 97777-6666", "Nome do cliente": "Paulo Souza Lima" }] }) })).json();
+  const r = await (await api(a, "/platform/clients/match", { method: "POST", body: JSON.stringify({ nomes: ["Marcia Ferreira", "Paulo Lima", "Paulo", "Zé Ninguém da Silva", "."] }) })).json();
+  assert.equal(r.resultado["Marcia Ferreira"].encontrado, "SIM");
+  assert.deepEqual(r.resultado["Paulo Lima"].onde, ["cadastro"]);
+  assert.equal(r.resultado["Paulo"].encontrado, "TALVEZ");
+  assert.equal(r.resultado["Zé Ninguém da Silva"].encontrado, "NAO");
+  assert.equal(r.resultado["."].encontrado, "SEM_NOME");
+  assert.ok(!JSON.stringify(r).includes("97777"), "nunca devolve telefone");
+});

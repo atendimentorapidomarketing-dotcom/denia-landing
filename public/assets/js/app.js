@@ -1745,7 +1745,7 @@
     if (!vivo()) return;
     el.appendChild(cabeca("Google Meu Negócio", "Reputação, posição nas buscas e desempenho de cada perfil, acompanhados semana a semana."));
     if (!lista.length) { semMarcas(el); return; }
-    const abas = [["publicacoes", "Posts e imagens"], ["avaliacoes", "Avaliações"], ["relatorio", "Relatório"], ["palavras", "Palavras-chave"], ["desempenho", "Desempenho"], ["conexao", "Conexão"]];
+    const abas = [["publicacoes", "Posts e imagens"], ["avaliacoes", "Avaliações"], ["triagem", "Triagem 1★"], ["relatorio", "Relatório"], ["palavras", "Palavras-chave"], ["desempenho", "Desempenho"], ["conexao", "Conexão"]];
     const atual = abas.some(a => a[0] === aba) ? aba : "publicacoes";
     const sel = seletorMarca(lista, estado.marcaGoogle || lista[0].id);
     sel.addEventListener("change", () => { estado.marcaGoogle = sel.value; navegar(); });
@@ -1756,6 +1756,7 @@
     try {
       if (atual === "avaliacoes") await abaAvaliacoes(area, marcaId);
       else if (atual === "relatorio") await abaRelatorio(area, marcaId);
+      else if (atual === "triagem") await abaTriagem(area, marcaId);
       else if (atual === "palavras") await abaPalavras(area, marcaId, lista.find(m => String(m.id) === String(marcaId)));
       else if (atual === "desempenho") await abaDesempenho(area, marcaId);
       else if (atual === "publicacoes") {
@@ -1779,7 +1780,7 @@
     } catch (e) { falha(area, e); }
   }
   async function abaAvaliacoes(area, marcaId) {
-    const [lista, g, cfg] = await Promise.all([mk(`avaliacoes?marca=${marcaId}`).then(r => r.avaliacoes || []), estadoGoogle(), mk("config").catch(() => ({}))]);
+    const [lista, g, cfg] = await Promise.all([mk(`avaliacoes?marca=${marcaId}`).then(r => (r.avaliacoes || []).filter(a => !a.removida_ms)), estadoGoogle(), mk("config").catch(() => ({}))]);
     const conectada = Boolean(contaGoogleDa(g, marcaId));
     // Como responder: uma pessoa aprova, ou a DENIA responde sozinha (as boas, ou todas menos as graves).
     const modoAuto = h("select", { class: "entrada", disabled: !pode("ADMIN") },
@@ -1828,6 +1829,67 @@
             botao(a.google_id ? "Publicar resposta no Google" : "Salvar resposta", async () => { try { const r = await mk(`avaliacoes/${a.id}/responder`, { metodo: "POST", corpo: { resposta: resp.value } }); aviso(r.publicada_google ? "Resposta publicada no Google." : "Resposta salva. Publique no Google (ou automaticamente, após a conexão).", "ok"); navegar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario btn-pequeno"),
             botao("Copiar", () => copiar(resp.value), "btn-secundario btn-pequeno")) : null);
       }));
+  }
+  // Triagem das avaliações de 1 e 2 estrelas: a DENIA separa as que parecem falsas e indica o tópico de denúncia.
+  async function abaTriagem(area, marcaId) {
+    const [lista, g] = await Promise.all([mk(`avaliacoes?marca=${marcaId}`).then(r => r.avaliacoes || []), estadoGoogle()]);
+    const conectada = Boolean(contaGoogleDa(g, marcaId));
+    const json_ = v => { try { return JSON.parse(v || "null"); } catch { return null; } };
+    const negativas = lista.filter(a => Number(a.nota) <= 2).map(a => ({ ...a, t: json_(a.triagem), d: json_(a.denuncia) }));
+    const ativas = negativas.filter(a => !a.removida_ms), removidas = negativas.filter(a => a.removida_ms);
+    const NOME_V = { PROVAVEL_FALSA: ["Provavelmente falsa", "erro"], DUVIDOSA: ["Duvidosa", "alerta"], PARECE_REAL: ["Parece de cliente real", "info"] };
+    const ordemV = { PROVAVEL_FALSA: 0, DUVIDOSA: 1, PARECE_REAL: 2 };
+    ativas.sort((x, y) => (ordemV[x.t?.veredito] ?? 3) - (ordemV[y.t?.veredito] ?? 3));
+    const progresso = h("p", { class: "nota oculto" });
+    const triar = async (b, refazer) => {
+      const lote = refazer ? String(Date.now()) : "";
+      b.disabled = true;
+      try {
+        for (let volta = 0; volta < 30; volta++) {
+          const r = await mk("avaliacoes/triagem", { metodo: "POST", corpo: { marca_id: marcaId, refazer, lote } });
+          progresso.classList.remove("oculto");
+          progresso.textContent = `Analisando… faltam ${r.restantes} de ${r.total}.${r.base_clientes ? ` Base de clientes consultada: ${numero(r.base_clientes.whatsapp)} contatos do WhatsApp e ${numero(r.base_clientes.cadastro)} do cadastro.` : " Base de clientes indisponível agora: a triagem segue com os outros sinais."}`;
+          if (!r.restantes || !r.feitas) break;
+        }
+        aviso("Triagem concluída.", "ok"); navegar();
+      } catch (e) { aviso(e.message, "erro"); } finally { b.disabled = false; }
+    };
+    const abrirPerfil = async () => { try { const r = await mk(`google/link?marca=${marcaId}`); if (r.url) window.open(r.url, "_blank", "noopener"); else aviso("O Google não informou o link do perfil.", "erro"); } catch (e) { aviso(e.message, "erro"); } };
+    const marcar = async (a, status) => { try { await mk(`avaliacoes/${a.id}/denuncia`, { metodo: "POST", corpo: { status, categoria: a.t && a.t.categoria } }); navegar(); } catch (e) { aviso(e.message, "erro"); } };
+    const conta = v => ativas.filter(a => a.t && a.t.veredito === v).length;
+    area.replaceChildren(
+      h("section", { class: "cartao vidro" },
+        h("h3", { style: "margin-top:0", text: "Triagem das avaliações de 1 e 2 estrelas" }),
+        h("p", { style: "margin:0;color:var(--texto-2)", text: "A DENIA confere se quem avaliou está na sua base de clientes (WhatsApp e cadastro importado), procura avaliações em sequência, textos repetidos e conteúdo fora do tema, e indica o tópico certo de denúncia do Google. Você confirma e denuncia uma a uma — o Google não permite denúncia automática, e denúncia sem fundamento pode prejudicar o perfil." }),
+        !conectada ? h("p", { class: "nota nota-alerta", text: "Conecte o Google desta marca (Marcas → Conectar Google) para trazer as avaliações." }) : null,
+        h("div", { class: "acoes", style: "margin-top:12px" },
+          pode("AGENTE") ? botao(ativas.some(a => !a.t) ? "✦ Fazer a triagem" : "✦ Refazer a triagem", (_e, b) => triar(b, !ativas.some(a => !a.t)), "btn-primario") : null,
+          conectada ? botao("Abrir o perfil no Google Maps", abrirPerfil, "btn-secundario") : null),
+        progresso),
+      h("section", { class: "grade grade-4" }, metrica("Provavelmente falsas", numero(conta("PROVAVEL_FALSA")), "com indícios fortes"), metrica("Duvidosas", numero(conta("DUVIDOSA")), "confira antes de denunciar"),
+        metrica("Denunciadas", numero(ativas.filter(a => a.d && a.d.status === "DENUNCIADA").length), "aguardando o Google"), metrica("Removidas pelo Google", numero(removidas.length), "saíram do perfil")),
+      h("details", { class: "cartao vidro" }, h("summary", { text: "Como denunciar no Google (passo a passo)" }),
+        h("ol", { class: "passos" }, h("li", {}, "Clique em \"Abrir o perfil no Google Maps\" e vá em Avaliações."), h("li", {}, "Ache a avaliação pelo nome de quem avaliou e toque nos três pontinhos ao lado dela."),
+          h("li", {}, "Toque em \"Denunciar avaliação\" e escolha o tópico que a DENIA indicou."), h("li", {}, "Volte aqui e clique em \"Já denunciei\". Quando o Google remover, a avaliação aparece em \"Removidas\" sozinha."),
+          h("li", {}, "Se o Google recusar, você pode pedir uma nova análise uma vez, pela ferramenta de gerenciamento de avaliações do Google, usando a justificativa abaixo de cada avaliação."))),
+      ...(ativas.length ? ativas.map(a => {
+        const v = a.t ? NOME_V[a.t.veredito] : null;
+        return h("article", { class: "sugestao vidro" + (a.t && a.t.veredito === "PROVAVEL_FALSA" ? " sugestao-alerta" : "") },
+          h("div", { class: "sugestao-topo" }, h("strong", { text: a.autor || "Cliente" }), h("span", { class: "estrelas", text: "★".repeat(a.nota) + "☆".repeat(5 - a.nota) }), v ? selo(v[0], v[1]) : selo("Ainda não analisada", ""),
+            a.d && a.d.status === "DENUNCIADA" ? selo("Denunciada em " + new Date(a.d.em).toLocaleDateString(LOCALE), "info") : a.d && a.d.status === "RECUSADA" ? selo("Google recusou", "alerta") : null),
+          h("p", { style: "margin:0;color:var(--texto-2)", text: a.texto || "(sem texto, só a nota)" }),
+          a.t ? h("div", { class: "analise-avaliacao" },
+            a.t.motivo ? h("p", { class: "nota", text: a.t.motivo }) : null,
+            (a.t.sinais || []).length ? h("ul", { class: "lista-simples" }, a.t.sinais.map(x => h("li", { text: x }))) : null,
+            a.t.categoria ? h("p", { class: "nota nota-alerta" }, "Tópico de denúncia: ", h("strong", { text: a.t.categoria })) : h("p", { class: "nota", text: "Sem base para denúncia: o melhor caminho é responder bem (aba Avaliações)." }),
+            a.t.justificativa && a.t.categoria ? h("p", { class: "nota", text: "Justificativa: " + a.t.justificativa }) : null) : null,
+          pode("AGENTE") && a.t && a.t.categoria ? h("div", { class: "acoes" },
+            !a.d ? botao("Já denunciei", () => marcar(a, "DENUNCIADA"), "btn-primario btn-pequeno") : botao("Desfazer", () => marcar(a, ""), "btn-secundario btn-pequeno"),
+            a.d && a.d.status === "DENUNCIADA" ? botao("O Google recusou", () => marcar(a, "RECUSADA"), "btn-secundario btn-pequeno") : null,
+            a.t.justificativa ? botao("Copiar justificativa", () => copiar(a.t.justificativa), "btn-secundario btn-pequeno") : null) : null);
+      }) : [h("div", { class: "cartao vidro" }, vazio("Nenhuma avaliação de 1 ou 2 estrelas", "", ICONES.caixa))]),
+      removidas.length ? h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: `Removidas pelo Google (${removidas.length})` }),
+        h("ul", { class: "lista-simples" }, removidas.map(a => h("li", { text: `${a.autor || "Cliente"} (${a.nota}★) — removida em ${new Date(a.removida_ms).toLocaleDateString(LOCALE)}` })))) : null);
   }
   async function abaRelatorio(area, marcaId) {
     const lista = (await mk(`relatorios?marca=${marcaId}`)).relatorios || [];

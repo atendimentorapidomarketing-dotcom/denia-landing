@@ -413,3 +413,4 @@ body.ao-vivo .denia-orbe span { animation-duration: 0.9s; box-shadow: 0 0 26px r
 .sugestao-alerta { border-color: rgba(239, 68, 68, 0.55); box-shadow: 0 0 0 1px rgba(239, 68, 68, 0.25); }
 .relatorio-texto { white-space: pre-wrap; line-height: 1.6; font-size: 14.5px; margin-top: 12px; }
 .contador-alerta { background: #ef4444; color: #fff; }
+.lista-simples { margin: 4px 0; padding-left: 18px; color: var(--texto-2); font-size: 13.5px; display: grid; gap: 2px; }

@@ -35,7 +35,7 @@
 //       relatório diário. Nunca inicia conversa nova por conta própria.
 // ============================================================================
 
-const VERSAO = "30.7.0";
+const VERSAO = "30.8.0";
 const SCHEMA_VERSAO = "30.3.0-a";
 const EMPRESA_ID = 1;
 const PHONE_ID_PADRAO = "473474732510163";
@@ -2324,6 +2324,29 @@ async function platformApi(request, env, caminho, metodo) {
     if (!["aprovar", "rejeitar"].includes(acao)) return json({ sucesso: false, erro: "Ação inválida." }, 400);
     const r = await decidirSugestao(c, Number(m[1]), acao, corpo?.conteudo, txt(corpo?.autor, 120) || "platform");
     return json({ sucesso: r.ok, ...r }, r.ok ? 200 : 409);
+  }
+  // Triagem de avaliações do Google: quem avaliou existe na base de clientes? (só diz sim/não/talvez, sem expor dados)
+  if (caminho === "/platform/clients/match" && metodo === "POST") {
+    const nomes = (Array.isArray(corpo?.nomes) ? corpo.nomes : []).map(n => txt(n, 120)).slice(0, 80);
+    const tokens = n => norm(n).replace(/[^a-z0-9 ]/g, " ").split(/\s+/).filter(t => t.length >= 2);
+    const pessoas = ((await c.db.prepare("SELECT nome, atualizado_em FROM pessoas WHERE empresa_id=? AND nome IS NOT NULL AND UPPER(COALESCE(tipo,'')) NOT IN ('TECNICO','ATENDENTE') LIMIT 30000").bind(EMPRESA_ID).all().catch(() => null))?.results || [])
+      .map(p => ({ t: new Set(tokens(p.nome)), em: p.atualizado_em, onde: "WhatsApp" }));
+    const fichas = ((await c.db.prepare("SELECT dados_json FROM d30_ficha LIMIT 30000").all().catch(() => null))?.results || []).map(f => {
+      let d = {}; try { d = JSON.parse(f.dados_json); } catch { d = {}; }
+      const nome = Object.entries(d).find(([k]) => /nome|cliente|name/i.test(k))?.[1] || "";
+      return { t: new Set(tokens(nome)), em: null, onde: "cadastro" };
+    }).filter(f => f.t.size);
+    const base = [...pessoas, ...fichas];
+    const resultado = {};
+    for (const n of nomes) {
+      const tk = tokens(n).filter(t => !/^[a-z]$/.test(t) && !["da", "de", "do", "das", "dos"].includes(t));
+      if (!tk.length) { resultado[n] = { encontrado: "SEM_NOME" }; continue; }
+      const [primeiro, ...resto] = tk;
+      // Nome e sobrenome iguais = encontrado; só o primeiro nome = talvez (muita gente tem o mesmo primeiro nome).
+      const achados = base.filter(b => b.t.has(primeiro) && resto.every(r => r.length <= 2 ? [...b.t].some(x => x.startsWith(r.replace(".", ""))) : b.t.has(r)));
+      resultado[n] = !achados.length ? { encontrado: "NAO" } : resto.length ? { encontrado: "SIM", onde: [...new Set(achados.map(a => a.onde))], ultimo_contato: achados.map(a => a.em).filter(Boolean).sort().pop() || null } : { encontrado: "TALVEZ", quantos: achados.length };
+    }
+    return json({ sucesso: true, base: { whatsapp: pessoas.length, cadastro: fichas.length }, resultado });
   }
   if (caminho === "/platform/import/clients" && metodo === "POST") return json({ sucesso: true, ...(await importarClientes(c, corpo?.linhas, corpo?.origem)) });
   if (caminho === "/platform/import/clients" && metodo === "GET") {

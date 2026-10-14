@@ -1,5 +1,12 @@
 # Changelog — DENIA Engine
 
+## 30.8.0 — 2026-10-14
+
+### Novo
+- Triagem de avaliações do Google (pela DENIA Platform): `/platform/clients/match` diz se quem
+  avaliou está na base de clientes (contatos do WhatsApp e cadastro importado) — só sim, não ou
+  talvez, sem devolver telefone nem outros dados.
+
 ## 30.7.0 — 2026-10-13
 
 ### Novo
