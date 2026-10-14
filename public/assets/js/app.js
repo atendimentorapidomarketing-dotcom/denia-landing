@@ -1793,7 +1793,11 @@
   // replaceChildren escreve "null" na tela para itens vazios: estas abas montam a lista sem eles.
   const trocar = (el, ...itens) => el.replaceChildren(...itens.flat().filter(x => x != null && x !== false && x !== ""));
   async function abaAvaliacoes(area, marcaId) {
-    const [lista, g, cfg] = await Promise.all([mk(`avaliacoes?marca=${marcaId}`).then(r => (r.avaliacoes || []).filter(a => !a.removida_ms)), estadoGoogle(), mk("config").catch(() => ({}))]);
+    // Lista paginada e com filtros (perfis com milhares de avaliações); os números do topo contam o perfil inteiro.
+    const filtro = estado.filtroAv && estado.filtroAv.marca === String(marcaId) ? estado.filtroAv : (estado.filtroAv = { marca: String(marcaId), filtro: "TODAS", nota: "", busca: "" });
+    const consulta = pagina => `avaliacoes?marca=${marcaId}&pagina=${pagina}&por_pagina=50&filtro=${filtro.filtro}&nota=${filtro.nota}&busca=${encodeURIComponent(filtro.busca)}`;
+    const [primeira, g, cfg] = await Promise.all([mk(consulta(0)), estadoGoogle(), mk("config").catch(() => ({}))]);
+    const lista = primeira.avaliacoes || [], res = primeira.resumo || {};
     const conectada = Boolean(contaGoogleDa(g, marcaId));
     // Como responder: uma pessoa aprova, ou a DENIA responde sozinha (as boas, ou todas menos as graves).
     const modoAuto = h("select", { class: "entrada", disabled: !pode("ADMIN") },
@@ -1805,18 +1809,36 @@
     const autor = h("input", { class: "entrada", placeholder: "Nome de quem avaliou" });
     const nota = h("select", { class: "entrada" }, [5, 4, 3, 2, 1].map(n => h("option", { value: n, text: "★".repeat(n) + " (" + n + ")" })));
     const texto = h("textarea", { class: "entrada", placeholder: "Cole aqui o texto da avaliação", style: "min-height:80px" });
-    const media = lista.length ? (lista.reduce((t, a) => t + Number(a.nota || 0), 0) / lista.length).toFixed(1).replace(".", ",") : "—";
+    const media = res.total ? Number(res.media).toFixed(1).replace(".", ",") : "—";
     const lida = a => { try { return JSON.parse(a.analise || "null"); } catch { return null; } };
     const precisaDeVoce = a => { const x = lida(a); return a.status === "PENDENTE" && x && (x.precisa_humano || x.viola_politica); };
-    const ordem = [...lista].sort((x, y) => (precisaDeVoce(y) - precisaDeVoce(x)) || (x.status === "PENDENTE" ? -1 : 0) - (y.status === "PENDENTE" ? -1 : 0));
+
     const NOME_SENT = { OTIMA: ["Ótima", "ok"], POSITIVA: ["Positiva", "ok"], NEUTRA: ["Neutra", "info"], NEGATIVA: ["Negativa", "alerta"], GRAVE: ["Grave", "erro"] };
     const blocoAnalise = (x) => x ? h("div", { class: "analise-avaliacao" },
       h("div", { class: "acoes" }, selo(...(NOME_SENT[x.sentimento] || ["—", ""])), (x.temas || []).map(t => h("span", { class: "selo", text: t })), x.urgencia === "ALTA" ? selo("Urgente", "erro") : null),
       x.resumo ? h("p", { class: "nota", text: x.resumo }) : null,
       x.precisa_humano ? h("p", { class: "nota nota-alerta", text: "Precisa de você: " + (x.motivo_humano || "uma pessoa da equipe deve ler e decidir antes de responder.") }) : null,
       x.viola_politica ? h("div", { class: "nota nota-alerta" }, h("strong", { text: "Pode violar as regras do Google" + (x.politica ? ` (${x.politica})` : "") + "." }), h("p", { style: "margin:6px 0 0", text: x.como_remover || "" })) : null) : null;
+    const selFiltro = h("select", { class: "entrada" }, [["TODAS", "Todas"], ["PENDENTE", `Sem resposta (${numero(res.pendentes || 0)})`], ["RESPONDIDA", "Respondidas"], ["PRECISAM", `Precisam de você (${numero(res.precisam || 0)})`]].map(([v, n]) => h("option", { value: v, text: n, selected: filtro.filtro === v })));
+    const selNota = h("select", { class: "entrada" }, h("option", { value: "", text: "Todas as notas" }), [5, 4, 3, 2, 1].map(n => h("option", { value: n, text: `${"★".repeat(n)} (${numero(res["n" + n] || 0)})`, selected: String(filtro.nota) === String(n) })));
+    const campoBusca = h("input", { class: "entrada", type: "search", value: filtro.busca, placeholder: "Procurar por nome ou texto" });
+    const aplicar = () => { Object.assign(filtro, { filtro: selFiltro.value, nota: selNota.value, busca: campoBusca.value.trim() }); navegar(); };
+    selFiltro.addEventListener("change", aplicar); selNota.addEventListener("change", aplicar);
+    campoBusca.addEventListener("keydown", e => { if (e.key === "Enter") aplicar(); });
+    const barraFiltros = h("section", { class: "cartao vidro" }, h("div", { class: "linha-form" }, campo("Mostrar", selFiltro), campo("Nota", selNota), campo("Buscar", campoBusca)),
+      h("p", { class: "nota", style: "margin:8px 0 0", text: `${numero(primeira.encontradas || 0)} avaliação(ões) com esses filtros.` }));
+    const listaEl = h("div", { class: "grade" });
+    let pagina = 0, carregadas = lista.length;
+    const mais = h("div", { class: "acoes", style: "justify-content:center" });
+    const atualizarMais = () => mais.replaceChildren(...(carregadas < (primeira.encontradas || 0) ? [botao(`Mostrar mais (${numero(carregadas)} de ${numero(primeira.encontradas)})`, async (_e, b) => {
+      b.textContent = "Carregando…";
+      try { const r = await mk(consulta(++pagina)); (r.avaliacoes || []).forEach(a => listaEl.appendChild(cartaoAvaliacao(a))); carregadas += (r.avaliacoes || []).length; atualizarMais(); }
+      catch (e) { aviso(e.message, "erro"); b.textContent = "Mostrar mais"; }
+    }, "btn-secundario")] : []));
+    lista.forEach(a => listaEl.appendChild(cartaoAvaliacao(a)));
+    atualizarMais();
     trocar(area, 
-      h("section", { class: "grade grade-4" }, metrica("Nota média", media, `${lista.length} avaliação(ões) registradas`), metrica("Sem resposta", numero(lista.filter(a => a.status === "PENDENTE").length), "responda em até 24 h"), metrica("Precisam de você", numero(lista.filter(precisaDeVoce).length), "graves ou que podem violar as regras do Google"), metrica("Negativas", numero(lista.filter(a => Number(a.nota) <= 3).length), "3 estrelas ou menos")),
+      h("section", { class: "grade grade-4" }, metrica("Nota média", media, `${numero(res.total || 0)} avaliação(ões) no perfil`), metrica("Sem resposta", numero(res.pendentes || 0), "responda em até 24 h"), metrica("Precisam de você", numero(res.precisam || 0), "graves ou que podem violar as regras do Google"), metrica("Negativas", numero(res.negativas || 0), "3 estrelas ou menos")),
       conectada ? h("section", { class: "cartao vidro" }, h("p", { style: "margin:0", text: "Perfil conectado: as avaliações do Google chegam sozinhas, a cada 10 minutos. A resposta salva aqui é publicada direto no Google." }),
         h("div", { style: "margin-top:12px;max-width:440px" }, campo("Como responder as avaliações", modoAuto, "No modo automático, a DENIA lê cada avaliação, escreve a resposta no jeito da empresa e publica. Graves, suspeitas de violar as regras do Google e as que pedem contato nunca saem sozinhas: ficam aqui e você recebe o aviso.")),
         contaGoogleDa(g, marcaId) && contaGoogleDa(g, marcaId).erro ? h("p", { class: "nota nota-alerta", text: "Última tentativa com o Google falhou: " + contaGoogleDa(g, marcaId).erro }) : null,
@@ -1831,7 +1853,8 @@
       pode("AGENTE") && !conectada ? h("section", { class: "cartao vidro formulario" }, h("h3", { style: "margin:0", text: "Registrar avaliação" }),
         h("div", { class: "linha-form" }, campo("Autor", autor), campo("Nota", nota)), campo("Texto", texto),
         h("div", { class: "acoes" }, botao("Registrar", async () => { try { await mk("avaliacoes", { metodo: "POST", corpo: { marca_id: marcaId, autor: autor.value, nota: nota.value, texto: texto.value } }); navegar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario"))) : null,
-      ...ordem.map(a => {
+      barraFiltros, lista.length ? listaEl : h("div", { class: "cartao vidro" }, vazio("Nenhuma avaliação com esses filtros", "", ICONES.caixa)), mais);
+    function cartaoAvaliacao(a) {
         const resp = h("textarea", { class: "entrada", value: a.resposta || a.resposta_sugerida || "", placeholder: "Resposta da empresa", style: "min-height:80px" });
         const analise = h("div", {}, blocoAnalise(lida(a)));
         return h("article", { class: "sugestao vidro" + (precisaDeVoce(a) ? " sugestao-alerta" : "") },
@@ -1841,7 +1864,7 @@
             botao("✦ Analisar e sugerir resposta", async (_e, b) => { b.textContent = "Lendo a avaliação…"; try { const r = await mk(`avaliacoes/${a.id}/sugerir`, { metodo: "POST", corpo: {} }); resp.value = r.resposta; analise.replaceChildren(blocoAnalise(r.analise) || ""); } catch (e) { aviso(e.message, "erro"); } finally { b.textContent = "✦ Analisar e sugerir resposta"; } }, "btn-secundario btn-pequeno"),
             botao(a.google_id ? "Publicar resposta no Google" : "Salvar resposta", async () => { try { const r = await mk(`avaliacoes/${a.id}/responder`, { metodo: "POST", corpo: { resposta: resp.value } }); aviso(r.publicada_google ? "Resposta publicada no Google." : "Resposta salva. Publique no Google (ou automaticamente, após a conexão).", "ok"); navegar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario btn-pequeno"),
             botao("Copiar", () => copiar(resp.value), "btn-secundario btn-pequeno")) : null);
-      }));
+    }
   }
   // Triagem das avaliações de 1 e 2 estrelas: a DENIA separa as que parecem falsas e indica o tópico de denúncia.
   async function abaTriagem(area, marcaId) {

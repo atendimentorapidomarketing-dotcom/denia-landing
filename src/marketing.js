@@ -643,6 +643,27 @@ Responda em JSON: {"titulo":"","legenda":"","hashtags":"","chamada":"","texto_ar
     // ----- Google Meu Negócio: avaliações
     if (resto === "avaliacoes" && metodo === "GET") {
       const q = new URL(request.url).searchParams;
+      // Com "pagina": lista paginada e filtrada (perfis com milhares de avaliações) + resumo do perfil inteiro.
+      if (q.has("pagina")) {
+        const marca = Number(q.get("marca") || 0);
+        const pagina = Math.max(0, Number(q.get("pagina")) || 0), tam = Math.min(100, Math.max(10, Number(q.get("por_pagina")) || 50));
+        const filtro = String(q.get("filtro") || "TODAS"), nota = Number(q.get("nota") || 0), busca = txt(q.get("busca"), 80);
+        const precisa = "(json_extract(analise,'$.precisa_humano')=1 OR json_extract(analise,'$.viola_politica')=1)";
+        const conds = ["org_id=?", "removida_ms IS NULL"], args = [orgId];
+        if (marca) { conds.push("marca_id=?"); args.push(marca); }
+        const base = [...conds], baseArgs = [...args];
+        if (filtro === "PENDENTE" || filtro === "RESPONDIDA") { conds.push("status=?"); args.push(filtro); }
+        if (filtro === "PRECISAM") conds.push(`status='PENDENTE' AND ${precisa}`);
+        if (nota >= 1 && nota <= 5) { conds.push("nota=?"); args.push(nota); }
+        if (busca) { conds.push("(autor LIKE ? OR texto LIKE ?)"); args.push(`%${busca}%`, `%${busca}%`); }
+        const [lista, achadas, resumo] = await Promise.all([
+          env.DB.prepare(`SELECT * FROM plt_mk_avaliacoes WHERE ${conds.join(" AND ")} ORDER BY (status='PENDENTE' AND ${precisa}) DESC, status='RESPONDIDA', id DESC LIMIT ? OFFSET ?`).bind(...args, tam, pagina * tam).all(),
+          env.DB.prepare(`SELECT COUNT(*) n FROM plt_mk_avaliacoes WHERE ${conds.join(" AND ")}`).bind(...args).first(),
+          env.DB.prepare(`SELECT COUNT(*) total, AVG(nota) media, SUM(status='PENDENTE') pendentes, SUM(nota<=3) negativas, SUM(status='PENDENTE' AND ${precisa}) precisam,
+            SUM(nota=5) n5, SUM(nota=4) n4, SUM(nota=3) n3, SUM(nota=2) n2, SUM(nota=1) n1 FROM plt_mk_avaliacoes WHERE ${base.join(" AND ")}`).bind(...baseArgs).first()
+        ]);
+        return json({ avaliacoes: lista?.results || [], encontradas: achadas?.n || 0, pagina, por_pagina: tam, resumo: resumo || {} });
+      }
       const marca = Number(q.get("marca") || 0), notaMax = Number(q.get("nota_max") || 0);
       const args = [orgId, ...(marca ? [marca] : []), ...(notaMax ? [notaMax] : [])];
       const r = await env.DB.prepare(`SELECT * FROM plt_mk_avaliacoes WHERE org_id=? ${marca ? "AND marca_id=?" : ""} ${notaMax ? "AND nota<=?" : ""} ORDER BY status='RESPONDIDA', id DESC LIMIT ${notaMax ? 1000 : 300}`).bind(...args).all();
