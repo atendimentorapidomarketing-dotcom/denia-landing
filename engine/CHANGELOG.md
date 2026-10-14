@@ -1,5 +1,16 @@
 # Changelog — DENIA Engine
 
+## 31.0.0 — 2026-10-14
+
+### Novo
+- Revisão da etapa pela IA: a DENIA lê tudo o que aconteceu no caso (cliente, profissional,
+  mensagens da equipe, resumos de ligação e eventos) e descobre a etapa real — agendado, em
+  andamento, concluído, cancelado… Com confiança ALTA move o caso sozinha; senão, deixa a
+  sugestão. Roda sozinha a cada 30 min nos casos parados há mais de 6 h
+  (`/platform/cases/:id/review` para revisar sob demanda).
+- Nova etapa EM_ANDAMENTO (serviço sendo feito).
+- `/platform/cases` devolve até 1.000 casos, com a última revisão da IA de cada um.
+
 ## 30.9.0 — 2026-10-14
 
 ### Novo

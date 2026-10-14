@@ -121,7 +121,7 @@ test("Plataforma — conecta a IA da empresa com token cifrado e treina pela pla
   assert.doesNotMatch(JSON.stringify(lido.dados), new RegExp(TOKEN_ENGINE), "token nunca volta ao navegador");
   const teste = await p.req("/api/orgs/1/integracao/testar", { metodo: "POST", quem: "admin", corpo: {} });
   assert.equal(teste.dados.ok, true);
-  assert.match(teste.dados.versao, /^30\./);
+  assert.match(teste.dados.versao, /^3\d\./);
 
   const salvo = await p.req("/api/orgs/1/engine/training", { metodo: "POST", quem: "admin", corpo: { treinamento: { servicos: "Eletricista não conserta eletrodomésticos." }, autor: "falsificado" } });
   assert.equal(salvo.status, 200);

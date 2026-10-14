@@ -748,3 +748,25 @@ test("V30.8 — triagem de avaliações: quem avaliou está na base de clientes?
   assert.equal(r.resultado["."].encontrado, "SEM_NOME");
   assert.ok(!JSON.stringify(r).includes("97777"), "nunca devolve telefone");
 });
+
+test("V31 — a IA lê o caso (cliente, profissional, equipe, ligação) e move para Agendado/Concluído com confiança alta", async () => {
+  const a = await criarAmbiente({ env: { DENIA_PLATFORM_SERVICE_TOKEN: SERVICO } });
+  await iniciarConsultaChaveiro(a);
+  const caso = casoAtual(a);
+  await (await api(a, `/platform/conversations/${pessoaDe(a, CLI)}/note`, { method: "POST", body: JSON.stringify({ texto: "Liguei: o chaveiro vai amanhã às 9h, cliente confirmou.", autor: "Ana" }) })).json();
+  let entrada = "";
+  a.llmRevisao = (e) => { entrada = e; return { etapa: "AGENDADO", confianca: "ALTA", data_servico: "amanhã 9h", motivo: "Ligação confirmou o horário.", proximo_passo: "Confirmar a visita." }; };
+  const r = await (await api(a, `/platform/cases/${caso}/review`, { method: "POST", body: JSON.stringify({ aplicar: true, autor: "Ana" }) })).json();
+  assert.equal(r.aplicada, true);
+  assert.match(entrada, /RESUMO DE LIGAÇÃO \(equipe\): Liguei: o chaveiro vai amanhã às 9h/);
+  assert.equal(a.DB.q("SELECT etapa FROM d30_casos WHERE caso_id=?", caso)[0].etapa, "AGENDADO");
+  // Confiança média: só sugere, não mexe.
+  a.llmRevisao = () => ({ etapa: "CONCLUIDO", confianca: "MEDIA", motivo: "Talvez." });
+  const r2 = await (await api(a, `/platform/cases/${caso}/review`, { method: "POST", body: JSON.stringify({}) })).json();
+  assert.deepEqual([r2.etapa_sugerida, r2.aplicada], ["CONCLUIDO", false]);
+  assert.equal(a.DB.q("SELECT etapa FROM d30_casos WHERE caso_id=?", caso)[0].etapa, "AGENDADO");
+  const lista = await (await api(a, "/platform/cases")).json();
+  assert.equal(lista.casos.find(x => x.casoId === caso).revisao_ia.etapa_sugerida, "CONCLUIDO");
+  // Em andamento é uma etapa que a equipe também pode escolher.
+  assert.equal((await (await api(a, `/platform/cases/${caso}/status`, { method: "POST", body: JSON.stringify({ etapa: "EM_ANDAMENTO" }) })).json()).sucesso, true);
+});
