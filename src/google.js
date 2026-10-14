@@ -235,36 +235,42 @@ export async function publicarGoogle(env, k, conta, p, imagem) {
 
 // ----- Avaliações: busca no Google e grava (as novas ficam "sem resposta" para a DENIA sugerir).
 // paginas: na rodada automática só as primeiras (as novas chegam no topo); na busca manual, o perfil inteiro.
+// Grava em poucas consultas (lotes em JSON): um perfil com centenas de avaliações não estoura o limite
+// de consultas por execução do banco (D1).
 async function sincronizarAvaliacoes(env, k, conta, token, paginas = 30) {
-  let novas = 0, total = 0, pagina = "", completo = false;
-  const vistos = new Set();
+  let pagina = "", completo = false;
+  const doGoogle = [];
   for (let i = 0; i < paginas; i++) {
     const d = await chamar("GET", `${API_V4}/${caminhoV4(conta)}/reviews?pageSize=50${pagina ? "&pageToken=" + encodeURIComponent(pagina) : ""}`, token);
-    for (const r of d.reviews || []) {
-      total++;
-      vistos.add(String(r.reviewId));
-      const nota = ESTRELAS[r.starRating] || 0;
-      const resposta = r.reviewReply?.comment || null;
-      const existe = await env.DB.prepare("SELECT id FROM plt_mk_avaliacoes WHERE org_id=? AND marca_id=? AND google_id=?").bind(conta.org_id, conta.marca_id, String(r.reviewId)).first();
-      if (existe) {
-        if (resposta) await env.DB.prepare("UPDATE plt_mk_avaliacoes SET resposta=?, status='RESPONDIDA', removida_ms=NULL WHERE id=?").bind(resposta, existe.id).run();
-        else await env.DB.prepare("UPDATE plt_mk_avaliacoes SET removida_ms=NULL WHERE id=? AND removida_ms IS NOT NULL").bind(existe.id).run();
-        continue;
-      }
-      await env.DB.prepare("INSERT INTO plt_mk_avaliacoes(org_id,marca_id,autor,nota,texto,data,resposta,status,criado_ms,google_id) VALUES(?,?,?,?,?,?,?,?,?,?)")
-        .bind(conta.org_id, conta.marca_id, String(r.reviewer?.displayName || "Cliente").slice(0, 120), nota, String(r.comment || "").slice(0, 3000), String(r.createTime || "").slice(0, 10) || null, resposta, resposta ? "RESPONDIDA" : "PENDENTE", k.agora(env), String(r.reviewId)).run();
-      novas++;
-    }
+    for (const r of d.reviews || []) doGoogle.push({
+      id: String(r.reviewId), autor: String(r.reviewer?.displayName || "Cliente").slice(0, 120), nota: ESTRELAS[r.starRating] || 0,
+      texto: String(r.comment || "").slice(0, 3000), data: String(r.createTime || "").slice(0, 10) || null, r: r.reviewReply?.comment ? String(r.reviewReply.comment).slice(0, 4000) : null
+    });
     pagina = d.nextPageToken || "";
     if (!pagina) { completo = true; break; }
   }
-  // Lista completa: o que sumiu do Google foi removido (por exemplo, depois de uma denúncia aceita).
-  let removidas = 0;
-  if (completo) {
-    const nossas = (await env.DB.prepare("SELECT id, google_id FROM plt_mk_avaliacoes WHERE org_id=? AND marca_id=? AND google_id IS NOT NULL AND removida_ms IS NULL").bind(conta.org_id, conta.marca_id).all())?.results || [];
-    for (const a of nossas) if (!vistos.has(a.google_id)) { await env.DB.prepare("UPDATE plt_mk_avaliacoes SET removida_ms=? WHERE id=?").bind(k.agora(env), a.id).run(); removidas++; }
+  const nossas = (await env.DB.prepare("SELECT google_id, resposta, removida_ms FROM plt_mk_avaliacoes WHERE org_id=? AND marca_id=? AND google_id IS NOT NULL").bind(conta.org_id, conta.marca_id).all())?.results || [];
+  const ja = new Map(nossas.map(a => [a.google_id, a]));
+  const novas = doGoogle.filter(r => !ja.has(r.id));
+  const respondidas = doGoogle.filter(r => r.r && ja.has(r.id) && ja.get(r.id).resposta !== r.r);
+  const voltaram = doGoogle.filter(r => ja.has(r.id) && ja.get(r.id).removida_ms);
+  const st = [];
+  for (let i = 0; i < novas.length; i += 150) {
+    st.push(env.DB.prepare(`INSERT INTO plt_mk_avaliacoes(org_id,marca_id,autor,nota,texto,data,resposta,status,criado_ms,google_id)
+      SELECT ?, ?, json_extract(value,'$.autor'), json_extract(value,'$.nota'), json_extract(value,'$.texto'), json_extract(value,'$.data'), json_extract(value,'$.r'),
+        CASE WHEN json_extract(value,'$.r') IS NULL THEN 'PENDENTE' ELSE 'RESPONDIDA' END, ?, json_extract(value,'$.id') FROM json_each(?)`)
+      .bind(conta.org_id, conta.marca_id, k.agora(env), JSON.stringify(novas.slice(i, i + 150))));
   }
-  return { novas, total, removidas };
+  if (respondidas.length) st.push(env.DB.prepare(`UPDATE plt_mk_avaliacoes SET status='RESPONDIDA',
+      resposta=(SELECT json_extract(value,'$.r') FROM json_each(?1) WHERE json_extract(value,'$.id')=plt_mk_avaliacoes.google_id)
+      WHERE org_id=?2 AND marca_id=?3 AND google_id IN (SELECT json_extract(value,'$.id') FROM json_each(?1))`).bind(JSON.stringify(respondidas.map(r => ({ id: r.id, r: r.r }))), conta.org_id, conta.marca_id));
+  if (voltaram.length) st.push(env.DB.prepare("UPDATE plt_mk_avaliacoes SET removida_ms=NULL WHERE org_id=? AND marca_id=? AND google_id IN (SELECT value FROM json_each(?))").bind(conta.org_id, conta.marca_id, JSON.stringify(voltaram.map(r => r.id))));
+  // Lista completa: o que sumiu do Google foi removido (por exemplo, depois de uma denúncia aceita).
+  const vistos = new Set(doGoogle.map(r => r.id));
+  const sumiram = completo ? nossas.filter(a => !a.removida_ms && !vistos.has(a.google_id)).map(a => a.google_id) : [];
+  if (sumiram.length) st.push(env.DB.prepare("UPDATE plt_mk_avaliacoes SET removida_ms=? WHERE org_id=? AND marca_id=? AND google_id IN (SELECT value FROM json_each(?))").bind(k.agora(env), conta.org_id, conta.marca_id, JSON.stringify(sumiram)));
+  if (st.length) await env.DB.batch(st);
+  return { novas: novas.length, total: doGoogle.length, removidas: sumiram.length };
 }
 // Endereço do perfil no Google Maps (para abrir e denunciar uma avaliação).
 export async function linkDoPerfil(env, k, conta) {
