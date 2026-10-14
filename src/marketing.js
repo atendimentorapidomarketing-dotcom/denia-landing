@@ -642,8 +642,10 @@ Responda em JSON: {"titulo":"","legenda":"","hashtags":"","chamada":"","texto_ar
 
     // ----- Google Meu Negócio: avaliações
     if (resto === "avaliacoes" && metodo === "GET") {
-      const marca = Number(new URL(request.url).searchParams.get("marca") || 0);
-      const r = await env.DB.prepare(`SELECT * FROM plt_mk_avaliacoes WHERE org_id=? ${marca ? "AND marca_id=?" : ""} ORDER BY status='RESPONDIDA', id DESC LIMIT 300`).bind(...(marca ? [orgId, marca] : [orgId])).all();
+      const q = new URL(request.url).searchParams;
+      const marca = Number(q.get("marca") || 0), notaMax = Number(q.get("nota_max") || 0);
+      const args = [orgId, ...(marca ? [marca] : []), ...(notaMax ? [notaMax] : [])];
+      const r = await env.DB.prepare(`SELECT * FROM plt_mk_avaliacoes WHERE org_id=? ${marca ? "AND marca_id=?" : ""} ${notaMax ? "AND nota<=?" : ""} ORDER BY status='RESPONDIDA', id DESC LIMIT ${notaMax ? 1000 : 300}`).bind(...args).all();
       return json({ avaliacoes: r?.results || [] });
     }
     if (resto === "avaliacoes" && metodo === "POST") {
@@ -692,7 +694,7 @@ Responda em JSON: {"resposta":""}`, `${resumoMarca(marca)}\n\nAvaliação de ${a
       const c = await corpoOu(1000);
       const marca = await marcaDa(c.marca_id);
       if (!marca) return json({ erro: "Escolha a marca." }, 400);
-      const todas = (await env.DB.prepare("SELECT * FROM plt_mk_avaliacoes WHERE org_id=? AND marca_id=? AND nota<=2 AND removida_ms IS NULL ORDER BY id DESC LIMIT 300").bind(orgId, marca.id).all())?.results || [];
+      const todas = (await env.DB.prepare("SELECT * FROM plt_mk_avaliacoes WHERE org_id=? AND marca_id=? AND nota<=2 AND removida_ms IS NULL ORDER BY id DESC LIMIT 1000").bind(orgId, marca.id).all())?.results || [];
       const pendentes = todas.filter(a => c.refazer ? !String(a.triagem || "").includes(`"lote":"${c.lote || ""}"`) : !a.triagem);
       const lote = pendentes.slice(0, 12);
       // Sinais que valem para todas: quem está na base de clientes, avaliações em sequência e textos repetidos.

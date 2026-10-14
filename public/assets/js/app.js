@@ -1843,7 +1843,7 @@
   }
   // Triagem das avaliações de 1 e 2 estrelas: a DENIA separa as que parecem falsas e indica o tópico de denúncia.
   async function abaTriagem(area, marcaId) {
-    const [lista, g] = await Promise.all([mk(`avaliacoes?marca=${marcaId}`).then(r => r.avaliacoes || []), estadoGoogle()]);
+    const [lista, g] = await Promise.all([mk(`avaliacoes?marca=${marcaId}&nota_max=2`).then(r => r.avaliacoes || []), estadoGoogle(true)]);
     const conectada = Boolean(contaGoogleDa(g, marcaId));
     const json_ = v => { try { return JSON.parse(v || "null"); } catch { return null; } };
     const negativas = lista.filter(a => Number(a.nota) <= 2).map(a => ({ ...a, t: json_(a.triagem), d: json_(a.denuncia) }));
@@ -1856,13 +1856,30 @@
       const lote = refazer ? String(Date.now()) : "";
       b.disabled = true;
       try {
+        // Primeiro traz do Google todas as avaliações (inclusive as antigas), para a triagem ver a lista completa.
+        if (conectada) {
+          progresso.classList.remove("oculto");
+          progresso.textContent = "Buscando todas as avaliações no Google…";
+          try {
+            const s = await mk("google/sincronizar", { metodo: "POST", corpo: { marca_id: marcaId } });
+            progresso.textContent = `Google: ${s.avaliacoes_total} avaliação(ões) no perfil.`;
+          } catch (e) { progresso.textContent = "O Google recusou a busca das avaliações: " + e.message; aviso(progresso.textContent, "erro"); return; }
+        }
+        const antes = (await mk(`avaliacoes?marca=${marcaId}&nota_max=2`)).avaliacoes || [];
+        const baixas = antes.filter(a => !a.removida_ms).length;
+        if (!baixas) {
+          progresso.classList.remove("oculto");
+          progresso.textContent = conectada ? `Não há avaliações de 1 ou 2 estrelas neste perfil do Google. Confira se a marca escolhida no topo é a certa e se o perfil conectado é o desta marca (aba Conexão).` : "Ainda não há avaliações desta marca na DENIA: conecte o Google da marca (Marcas → Conectar Google).";
+          aviso(progresso.textContent, "erro");
+          return;
+        }
         for (let volta = 0; volta < 30; volta++) {
           const r = await mk("avaliacoes/triagem", { metodo: "POST", corpo: { marca_id: marcaId, refazer, lote } });
           progresso.classList.remove("oculto");
           progresso.textContent = `Analisando… faltam ${r.restantes} de ${r.total}.${r.base_clientes ? ` Base de clientes consultada: ${numero(r.base_clientes.whatsapp)} contatos do WhatsApp e ${numero(r.base_clientes.cadastro)} do cadastro.` : " Base de clientes indisponível agora: a triagem segue com os outros sinais."}`;
           if (!r.restantes || !r.feitas) break;
         }
-        aviso("Triagem concluída.", "ok"); navegar();
+        aviso(`Triagem concluída: ${baixas} avaliação(ões) de 1 e 2 estrelas analisadas.`, "ok"); navegar();
       } catch (e) { aviso(e.message, "erro"); } finally { b.disabled = false; }
     };
     const abrirPerfil = async () => { try { const r = await mk(`google/link?marca=${marcaId}`); if (r.url) window.open(r.url, "_blank", "noopener"); else aviso("O Google não informou o link do perfil.", "erro"); } catch (e) { aviso(e.message, "erro"); } };
@@ -1872,7 +1889,9 @@
       h("section", { class: "cartao vidro" },
         h("h3", { style: "margin-top:0", text: "Triagem das avaliações de 1 e 2 estrelas" }),
         h("p", { style: "margin:0;color:var(--texto-2)", text: "A DENIA confere se quem avaliou está na sua base de clientes (WhatsApp e cadastro importado), procura avaliações em sequência, textos repetidos e conteúdo fora do tema, e indica o tópico certo de denúncia do Google. Você confirma e denuncia uma a uma — o Google não permite denúncia automática, e denúncia sem fundamento pode prejudicar o perfil." }),
-        !conectada ? h("p", { class: "nota nota-alerta", text: "Conecte o Google desta marca (Marcas → Conectar Google) para trazer as avaliações." }) : null,
+        !conectada ? h("p", { class: "nota nota-alerta", text: "Conecte o Google desta marca (Marcas → Conectar Google) para trazer as avaliações." })
+          : h("p", { class: "nota", text: `Perfil conectado: ${contaGoogleDa(g, marcaId).local_titulo}. Na DENIA: ${ativas.length} avaliação(ões) de 1 ou 2 estrelas.${contaGoogleDa(g, marcaId).sincronizado_ms ? " Última busca no Google: " + new Date(contaGoogleDa(g, marcaId).sincronizado_ms).toLocaleString(LOCALE) + "." : ""}` }),
+        conectada && contaGoogleDa(g, marcaId).erro ? h("p", { class: "nota nota-alerta", text: "Última tentativa com o Google falhou: " + contaGoogleDa(g, marcaId).erro }) : null,
         h("div", { class: "acoes", style: "margin-top:12px" },
           pode("AGENTE") ? botao(ativas.some(a => !a.t) ? "✦ Fazer a triagem" : "✦ Refazer a triagem", (_e, b) => triar(b, !ativas.some(a => !a.t)), "btn-primario") : null,
           conectada ? botao("Abrir o perfil no Google Maps", abrirPerfil, "btn-secundario") : null),

@@ -234,10 +234,11 @@ export async function publicarGoogle(env, k, conta, p, imagem) {
 }
 
 // ----- Avaliações: busca no Google e grava (as novas ficam "sem resposta" para a DENIA sugerir).
-async function sincronizarAvaliacoes(env, k, conta, token) {
+// paginas: na rodada automática só as primeiras (as novas chegam no topo); na busca manual, o perfil inteiro.
+async function sincronizarAvaliacoes(env, k, conta, token, paginas = 30) {
   let novas = 0, total = 0, pagina = "", completo = false;
   const vistos = new Set();
-  for (let i = 0; i < 10; i++) {
+  for (let i = 0; i < paginas; i++) {
     const d = await chamar("GET", `${API_V4}/${caminhoV4(conta)}/reviews?pageSize=50${pagina ? "&pageToken=" + encodeURIComponent(pagina) : ""}`, token);
     for (const r of d.reviews || []) {
       total++;
@@ -333,9 +334,9 @@ export async function desempenhoAoVivo(env, k, conta) {
   return { perfil: conta.local_titulo, de: ini.toISOString().slice(0, 10), ate: fim.toISOString().slice(0, 10), totais, palavras };
 }
 
-export async function sincronizarConta(env, k, conta, { forcarDesempenho = true } = {}) {
+export async function sincronizarConta(env, k, conta, { forcarDesempenho = true, completa = true } = {}) {
   const token = await tokenDa(env, k, conta);
-  const av = await sincronizarAvaliacoes(env, k, conta, token);
+  const av = await sincronizarAvaliacoes(env, k, conta, token, completa ? 30 : 2);
   let desempenho = null;
   if (forcarDesempenho || !conta.desempenho_ms || conta.desempenho_ms < k.agora(env) - DESEMPENHO_A_CADA_MS) {
     try { await gravarSemanas(env, k, conta, token); desempenho = true; await env.DB.prepare("UPDATE plt_mk_google SET desempenho_ms=? WHERE id=?").bind(k.agora(env), conta.id).run(); }
@@ -352,7 +353,7 @@ export async function sincronizarGooglePendentes(env, k) {
   const contas = (await env.DB.prepare("SELECT * FROM plt_mk_google WHERE sincronizado_ms IS NULL OR sincronizado_ms < ? ORDER BY sincronizado_ms LIMIT 5").bind(k.agora(env) - SINCRONIZAR_A_CADA_MS).all())?.results || [];
   let n = 0;
   for (const c of contas) {
-    try { await sincronizarConta(env, k, c, { forcarDesempenho: false }); n++; }
+    try { await sincronizarConta(env, k, c, { forcarDesempenho: false, completa: false }); n++; }
     catch (e) {
       console.error("google sync", c.id, e?.message);
       // Guarda o motivo para aparecer no painel; tenta de novo na próxima rodada.
