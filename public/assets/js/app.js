@@ -1550,14 +1550,25 @@
     }
     location.href = `/api/orgs/${estado.org.id}/mk/meta/conectar?marca=${marca.id}`;
   }
+  // Busca dentro de uma lista longa de opções (páginas da Meta, perfis do Google): esconde o que não combina.
+  function filtroDaLista(lista, dica) {
+    const busca = h("input", { class: "entrada", type: "search", placeholder: dica, "aria-label": dica });
+    const sem = s => String(s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+    busca.addEventListener("input", () => {
+      const q = sem(busca.value.trim());
+      lista.querySelectorAll(".opcao-pagina").forEach(op => { op.classList.toggle("oculto", Boolean(q) && !sem(op.textContent).includes(q)); });
+    });
+    setTimeout(() => busca.focus(), 50);
+    return busca;
+  }
   async function escolherPaginaMeta(nonce) {
     let d;
     try { d = await mk(`meta/paginas?n=${encodeURIComponent(nonce)}`); }
     catch (e) { aviso(e.message, "erro"); location.hash = "#/marcas"; return; }
-    const opcoes = h("div", { class: "lista-saude" }, d.paginas.map((p, i) => h("label", { class: "opcao-pagina" },
+    const opcoes = h("div", { class: "lista-saude lista-rolavel" }, d.paginas.map((p, i) => h("label", { class: "opcao-pagina" },
       h("input", { type: "radio", name: "pagina-meta", value: p.id, checked: i === 0 }),
       h("span", {}, h("strong", { text: p.nome }), h("span", { class: "sub", text: p.ig_usuario ? `Instagram @${p.ig_usuario}` : "Sem Instagram profissional ligado a esta página" })))));
-    if (!(await modal({ titulo: "Qual página é desta marca?", conteudo: [opcoes], confirmar: "Conectar" }))) { location.hash = "#/marcas"; return; }
+    if (!(await modal({ titulo: "Qual página é desta marca?", conteudo: [...(d.paginas.length > 6 ? [filtroDaLista(opcoes, `Procurar entre as ${d.paginas.length} páginas`)] : []), opcoes], confirmar: "Conectar" }))) { location.hash = "#/marcas"; return; }
     const escolhida = opcoes.querySelector("input:checked");
     try {
       const r = await mk("meta/escolher", { metodo: "POST", corpo: { n: nonce, pagina_id: escolhida && escolhida.value } });
@@ -1591,10 +1602,10 @@
     let d;
     try { d = await mk(`google/locais?n=${encodeURIComponent(nonce)}`); }
     catch (e) { aviso(e.message, "erro"); location.hash = "#/marcas"; return; }
-    const opcoes = h("div", { class: "lista-saude" }, d.locais.map((l, i) => h("label", { class: "opcao-pagina" },
+    const opcoes = h("div", { class: "lista-saude lista-rolavel" }, d.locais.map((l, i) => h("label", { class: "opcao-pagina" },
       h("input", { type: "radio", name: "local-google", value: l.id, checked: i === 0 }),
       h("span", {}, h("strong", { text: l.titulo }), h("span", { class: "sub", text: l.endereco || "Perfil sem endereço (atende na região)" })))));
-    if (!(await modal({ titulo: "Qual perfil do Google é desta marca?", conteudo: [opcoes], confirmar: "Conectar" }))) { location.hash = "#/marcas"; return; }
+    if (!(await modal({ titulo: "Qual perfil do Google é desta marca?", conteudo: [...(d.locais.length > 6 ? [filtroDaLista(opcoes, `Procurar entre os ${d.locais.length} perfis (nome ou endereço)`)] : []), opcoes], confirmar: "Conectar" }))) { location.hash = "#/marcas"; return; }
     const escolhido = opcoes.querySelector("input:checked");
     try {
       const r = await mk("google/escolher", { metodo: "POST", corpo: { n: nonce, local_id: escolhido && escolhido.value } });
