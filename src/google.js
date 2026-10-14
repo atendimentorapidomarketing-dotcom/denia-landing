@@ -184,11 +184,12 @@ export async function rotasGoogle(request, env, k, orgId, papel, resto) {
       return json({ erro: e.message }, 502);
     }
   }
-  // Desempenho ao vivo: últimos 30 dias e as buscas que mais levaram ao perfil no último mês.
+  // Desempenho de qualquer período (7 dias a 18 meses, ou datas escolhidas), com comparação e as buscas do período.
   if (resto === "google/desempenho" && metodo === "GET") {
     const conta = await contaGoogleDe(env, orgId, Number(url.searchParams.get("marca")));
     if (!conta) return json({ conectada: false });
-    try { return json({ conectada: true, ...(await desempenhoAoVivo(env, k, conta)) }); }
+    const q = n => url.searchParams.get(n) || undefined;
+    try { return json({ conectada: true, ...(await desempenhoDoPeriodo(env, k, conta, { dias: q("dias"), de: q("de"), ate: q("ate"), atalho: q("atalho"), comparar: q("comparar") })) }); }
     catch (e) { return json({ conectada: true, erro: e.message }); }
   }
   return null; // outras rotas google/* ficam no marketing.js (resumo)
@@ -331,31 +332,78 @@ export async function responderAvaliacaoGoogle(env, k, avaliacao, texto) {
 }
 
 // ----- Desempenho
+// Todas as métricas diárias que o Google oferece para um perfil (as de reserva e comida só existem em alguns ramos).
 const METRICAS = {
-  BUSINESS_IMPRESSIONS_DESKTOP_MAPS: "visualizacoes", BUSINESS_IMPRESSIONS_MOBILE_MAPS: "visualizacoes",
-  BUSINESS_IMPRESSIONS_DESKTOP_SEARCH: "buscas", BUSINESS_IMPRESSIONS_MOBILE_SEARCH: "buscas",
-  CALL_CLICKS: "ligacoes", BUSINESS_DIRECTION_REQUESTS: "rotas", WEBSITE_CLICKS: "cliques_site", BUSINESS_CONVERSATIONS: "mensagens"
+  BUSINESS_IMPRESSIONS_MOBILE_MAPS: "maps_celular", BUSINESS_IMPRESSIONS_DESKTOP_MAPS: "maps_computador",
+  BUSINESS_IMPRESSIONS_MOBILE_SEARCH: "pesquisa_celular", BUSINESS_IMPRESSIONS_DESKTOP_SEARCH: "pesquisa_computador",
+  CALL_CLICKS: "ligacoes", BUSINESS_DIRECTION_REQUESTS: "rotas", WEBSITE_CLICKS: "cliques_site", BUSINESS_CONVERSATIONS: "mensagens",
+  BUSINESS_BOOKINGS: "reservas", BUSINESS_FOOD_ORDERS: "pedidos_comida", BUSINESS_FOOD_MENU_CLICKS: "cliques_cardapio"
 };
+const METRICAS_DE_RAMO = new Set(["BUSINESS_BOOKINGS", "BUSINESS_FOOD_ORDERS", "BUSINESS_FOOD_MENU_CLICKS"]);
+const DIA_MS = 86400000;
+export const HISTORICO_DIAS = 540; // o Google guarda cerca de 18 meses de desempenho
+const ATRASO_DIAS = 2; // e consolida os números com ~2 dias de atraso
+const isoDia = d => d.toISOString().slice(0, 10);
+const diaUTC = iso => new Date(iso + "T00:00:00Z");
+const zerado = () => Object.fromEntries(Object.values(METRICAS).map(c => [c, 0]));
 const parteData = (prefixo, d) => `${prefixo}.year=${d.getUTCFullYear()}&${prefixo}.month=${d.getUTCMonth() + 1}&${prefixo}.day=${d.getUTCDate()}`;
-async function metricas(conta, token, ini, fim) {
-  const url = `${API_DESEMPENHO}/${conta.local_nome}:fetchMultiDailyMetricsTimeSeries?${Object.keys(METRICAS).map(m => "dailyMetrics=" + m).join("&")}&${parteData("dailyRange.startDate", ini)}&${parteData("dailyRange.endDate", fim)}`;
-  const d = await chamar("GET", url, token);
-  const totais = { visualizacoes: 0, buscas: 0, ligacoes: 0, rotas: 0, cliques_site: 0, mensagens: 0 };
+// Totais (visualizações = Maps + Pesquisa) a partir do detalhe por métrica.
+function resumir(det) {
+  const maps = det.maps_celular + det.maps_computador, pesquisa = det.pesquisa_celular + det.pesquisa_computador;
+  return { visualizacoes: maps + pesquisa, buscas: pesquisa, maps, ligacoes: det.ligacoes, rotas: det.rotas, cliques_site: det.cliques_site, mensagens: det.mensagens,
+    reservas: det.reservas, pedidos_comida: det.pedidos_comida, cliques_cardapio: det.cliques_cardapio,
+    interacoes: det.ligacoes + det.rotas + det.cliques_site + det.mensagens + det.reservas + det.pedidos_comida + det.cliques_cardapio };
+}
+// Uma chamada traz todas as métricas, dia a dia, do período.
+async function serieDoPeriodo(conta, token, ini, fim) {
+  const pedir = nomes => chamar("GET", `${API_DESEMPENHO}/${conta.local_nome}:fetchMultiDailyMetricsTimeSeries?${nomes.map(m => "dailyMetrics=" + m).join("&")}&${parteData("dailyRange.startDate", ini)}&${parteData("dailyRange.endDate", fim)}`, token);
+  let d;
+  try { d = await pedir(Object.keys(METRICAS)); }
+  catch { d = await pedir(Object.keys(METRICAS).filter(m => !METRICAS_DE_RAMO.has(m))); } // perfis que não aceitam as métricas de ramo
+  const detalhe = zerado(), porDia = new Map();
   for (const grupo of d.multiDailyMetricTimeSeries || []) for (const s of grupo.dailyMetricTimeSeries || []) {
     const campo = METRICAS[s.dailyMetric];
     if (!campo) continue;
-    for (const v of s.timeSeries?.datedValues || []) totais[campo] += Number(v.value || 0);
+    for (const v of s.timeSeries?.datedValues || []) {
+      const n = Number(v.value || 0);
+      detalhe[campo] += n;
+      if (!v.date?.year) continue;
+      const chave = `${v.date.year}-${String(v.date.month).padStart(2, "0")}-${String(v.date.day).padStart(2, "0")}`;
+      if (!porDia.has(chave)) porDia.set(chave, zerado());
+      porDia.get(chave)[campo] += n;
+    }
   }
-  // "Visualizações do perfil" = todas as vezes que o perfil apareceu (Maps + Pesquisa).
-  totais.visualizacoes += totais.buscas;
-  return totais;
+  const diario = [];
+  for (let t = diaUTC(isoDia(ini)).getTime(); t <= fim.getTime(); t += DIA_MS) {
+    const data = isoDia(new Date(t)), det = porDia.get(data) || zerado();
+    diario.push({ data, ...det, ...resumir(det) });
+  }
+  return { detalhe, totais: resumir(detalhe), diario };
+}
+async function metricas(conta, token, ini, fim) { return (await serieDoPeriodo(conta, token, ini, fim)).totais; }
+// Buscas que levaram ao perfil: o Google só publica meses completos, então usa os meses do período até o mês passado.
+async function palavrasDoPeriodo(conta, token, ini, fim, agoraMs, limite = 50) {
+  const agora = new Date(agoraMs), ultimoMes = new Date(Date.UTC(agora.getUTCFullYear(), agora.getUTCMonth() - 1, 1));
+  let ate = new Date(Date.UTC(fim.getUTCFullYear(), fim.getUTCMonth(), 1));
+  if (ate > ultimoMes) ate = ultimoMes;
+  let de = new Date(Date.UTC(ini.getUTCFullYear(), ini.getUTCMonth(), 1));
+  if (de > ate) de = ate;
+  const faixa = `monthlyRange.startMonth.year=${de.getUTCFullYear()}&monthlyRange.startMonth.month=${de.getUTCMonth() + 1}&monthlyRange.endMonth.year=${ate.getUTCFullYear()}&monthlyRange.endMonth.month=${ate.getUTCMonth() + 1}`;
+  const todas = [];
+  let pagina = "";
+  for (let i = 0; i < 5; i++) {
+    const r = await chamar("GET", `${API_DESEMPENHO}/${conta.local_nome}/searchkeywords/impressions/monthly?${faixa}&pageSize=100${pagina ? "&pageToken=" + encodeURIComponent(pagina) : ""}`, token);
+    todas.push(...(r.searchKeywordsCounts || []));
+    if (!r.nextPageToken) break;
+    pagina = r.nextPageToken;
+  }
+  const lista = todas.map(x => ({ palavra: String(x.searchKeyword || ""), buscas: x.insightsValue?.value != null ? Number(x.insightsValue.value) : null, menos_de: x.insightsValue?.threshold != null ? Number(x.insightsValue.threshold) : null }))
+    .filter(x => x.palavra).sort((a, b) => (b.buscas ?? b.menos_de ?? 0) - (a.buscas ?? a.menos_de ?? 0)).slice(0, limite);
+  return { lista, mes_de: isoDia(de).slice(0, 7), mes_ate: isoDia(ate).slice(0, 7) };
 }
 async function palavrasDoMes(conta, token, agoraMs) {
-  const d = new Date(agoraMs); d.setUTCDate(1); d.setUTCMonth(d.getUTCMonth() - 1); // mês passado (completo)
-  const ano = d.getUTCFullYear(), mes = d.getUTCMonth() + 1;
-  const r = await chamar("GET", `${API_DESEMPENHO}/${conta.local_nome}/searchkeywords/impressions/monthly?monthlyRange.startMonth.year=${ano}&monthlyRange.startMonth.month=${mes}&monthlyRange.endMonth.year=${ano}&monthlyRange.endMonth.month=${mes}&pageSize=100`, token);
-  return (r.searchKeywordsCounts || []).map(x => ({ palavra: String(x.searchKeyword || ""), buscas: x.insightsValue?.value != null ? Number(x.insightsValue.value) : null, menos_de: x.insightsValue?.threshold != null ? Number(x.insightsValue.threshold) : null }))
-    .filter(x => x.palavra).sort((a, b) => (b.buscas ?? b.menos_de ?? 0) - (a.buscas ?? a.menos_de ?? 0)).slice(0, 15);
+  const mes = new Date(agoraMs); mes.setUTCDate(1); mes.setUTCMonth(mes.getUTCMonth() - 1);
+  return (await palavrasDoPeriodo(conta, token, mes, mes, agoraMs, 15)).lista;
 }
 function segundaDe(ms) { const d = new Date(ms); const dia = (d.getUTCDay() + 6) % 7; d.setUTCHours(12, 0, 0, 0); d.setUTCDate(d.getUTCDate() - dia); return d; }
 // Grava as duas últimas semanas completas na aba Desempenho (o Google consolida os números com alguns dias de atraso).
@@ -373,9 +421,54 @@ async function gravarSemanas(env, k, conta, token) {
 // Últimos 30 dias (o Google consolida com ~2 dias de atraso) e as buscas do mês passado.
 export async function desempenhoAoVivo(env, k, conta) {
   const token = await tokenDa(env, k, conta);
-  const fim = new Date(k.agora(env) - 2 * 86400000), ini = new Date(fim.getTime() - 29 * 86400000);
+  const fim = new Date(k.agora(env) - ATRASO_DIAS * DIA_MS), ini = new Date(fim.getTime() - 29 * DIA_MS);
   const [totais, palavras] = await Promise.all([metricas(conta, token, ini, fim), palavrasDoMes(conta, token, k.agora(env)).catch(() => [])]);
-  return { perfil: conta.local_titulo, de: ini.toISOString().slice(0, 10), ate: fim.toISOString().slice(0, 10), totais, palavras };
+  return { perfil: conta.local_titulo, de: isoDia(ini), ate: isoDia(fim), totais, palavras };
+}
+
+// Escolhe o período pedido: "dias" (7, 30, 60…), "de"/"ate" (AAAA-MM-DD) ou os atalhos "mes" (este mês) e "mes_passado".
+export function periodoPedido(agoraMs, { dias, de, ate, atalho } = {}) {
+  const ultimo = diaUTC(isoDia(new Date(agoraMs - ATRASO_DIAS * DIA_MS)));
+  const primeiro = new Date(ultimo.getTime() - (HISTORICO_DIAS - 1) * DIA_MS);
+  const valida = s => /^\d{4}-\d{2}-\d{2}$/.test(String(s || "")) && !isNaN(diaUTC(s));
+  let ini, fim;
+  if (atalho === "mes") { fim = ultimo; ini = new Date(Date.UTC(ultimo.getUTCFullYear(), ultimo.getUTCMonth(), 1)); }
+  else if (atalho === "mes_passado") { const hoje = diaUTC(isoDia(new Date(agoraMs))); fim = new Date(Date.UTC(hoje.getUTCFullYear(), hoje.getUTCMonth(), 0)); ini = new Date(Date.UTC(fim.getUTCFullYear(), fim.getUTCMonth(), 1)); if (fim > ultimo) fim = ultimo; }
+  else if (de || ate) {
+    if (!valida(de) || !valida(ate)) throw new Error("Escolha a data de início e a data de fim.");
+    ini = diaUTC(de); fim = diaUTC(ate);
+    if (ini > fim) [ini, fim] = [fim, ini];
+  } else {
+    const n = Math.min(HISTORICO_DIAS, Math.max(1, Math.round(Number(dias) || 30)));
+    fim = ultimo; ini = new Date(ultimo.getTime() - (n - 1) * DIA_MS);
+  }
+  if (fim > ultimo) fim = ultimo;
+  if (ini < primeiro) ini = primeiro;
+  if (ini > fim) throw new Error(`O Google só tem números até ${isoDia(ultimo).split("-").reverse().join("/")} (ele consolida com 2 dias de atraso).`);
+  return { ini, fim, primeiro, ultimo, dias: Math.round((fim - ini) / DIA_MS) + 1 };
+}
+
+// Desempenho completo de qualquer período (até 18 meses): totais, detalhe, dia a dia, comparação e buscas.
+// comparar: "anterior" (mesmo tamanho, logo antes), "ano" (mesmo período do ano passado) ou "nada".
+export async function desempenhoDoPeriodo(env, k, conta, pedido = {}) {
+  const agora = k.agora(env);
+  const per = periodoPedido(agora, pedido);
+  const token = await tokenDa(env, k, conta);
+  const modo = ["anterior", "ano", "nada"].includes(pedido.comparar) ? pedido.comparar : "anterior";
+  let cIni = null, cFim = null;
+  if (modo === "anterior") { cFim = new Date(per.ini.getTime() - DIA_MS); cIni = new Date(cFim.getTime() - (per.dias - 1) * DIA_MS); }
+  if (modo === "ano") { cIni = new Date(Date.UTC(per.ini.getUTCFullYear() - 1, per.ini.getUTCMonth(), per.ini.getUTCDate())); cFim = new Date(Date.UTC(per.fim.getUTCFullYear() - 1, per.fim.getUTCMonth(), per.fim.getUTCDate())); }
+  const cabe = cIni && cIni >= per.primeiro;
+  const [atual, antes, palavras] = await Promise.all([
+    serieDoPeriodo(conta, token, per.ini, per.fim),
+    cabe ? serieDoPeriodo(conta, token, cIni, cFim).catch(() => null) : null,
+    palavrasDoPeriodo(conta, token, per.ini, per.fim, agora).catch(() => ({ lista: [], mes_de: null, mes_ate: null }))
+  ]);
+  const comparacao = modo === "nada" ? null : antes ? { modo, de: isoDia(cIni), ate: isoDia(cFim), totais: antes.totais, detalhe: antes.detalhe, diario: antes.diario }
+    : { modo, indisponivel: "O Google guarda só os últimos 18 meses, então não há números para comparar com esse período." };
+  return { perfil: conta.local_titulo, de: isoDia(per.ini), ate: isoDia(per.fim), dias: per.dias, primeiro_dia: isoDia(per.primeiro), ultimo_dia: isoDia(per.ultimo),
+    totais: atual.totais, detalhe: atual.detalhe, diario: atual.diario, comparacao,
+    palavras: palavras.lista, palavras_de: palavras.mes_de, palavras_ate: palavras.mes_ate };
 }
 
 export async function sincronizarConta(env, k, conta, { forcarDesempenho = true, completa = true, continuar = false } = {}) {
