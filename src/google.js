@@ -1,3 +1,4 @@
+import { registrarUso, orgDoUso } from "./uso.js";
 // DENIA Platform — Google Perfil da Empresa (Google Meu Negócio), pela API oficial.
 // Conexão por marca (login do Google), publicação dos posts aprovados, avaliações (buscar e responder)
 // e desempenho do perfil (visualizações, ligações, rotas, cliques e as buscas que levam ao perfil).
@@ -53,17 +54,38 @@ function explicarErro(d, status) {
   if (status === 429) return "Limite de uso do Google atingido por agora. A DENIA tenta de novo mais tarde.";
   return "O Google respondeu: " + msg.slice(0, 220);
 }
+// Qual API do Google (e cota) cada endereço usa — para a página Consumo.
+function apiGoogleDe(url) {
+  const u = String(url);
+  if (u.includes("mybusinessaccountmanagement")) return "contas";
+  if (u.includes("mybusinessbusinessinformation")) return "informacoes";
+  if (u.includes("businessprofileperformance")) return "desempenho";
+  if (u.includes("oauth2.googleapis.com")) return "login";
+  return "avaliacoes";
+}
+function operacaoGoogle(metodo, url) {
+  const caminho = new URL(url).pathname.split("/").filter(x => x && !/^(v\d+|accounts|locations|\d+)$/.test(x));
+  const ultimo = (caminho.slice(-1)[0] || "").split(":").slice(-1)[0];
+  return `${metodo} ${ultimo}`.slice(0, 50);
+}
+const orgDoToken = new Map(); // token de acesso → empresa (para somar o consumo na empresa certa)
 async function chamar(metodo, url, token, corpo) {
-  const r = await fetch(url, {
-    method: metodo, signal: AbortSignal.timeout(30000),
-    headers: { authorization: "Bearer " + token, ...(corpo ? { "content-type": "application/json" } : {}) },
-    body: corpo ? JSON.stringify(corpo) : undefined
-  });
+  const inicio = Date.now(), org = orgDoToken.get(token) || 0;
+  let r;
+  try {
+    r = await fetch(url, {
+      method: metodo, signal: AbortSignal.timeout(30000),
+      headers: { authorization: "Bearer " + token, ...(corpo ? { "content-type": "application/json" } : {}) },
+      body: corpo ? JSON.stringify(corpo) : undefined
+    });
+  } catch (e) { registrarUso(org, "google", apiGoogleDe(url), operacaoGoogle(metodo, url), { erro: true, ms: Date.now() - inicio }); throw e; }
+  registrarUso(org, "google", apiGoogleDe(url), operacaoGoogle(metodo, url), { erro: !r.ok, limitada: r.status === 429, ms: Date.now() - inicio });
   const d = await r.json().catch(() => ({}));
   if (!r.ok) { const e = new Error(explicarErro(d, r.status)); e.status = r.status; throw e; }
   return d;
 }
 async function trocarToken(env, params) {
+  registrarUso(orgDoUso(env), "google", "login", params.grant_type === "refresh_token" ? "renovar acesso" : "conectar");
   const r = await fetch("https://oauth2.googleapis.com/token", {
     method: "POST", signal: AbortSignal.timeout(20000), headers: { "content-type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({ client_id: String(env.GOOGLE_CLIENT_ID).trim(), client_secret: String(env.GOOGLE_CLIENT_SECRET).trim(), ...params })
@@ -81,6 +103,8 @@ async function tokenDa(env, k, conta) {
   if (!refresh) throw new Error("O acesso ao Google desta marca não pôde ser lido. Conecte de novo.");
   const d = await trocarToken(env, { grant_type: "refresh_token", refresh_token: refresh });
   cacheTokens.set(conta.id, { token: d.access_token, ate: k.agora(env) + Number(d.expires_in || 3600) * 1000 });
+  if (orgDoToken.size > 500) orgDoToken.clear();
+  orgDoToken.set(d.access_token, conta.org_id);
   return d.access_token;
 }
 

@@ -25,7 +25,7 @@
 // SECRETS / VARIÁVEIS
 //   Obrigatórios: OPENAI_API_KEY, WHATSAPP_TOKEN, WHATSAPP_VERIFY_TOKEN, PAINEL_SENHA
 //   Recomendados: META_APP_SECRET, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
-//   Opcionais:   OPENAI_MODEL, OPENAI_TRANSCRIPTION_MODEL, WHATSAPP_PHONE_NUMBER_ID,
+//   Opcionais:   OPENAI_MODEL, OPENAI_TRANSCRIPTION_MODEL, WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_WABA_ID,
 //                WHATSAPP_TEMPLATE_CONSULTA_TECNICO, WHATSAPP_TEMPLATE_IDIOMA,
 //                MARKUP_PERCENT, JANELA_AGRUPAMENTO_MS, VIDEO_PROCESSOR_URL,
 //                VIDEO_PROCESSOR_TOKEN, RELATORIO_GMAIL_URL, RELATORIO_GMAIL_SEGREDO,
@@ -35,7 +35,7 @@
 //       relatório diário. Nunca inicia conversa nova por conta própria.
 // ============================================================================
 
-const VERSAO = "31.0.0";
+const VERSAO = "31.1.0";
 const SCHEMA_VERSAO = "30.3.0-a";
 const EMPRESA_ID = 1;
 const PHONE_ID_PADRAO = "473474732510163";
@@ -324,7 +324,8 @@ const SQL_SCHEMA = [
   `CREATE TABLE IF NOT EXISTS d30_sugestoes (id INTEGER PRIMARY KEY AUTOINCREMENT, hash TEXT NOT NULL UNIQUE, tipo TEXT NOT NULL, titulo TEXT NOT NULL, conteudo TEXT NOT NULL, evidencia TEXT, ocorrencias INTEGER NOT NULL DEFAULT 1, status TEXT NOT NULL DEFAULT 'PENDENTE', criado_ms INTEGER NOT NULL, decidido_ms INTEGER, decidido_por TEXT)`,
   `CREATE INDEX IF NOT EXISTS d30_sugestoes_status ON d30_sugestoes(status, ocorrencias)`,
   `CREATE TABLE IF NOT EXISTS d30_ficha (id INTEGER PRIMARY KEY AUTOINCREMENT, telefone TEXT NOT NULL, dados_json TEXT NOT NULL, origem TEXT, importado_ms INTEGER NOT NULL)`,
-  `CREATE INDEX IF NOT EXISTS d30_ficha_tel ON d30_ficha(telefone)`
+  `CREATE INDEX IF NOT EXISTS d30_ficha_tel ON d30_ficha(telefone)`,
+  `CREATE TABLE IF NOT EXISTS d30_uso (dia TEXT NOT NULL, operacao TEXT NOT NULL, modelo TEXT NOT NULL DEFAULT '', chamadas INTEGER NOT NULL DEFAULT 0, erros INTEGER NOT NULL DEFAULT 0, tokens_entrada INTEGER NOT NULL DEFAULT 0, tokens_saida INTEGER NOT NULL DEFAULT 0, tokens_cache INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (dia, operacao, modelo))`
 ];
 const SQL_INDICES_LEGADO = [
   `CREATE INDEX IF NOT EXISTS d30_idx_msg_pessoa ON mensagens(empresa_id, pessoa_id, id)`,
@@ -997,6 +998,43 @@ async function encaminharMidiasAoPrestador(c, consulta) {
 // ============================================================================
 
 function modelo(env) { return String(env.OPENAI_MODEL || MODELO_PADRAO).trim(); }
+// Consumo da OpenAI por dia (a plataforma mostra em Consumo e custos). Nunca atrapalha a resposta.
+async function registrarUsoIA(c, operacao, modeloUsado, usage, erro) {
+  if (!c?.db || c.sim) return;
+  try {
+    const det = usage?.input_tokens_details || {};
+    await c.db.prepare(`INSERT INTO d30_uso (dia,operacao,modelo,chamadas,erros,tokens_entrada,tokens_saida,tokens_cache) VALUES (?,?,?,1,?,?,?,?)
+      ON CONFLICT(dia,operacao,modelo) DO UPDATE SET chamadas=chamadas+1, erros=erros+excluded.erros, tokens_entrada=tokens_entrada+excluded.tokens_entrada, tokens_saida=tokens_saida+excluded.tokens_saida, tokens_cache=tokens_cache+excluded.tokens_cache`)
+      .bind(new Date(c.agora()).toISOString().slice(0, 10), operacao, String(modeloUsado || ""), erro ? 1 : 0, Number(usage?.input_tokens || 0) || 0, Number(usage?.output_tokens || 0) || 0, Number(det.cached_tokens || 0) || 0).run();
+  } catch { /* tabela ainda não criada ou banco ocupado */ }
+}
+// Consumo do período: IA, mensagens recebidas/enviadas por dia e, com WHATSAPP_WABA_ID, o custo cobrado pela Meta.
+async function consumoDoPeriodo(c, de, ate) {
+  const valida = s => /^\d{4}-\d{2}-\d{2}$/.test(String(s || ""));
+  if (!valida(de) || !valida(ate)) { ate = new Date(c.agora()).toISOString().slice(0, 10); de = new Date(c.agora() - 29 * 86400000).toISOString().slice(0, 10); }
+  const ini = Date.parse(de + "T00:00:00Z"), fim = Date.parse(ate + "T00:00:00Z") + 86400000;
+  const ia = (await c.db.prepare("SELECT dia,operacao,modelo,chamadas,erros,tokens_entrada,tokens_saida,tokens_cache FROM d30_uso WHERE dia BETWEEN ? AND ? ORDER BY dia").bind(de, ate).all().catch(() => null))?.results || [];
+  const recebidas = (await c.db.prepare("SELECT strftime('%Y-%m-%d', recebido_ms/1000, 'unixepoch') dia, COUNT(*) n FROM d30_fila WHERE recebido_ms >= ? AND recebido_ms < ? GROUP BY dia").bind(ini, fim).all().catch(() => null))?.results || [];
+  const enviadas = (await c.db.prepare("SELECT strftime('%Y-%m-%d', criado_ms/1000, 'unixepoch') dia, COUNT(*) n FROM d30_saidas WHERE criado_ms >= ? AND criado_ms < ? GROUP BY dia").bind(ini, fim).all().catch(() => null))?.results || [];
+  const r = { de, ate, ia, mensagens: { recebidas, enviadas }, meta: null };
+  const waba = String(c.env.WHATSAPP_WABA_ID || "").trim();
+  if (!waba) r.meta = { configurado: false, ajuda: "Para ver o custo cobrado pela Meta, crie no Worker do motor a variável WHATSAPP_WABA_ID com o ID da conta do WhatsApp Business (Gerenciador do WhatsApp → Configurações da conta)." };
+  else if (c.env.WHATSAPP_TOKEN) {
+    try {
+      const campos = `pricing_analytics.start(${Math.floor(ini / 1000)}).end(${Math.floor(fim / 1000)}).granularity(DAILY).dimensions(["PRICING_CATEGORY","PRICING_TYPE"])`;
+      const u = `https://graph.facebook.com/${GRAPH}/${encodeURIComponent(waba)}?fields=${encodeURIComponent(campos)}&access_token=${encodeURIComponent(String(c.env.WHATSAPP_TOKEN).trim())}`;
+      const w = await fetch(u, { signal: AbortSignal.timeout(20000) });
+      const d = await w.json().catch(() => ({}));
+      if (!w.ok || d.error) r.meta = { configurado: true, erro: txt(d?.error?.message || `HTTP ${w.status}`, 300) };
+      else {
+        const pontos = [];
+        for (const bloco of d.pricing_analytics?.data || []) for (const p of bloco.data_points || []) pontos.push({ dia: new Date(Number(p.start) * 1000).toISOString().slice(0, 10), categoria: String(p.pricing_category || ""), tipo: String(p.pricing_type || ""), volume: Number(p.volume || 0), custo: Number(p.cost || 0) });
+        r.meta = { configurado: true, moeda: d.pricing_analytics?.currency || null, pontos };
+      }
+    } catch (e) { r.meta = { configurado: true, erro: txt(e?.message, 200) }; }
+  }
+  return r;
+}
 async function openaiJSON(c, instrucoes, entrada, anexos = [], maxTokens = 1400) {
   const env = c.env;
   if (!env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY não configurada.");
@@ -1013,8 +1051,9 @@ async function openaiJSON(c, instrucoes, entrada, anexos = [], maxTokens = 1400)
     body: JSON.stringify(corpo), signal: AbortSignal.timeout(18000)
   });
   const bruto = await r.text();
-  if (!r.ok) throw new Error(`OpenAI HTTP ${r.status}: ${bruto.slice(0, 300)}`);
+  if (!r.ok) { await registrarUsoIA(c, "atendimento", corpo.model, null, true); throw new Error(`OpenAI HTTP ${r.status}: ${bruto.slice(0, 300)}`); }
   const d = JSON.parse(bruto);
+  await registrarUsoIA(c, "atendimento", corpo.model, d.usage, false);
   let saida = typeof d.output_text === "string" ? d.output_text : "";
   if (!saida) for (const item of d.output || []) for (const x of item.content || []) if (typeof x.text === "string") saida += x.text;
   const obj = lerJSON(saida);
@@ -1029,6 +1068,7 @@ async function transcreverAudio(c, buffer, mime) {
   f.append("file", new Blob([buffer], { type: mime }), "audio." + ext);
   const r = await fetch("https://api.openai.com/v1/audio/transcriptions", { method: "POST", headers: { Authorization: `Bearer ${c.env.OPENAI_API_KEY}` }, body: f, signal: AbortSignal.timeout(20000) });
   const d = await r.json().catch(() => ({}));
+  await registrarUsoIA(c, "transcricao_audio", String(c.env.OPENAI_TRANSCRIPTION_MODEL || "gpt-4o-mini-transcribe"), d?.usage, !r.ok);
   if (!r.ok || !String(d?.text || "").trim()) throw new Error(`Transcrição falhou (${r.status}).`);
   return String(d.text).trim();
 }
@@ -2282,6 +2322,7 @@ async function platformApi(request, env, caminho, metodo) {
   await garantirSchema(c);
   const corpo = metodo === "POST" ? await request.json().catch(() => ({})) : {};
   let m;
+  if (caminho === "/platform/usage" && metodo === "GET") { const q = new URL(request.url).searchParams; return json({ sucesso: true, versao: VERSAO, ...(await consumoDoPeriodo(c, q.get("de"), q.get("ate"))) }); }
   if (caminho === "/platform/status") return json({ sucesso: true, versao: VERSAO, ...(await saude(c, { completo: new URL(request.url).searchParams.get("completo") === "1" })) });
   if (caminho === "/platform/conversations" && metodo === "GET") {
     const lim = Math.min(Math.max(Number(new URL(request.url).searchParams.get("limit")) || 100, 1), 250);

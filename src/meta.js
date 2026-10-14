@@ -1,3 +1,4 @@
+import { registrarUso, lerLimitesMeta, orgDoUso, recursoDo, comOrgUso } from "./uso.js";
 // DENIA Platform — Instagram e Facebook (API oficial da Meta).
 // Conexão por marca (Login do Facebook), publicação dos posts aprovados no horário (cron) e "Publicar agora".
 //
@@ -30,13 +31,23 @@ async function garantir(env) {
 const versao = env => String(env.META_GRAPH_VERSION || GRAPH_PADRAO).trim();
 export const metaConfigurada = env => Boolean(String(env.META_APP_ID || "").trim() && String(env.META_APP_SECRET || "").trim());
 
+// Nome curto da chamada (sem ids) para a página Consumo: "GET media", "POST media_publish", "POST photos"…
+function operacaoMeta(metodo, caminho) {
+  const partes = String(caminho).split("?")[0].split("/").filter(x => x && !/^\d+$/.test(x));
+  return `${metodo} ${partes.slice(-1)[0] || "objeto"}`.slice(0, 50);
+}
 async function graph(env, metodo, caminho, params = {}) {
   const url = new URL(`https://graph.facebook.com/${versao(env)}/${caminho.replace(/^\//, "")}`);
   const init = { method: metodo, signal: AbortSignal.timeout(30000) };
   if (metodo === "GET") for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
   else { init.body = new URLSearchParams(params); init.headers = { "content-type": "application/x-www-form-urlencoded" }; }
-  const r = await fetch(url.toString(), init);
+  const inicio = Date.now(), org = orgDoUso(env);
+  let r;
+  try { r = await fetch(url.toString(), init); }
+  catch (e) { registrarUso(org, "meta", operacaoMeta(metodo, caminho), "", { erro: true, ms: Date.now() - inicio }, recursoDo(env)); throw e; }
+  lerLimitesMeta(org, r.headers);
   const d = await r.json().catch(() => ({}));
+  registrarUso(org, "meta", operacaoMeta(metodo, caminho), "", { erro: !r.ok || Boolean(d.error), limitada: [4, 17, 32, 613, 80001, 80002].includes(Number(d.error?.code)), ms: Date.now() - inicio }, recursoDo(env));
   if (!r.ok || d.error) {
     const e = new Error(explicarErro(d.error, r.status));
     e.codigo = d.error?.code; e.sub = d.error?.error_subcode;
@@ -235,6 +246,7 @@ const NOME_CANAL = { instagram: "Instagram", facebook: "Facebook", google: "Goog
 // Canais já publicados não se repetem; canais sem conexão ficam de fora.
 export async function publicarPost(env, k, p, base) {
   await garantir(env);
+  env = comOrgUso(env, p.org_id); // o consumo da publicação conta para a empresa do post
   const conta = await env.DB.prepare("SELECT * FROM plt_mk_contas WHERE org_id=? AND marca_id=?").bind(p.org_id, p.marca_id).first(); // o token da página não depende dos secrets do app
   const contaG = googleConfigurada(env) ? await contaGoogleDe(env, p.org_id, p.marca_id) : null;
   if (!conta && !contaG) return { ok: false, resumo: "A marca deste post ainda não está conectada (Marcas → Conectar Instagram e Facebook ou Conectar Google)." };

@@ -1137,3 +1137,37 @@ test("Instagram e Facebook — sem os secrets da Meta, a plataforma explica o qu
   assert.equal((await p.req("/api/meta/retorno?code=x&state=forjado")).r.status, 200, "state forjado não conecta nada");
   assert.equal(p.env.DB.q("SELECT COUNT(*) n FROM plt_meta WHERE chave LIKE 'meta_n_%'")[0].n, 0);
 });
+
+test("Consumo e custos — cada chamada da OpenAI entra na conta com tokens e custo, preços ajustáveis e voz ao vivo", async () => {
+  const p = await criarPlataforma({ OPENAI_API_KEY: "sk-teste" });
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  const marca = (await p.req("/api/orgs/1/mk/marcas", { metodo: "POST", quem: "admin", corpo: { nome: "Oficina" } })).dados.id;
+  const comUso = obj => ({ ...resposta(obj), usage: { input_tokens: 1_000_000, output_tokens: 100_000, input_tokens_details: { cached_tokens: 0 } } });
+  p.openai = () => comUso({ posts: [{ dia: 0, hora: "18:00", formato: "post", titulo: "T", legenda: "L", hashtags: "", chamada: "", ideia_imagem: "" }] });
+  await p.req("/api/orgs/1/mk/ia/semana", { metodo: "POST", quem: "admin", corpo: { marca_id: marca, inicio: "2026-10-14", quantidade: 1 } });
+  let uso = (await p.req("/api/orgs/1/mk/uso?dias=7", { quem: "admin" })).dados;
+  const linha = uso.linhas.find(l => l.servico === "openai" && l.operacao === "texto");
+  assert.ok(linha, "a chamada de texto foi registrada");
+  assert.equal(linha.recurso, "ia/semana");
+  assert.equal(linha.tokens_entrada, 1_000_000);
+  assert.equal(linha.tokens_saida, 100_000);
+  assert.ok(Math.abs(linha.custo_usd - 2.25) < 1e-9, "1M de entrada a US$1,25 + 100 mil de saída a US$10/M");
+  assert.equal(uso.moeda, "BRL");
+  // Preço ajustado pelo administrador vale para as próximas chamadas.
+  const salvo = await p.req("/api/orgs/1/mk/uso/precos", { metodo: "POST", quem: "admin", corpo: { precos: { "gpt-5.6": { entrada: 2, cache: 0.2, saida: 20 } }, moeda: "EUR", cotacao: 0.9 } });
+  assert.equal(salvo.dados.precos["gpt-5.6"].entrada, 2);
+  await p.req("/api/orgs/1/mk/ia/semana", { metodo: "POST", quem: "admin", corpo: { marca_id: marca, inicio: "2026-10-21", quantidade: 1 } });
+  uso = (await p.req("/api/orgs/1/mk/uso?dias=7", { quem: "admin" })).dados;
+  const texto = uso.linhas.filter(l => l.servico === "openai" && l.operacao === "texto");
+  assert.equal(texto.reduce((s, l) => s + l.chamadas, 0), 2, "somadas no mesmo dia");
+  assert.ok(Math.abs(texto.reduce((s, l) => s + l.custo_usd, 0) - (2.25 + 4)) < 1e-9);
+  assert.equal(uso.moeda, "EUR"); assert.equal(uso.cotacao, 0.9);
+  // A voz ao vivo (no navegador) manda o uso de cada resposta.
+  await p.req("/api/orgs/1/mk/uso/realtime", { metodo: "POST", quem: "admin", corpo: { modelo: "gpt-realtime", usage: { input_tokens: 1000, output_tokens: 1000, input_tokens_details: { audio_tokens: 1000 }, output_tokens_details: { audio_tokens: 1000 } } } });
+  uso = (await p.req("/api/orgs/1/mk/uso?dias=7", { quem: "admin" })).dados;
+  const voz = uso.linhas.find(l => l.operacao === "voz_ao_vivo");
+  assert.ok(Math.abs(voz.custo_usd - (1000 * 32 + 1000 * 64) / 1e6) < 1e-9, "áudio de entrada e saída pelo preço de áudio");
+  // Chave de administrador da OpenAI: só aceita sk-admin-.
+  const errada = await p.req("/api/orgs/1/mk/uso/chave-admin", { metodo: "POST", quem: "admin", corpo: { chave: "sk-normal-1234567890abcdefghijkl" } });
+  assert.equal(errada.status, 400);
+});

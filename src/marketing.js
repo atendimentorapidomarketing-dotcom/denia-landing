@@ -1,4 +1,5 @@
 import { rotasMeta, aoAprovar } from "./meta.js";
+import { rotasUso, registrarUso, custoOpenAI, tokensDe, precosDaOrg, orgDoUso, recursoDo, comRecurso } from "./uso.js";
 import { rotasGoogle, responderAvaliacaoGoogle, apagarRespostaGoogle, contaGoogleDe, desempenhoAoVivo, sincronizarConta, linkDoPerfil } from "./google.js";
 // ============================================================================
 // DENIA Platform — Estúdio de Marketing e Assistente DENIA (texto e voz)
@@ -53,18 +54,31 @@ function textoDaResposta(d) {
   for (const o of d?.output || []) for (const c of o?.content || []) if (typeof c?.text === "string") partes.push(c.text);
   return partes.join("");
 }
+// Tipo de uso de cada caminho da OpenAI (para a página Consumo).
+const OPERACAO_OPENAI = { responses: "texto", "images/edits": "imagem", "images/generations": "imagem", "audio/transcriptions": "transcricao", "audio/speech": "voz_falada", "realtime/client_secrets": "voz_sessao" };
 async function openai(env, caminho, corpo, extras = {}) {
-  const r = await fetch("https://api.openai.com/v1/" + caminho, {
-    method: "POST",
-    headers: { authorization: `Bearer ${chave(env)}`, ...(corpo instanceof FormData ? {} : { "content-type": "application/json" }) },
-    body: corpo instanceof FormData ? corpo : JSON.stringify(corpo),
-    signal: AbortSignal.timeout(extras.timeout || 60000)
-  });
+  const inicio = Date.now();
+  const modelo = String((corpo instanceof FormData ? corpo.get("model") : corpo?.model) || "");
+  const org = orgDoUso(env), operacao = OPERACAO_OPENAI[caminho] || caminho, recurso = recursoDo(env);
+  let r;
+  try {
+    r = await fetch("https://api.openai.com/v1/" + caminho, {
+      method: "POST",
+      headers: { authorization: `Bearer ${chave(env)}`, ...(corpo instanceof FormData ? {} : { "content-type": "application/json" }) },
+      body: corpo instanceof FormData ? corpo : JSON.stringify(corpo),
+      signal: AbortSignal.timeout(extras.timeout || 60000)
+    });
+  } catch (e) { registrarUso(org, "openai", operacao, modelo, { erro: true, ms: Date.now() - inicio }, recurso); throw e; }
   if (extras.binario) {
+    // Voz falada: a API não devolve tokens; o custo é estimado pelos caracteres do texto.
+    const caracteres = operacao === "voz_falada" ? String(corpo?.input || "").length : 0;
+    registrarUso(org, "openai", operacao, modelo, { erro: !r.ok, limitada: r.status === 429, caracteres, custo_usd: r.ok && caracteres ? custoOpenAI(modelo, null, await precosDaOrg(env, org), { caracteres }) : 0, ms: Date.now() - inicio }, recurso);
     if (!r.ok) throw new Error(`OpenAI HTTP ${r.status}`);
     return r;
   }
   const d = await r.json().catch(() => ({}));
+  registrarUso(org, "openai", operacao, modelo, { erro: !r.ok, limitada: r.status === 429, ...tokensDe(d?.usage), imagens: operacao === "imagem" && r.ok ? (d?.data || []).length : 0,
+    custo_usd: r.ok ? custoOpenAI(modelo, d?.usage, await precosDaOrg(env, org)) : 0, ms: Date.now() - inicio }, recurso);
   if (!r.ok) {
     const msg = d?.error?.message || `HTTP ${r.status}`;
     const e = new Error(r.status === 401 ? "A chave da OpenAI foi recusada. Cole uma chave válida em Integrações → Inteligência da DENIA (OpenAI)." : r.status === 429 ? "A OpenAI recusou por limite ou falta de crédito na conta. Confira em platform.openai.com → Billing." : "A IA não conseguiu responder agora: " + msg);
@@ -380,6 +394,10 @@ Responda em JSON: {"nota":0,"aprovado":false,"comentario":""} — nota de 0 a 10
 export async function apiMarketing(request, env, k, orgId, papel, resto) {
   const { json, lerCorpo, txt, pode, agora, auditar, sessao } = k;
   await garantir(env);
+  // Cada chamada externa desta rota conta no recurso (ex.: "avaliacoes/triagem") na página Consumo.
+  env = comRecurso(env, resto.split("/").filter(x => x && !/^\d+$/.test(x)).slice(0, 2).join("/"));
+  const doUso = await rotasUso(request, env, k, orgId, papel, resto, { central: Boolean(k.central) });
+  if (doUso) return doUso;
   const daMeta = await rotasMeta(request, env, k, orgId, papel, resto);
   if (daMeta) return daMeta;
   // "Buscar avaliações agora": traz do Google, lê e (no automático) responde na hora — sem esperar a rodada de 10 minutos.

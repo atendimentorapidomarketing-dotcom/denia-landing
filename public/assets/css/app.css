@@ -479,3 +479,11 @@ p.sub { color: var(--texto-3); font-size: 13px; }
 .barra-parte i { display: block; height: 100%; background: var(--azul); border-radius: 999px; }
 details.cartao > summary { cursor: pointer; font-weight: 700; }
 .grade > .cartao, .grade > details { min-width: 0; }
+
+/* Consumo e custos */
+.limite-bloco { display: grid; gap: 6px; margin-top: 12px; }
+.limite-linha { display: grid; grid-template-columns: 120px minmax(0, 1fr) 48px; gap: 10px; align-items: center; font-size: 13.5px; color: var(--texto-2); }
+.barra-limite { width: 100%; height: 8px; }
+.barra-limite.atencao i { background: var(--ambar); }
+.barra-limite.perigo i { background: var(--vermelho); }
+.entrada-preco { max-width: 110px; }

@@ -227,6 +227,7 @@
     aprendizados: { titulo: "Aprendizados", render: paginaAprendizados },
     clientes: { titulo: "Base de clientes", render: paginaClientes },
     integracoes: { titulo: "Integrações", render: paginaIntegracoes },
+    consumo: { titulo: "Consumo e custos", render: paginaConsumo, minimo: "ADMIN" },
     equipe: { titulo: "Equipe", render: paginaEquipe, minimo: "ADMIN" },
     auditoria: { titulo: "Auditoria", render: paginaAuditoria, minimo: "ADMIN" },
     empresas: { titulo: "Empresas", render: paginaEmpresas, superAdmin: true },
@@ -2403,6 +2404,201 @@
         h("div", { class: "acoes" }, botao("Salvar semana", async () => { try { const corpo = { marca_id: marcaId, semana: isoLocal(new Date()) }; CAMPOS_M.forEach(([k]) => { corpo[k] = ents[k].value; }); await mk("metricas", { metodo: "POST", corpo }); aviso("Semana registrada.", "ok"); navegar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario"))) : null);
   }
 
+  // ---------------------------------------------------------------------------
+  // Consumo e custos: OpenAI (painel e WhatsApp), Meta (Instagram, Facebook, WhatsApp) e Google
+  // ---------------------------------------------------------------------------
+  const NOME_SERVICO = { openai: "OpenAI", meta: "Meta (Instagram e Facebook)", google: "Google" };
+  const NOME_OPERACAO_IA = { texto: "Texto", imagem: "Imagens", transcricao: "Transcrição de áudio", voz_falada: "Voz falada", voz_sessao: "Abrir conversa por voz", voz_ao_vivo: "Conversa por voz ao vivo", atendimento: "Respostas no WhatsApp", transcricao_audio: "Áudios do WhatsApp" };
+  const NOME_RECURSO = {
+    "": "Outros", assistente: "Assistente DENIA", "assistente/voz": "DENIA por voz", "assistente/conversa": "Assistente DENIA", "assistente/ao-vivo": "DENIA por voz",
+    "automático/avaliações": "Automático: avaliações do Google", "automático/relatórios": "Automático: relatórios semanais", "whatsapp/motor": "WhatsApp (motor)",
+    "avaliacoes/triagem": "Triagem de avaliações", "avaliacoes/analisar-lote": "Leitura de avaliações", avaliacoes: "Avaliações", "posts/gerar": "Criar posts com IA", posts: "Posts", "midias/gerar": "Criar imagens", midias: "Imagens",
+    "relatorios/gerar": "Relatório do Google", "google/agora": "Buscar e responder avaliações", "google/sincronizar": "Sincronizar Google", "google/desempenho": "Desempenho do Google", "meta/publicar": "Publicar na Meta"
+  };
+  const nomeRecurso = r => NOME_RECURSO[r] || NOME_RECURSO[String(r).split("/")[0]] || r;
+  const MOEDAS = ["BRL", "USD", "EUR", "GBP", "INR", "JPY", "MXN", "ARS", "CLP", "COP", "PEN", "CAD", "AUD", "CHF"];
+  function dinheiro(valor, moeda) {
+    const v = Number(valor) || 0;
+    try { return new Intl.NumberFormat(LOCALE, { style: "currency", currency: moeda, minimumFractionDigits: v && Math.abs(v) < 1 ? 3 : 2, maximumFractionDigits: v && Math.abs(v) < 1 ? 4 : 2 }).format(v); }
+    catch { return `${moeda} ${v.toFixed(2)}`; }
+  }
+  // Mesmo cálculo do servidor (src/uso.js) para o consumo do motor, que só devolve tokens.
+  function precoModelo(tabela, modelo) {
+    const m = String(modelo || "").toLowerCase();
+    const k = Object.keys(tabela).filter(x => x !== "*" && m.startsWith(x.toLowerCase())).sort((a, b) => b.length - a.length)[0];
+    return tabela[k] || tabela["*"] || { entrada: 1.25, cache: 0.125, saida: 10 };
+  }
+  function custoTokens(tabela, modelo, ent, cache, sai) {
+    const p = precoModelo(tabela, modelo);
+    return (Math.max(0, ent - cache) * p.entrada + cache * (p.cache ?? p.entrada) + sai * p.saida) / 1e6;
+  }
+
+  async function paginaConsumo(el, _p, vivo) {
+    const f = estado.consumo = estado.consumo || { periodo: "30", metrica: "custo" };
+    const q = new URLSearchParams();
+    if (f.periodo === "mes" || f.periodo === "mes_passado") q.set("atalho", f.periodo); else q.set("dias", f.periodo);
+    const uso = await mk("uso?" + q);
+    if (!vivo()) return;
+    // O motor do WhatsApp recebe o mesmo período que o painel (versões antigas não têm esta rota).
+    const mot = estado.org.conectada ? await eng(`usage?de=${uso.de}&ate=${uso.ate}`).catch(e => ({ erro: e.status === 404 ? "ANTIGO" : e.message })) : null;
+    if (!vivo()) return;
+    const oficial = uso.tem_chave_admin && pode("ADMIN") ? await mk(`uso/openai-oficial?de=${uso.de}&ate=${uso.ate}`).catch(e => ({ erro: e.message })) : null;
+    if (!vivo()) return;
+    const moeda = uso.moeda || "BRL", cot = moeda === "USD" ? 1 : Number(uso.cotacao) || 1;
+    const emMoeda = usd => dinheiro(usd * cot, moeda);
+    const precos = uso.precos || {};
+
+    // Linhas do painel + linhas do motor (WhatsApp) no mesmo formato.
+    const linhas = (uso.linhas || []).slice();
+    const iaMotor = mot && !mot.erro ? (mot.ia || []) : [];
+    for (const r of iaMotor) linhas.push({ dia: r.dia, servico: "openai", operacao: r.operacao, recurso: "whatsapp/motor", modelo: r.modelo, chamadas: r.chamadas, erros: r.erros, limitadas: 0, tokens_entrada: r.tokens_entrada, tokens_saida: r.tokens_saida, tokens_cache: r.tokens_cache, imagens: 0, caracteres: 0, custo_usd: custoTokens(precos, r.modelo, r.tokens_entrada, r.tokens_cache, r.tokens_saida), ms_total: 0 });
+    const soma = (filtro, campo) => linhas.filter(filtro).reduce((s, l) => s + (Number(l[campo]) || 0), 0);
+    const ehIA = l => l.servico === "openai", ehMeta = l => l.servico === "meta", ehGoogle = l => l.servico === "google";
+    const custoIA = soma(ehIA, "custo_usd");
+    const metaPontos = mot && !mot.erro && mot.meta && mot.meta.pontos ? mot.meta.pontos : [];
+    const custoWhats = metaPontos.reduce((s, p) => s + p.custo, 0);
+    const recebidas = mot && !mot.erro ? (mot.mensagens?.recebidas || []).reduce((s, x) => s + x.n, 0) : 0;
+    const enviadas = mot && !mot.erro ? (mot.mensagens?.enviadas || []).reduce((s, x) => s + x.n, 0) : 0;
+    const ant = Object.fromEntries((uso.anterior?.servicos || []).map(s => [s.servico, s]));
+
+    // Período (uma linha acima de tudo).
+    const recarregar = () => navegar();
+    const PER = [["7", "7 dias"], ["30", "30 dias"], ["60", "60 dias"], ["90", "90 dias"], ["180", "6 meses"], ["365", "12 meses"], ["mes", "Este mês"], ["mes_passado", "Mês passado"]];
+    el.appendChild(cabeca("Consumo e custos", `Quanto cada serviço usou e custou de ${dataCompleta(uso.de)} a ${dataCompleta(uso.ate)}: inteligência artificial (OpenAI), Meta (Instagram, Facebook e WhatsApp) e Google.`,
+      botao("Baixar planilha", () => baixarCsv(`consumo-${uso.de}-a-${uso.ate}.csv`, [["Dia", "Serviço", "Recurso", "Tipo", "Modelo / detalhe", "Chamadas", "Erros", "Limitadas", "Tokens de entrada", "Tokens em cache", "Tokens de saída", "Imagens", "Custo estimado (USD)", `Custo estimado (${moeda})`],
+        ...linhas.map(l => [dataCompleta(l.dia), NOME_SERVICO[l.servico] || l.servico, nomeRecurso(l.recurso), NOME_OPERACAO_IA[l.operacao] || l.operacao, l.modelo, l.chamadas, l.erros, l.limitadas, l.tokens_entrada, l.tokens_cache, l.tokens_saida, l.imagens, (Number(l.custo_usd) || 0).toFixed(6), ((Number(l.custo_usd) || 0) * cot).toFixed(4)])]), "btn-secundario btn-pequeno")));
+    el.appendChild(h("section", { class: "cartao vidro filtros-desempenho" }, h("div", { class: "abas abas-chips", role: "group", "aria-label": "Período" },
+      PER.map(([v, n]) => h("button", { type: "button", class: "aba" + (f.periodo === v ? " ativo" : ""), "aria-pressed": f.periodo === v ? "true" : "false", onclick: () => { f.periodo = v; recarregar(); } }, n)))));
+
+    // Cartões (tocar troca o gráfico).
+    const cartao = (k, rotulo, valor, sub) => h("button", { type: "button", class: "metrica vidro metrica-botao" + (f.metrica === k ? " ativo" : ""), "aria-pressed": f.metrica === k ? "true" : "false", onclick: () => { f.metrica = k; recarregar(); } }, h("span", { text: rotulo }), h("strong", { text: valor }), h("small", {}, sub));
+    const comparar = (atual, antes) => { const v = variacaoPct(atual, antes); return v ? h("span", { class: v.zero ? "" : v.sobe ? "desce" : "sobe", text: v.texto + " " }) : null; }; // gastar mais é vermelho
+    const custoAntes = ant.openai ? Number(ant.openai.custo_usd) || 0 : null;
+    el.appendChild(h("section", { class: "grade grade-4" },
+      cartao("custo", "IA — custo estimado", emMoeda(custoIA), [comparar(soma(l => ehIA(l) && l.recurso !== "whatsapp/motor", "custo_usd"), custoAntes), moeda !== "USD" ? `US$ ${custoIA.toFixed(2)} · ` : "", `${numero(soma(ehIA, "chamadas"))} chamadas`]),
+      cartao("whatsapp", "WhatsApp — Meta", metaPontos.length ? (mot.meta.moeda ? dinheiro(custoWhats, mot.meta.moeda) : numero(custoWhats)) : numero(enviadas), metaPontos.length ? `${numero(metaPontos.reduce((s, p) => s + p.volume, 0))} mensagens cobradas` : `${numero(enviadas)} enviadas · ${numero(recebidas)} recebidas`),
+      cartao("meta", "Meta — chamadas", numero(soma(ehMeta, "chamadas")), [comparar(soma(ehMeta, "chamadas"), ant.meta ? ant.meta.chamadas : null), `${numero(soma(ehMeta, "erros"))} com erro`]),
+      cartao("google", "Google — chamadas", numero(soma(ehGoogle, "chamadas")), [comparar(soma(ehGoogle, "chamadas"), ant.google ? ant.google.chamadas : null), `${numero(soma(ehGoogle, "limitadas"))} barradas pela cota`])));
+
+    // Gráfico dia a dia da métrica escolhida.
+    const dias = [];
+    for (let t = Date.parse(uso.de + "T00:00:00Z"); t <= Date.parse(uso.ate + "T00:00:00Z"); t += 86400000) dias.push(new Date(t).toISOString().slice(0, 10));
+    const porDia = (filtro, campo, fator = 1) => dias.map(d => ({ data: d, valor: Math.round(linhas.filter(l => l.dia === d && filtro(l)).reduce((s, l) => s + (Number(l[campo]) || 0), 0) * fator * 100) / 100 }));
+    const seriesDia = {
+      custo: { nome: `Custo da IA (${moeda})`, pontos: porDia(ehIA, "custo_usd", cot) },
+      whatsapp: { nome: metaPontos.length ? "Custo do WhatsApp" : "Mensagens enviadas no WhatsApp", pontos: metaPontos.length ? dias.map(d => ({ data: d, valor: Math.round(metaPontos.filter(p => p.dia === d).reduce((s, p) => s + p.custo, 0) * 100) / 100 })) : dias.map(d => ({ data: d, valor: (mot && !mot.erro ? (mot.mensagens?.enviadas || []).find(x => x.dia === d)?.n : 0) || 0 })) },
+      meta: { nome: "Chamadas à Meta", pontos: porDia(ehMeta, "chamadas") },
+      google: { nome: "Chamadas ao Google", pontos: porDia(ehGoogle, "chamadas") }
+    };
+    const s = seriesDia[f.metrica] || seriesDia.custo;
+    const pontos = agruparSerie(s.pontos.map(p => ({ data: p.data, v: p.valor })), dias.length <= 92 ? "dia" : dias.length <= 370 ? "semana" : "mes", "v");
+    el.appendChild(h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: s.nome }),
+      pontos.some(p => p.valor) ? graficoLinha(pontos, null, s.nome, "") : vazio("Nada registrado neste período", "O consumo começa a ser contado a partir desta versão da plataforma.")));
+
+    // OpenAI por recurso.
+    const grupos = new Map();
+    for (const l of linhas.filter(ehIA)) {
+      const k = [l.recurso, l.operacao, l.modelo].join("|");
+      const g = grupos.get(k) || { recurso: l.recurso, operacao: l.operacao, modelo: l.modelo, chamadas: 0, erros: 0, ent: 0, cache: 0, sai: 0, imagens: 0, custo: 0 };
+      g.chamadas += l.chamadas; g.erros += l.erros; g.ent += l.tokens_entrada; g.cache += l.tokens_cache; g.sai += l.tokens_saida; g.imagens += l.imagens; g.custo += Number(l.custo_usd) || 0;
+      grupos.set(k, g);
+    }
+    const listaIA = [...grupos.values()].sort((a, b) => b.custo - a.custo);
+    el.appendChild(h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Inteligência artificial (OpenAI) — onde foi usada" }),
+      h("p", { class: "sub", text: "Estimativa pelos tokens que a OpenAI devolve em cada resposta e pela tabela de preços abaixo. O valor cobrado de verdade aparece em \"Fatura da OpenAI\"." }),
+      listaIA.length ? h("div", { class: "tabela-caixa lista-rolavel" }, h("table", {}, h("thead", {}, h("tr", {}, ["Recurso", "Tipo", "Modelo", "Chamadas", "Tokens de entrada", "Tokens de saída", "Custo estimado"].map(t => h("th", { text: t })))),
+        h("tbody", {}, listaIA.map(g => h("tr", {}, h("td", {}, h("strong", { text: nomeRecurso(g.recurso) })), h("td", { text: NOME_OPERACAO_IA[g.operacao] || g.operacao }), h("td", { text: g.modelo || "—" }),
+          h("td", {}, numero(g.chamadas), g.erros ? h("span", { class: "sub", text: `${numero(g.erros)} com erro` }) : null), h("td", {}, numero(g.ent), g.cache ? h("span", { class: "sub", text: `${numero(g.cache)} em cache` }) : null),
+          h("td", { text: g.imagens ? `${numero(g.sai)} · ${numero(g.imagens)} imagem(ns)` : numero(g.sai) }), h("td", { text: emMoeda(g.custo) })))))) : vazio("Nenhum uso da IA registrado no período")));
+
+    // Fatura oficial da OpenAI (chave de administrador, só leitura).
+    if (pode("ADMIN")) {
+      const entrada = h("input", { class: "entrada", type: "password", placeholder: "sk-admin-…", autocomplete: "off" });
+      el.appendChild(h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Fatura da OpenAI (valor oficial)" }),
+        oficial && oficial.configurada && !oficial.erro ? [
+          h("section", { class: "grade grade-3" }, metrica("Cobrado no período", dinheiro(oficial.total_usd, "USD"), moeda !== "USD" ? `≈ ${emMoeda(oficial.total_usd)}` : ""), metrica("Estimativa da DENIA", emMoeda(custoIA), "Painel + WhatsApp"), metrica("Média por dia", dinheiro(oficial.total_usd / (uso.dias || 1), "USD"), "")),
+          oficial.por_item.length ? h("div", { class: "tabela-caixa", style: "margin-top:12px" }, h("table", {}, h("thead", {}, h("tr", {}, h("th", { text: "Item da fatura" }), h("th", { text: "Valor (USD)" }))),
+            h("tbody", {}, oficial.por_item.map(x => h("tr", {}, h("td", { text: x.item }), h("td", { text: dinheiro(x.usd, "USD") })))))) : null,
+          h("div", { class: "acoes", style: "margin-top:10px" }, botao("Remover chave de administrador", async () => { await mk("uso/chave-admin", { metodo: "POST", corpo: { remover: true } }); navegar(); }, "btn-secundario btn-pequeno"))]
+          : [oficial && oficial.erro ? h("p", { class: "nota nota-alerta", text: oficial.erro }) : null,
+            h("p", { class: "sub", text: "Para ver o valor exato cobrado (inclui o WhatsApp e tudo o que usa a sua conta), cole uma chave de administrador da OpenAI: platform.openai.com → Settings → Organization → Admin keys. Ela só lê custos e fica guardada cifrada." }),
+            h("div", { class: "linha-form" }, campo("Chave de administrador", entrada)),
+            h("div", { class: "acoes" }, botao("Salvar e ler a fatura", async () => { try { await mk("uso/chave-admin", { metodo: "POST", corpo: { chave: entrada.value } }); aviso("Chave salva.", "ok"); navegar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario"))]));
+    }
+
+    // WhatsApp (motor).
+    const blocoWhats = h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "WhatsApp" }));
+    if (!estado.org.conectada) blocoWhats.appendChild(h("p", { class: "sub", text: "A IA do WhatsApp ainda não está conectada (Integrações)." }));
+    else if (mot.erro === "ANTIGO") blocoWhats.appendChild(h("p", { class: "nota nota-alerta", text: "O motor do WhatsApp ainda está numa versão antiga. Cole a versão 31.1 no Worker \"denia\" para ver aqui o consumo da IA e as mensagens do WhatsApp." }));
+    else if (mot.erro) blocoWhats.appendChild(h("p", { class: "nota nota-alerta", text: mot.erro }));
+    else {
+      blocoWhats.appendChild(h("section", { class: "grade grade-3" }, metrica("Mensagens recebidas", numero(recebidas), "Clientes e profissionais"), metrica("Mensagens enviadas", numero(enviadas), "Pela DENIA e pela equipe"),
+        metrica("IA no WhatsApp", emMoeda(linhas.filter(l => l.recurso === "whatsapp/motor").reduce((t, l) => t + l.custo_usd, 0)), `${numero(iaMotor.reduce((t, r) => t + r.chamadas, 0))} respostas e áudios lidos`)));
+      if (metaPontos.length) {
+        const porCat = new Map();
+        for (const p of metaPontos) { const c = porCat.get(p.categoria) || { volume: 0, custo: 0 }; c.volume += p.volume; c.custo += p.custo; porCat.set(p.categoria, c); }
+        const NOME_CAT = { MARKETING: "Marketing", UTILITY: "Utilidade", AUTHENTICATION: "Autenticação", SERVICE: "Atendimento (serviço)", MARKETING_LITE: "Marketing leve", AUTHENTICATION_INTERNATIONAL: "Autenticação internacional" };
+        blocoWhats.appendChild(h("div", { class: "tabela-caixa", style: "margin-top:12px" }, h("table", {}, h("thead", {}, h("tr", {}, h("th", { text: "Categoria cobrada pela Meta" }), h("th", { text: "Mensagens" }), h("th", { text: "Custo" }))),
+          h("tbody", {}, [...porCat.entries()].map(([c, v]) => h("tr", {}, h("td", { text: NOME_CAT[c] || c }), h("td", { text: numero(v.volume) }), h("td", { text: mot.meta.moeda ? dinheiro(v.custo, mot.meta.moeda) : numero(v.custo) })))))));
+      } else if (mot.meta) blocoWhats.appendChild(h("p", { class: mot.meta.erro ? "nota nota-alerta" : "sub", style: "margin-top:10px", text: mot.meta.erro ? "A Meta não devolveu o custo do WhatsApp: " + mot.meta.erro : mot.meta.ajuda || "A Meta não cobrou mensagens neste período (respostas dentro de 24 h são grátis)." }));
+    }
+    el.appendChild(blocoWhats);
+
+    // Meta: limites (porcentagem usada na última hora) e chamadas.
+    const lims = (uso.limites || []).filter(l => l.servico === "meta");
+    const barra = (rotulo, pct) => h("div", { class: "limite-linha" }, h("span", { text: rotulo }), h("div", { class: "barra-parte barra-limite" + (pct >= 80 ? " perigo" : pct >= 50 ? " atencao" : "") }, h("i", { style: `width:${Math.min(100, Math.max(0, pct))}%` })), h("strong", { text: `${Math.round(pct)}%` }));
+    const blocoMeta = h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Meta — limites e chamadas" }),
+      h("p", { class: "sub", text: "A Meta deixa cada app fazer um número de chamadas por hora. Acima de 100% ela bloqueia por alguns minutos; a DENIA tenta de novo sozinha." }));
+    if (!lims.length) blocoMeta.appendChild(h("p", { class: "sub", text: "Ainda sem leitura de limite: aparece depois da primeira publicação ou conexão com a Meta." }));
+    for (const l of lims) {
+      const quando = fmtDataHora.format(new Date(l.atualizado_ms));
+      if (l.chave === "app" && l.dados) blocoMeta.appendChild(h("div", { class: "limite-bloco" }, h("strong", { text: `App DENIA (lido em ${quando})` }), barra("Chamadas", l.dados.call_count || 0), barra("Processamento", l.dados.total_cputime || 0), barra("Tempo", l.dados.total_time || 0)));
+      else if (l.chave.startsWith("buc:") && Array.isArray(l.dados)) for (const d of l.dados) blocoMeta.appendChild(h("div", { class: "limite-bloco" }, h("strong", { text: `${d.type || "Conta"} ${l.chave.slice(4)} (lido em ${quando})` }), barra("Chamadas", d.call_count || 0), barra("Processamento", d.total_cputime || 0), barra("Tempo", d.total_time || 0),
+        d.estimated_time_to_regain_access ? h("p", { class: "nota nota-alerta", text: `Bloqueado pela Meta: libera em cerca de ${d.estimated_time_to_regain_access} minuto(s).` }) : null));
+    }
+    const porOp = (filtro) => { const m = new Map(); for (const l of linhas.filter(filtro)) { const k = l.operacao + "|" + l.modelo; const g = m.get(k) || { operacao: l.operacao, modelo: l.modelo, chamadas: 0, erros: 0, limitadas: 0, ms: 0 }; g.chamadas += l.chamadas; g.erros += l.erros; g.limitadas += l.limitadas; g.ms += l.ms_total; m.set(k, g); } return [...m.values()].sort((a, b) => b.chamadas - a.chamadas); };
+    const listaMeta = porOp(ehMeta);
+    if (listaMeta.length) blocoMeta.appendChild(h("div", { class: "tabela-caixa", style: "margin-top:12px" }, h("table", {}, h("thead", {}, h("tr", {}, ["Chamada", "Vezes", "Erros", "Barradas por limite", "Tempo médio"].map(t => h("th", { text: t })))),
+      h("tbody", {}, listaMeta.map(g => h("tr", {}, h("td", { text: g.operacao }), h("td", { text: numero(g.chamadas) }), h("td", { text: numero(g.erros) }), h("td", { text: numero(g.limitadas) }), h("td", { text: g.chamadas ? `${numero(Math.round(g.ms / g.chamadas))} ms` : "—" })))))));
+    el.appendChild(blocoMeta);
+
+    // Google: chamadas por API e cota.
+    const cotas = uso.cotas_google || {};
+    const porApi = new Map();
+    for (const l of linhas.filter(ehGoogle)) { const g = porApi.get(l.operacao) || { chamadas: 0, erros: 0, limitadas: 0, pico: 0 }; g.chamadas += l.chamadas; g.erros += l.erros; g.limitadas += l.limitadas; porApi.set(l.operacao, g); }
+    el.appendChild(h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Google — chamadas e cotas" }),
+      h("p", { class: "sub", text: "As APIs do Google Perfil da Empresa não cobram por chamada; o limite é a cota por minuto do projeto (veja e peça aumento em console.cloud.google.com → APIs e serviços → Cotas)." }),
+      porApi.size ? h("div", { class: "tabela-caixa" }, h("table", {}, h("thead", {}, h("tr", {}, ["API", "Chamadas", "Média por dia", "Erros", "Barradas pela cota", "Cota por minuto"].map(t => h("th", { text: t })))),
+        h("tbody", {}, [...porApi.entries()].map(([api, g]) => h("tr", {}, h("td", { text: (cotas[api] || {}).nome || api }), h("td", { text: numero(g.chamadas) }), h("td", { text: numero(Math.round(g.chamadas / (uso.dias || 1))) }), h("td", { text: numero(g.erros) }),
+          h("td", {}, g.limitadas ? h("span", { class: "desce", text: numero(g.limitadas) }) : "0"), h("td", { text: (cotas[api] || {}).por_minuto ? numero(cotas[api].por_minuto) : "—" }))))))
+        : vazio("Nenhuma chamada ao Google no período")));
+
+    // Preços usados na estimativa (administradores).
+    if (pode("ADMIN")) {
+      const moedaE = h("select", { class: "entrada" }, MOEDAS.map(m => h("option", { value: m, selected: m === moeda, text: m })));
+      const cotE = h("input", { class: "entrada", type: "number", min: "0", step: "0.0001", value: String(uso.cotacao || 5.4) });
+      const linhasP = Object.entries(precos).map(([m, p]) => ({ m, p }));
+      const corpoT = h("tbody", {});
+      const linhaPreco = ({ m, p }) => {
+        const n = h("input", { class: "entrada", value: m, "aria-label": "Modelo" });
+        const c = k => h("input", { class: "entrada entrada-preco", type: "number", min: "0", step: "0.001", value: p[k] != null ? String(p[k]) : "", "aria-label": k });
+        const ent = c("entrada"), cac = c("cache"), sai = c("saida");
+        const tr = h("tr", {}, h("td", {}, n), h("td", {}, ent), h("td", {}, cac), h("td", {}, sai), h("td", {}, botao("×", () => tr.remove(), "btn-secundario btn-pequeno", { "aria-label": "Remover" })));
+        tr.ler = () => ({ nome: n.value.trim(), v: { ...p, entrada: ent.value, cache: cac.value, saida: sai.value } });
+        return tr;
+      };
+      linhasP.forEach(x => corpoT.appendChild(linhaPreco(x)));
+      el.appendChild(h("details", { class: "cartao vidro" }, h("summary", { text: "Preços e moeda usados na estimativa" }),
+        h("p", { class: "sub", text: "Dólares por 1 milhão de tokens. O modelo vale para todos os que começam com o mesmo nome (\"*\" = qualquer outro). Ajuste quando a OpenAI mudar a tabela em openai.com/api/pricing." }),
+        h("div", { class: "linha-form" }, campo("Moeda do painel", moedaE), campo("Cotação (1 dólar =)", cotE)),
+        h("div", { class: "tabela-caixa" }, h("table", {}, h("thead", {}, h("tr", {}, ["Modelo", "Entrada", "Entrada em cache", "Saída", ""].map(t => h("th", { text: t })))), corpoT)),
+        h("div", { class: "acoes", style: "margin-top:10px" },
+          botao("Adicionar modelo", () => corpoT.appendChild(linhaPreco({ m: "", p: {} })), "btn-secundario btn-pequeno"),
+          botao("Salvar preços", async () => { try { const precosN = {}; for (const tr of corpoT.children) { const { nome, v } = tr.ler(); if (nome) precosN[nome] = v; } await mk("uso/precos", { metodo: "POST", corpo: { precos: precosN, moeda: moedaE.value, cotacao: cotE.value } }); aviso("Preços salvos. Valem para as próximas chamadas.", "ok"); navegar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario btn-pequeno"),
+          botao("Voltar ao padrão", async () => { await mk("uso/precos", { metodo: "POST", corpo: { restaurar: true, moeda: moedaE.value, cotacao: cotE.value } }); navegar(); }, "btn-secundario btn-pequeno"))));
+    }
+  }
+
   async function atualizarAprovacoes() {
     const c = $("contador-aprovacoes");
     if (!c || !estado.org) return;
@@ -2603,6 +2799,7 @@
         .catch(() => { throw new Error("Permita o uso do microfone para conversar com a DENIA (no cadeado ao lado do endereço do site)."); });
       aoVivo.fluxo = fluxo;
       const s = await api(`/api/orgs/${estado.org.id}/assistente/ao-vivo`, { metodo: "POST", corpo: {} });
+      aoVivo.modelo = s.modelo || "";
       if (!aoVivo.conectando) { fluxo.getTracks().forEach(t => t.stop()); return; }
       const pc = new RTCPeerConnection();
       aoVivo.pc = pc;
@@ -2660,6 +2857,7 @@
     if (t === "input_audio_buffer.speech_started") { estadoAssistente("Ouvindo…"); return; }
     if (t === "input_audio_buffer.speech_stopped") { estadoAssistente("Pensando…"); return; }
     if (t === "output_audio_buffer.started") { estadoAssistente("Falando… (pode interromper)"); return; }
+    if (t === "response.done" && ev.response && ev.response.usage) mk("uso/realtime", { metodo: "POST", corpo: { usage: ev.response.usage, modelo: aoVivo.modelo || "" } }).catch(() => {});
     if (t === "output_audio_buffer.stopped" || t === "response.done") { if (!piloto.ativo) estadoAssistente(aoVivo.ativo ? "Ao vivo — pode falar" : ""); if (t === "output_audio_buffer.stopped") return; }
     if (t === "conversation.item.input_audio_transcription.completed" && ev.transcript && ev.transcript.trim()) {
       const texto = ev.transcript.trim();
