@@ -62,7 +62,7 @@ export async function criarAmbiente({ inicio = "2026-10-07T14:00:00-03:00", env:
       const entrada = corpo.input[0].content[0].text;
       const papel = corpo.instructions.startsWith("Você é a DENIA") ? "cliente" : corpo.instructions.startsWith("Você trabalha") ? "prestador" : "outro";
       amb.llm.push({ papel, entrada });
-      const fn = papel === "cliente" ? amb.llmCliente : papel === "prestador" ? amb.llmPrestador : (corpo.instructions.startsWith("Você analisa conversas") && amb.llmAprendizado) || (() => ({ analise: "ok", descricao: "ok" }));
+      const fn = papel === "cliente" ? amb.llmCliente : papel === "prestador" ? amb.llmPrestador : (corpo.instructions.startsWith("Você analisa conversas") && amb.llmAprendizado) || (corpo.instructions.startsWith("Você cuida do acompanhamento") && amb.llmRevisao) || (() => ({ analise: "ok", descricao: "ok" }));
       if (!fn) throw new Error("LLM não esperado: " + papel);
       const out = fn(entrada);
       if (out instanceof Error) return resp({ error: { message: out.message } }, 500);

@@ -421,3 +421,22 @@ body.ao-vivo .denia-orbe span { animation-duration: 0.9s; box-shadow: 0 0 26px r
 .resposta-publicada { border-left: 3px solid rgba(34, 197, 94, 0.6); padding: 6px 10px; background: rgba(34, 197, 94, 0.07); border-radius: 8px; font-size: 14px; }
 .barra-lote { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; position: sticky; top: 8px; z-index: 5; }
 .barra-lote input[type="checkbox"], .sugestao-topo input[type="checkbox"] { width: 18px; height: 18px; }
+/* Atendimentos em lista */
+.lista-casos { display: grid; gap: 10px; }
+.caso-linha { padding: 14px 16px; border-radius: 14px; display: grid; gap: 4px; }
+.caso-linha-topo { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.caso-linha-topo .sub { margin-left: auto; }
+.caso-linha .acoes select { max-width: 200px; }
+.abas-chips { flex-wrap: wrap; }
+/* Semáforo das avaliações */
+.semaforo-itens { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }
+.semaforo-item { text-align: left; border: 1px solid var(--borda); border-radius: 14px; padding: 12px 14px; background: transparent; color: inherit; cursor: pointer; display: grid; gap: 4px; font: inherit; }
+.semaforo-item b { font-size: 26px; }
+.semaforo-item span { font-size: 13px; color: var(--texto-2); }
+.sem-vermelho { border-color: rgba(239, 68, 68, 0.55); background: rgba(239, 68, 68, 0.08); }
+.sem-amarelo { border-color: rgba(250, 204, 21, 0.5); background: rgba(250, 204, 21, 0.07); }
+.sem-verde { border-color: rgba(34, 197, 94, 0.5); background: rgba(34, 197, 94, 0.07); }
+.cor-vermelho { border-left: 4px solid #ef4444 !important; }
+.cor-amarelo { border-left: 4px solid #facc15 !important; }
+.cor-verde { border-left: 4px solid #22c55e !important; }
+.cor-cinza { border-left: 4px solid rgba(127, 127, 127, 0.4) !important; }

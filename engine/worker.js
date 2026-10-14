@@ -35,7 +35,7 @@
 //       relatório diário. Nunca inicia conversa nova por conta própria.
 // ============================================================================
 
-const VERSAO = "30.9.0";
+const VERSAO = "31.0.0";
 const SCHEMA_VERSAO = "30.3.0-a";
 const EMPRESA_ID = 1;
 const PHONE_ID_PADRAO = "473474732510163";
@@ -667,6 +667,7 @@ function etapaDeStatusLegado(s) {
   const v = String(s || "").toUpperCase();
   if (STATUS_LEGADO_ENCERRADO.test(v)) return v.startsWith("CANCEL") ? "CANCELADO" : "CONCLUIDO";
   if (v === "AGENDADO") return "AGENDADO";
+  if (v === "EM_ANDAMENTO") return "EM_ANDAMENTO";
   return "COLETANDO";
 }
 function linhaParaCaso(r) {
@@ -1217,6 +1218,7 @@ function descreverEtapa(caso, consulta) {
     case "AGUARDANDO_ENDERECO": return "O cliente aceitou a proposta. Falta o endereço completo para confirmarmos com o profissional.";
     case "AGUARDANDO_CONFIRMACAO_PRESTADOR": return `O cliente aceitou (${prop}). Aguardamos a confirmação FINAL do profissional. Não diga que está confirmado.`;
     case "AGENDADO": return `Atendimento CONFIRMADO pelo profissional (${prop}). Não recomece a coleta de dados.`;
+    case "EM_ANDAMENTO": return "O serviço já está sendo feito (o profissional já foi ao local ou está com o equipamento). Não recomece a coleta; para dúvidas sobre o andamento, use PERGUNTA_PARA_PROFISSIONAL.";
     case "EQUIPE": return "A equipe interna está cuidando deste caso. Não prometa nada operacional; seja cordial.";
     default: return `Etapa ${caso.etapa}.`;
   }
@@ -2119,6 +2121,7 @@ async function cron(c) {
   await processarSync(c).catch(e => console.error("sync", e));
   await processarAprendizado(c).catch(e => console.error("aprendizado", e));
   await relatorioDiario(c).catch(e => console.error("relatório", e));
+  await revisarCasosParados(c).catch(e => console.error("revisão de casos", e));
   const dia = dataSP(agora);
   if (await reservarChave(c, "limpeza:" + dia)) {
     await c.db.prepare("DELETE FROM d30_fila WHERE recebido_ms < ?").bind(agora - 7 * 86400000).run();
@@ -2130,6 +2133,64 @@ async function cron(c) {
       await kvPut(c.env, "d30:equipe", JSON.stringify(eq.map(x => digitos(x.telefone)).filter(Boolean)), 60 * 60 * 24 * 30);
     }
     await c.db.prepare("DELETE FROM d30_envios WHERE criado_ms < ? AND chave NOT LIKE 'limpeza:%' AND chave NOT LIKE 'relatorio:%'").bind(agora - 45 * 86400000).run();
+  }
+}
+
+// ============================================================================
+// REVISÃO DA ETAPA PELA IA — a DENIA lê tudo o que aconteceu no caso (cliente, profissional, equipe pelo
+// WhatsApp, resumos de ligação, eventos) e descobre em que pé ele está: agendado, em andamento, concluído...
+// Com confiança ALTA, move o caso sozinha; senão, só sugere.
+// ============================================================================
+const ETAPAS_REVISAO = ["COLETANDO", "AGUARDANDO_PRESTADOR", "AGUARDANDO_CLIENTE", "AGUARDANDO_ENDERECO", "AGUARDANDO_CONFIRMACAO_PRESTADOR", "EQUIPE", "AGENDADO", "EM_ANDAMENTO", "CONCLUIDO", "CANCELADO"];
+const INSTRUCOES_REVISAO_ETAPA = `Você cuida do acompanhamento dos atendimentos da Central. Leia TODO o histórico de UM caso (mensagens do cliente, do profissional, da equipe e resumos de ligações) e diga em que etapa o caso REALMENTE está agora.
+Etapas: COLETANDO (ainda entendendo o pedido), AGUARDANDO_PRESTADOR (esperando o profissional responder valor/disponibilidade), AGUARDANDO_CLIENTE (proposta enviada, esperando o cliente), AGUARDANDO_ENDERECO, AGUARDANDO_CONFIRMACAO_PRESTADOR, EQUIPE (a equipe interna assumiu e não dá para saber mais), AGENDADO (dia/horário combinado e confirmado), EM_ANDAMENTO (o profissional já foi ao local, está com o equipamento ou o serviço está sendo feito), CONCLUIDO (serviço feito/entregue, cliente recebeu, pagou ou agradeceu pelo serviço feito), CANCELADO (cliente desistiu, não quis, ou o serviço não vai acontecer).
+Regras: decida pelos FATOS do histórico, inclusive o que a equipe combinou por fora (mensagens da equipe e resumos de ligação valem). Data de agendamento que já passou NÃO significa concluído sem sinal de que o serviço foi feito. confianca ALTA só quando há uma frase clara que comprove (ex.: "o técnico já veio e resolveu", "ficou pronto", "pode vir amanhã às 9h, confirmado", "não quero mais"). Na dúvida, MEDIA ou BAIXA.
+Responda em JSON: {"etapa":"","confianca":"ALTA|MEDIA|BAIXA","data_servico":"dia/horário combinado, se houver","motivo":"1 frase citando a evidência","proximo_passo":"o que falta para o caso andar, em 1 frase"}`;
+
+async function revisarEtapaCaso(c, caso, { aplicar = false, autor = "IA" } = {}) {
+  const msgs = (await c.db.prepare(`SELECT m.direcao, m.origem, m.conteudo, m.criado_em, p.tipo, p.nome FROM mensagens m LEFT JOIN pessoas p ON p.id=m.pessoa_id
+    WHERE m.caso_id=? ORDER BY m.id DESC LIMIT 80`).bind(caso.casoId).all().catch(() => null))?.results || [];
+  const eventos = (await c.db.prepare("SELECT tipo, descricao, criado_ms FROM d30_eventos WHERE caso_id=? ORDER BY id DESC LIMIT 25").bind(caso.casoId).all().catch(() => null))?.results || [];
+  const consulta = await consultaDoCaso(c, caso.casoId).catch(() => null);
+  const quem = m => String(m.origem).toUpperCase() === "LIGACAO" ? "RESUMO DE LIGAÇÃO (equipe)" : String(m.direcao).toUpperCase() === "ENTRADA" ? (String(m.tipo || "").toUpperCase() === "TECNICO" ? "PROFISSIONAL" : "CLIENTE") : String(m.origem).toUpperCase() === "HUMANO" ? "EQUIPE" : "DENIA";
+  const entrada = `CASO #${caso.casoId} — etapa registrada: ${caso.etapa}
+FATOS:
+${formatarFatos(caso.fatos)}
+Resumo: ${caso.resumo || "-"}
+${consulta ? `Consulta ao profissional ${consulta.prestador_nome || ""}: status ${consulta.status}${consulta.disponibilidade ? ", disponibilidade " + consulta.disponibilidade : ""}${consulta.valor_cliente ? ", valor " + moeda(consulta.valor_cliente) : ""}` : "Nenhum profissional consultado pelo sistema."}
+DATA E HORA ATUAL: ${dataHoraSP(c.agora())}
+
+EVENTOS (mais recente primeiro):
+${eventos.map(e => `- ${new Date(e.criado_ms).toISOString().slice(0, 16)} ${e.tipo}: ${txt(e.descricao, 200)}`).join("\n") || "(nenhum)"}
+
+HISTÓRICO (mais antigo primeiro):
+${[...msgs].reverse().map(m => `[${String(m.criado_em || "").slice(0, 16)}] ${quem(m)}: ${txt(ocultarTelefones(m.conteudo), 500)}`).join("\n") || "(sem mensagens)"}
+
+Responda em JSON.`;
+  const d = await openaiJSON(c, INSTRUCOES_REVISAO_ETAPA, entrada, [], 500);
+  const etapa = ETAPAS_REVISAO.includes(String(d?.etapa).toUpperCase()) ? String(d.etapa).toUpperCase() : caso.etapa;
+  const r = { etapa_atual: caso.etapa, etapa_sugerida: etapa, confianca: ["ALTA", "MEDIA", "BAIXA"].includes(String(d?.confianca).toUpperCase()) ? String(d.confianca).toUpperCase() : "BAIXA",
+    data_servico: txt(d?.data_servico, 120), motivo: txt(d?.motivo, 300), proximo_passo: txt(d?.proximo_passo, 300), aplicada: false };
+  // Só avança com confiança ALTA e nunca reabre um caso encerrado.
+  if (aplicar && r.confianca === "ALTA" && etapa !== caso.etapa && !ETAPAS_ENCERRADAS.has(caso.etapa)) {
+    if (r.data_servico && ["AGENDADO", "EM_ANDAMENTO"].includes(etapa)) caso.fatos = { ...(caso.fatos || {}), preferencia_horario: caso.fatos?.preferencia_horario || r.data_servico };
+    await mudarEtapa(c, caso, etapa);
+    r.aplicada = true;
+  }
+  await evento(c, caso.casoId, "REVISAO_IA", `${caso.etapa === etapa || !r.aplicada ? "sugeriu" : "moveu para"} ${etapa} (${r.confianca}) — ${r.motivo} — por ${autor}`, r);
+  return r;
+}
+// Cron: casos parados há mais de 6 h (e não revisados nas últimas 12 h) são revisados pela IA, 3 por vez.
+async function revisarCasosParados(c) {
+  if (!c.env.OPENAI_API_KEY) return;
+  const agora = c.agora();
+  if (!(await reservarChave(c, "revisao-casos:" + Math.floor(agora / 1800000)))) return; // no máximo a cada 30 min
+  const casos = (await c.db.prepare(`SELECT * FROM d30_casos k WHERE etapa NOT IN ('CONCLUIDO','CANCELADO') AND atualizado_ms < ? AND atualizado_ms > ?
+    AND NOT EXISTS (SELECT 1 FROM d30_eventos e WHERE e.caso_id=k.caso_id AND e.tipo='REVISAO_IA' AND e.criado_ms > ?) ORDER BY atualizado_ms LIMIT 3`)
+    .bind(agora - 6 * 3600000, agora - 60 * 86400000, agora - 12 * 3600000).all().catch(() => null))?.results || [];
+  for (const row of casos) {
+    try { await revisarEtapaCaso(c, linhaParaCaso(row), { aplicar: true, autor: "revisão automática" }); }
+    catch (e) { console.error("revisão de caso", row.caso_id, e?.message); }
   }
 }
 
@@ -2303,13 +2364,22 @@ async function platformApi(request, env, caminho, metodo) {
     const caso = await carregarCasoPorId(c, Number(m[1]));
     const etapa = String(corpo?.etapa || "").toUpperCase();
     if (!caso) return json({ sucesso: false, erro: "Caso não encontrado." }, 404);
-    if (!["COLETANDO", "EQUIPE", "AGENDADO", "CONCLUIDO", "CANCELADO"].includes(etapa)) return json({ sucesso: false, erro: "Etapa inválida." }, 400);
+    if (!["COLETANDO", "EQUIPE", "AGENDADO", "EM_ANDAMENTO", "CONCLUIDO", "CANCELADO"].includes(etapa)) return json({ sucesso: false, erro: "Etapa inválida." }, 400);
     await mudarEtapa(c, caso, etapa);
     return json({ sucesso: true, caso });
   }
   if (caminho === "/platform/cases" && metodo === "GET") {
-    const r = await c.db.prepare("SELECT * FROM d30_casos ORDER BY atualizado_ms DESC LIMIT 100").all();
-    return json({ sucesso: true, casos: (r?.results || []).map(linhaParaCaso) });
+    const r = await c.db.prepare("SELECT * FROM d30_casos ORDER BY atualizado_ms DESC LIMIT 1000").all();
+    // Última revisão da IA de cada caso (para a tela mostrar o que ela viu e sugeriu).
+    const revs = (await c.db.prepare("SELECT caso_id, dados, criado_ms FROM d30_eventos WHERE tipo='REVISAO_IA' AND id IN (SELECT MAX(id) FROM d30_eventos WHERE tipo='REVISAO_IA' GROUP BY caso_id)").all().catch(() => null))?.results || [];
+    const porCaso = new Map(revs.map(x => { let d = null; try { d = JSON.parse(x.dados || "null"); } catch { d = null; } return [x.caso_id, d ? { ...d, em: x.criado_ms } : null]; }));
+    return json({ sucesso: true, casos: (r?.results || []).map(row => ({ ...linhaParaCaso(row), revisao_ia: porCaso.get(row.caso_id) || null })) });
+  }
+  if ((m = caminho.match(/^\/platform\/cases\/(\d+)\/review$/)) && metodo === "POST") {
+    const caso = await carregarCasoPorId(c, Number(m[1]));
+    if (!caso) return json({ sucesso: false, erro: "Caso não encontrado." }, 404);
+    try { return json({ sucesso: true, ...(await revisarEtapaCaso(c, caso, { aplicar: corpo?.aplicar !== false, autor: txt(corpo?.autor, 120) || "platform" })) }); }
+    catch (e) { return json({ sucesso: false, erro: "A IA não conseguiu revisar agora: " + txt(e?.message, 200) }, 502); }
   }
   if (caminho === "/platform/training" && metodo === "GET") return json({ sucesso: true, ...(await carregarTreinamento(c)) });
   if (caminho === "/platform/training" && metodo === "POST") {

@@ -208,11 +208,12 @@
     ["AGUARDANDO_ENDERECO", "Aguardando endereço"],
     ["EQUIPE", "Com a equipe"],
     ["AGENDADO", "Agendado"],
+    ["EM_ANDAMENTO", "Serviço em andamento"],
     ["CONCLUIDO", "Concluído"],
     ["CANCELADO", "Cancelado"]
   ];
   const NOME_ETAPA = Object.fromEntries(ETAPAS);
-  const ETAPAS_MANUAIS = ["COLETANDO", "EQUIPE", "AGENDADO", "CONCLUIDO", "CANCELADO"];
+  const ETAPAS_MANUAIS = ["COLETANDO", "EQUIPE", "AGENDADO", "EM_ANDAMENTO", "CONCLUIDO", "CANCELADO"];
   const PAPEIS = [["OWNER", "Proprietário"], ["ADMIN", "Administrador"], ["AGENTE", "Atendente"], ["VISUALIZADOR", "Somente leitura"], ["REVISOR", "Revisor de aprendizados"]];
   const NOME_PAPEL = Object.fromEntries(PAPEIS);
 
@@ -481,7 +482,7 @@
       const cache = estado.cacheConversas && estado.cacheConversas.org === orgId ? estado.cacheConversas : sessao.ler("denia_conversas_" + orgId);
       if (!forcar && cache && cache.lista) { lista = cache.lista; desenhar(); if (Date.now() - cache.em < 15000) return; }
       try {
-        const nova = (await eng("conversations?limit=80", { fresco: true })).conversas || [];
+        const nova = (await eng("conversations?limit=250", { fresco: true })).conversas || [];
         if (!grade.isConnected) return;
         lista = nova; estado.cacheConversas = { org: orgId, lista: nova, em: Date.now() };
         sessao.gravar("denia_conversas_" + orgId, estado.cacheConversas);
@@ -496,7 +497,17 @@
       if (aberta) abrirConversa(painel, aberta, () => grade.isConnected && aberta === id);
       else painel.replaceChildren(vazio("Escolha uma conversa", "As mensagens aparecem aqui.", ICONES.conversa));
     };
-    grade.append(h("section", { class: "conversas-lista vidro" }, h("div", { class: "conversas-busca" }, busca, botao("Atualizar", () => carregarLista(true), "btn-secundario btn-pequeno")), itens), painel);
+    // Canais: hoje as conversas são do WhatsApp; Instagram Direct e Messenger entram aqui quando a Meta liberar.
+    const canal = estado.canalConversas || "whatsapp";
+    const abaCanal = (k, n) => h("button", { type: "button", class: "aba" + (canal === k ? " ativo" : ""), onclick: () => { estado.canalConversas = k; navegar(); } }, n);
+    const canais = h("div", { class: "abas abas-chips", style: "margin-bottom:8px" }, abaCanal("whatsapp", "WhatsApp"), abaCanal("instagram", "Instagram Direct"), abaCanal("messenger", "Messenger (Facebook)"));
+    if (canal !== "whatsapp") {
+      grade.append(h("section", { class: "conversas-lista vidro" }, canais,
+        vazio(canal === "instagram" ? "Direct do Instagram" : "Messenger do Facebook", "Responder as mensagens privadas por aqui depende de a Meta liberar as permissões de mensagens (instagram_manage_messages e pages_messaging) para o app da DENIA, o que exige a verificação da empresa no Gerenciador de Negócios. Assim que a liberação sair, as conversas deste canal aparecem nesta aba e a DENIA responde como no WhatsApp.", ICONES.conversa)), painel);
+      el.appendChild(grade);
+      return;
+    }
+    grade.append(h("section", { class: "conversas-lista vidro" }, canais, h("div", { class: "conversas-busca" }, busca, botao("Atualizar", () => carregarLista(true), "btn-secundario btn-pequeno")), itens), painel);
     el.appendChild(grade);
     estado.paginaViva = { nome: "conversas", org: orgId, el: grade, trocar };
     busca.addEventListener("input", desenhar);
@@ -598,24 +609,58 @@
   // Atendimentos (quadro por etapa)
   // ---------------------------------------------------------------------------
 
+  // Atendimentos: lista com filtros por etapa (no lugar das colunas), busca, e a IA revisando em que pé cada caso está.
   async function paginaAtendimentos(el, _p, vivo) {
-    el.appendChild(cabeca("Atendimentos", "Cada caso passa pelas etapas abaixo. A IA move os casos sozinha; quando precisar, a equipe ajusta aqui.", botao("Atualizar", () => navegar())));
-    const area = h("div", {}, carregando());
+    el.appendChild(cabeca("Atendimentos", "Todos os pedidos dos clientes. A IA move os casos sozinha quando tem certeza (agendado, em andamento, concluído) lendo as conversas com o cliente, com o profissional, as mensagens da equipe e os resumos de ligação. A equipe ajusta quando precisar.", botao("Atualizar", () => navegar())));
+    const area = h("div", { class: "grade" }, carregando());
     el.appendChild(area);
     let casos;
-    try { casos = (await eng("cases")).casos || []; }
+    try { casos = (await eng("cases", { fresco: true })).casos || []; }
     catch (e) { if (vivo()) falha(area, e); return; }
     if (!vivo()) return;
     if (!casos.length) { area.replaceChildren(h("div", { class: "cartao vidro" }, vazio("Nenhum atendimento ainda", "Os casos abertos pela IA aparecem aqui."))); return; }
-    const colunas = ETAPAS.filter(([k]) => casos.some(c => c.etapa === k) || !["AGUARDANDO_ENDERECO", "AGUARDANDO_CONFIRMACAO_PRESTADOR", "CANCELADO"].includes(k));
-    area.replaceChildren(h("div", { class: "kanban" }, colunas.map(([k, nome]) => {
-      const doGrupo = casos.filter(c => c.etapa === k);
-      return h("section", { class: "coluna vidro", "aria-label": nome }, h("div", { class: "coluna-cabeca" }, h("span", { text: nome }), h("b", { text: String(doGrupo.length) })),
-        doGrupo.length ? doGrupo.map(cartaoCaso) : h("p", { style: "margin:4px;color:var(--texto-3);font-size:13px", text: "Nenhum caso." }));
-    })));
+    const f = estado.filtroCasos || (estado.filtroCasos = { etapa: "ABERTOS", busca: "" });
+    const abertos = c => !["CONCLUIDO", "CANCELADO"].includes(c.etapa);
+    const parado = c => abertos(c) && Date.now() - (c.atualizadoMs || 0) > 86400000;
+    const filtrar = c => (f.etapa === "TODOS" || (f.etapa === "ABERTOS" ? abertos(c) : f.etapa === "PARADOS" ? parado(c) : c.etapa === f.etapa))
+      && (!f.busca || JSON.stringify([c.casoId, c.fatos, c.telefone, c.resumo]).toLowerCase().includes(f.busca.toLowerCase()));
+    const conta = fn => casos.filter(fn).length;
+    const chips = h("div", { class: "abas abas-chips" }, [["ABERTOS", "Em aberto", abertos], ["PARADOS", "Parados há mais de 1 dia", parado], ...ETAPAS.map(([k, n]) => [k, n, c => c.etapa === k]), ["TODOS", "Todos", () => true]]
+      .filter(([k, , fn]) => ["ABERTOS", "TODOS", "PARADOS"].includes(k) || conta(fn))
+      .map(([k, n, fn]) => h("button", { type: "button", class: "aba" + (f.etapa === k ? " ativo" : ""), onclick: () => { f.etapa = k; navegar(); } }, `${n} (${numero(conta(fn))})`)));
+    const busca = h("input", { class: "entrada", type: "search", value: f.busca, placeholder: "Procurar por serviço, bairro, telefone ou nº do caso (Enter)" });
+    busca.addEventListener("keydown", e => { if (e.key === "Enter") { f.busca = busca.value.trim(); navegar(); } });
+    const lista = casos.filter(filtrar).sort((a, b) => (b.atualizadoMs || 0) - (a.atualizadoMs || 0));
+    const progresso = h("p", { class: "nota oculto" });
+    const revisarVarios = async (_e, b) => {
+      const alvo = casos.filter(parado).slice(0, 30);
+      if (!alvo.length) { aviso("Nenhum caso parado para revisar.", "ok"); return; }
+      let movidos = 0;
+      b.disabled = true;
+      try {
+        for (const [i, c] of alvo.entries()) {
+          progresso.classList.remove("oculto"); progresso.textContent = `A IA está lendo o caso #${c.casoId} (${i + 1} de ${alvo.length})…`;
+          try { const r = await eng(`cases/${c.casoId}/review`, { metodo: "POST", corpo: { aplicar: true } }); if (r.aplicada) movidos++; } catch (e) { aviso(`Caso #${c.casoId}: ${e.message}`, "erro"); }
+        }
+        aviso(`Revisão concluída: ${movidos} caso(s) mudaram de etapa. Os outros ficaram com a sugestão da IA para você conferir.`, "ok"); navegar();
+      } finally { b.disabled = false; }
+    };
+    const PAGINA = 40;
+    let mostrados = 0;
+    const listaEl = h("div", { class: "lista-casos" });
+    const mais = h("div", { class: "acoes", style: "justify-content:center" });
+    const mostrarMais = () => { lista.slice(mostrados, mostrados + PAGINA).forEach(c => listaEl.appendChild(linhaCaso(c))); mostrados = Math.min(lista.length, mostrados + PAGINA); mais.replaceChildren(...(mostrados < lista.length ? [botao(`Mostrar mais (${numero(mostrados)} de ${numero(lista.length)})`, mostrarMais, "btn-secundario")] : [])); };
+    mostrarMais();
+    area.replaceChildren(
+      h("section", { class: "cartao vidro" }, chips,
+        h("div", { class: "acoes", style: "margin-top:10px" }, h("div", { style: "flex:1;min-width:240px" }, busca),
+          pode("AGENTE") && conta(parado) ? botao(`✦ Revisar com IA os ${numero(Math.min(30, conta(parado)))} casos parados`, revisarVarios, "btn-primario") : null),
+        progresso),
+      lista.length ? listaEl : h("div", { class: "cartao vidro" }, vazio("Nenhum caso com esse filtro", "", ICONES.caixa)), mais);
   }
-  function cartaoCaso(c) {
-    const f = c.fatos || {};
+  const TOM_ETAPA = { CONCLUIDO: "ok", AGENDADO: "ok", EM_ANDAMENTO: "info", CANCELADO: "", EQUIPE: "alerta", AGUARDANDO_PRESTADOR: "alerta", AGUARDANDO_CLIENTE: "alerta", AGUARDANDO_CONFIRMACAO_PRESTADOR: "alerta", AGUARDANDO_ENDERECO: "alerta", COLETANDO: "info" };
+  function linhaCaso(c) {
+    const f = c.fatos || {}, rev = c.revisao_ia;
     const sel = pode("AGENTE") ? h("select", { class: "entrada", "aria-label": `Mudar a etapa do caso ${c.casoId}` },
       h("option", { value: "", text: "Mudar etapa…" }), ETAPAS_MANUAIS.filter(k => k !== c.etapa).map(k => h("option", { value: k, text: NOME_ETAPA[k] }))) : null;
     if (sel) sel.addEventListener("change", async () => {
@@ -626,11 +671,23 @@
       try { await eng(`cases/${c.casoId}/status`, { metodo: "POST", corpo: { etapa } }); aviso("Etapa atualizada.", "ok"); navegar(); }
       catch (e) { aviso(e.message, "erro"); sel.value = ""; }
     });
-    return h("article", { class: "caso" },
-      h("strong", { text: `#${c.casoId} · ${f.servico || f.categoria || "Serviço a definir"}` }),
-      f.problema ? h("p", { text: f.problema }) : null,
-      h("p", { style: "color:var(--texto-3);font-size:12.5px", text: [f.bairro, telefone(c.telefone), quando(c.atualizadoMs)].filter(Boolean).join(" · ") }),
-      h("a", { href: "#/conversas/" + c.clienteId, style: "font-size:13px;color:var(--ciano)" }, "Abrir conversa"), sel);
+    const sugestao = rev && rev.etapa_sugerida && rev.etapa_sugerida !== c.etapa && !rev.aplicada ? rev : null;
+    return h("article", { class: "caso-linha vidro" },
+      h("div", { class: "caso-linha-topo" },
+        h("strong", { text: `#${c.casoId} · ${f.servico || f.categoria || "Serviço a definir"}` }), selo(NOME_ETAPA[c.etapa] || c.etapa, TOM_ETAPA[c.etapa] || ""),
+        Date.now() - (c.atualizadoMs || 0) > 86400000 && !["CONCLUIDO", "CANCELADO"].includes(c.etapa) ? selo("Parado há " + Math.floor((Date.now() - c.atualizadoMs) / 86400000) + " dia(s)", "alerta") : null,
+        h("span", { class: "sub", text: [f.bairro, telefone(c.telefone), "atualizado " + quando(c.atualizadoMs)].filter(Boolean).join(" · ") })),
+      f.problema ? h("p", { style: "margin:4px 0", text: f.problema }) : null,
+      f.preferencia_horario ? h("p", { class: "sub", text: "Horário: " + f.preferencia_horario }) : null,
+      rev ? h("p", { class: "nota" + (sugestao ? " nota-alerta" : ""), text: `IA (${new Date(rev.em).toLocaleString(LOCALE)}): ${sugestao ? `acha que está em "${NOME_ETAPA[rev.etapa_sugerida] || rev.etapa_sugerida}" (confiança ${rev.confianca.toLowerCase()})` : rev.aplicada ? `moveu para "${NOME_ETAPA[rev.etapa_sugerida] || rev.etapa_sugerida}"` : "confirmou a etapa"}. ${rev.motivo || ""}${rev.proximo_passo ? " Próximo passo: " + rev.proximo_passo : ""}` }) : null,
+      h("div", { class: "acoes" },
+        h("a", { class: "btn btn-secundario btn-pequeno", href: "#/conversas/" + c.clienteId }, "Abrir conversa"),
+        pode("AGENTE") && sugestao ? botao(`Aceitar: ${NOME_ETAPA[sugestao.etapa_sugerida] || sugestao.etapa_sugerida}`, async () => { try { await eng(`cases/${c.casoId}/status`, { metodo: "POST", corpo: { etapa: sugestao.etapa_sugerida } }); aviso("Etapa atualizada.", "ok"); navegar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario btn-pequeno") : null,
+        pode("AGENTE") ? botao("✦ Atualizar com IA", async (_e, b) => {
+          b.textContent = "Lendo o caso…";
+          try { const r = await eng(`cases/${c.casoId}/review`, { metodo: "POST", corpo: { aplicar: true } }); aviso(r.aplicada ? `Movido para "${NOME_ETAPA[r.etapa_sugerida] || r.etapa_sugerida}": ${r.motivo}` : `A IA sugere "${NOME_ETAPA[r.etapa_sugerida] || r.etapa_sugerida}" (confiança ${r.confianca.toLowerCase()}): ${r.motivo}`, "ok"); navegar(); }
+          catch (e) { aviso(e.message, "erro"); } finally { b.textContent = "✦ Atualizar com IA"; }
+        }, "btn-secundario btn-pequeno") : null, sel));
   }
 
   // ---------------------------------------------------------------------------
@@ -1155,9 +1212,13 @@
     else if (st.teste_whatsapp && !st.teste_whatsapp.ok) itens.push(["erro", st.teste_whatsapp.codigo === 190 ? "O TOKEN DO WHATSAPP EXPIROU ou foi revogado. Gere um token permanente (Meta Business → Usuários do sistema → Gerar token, com whatsapp_business_messaging) e cole no secret WHATSAPP_TOKEN do Worker denia." : "A Meta recusou o token do WhatsApp: " + st.teste_whatsapp.erro]);
     if (st.assinatura_invalida_ms && (!st.ultima_recebida_ms || st.assinatura_invalida_ms > st.ultima_recebida_ms)) itens.push(["erro", `A Meta está mandando as mensagens, mas o motor está RECUSANDO (assinatura não confere, última vez em ${quando(st.assinatura_invalida_ms)}). O secret META_APP_SECRET do Worker denia não é a chave secreta atual do app da Meta — provavelmente ela foi redefinida. Copie a chave secreta atual (Configurações do app → Básico → Mostrar) e cole no META_APP_SECRET do Worker denia.`]);
     if (st.ultima_recebida_ms && Date.now() - st.ultima_recebida_ms > 6 * 3600000 && !itens.length) itens.push(["alerta", `Nenhuma mensagem chega ao motor desde ${quando(st.ultima_recebida_ms)}. Confira no app da Meta → WhatsApp → Configuração se o webhook está verificado e com o campo "messages" assinado.`]);
+    // Fila das últimas 24 h (vale também para motores antigos): mensagens com erro ou presas sem processar.
+    const fila = Object.fromEntries((st.fila_24h || []).map(x => [x.status, Number(x.n || 0)]));
+    if (fila.ERRO) itens.push(["erro", `${numero(fila.ERRO)} mensagem(ns) de clientes deram ERRO nas últimas 24 h e não foram respondidas. Clique em "Verificar agora" (com o motor 30.9 ou mais novo aparece o motivo exato).`]);
+    if ((fila.PENDENTE || 0) + (fila.PROCESSANDO || 0) > 5) itens.push(["alerta", `${numero((fila.PENDENTE || 0) + (fila.PROCESSANDO || 0))} mensagem(ns) estão na fila esperando a IA. Se esse número só cresce, a IA travou: confira a chave da OpenAI e o token do WhatsApp.`]);
     (st.erros_24h || []).slice(0, 2).forEach(x => itens.push(["alerta", `Erro ao processar mensagens (${quando(x.em)}): ${x.erro}`]));
     if (st.falhas_envio_24h && st.falhas_envio_24h.n) itens.push(["alerta", `${st.falhas_envio_24h.n} resposta(s) não foram entregues nas últimas 24 h. Último motivo: ${st.falhas_envio_24h.ultima || "—"}`]);
-    if (st.versao && st.versao < "30.9") itens.push(["info", `O motor está na versão ${st.versao}. Cole o motor mais novo no Worker denia para ter as correções e este diagnóstico completo.`]);
+    if (st.versao && /^30\.[0-8]\./.test(st.versao)) itens.push(["info", `O motor está na versão ${st.versao}. Cole o motor mais novo no Worker denia para ter as correções e este diagnóstico completo.`]);
     if (!itens.some(i => i[0] === "erro")) itens.push(["ok", `Motor funcionando${st.enviadas_24h != null ? `: ${numero(st.enviadas_24h)} resposta(s) da IA nas últimas 24 h` : ""}${st.ultima_recebida_ms ? `, última mensagem recebida em ${quando(st.ultima_recebida_ms)}` : ""}.${st.teste_whatsapp && st.teste_whatsapp.ok ? ` Token do WhatsApp válido (${st.teste_whatsapp.numero || "número ok"}).` : ""}${st.teste_openai && st.teste_openai.ok ? " Chave da OpenAI válida." : ""}`]);
     return itens;
   }
@@ -1839,8 +1900,8 @@
   const trocar = (el, ...itens) => el.replaceChildren(...itens.flat().filter(x => x != null && x !== false && x !== ""));
   async function abaAvaliacoes(area, marcaId) {
     // Lista paginada e com filtros (perfis com milhares de avaliações); os números do topo contam o perfil inteiro.
-    const filtro = estado.filtroAv && estado.filtroAv.marca === String(marcaId) ? estado.filtroAv : (estado.filtroAv = { marca: String(marcaId), filtro: "TODAS", nota: "", busca: "" });
-    const consulta = pagina => `avaliacoes?marca=${marcaId}&pagina=${pagina}&por_pagina=50&filtro=${filtro.filtro}&nota=${filtro.nota}&busca=${encodeURIComponent(filtro.busca)}`;
+    const filtro = estado.filtroAv && estado.filtroAv.marca === String(marcaId) ? estado.filtroAv : (estado.filtroAv = { marca: String(marcaId), filtro: "TODAS", nota: "", busca: "", cor: "" });
+    const consulta = pagina => `avaliacoes?marca=${marcaId}&pagina=${pagina}&por_pagina=50&filtro=${filtro.filtro}&nota=${filtro.nota}&cor=${filtro.cor || ""}&busca=${encodeURIComponent(filtro.busca)}`;
     const [primeira, g, cfg] = await Promise.all([mk(consulta(0)), estadoGoogle(true), mk("config").catch(() => ({}))]);
     const progressoAv = h("p", { class: "nota oculto" });
     const lista = primeira.avaliacoes || [], res = primeira.resumo || {};
@@ -1868,10 +1929,11 @@
     const selFiltro = h("select", { class: "entrada" }, [["TODAS", "Todas"], ["PENDENTE", `Sem resposta (${numero(res.pendentes || 0)})`], ["RESPONDIDA", "Respondidas"], ["PRECISAM", `Precisam de você (${numero(res.precisam || 0)})`]].map(([v, n]) => h("option", { value: v, text: n, selected: filtro.filtro === v })));
     const selNota = h("select", { class: "entrada" }, h("option", { value: "", text: "Todas as notas" }), [5, 4, 3, 2, 1].map(n => h("option", { value: n, text: `${"★".repeat(n)} (${numero(res["n" + n] || 0)})`, selected: String(filtro.nota) === String(n) })));
     const campoBusca = h("input", { class: "entrada", type: "search", value: filtro.busca, placeholder: "Procurar por nome ou texto" });
-    const aplicar = () => { Object.assign(filtro, { filtro: selFiltro.value, nota: selNota.value, busca: campoBusca.value.trim() }); navegar(); };
-    selFiltro.addEventListener("change", aplicar); selNota.addEventListener("change", aplicar);
+    const selCor = h("select", { class: "entrada" }, [["", "Todas as cores"], ["VERMELHO", `🔴 Vermelhas — precisam de atenção (${numero(res.vermelhas || 0)})`], ["AMARELO", `🟡 Amarelas — neutras ou críticas (${numero(res.amarelas || 0)})`], ["VERDE", `🟢 Verdes — elogios (${numero(res.verdes || 0)})`], ["SEM", `⚪ Ainda não lidas (${numero(res.nao_lidas || 0)})`]].map(([v, n]) => h("option", { value: v, text: n, selected: (filtro.cor || "") === v })));
+    const aplicar = () => { Object.assign(filtro, { filtro: selFiltro.value, nota: selNota.value, cor: selCor.value, busca: campoBusca.value.trim() }); navegar(); };
+    selFiltro.addEventListener("change", aplicar); selNota.addEventListener("change", aplicar); selCor.addEventListener("change", aplicar);
     campoBusca.addEventListener("keydown", e => { if (e.key === "Enter") aplicar(); });
-    const barraFiltros = h("section", { class: "cartao vidro" }, h("div", { class: "linha-form" }, campo("Mostrar", selFiltro), campo("Nota", selNota), campo("Buscar", campoBusca)),
+    const barraFiltros = h("section", { class: "cartao vidro" }, h("div", { class: "linha-form" }, campo("Mostrar", selFiltro), campo("Cor", selCor), campo("Nota", selNota), campo("Buscar", campoBusca)),
       h("p", { class: "nota", style: "margin:8px 0 0", text: `${numero(primeira.encontradas || 0)} avaliação(ões) com esses filtros.` }));
     const listaEl = h("div", { class: "grade" });
     let pagina = 0, carregadas = lista.length;
@@ -1884,6 +1946,23 @@
     lista.forEach(a => listaEl.appendChild(cartaoAvaliacao(a)));
     atualizarMais();
     trocar(area, 
+      h("section", { class: "cartao vidro semaforo" },
+        h("div", { class: "semaforo-itens" },
+          h("button", { type: "button", class: "semaforo-item sem-vermelho", onclick: () => { filtro.cor = "VERMELHO"; navegar(); } }, h("b", { text: numero(res.vermelhas || 0) }), h("span", { text: "🔴 Vermelhas: graves, pedem uma pessoa ou podem violar regras" })),
+          h("button", { type: "button", class: "semaforo-item sem-amarelo", onclick: () => { filtro.cor = "AMARELO"; navegar(); } }, h("b", { text: numero(res.amarelas || 0) }), h("span", { text: "🟡 Amarelas: neutras ou com crítica" })),
+          h("button", { type: "button", class: "semaforo-item sem-verde", onclick: () => { filtro.cor = "VERDE"; navegar(); } }, h("b", { text: numero(res.verdes || 0) }), h("span", { text: "🟢 Verdes: elogios" })),
+          h("button", { type: "button", class: "semaforo-item sem-cinza", onclick: () => { filtro.cor = "SEM"; navegar(); } }, h("b", { text: numero(res.nao_lidas || 0) }), h("span", { text: "⚪ Ainda não lidas pela IA" }))),
+        res.nao_lidas && pode("AGENTE") ? h("div", { class: "acoes", style: "margin-top:10px" }, botao(`✦ Ler as ${numero(res.nao_lidas)} com IA (dar cor e sugerir resposta)`, async (_e, b) => {
+          b.disabled = true;
+          try {
+            for (let volta = 0; volta < 600; volta++) {
+              const r = await mk("avaliacoes/analisar-lote", { metodo: "POST", corpo: { marca_id: marcaId } });
+              progressoAv.classList.remove("oculto"); progressoAv.textContent = `A IA está lendo as avaliações… faltam ${numero(r.restantes)}. Nada é publicado: ela só classifica e deixa a resposta sugerida.`;
+              if (!r.restantes || !r.feitas) break;
+            }
+            aviso("Leitura concluída.", "ok"); navegar();
+          } catch (e) { aviso(e.message, "erro"); } finally { b.disabled = false; }
+        }, "btn-primario btn-pequeno"), h("span", { class: "sub", text: "Usa a chave da OpenAI (custo baixo por avaliação)." })) : null),
       h("section", { class: "grade grade-4" }, metrica("Nota média", media, `${numero(res.total || 0)} avaliação(ões) na DENIA${contaGoogleDa(g, marcaId) && contaGoogleDa(g, marcaId).total_google != null ? ` · ${numero(contaGoogleDa(g, marcaId).total_google)} no Google` : ""}`), metrica("Sem resposta", numero(res.pendentes || 0), "responda em até 24 h"), metrica("Precisam de você", numero(res.precisam || 0), "graves ou que podem violar as regras do Google"), metrica("Negativas", numero(res.negativas || 0), "3 estrelas ou menos")),
       conectada ? h("section", { class: "cartao vidro" }, h("p", { style: "margin:0", text: "Perfil conectado: as avaliações do Google chegam sozinhas, a cada 10 minutos. A resposta salva aqui é publicada direto no Google." }),
         h("div", { style: "margin-top:12px;max-width:440px" }, campo("Como responder as avaliações", modoAuto, "No modo automático, a DENIA lê cada avaliação, escreve a resposta no jeito da empresa e publica. Graves, suspeitas de violar as regras do Google e as que pedem contato nunca saem sozinhas: ficam aqui e você recebe o aviso.")),
@@ -1908,7 +1987,8 @@
     function cartaoAvaliacao(a) {
         const resp = h("textarea", { class: "entrada", value: a.resposta || a.resposta_sugerida || "", placeholder: "Resposta da empresa", style: "min-height:80px" });
         const analise = h("div", {}, blocoAnalise(lida(a)));
-        return h("article", { class: "sugestao vidro" + (precisaDeVoce(a) ? " sugestao-alerta" : "") },
+        const x = lida(a), corCartao = !x ? "cor-cinza" : (x.sentimento === "GRAVE" || x.precisa_humano || x.viola_politica) ? "cor-vermelho" : ["OTIMA", "POSITIVA"].includes(x.sentimento) ? "cor-verde" : "cor-amarelo";
+        return h("article", { class: "sugestao vidro " + corCartao + (precisaDeVoce(a) ? " sugestao-alerta" : "") },
           h("div", { class: "sugestao-topo" }, h("strong", { text: a.autor || "Cliente" }), h("span", { class: "estrelas", text: "★".repeat(a.nota) + "☆".repeat(5 - a.nota) }), a.status === "RESPONDIDA" ? selo("Respondida", "ok") : selo("Sem resposta", Number(a.nota) <= 3 ? "erro" : "alerta")),
           h("p", { style: "margin:0;color:var(--texto-2)", text: a.texto || "(sem texto)" }), analise, resp,
           pode("AGENTE") ? h("div", { class: "acoes" },

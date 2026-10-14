@@ -664,6 +664,13 @@ Responda em JSON: {"titulo":"","legenda":"","hashtags":"","chamada":"","texto_ar
         const resp = String(q.get("resposta") || "");
         if (resp === "COM") conds.push("resposta IS NOT NULL AND TRIM(resposta)<>''");
         if (resp === "SEM") conds.push("(resposta IS NULL OR TRIM(resposta)='')");
+        // Cores (semáforo da análise): verde = ótima/positiva; amarelo = neutra/negativa; vermelho = grave, pede uma pessoa ou pode violar regras.
+        const cor = String(q.get("cor") || "");
+        const vermelho = `(json_extract(analise,'$.sentimento')='GRAVE' OR ${precisa})`;
+        if (cor === "VERDE") conds.push(`json_extract(analise,'$.sentimento') IN ('OTIMA','POSITIVA') AND NOT ${vermelho}`);
+        if (cor === "AMARELO") conds.push(`json_extract(analise,'$.sentimento') IN ('NEUTRA','NEGATIVA') AND NOT ${vermelho}`);
+        if (cor === "VERMELHO") conds.push(vermelho);
+        if (cor === "SEM") conds.push("analise IS NULL");
         const den = String(q.get("denuncia") || "");
         if (den === "NAO") conds.push("denuncia IS NULL");
         if (den === "DENUNCIADA" || den === "RECUSADA") { conds.push("json_extract(denuncia,'$.status')=?"); args.push(den); }
@@ -675,7 +682,11 @@ Responda em JSON: {"titulo":"","legenda":"","hashtags":"","chamada":"","texto_ar
             SUM(nota=5) n5, SUM(nota=4) n4, SUM(nota=3) n3, SUM(nota=2) n2, SUM(nota=1) n1,
             SUM(resposta IS NOT NULL AND TRIM(resposta)<>'') com_resposta, SUM(triagem IS NULL) sem_triagem,
             SUM(json_extract(triagem,'$.veredito')='PROVAVEL_FALSA') falsas, SUM(json_extract(triagem,'$.veredito')='DUVIDOSA') duvidosas, SUM(json_extract(triagem,'$.veredito')='PARECE_REAL') reais,
-            SUM(json_extract(denuncia,'$.status')='DENUNCIADA') denunciadas, SUM(json_extract(denuncia,'$.status')='RECUSADA') recusadas
+            SUM(json_extract(denuncia,'$.status')='DENUNCIADA') denunciadas, SUM(json_extract(denuncia,'$.status')='RECUSADA') recusadas,
+            SUM(analise IS NULL) nao_lidas,
+            SUM(json_extract(analise,'$.sentimento') IN ('OTIMA','POSITIVA') AND NOT (json_extract(analise,'$.sentimento')='GRAVE' OR ${precisa})) verdes,
+            SUM(json_extract(analise,'$.sentimento') IN ('NEUTRA','NEGATIVA') AND NOT (json_extract(analise,'$.sentimento')='GRAVE' OR ${precisa})) amarelas,
+            SUM(json_extract(analise,'$.sentimento')='GRAVE' OR ${precisa}) vermelhas
             FROM plt_mk_avaliacoes WHERE ${base.join(" AND ")}`).bind(...baseArgs).first()
         ]);
         const remov = await env.DB.prepare(`SELECT COUNT(*) n FROM plt_mk_avaliacoes WHERE org_id=? ${marca ? "AND marca_id=?" : ""} ${notaMax ? "AND nota<=?" : ""} AND removida_ms IS NOT NULL`).bind(orgId, ...(marca ? [marca] : []), ...(notaMax ? [notaMax] : [])).first();
@@ -782,6 +793,22 @@ Responda em JSON: {"resposta":""}`, `${resumoMarca(marca)}\n\nAvaliação de ${a
       await env.DB.prepare("UPDATE plt_mk_avaliacoes SET denuncia=? WHERE id=?").bind(reg ? JSON.stringify(reg) : null, a.id).run();
       if (reg) await auditar(env, request, sessao, orgId, "MARKETING", `Avaliação de ${a.autor}: ${status === "DENUNCIADA" ? "denunciada ao Google" : "denúncia recusada pelo Google"}${reg.categoria ? " (" + reg.categoria + ")" : ""}`);
       return json({ ok: true, denuncia: reg });
+    }
+    // "Ler todas com IA": analisa (sem publicar nada) as avaliações que ainda não foram lidas, em lotes.
+    if (resto === "avaliacoes/analisar-lote" && metodo === "POST") {
+      exigir("AGENTE");
+      if (!chave(env)) { const s = semChave(); return json(s.corpo, s.status); }
+      const c = await corpoOu(1000);
+      const marca = await marcaDa(c.marca_id);
+      if (!marca) return json({ erro: "Escolha a marca." }, 400);
+      const lote = (await env.DB.prepare("SELECT * FROM plt_mk_avaliacoes WHERE org_id=? AND marca_id=? AND analise IS NULL AND removida_ms IS NULL ORDER BY status='RESPONDIDA', nota, id DESC LIMIT 8").bind(orgId, marca.id).all())?.results || [];
+      let feitas = 0;
+      for (const a of lote) {
+        try { await analisarUmaAvaliacao(env, marca, a); feitas++; }
+        catch (e) { return json({ erro: e.message, feitas }, 502); }
+      }
+      const resta = await env.DB.prepare("SELECT COUNT(*) n FROM plt_mk_avaliacoes WHERE org_id=? AND marca_id=? AND analise IS NULL AND removida_ms IS NULL").bind(orgId, marca.id).first();
+      return json({ ok: true, feitas, restantes: Number(resta?.n || 0) });
     }
     if (resto === "avaliacoes/denuncia-lote" && metodo === "POST") {
       exigir("AGENTE");
