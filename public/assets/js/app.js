@@ -1790,13 +1790,30 @@
       }
     } catch (e) { falha(area, e); }
   }
+  // Lê o perfil inteiro no Google, em partes de 1.000, mostrando o andamento.
+  async function buscarTodasNoGoogle(marcaId, mostrar) {
+    let lidas = 0, continuar = false, r;
+    for (let volta = 0; volta < 60; volta++) {
+      r = await mk("google/sincronizar", { metodo: "POST", corpo: { marca_id: marcaId, continuar } });
+      lidas += r.avaliacoes_lidas || 0;
+      mostrar(`Lendo o perfil no Google: ${numero(lidas)} de ${numero(r.avaliacoes_total || lidas)} avaliações…`);
+      if (r.completo) break;
+      continuar = true;
+    }
+    cacheGoogle = null;
+    return { lidas, removidas: (r && r.avaliacoes_removidas) || 0 };
+  }
+  // Aviso quando a DENIA ainda não tem todas as avaliações que o Google informa.
+  const avisoFaltam = c => c && c.total_google != null && Number(c.na_denia) < Number(c.total_google)
+    ? h("p", { class: "nota nota-alerta", text: `No Google há ${numero(c.total_google)} avaliações; na DENIA estão ${numero(c.na_denia)}. Faltam ${numero(c.total_google - c.na_denia)}: clique em "Buscar todas no Google" (ou espere: a DENIA completa sozinha, aos poucos). Os números abaixo contam só as que já estão na DENIA.` }) : null;
   // replaceChildren escreve "null" na tela para itens vazios: estas abas montam a lista sem eles.
   const trocar = (el, ...itens) => el.replaceChildren(...itens.flat().filter(x => x != null && x !== false && x !== ""));
   async function abaAvaliacoes(area, marcaId) {
     // Lista paginada e com filtros (perfis com milhares de avaliações); os números do topo contam o perfil inteiro.
     const filtro = estado.filtroAv && estado.filtroAv.marca === String(marcaId) ? estado.filtroAv : (estado.filtroAv = { marca: String(marcaId), filtro: "TODAS", nota: "", busca: "" });
     const consulta = pagina => `avaliacoes?marca=${marcaId}&pagina=${pagina}&por_pagina=50&filtro=${filtro.filtro}&nota=${filtro.nota}&busca=${encodeURIComponent(filtro.busca)}`;
-    const [primeira, g, cfg] = await Promise.all([mk(consulta(0)), estadoGoogle(), mk("config").catch(() => ({}))]);
+    const [primeira, g, cfg] = await Promise.all([mk(consulta(0)), estadoGoogle(true), mk("config").catch(() => ({}))]);
+    const progressoAv = h("p", { class: "nota oculto" });
     const lista = primeira.avaliacoes || [], res = primeira.resumo || {};
     const conectada = Boolean(contaGoogleDa(g, marcaId));
     // Como responder: uma pessoa aprova, ou a DENIA responde sozinha (as boas, ou todas menos as graves).
@@ -1838,11 +1855,16 @@
     lista.forEach(a => listaEl.appendChild(cartaoAvaliacao(a)));
     atualizarMais();
     trocar(area, 
-      h("section", { class: "grade grade-4" }, metrica("Nota média", media, `${numero(res.total || 0)} avaliação(ões) no perfil`), metrica("Sem resposta", numero(res.pendentes || 0), "responda em até 24 h"), metrica("Precisam de você", numero(res.precisam || 0), "graves ou que podem violar as regras do Google"), metrica("Negativas", numero(res.negativas || 0), "3 estrelas ou menos")),
+      h("section", { class: "grade grade-4" }, metrica("Nota média", media, `${numero(res.total || 0)} avaliação(ões) na DENIA${contaGoogleDa(g, marcaId) && contaGoogleDa(g, marcaId).total_google != null ? ` · ${numero(contaGoogleDa(g, marcaId).total_google)} no Google` : ""}`), metrica("Sem resposta", numero(res.pendentes || 0), "responda em até 24 h"), metrica("Precisam de você", numero(res.precisam || 0), "graves ou que podem violar as regras do Google"), metrica("Negativas", numero(res.negativas || 0), "3 estrelas ou menos")),
       conectada ? h("section", { class: "cartao vidro" }, h("p", { style: "margin:0", text: "Perfil conectado: as avaliações do Google chegam sozinhas, a cada 10 minutos. A resposta salva aqui é publicada direto no Google." }),
         h("div", { style: "margin-top:12px;max-width:440px" }, campo("Como responder as avaliações", modoAuto, "No modo automático, a DENIA lê cada avaliação, escreve a resposta no jeito da empresa e publica. Graves, suspeitas de violar as regras do Google e as que pedem contato nunca saem sozinhas: ficam aqui e você recebe o aviso.")),
         contaGoogleDa(g, marcaId) && contaGoogleDa(g, marcaId).erro ? h("p", { class: "nota nota-alerta", text: "Última tentativa com o Google falhou: " + contaGoogleDa(g, marcaId).erro }) : null,
-        pode("AGENTE") ? h("div", { class: "acoes", style: "margin-top:10px" }, botao("Buscar e responder agora", async (_e, b) => {
+        avisoFaltam(contaGoogleDa(g, marcaId)), progressoAv,
+        pode("AGENTE") ? h("div", { class: "acoes", style: "margin-top:10px" }, botao("Buscar todas no Google", async (_e, b) => {
+          b.textContent = "Buscando no Google…";
+          try { const r = await buscarTodasNoGoogle(marcaId, t => { progressoAv.classList.remove("oculto"); progressoAv.textContent = t; }); aviso(`Pronto: ${numero(r.lidas)} avaliações lidas do Google.`, "ok"); navegar(); }
+          catch (e) { aviso("O Google recusou a busca: " + e.message, "erro"); } finally { b.textContent = "Buscar todas no Google"; }
+        }, "btn-secundario btn-pequeno"), botao("Buscar e responder agora", async (_e, b) => {
           b.textContent = "Buscando no Google…";
           try {
             const r = await mk("google/agora", { metodo: "POST", corpo: { marca_id: marcaId } });
@@ -1884,18 +1906,8 @@
     // Ações gerais
     const buscarTodas = async (_e, b) => {
       b.textContent = "Buscando no Google…";
-      try {
-        let lidas = 0, continuar = false, r;
-        for (let volta = 0; volta < 40; volta++) {
-          r = await mk("google/sincronizar", { metodo: "POST", corpo: { marca_id: marcaId, continuar } });
-          lidas += r.avaliacoes_lidas || 0;
-          mostrar(`Lendo o perfil no Google: ${numero(lidas)} de ${numero(r.avaliacoes_total || lidas)} avaliações…`);
-          if (r.completo) break;
-          continuar = true;
-        }
-        aviso(`Pronto: ${numero(lidas)} avaliações lidas do Google.${r && r.avaliacoes_removidas ? ` ${r.avaliacoes_removidas} saíram do perfil (removidas).` : ""}`, "ok");
-        cacheGoogle = null; navegar();
-      } catch (e) { aviso("O Google recusou a busca: " + e.message, "erro"); } finally { b.textContent = "Buscar todas no Google"; }
+      try { const r = await buscarTodasNoGoogle(marcaId, mostrar); aviso(`Pronto: ${numero(r.lidas)} avaliações lidas do Google.${r.removidas ? ` ${r.removidas} saíram do perfil (removidas).` : ""}`, "ok"); navegar(); }
+      catch (e) { aviso("O Google recusou a busca: " + e.message, "erro"); } finally { b.textContent = "Buscar todas no Google"; }
     };
     const analisar = async (b, ids) => {
       const original = b.textContent; b.disabled = true;
@@ -2001,6 +2013,7 @@
         conectada ? h("p", { class: "nota", text: `Perfil: ${conta.local_titulo}.${conta.total_google != null ? ` No Google: ${numero(conta.total_google)} avaliações${conta.media_google ? `, nota ${String(Number(conta.media_google).toFixed(1)).replace(".", ",")}` : ""}.` : ""} Na DENIA: ${numero(res.n1 || 0)} de 1 estrela e ${numero(res.n2 || 0)} de 2 estrelas.${conta.lendo ? " A última leitura completa do Google não terminou: clique em \"Buscar todas no Google\"." : ""}${conta.sincronizado_ms ? " Última busca: " + new Date(conta.sincronizado_ms).toLocaleString(LOCALE) + "." : ""}` })
           : h("p", { class: "nota nota-alerta", text: "Conecte o Google desta marca (Marcas → Conectar Google) para trazer as avaliações." }),
         conectada && conta.erro ? h("p", { class: "nota nota-alerta", text: "Última tentativa com o Google falhou: " + conta.erro }) : null,
+        avisoFaltam(conta),
         h("p", { style: "margin:6px 0 0;color:var(--texto-2);font-size:14px", text: "A DENIA confere se quem avaliou está na sua base de clientes, procura avaliações em sequência, textos repetidos e conteúdo fora do tema, e indica o tópico de denúncia do Google. A denúncia em si é um toque no Google (ele não permite denúncia automática); o botão \"Denunciar no Google\" já abre o perfil e copia o nome para você achar a avaliação." }),
         h("div", { class: "acoes", style: "margin-top:12px" },
           conectada && pode("AGENTE") ? botao("Buscar todas no Google", buscarTodas, "btn-secundario") : null,
