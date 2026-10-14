@@ -914,6 +914,41 @@ test("Google Meu Negócio — conectar o perfil, trazer avaliações e desempenh
   const des = (await p.req(`/api/orgs/1/mk/google/desempenho?marca=${marca}`, { quem: "admin" })).dados;
   assert.equal(des.totais.visualizacoes, 50);
   assert.deepEqual(des.palavras[0], { palavra: "marketing niteroi", buscas: 120, menos_de: null });
+  // Outros períodos: 60 dias com comparação, datas escolhidas e o limite de 18 meses do Google.
+  const pedidos = [];
+  const googleD = p.google;
+  p.google = (url, metodo, corpo) => {
+    if (url.includes(":fetchMultiDailyMetricsTimeSeries")) {
+      pedidos.push(url);
+      const de = url.match(/startDate\.year=(\d+)&dailyRange\.startDate\.month=(\d+)&dailyRange\.startDate\.day=(\d+)/);
+      const data = { year: +de[1], month: +de[2], day: +de[3] };
+      return { multiDailyMetricTimeSeries: [{ dailyMetricTimeSeries: [
+        { dailyMetric: "BUSINESS_IMPRESSIONS_MOBILE_MAPS", timeSeries: { datedValues: [{ date: data, value: "30" }] } },
+        { dailyMetric: "BUSINESS_IMPRESSIONS_DESKTOP_SEARCH", timeSeries: { datedValues: [{ date: data, value: "10" }] } },
+        { dailyMetric: "CALL_CLICKS", timeSeries: { datedValues: [{ date: data, value: "4" }] } },
+        { dailyMetric: "BUSINESS_BOOKINGS", timeSeries: { datedValues: [{ date: data, value: "1" }] } }] }] };
+    }
+    return googleD(url, metodo, corpo);
+  };
+  const d60 = (await p.req(`/api/orgs/1/mk/google/desempenho?marca=${marca}&dias=60`, { quem: "admin" })).dados;
+  assert.equal(d60.dias, 60);
+  assert.equal(d60.diario.length, 60);
+  assert.equal(d60.totais.visualizacoes, 40);
+  assert.equal(d60.totais.interacoes, 5);
+  assert.equal(d60.detalhe.maps_celular, 30);
+  assert.equal(d60.diario[0].visualizacoes, 40, "o valor cai no dia certo");
+  assert.equal(d60.comparacao.modo, "anterior");
+  assert.equal(new Date(d60.comparacao.ate + "T00:00:00Z").getTime(), new Date(d60.de + "T00:00:00Z").getTime() - 86400000, "o período anterior termina no dia antes");
+  assert.equal(d60.comparacao.diario.length, 60);
+  assert.ok(pedidos.some(u => u.includes("dailyMetrics=BUSINESS_BOOKINGS")));
+  const escolhido = (await p.req(`/api/orgs/1/mk/google/desempenho?marca=${marca}&de=2026-01-01&ate=2026-01-31&comparar=ano`, { quem: "admin" })).dados;
+  assert.equal(escolhido.de, "2026-01-01"); assert.equal(escolhido.ate, "2026-01-31"); assert.equal(escolhido.dias, 31);
+  assert.equal(escolhido.comparacao.modo, "ano");
+  assert.ok(escolhido.comparacao.de === "2025-01-01" || escolhido.comparacao.indisponivel, "ano passado ou aviso dos 18 meses");
+  const longo = (await p.req(`/api/orgs/1/mk/google/desempenho?marca=${marca}&dias=5000`, { quem: "admin" })).dados;
+  assert.equal(longo.dias, 540, "no máximo 18 meses");
+  assert.ok(longo.comparacao.indisponivel, "sem comparação além dos 18 meses");
+  p.google = googleD;
 
   // Post para o Google: aprovar com o horário já chegado publica no perfil, com o botão para o site.
   p.env.DB.prepare("INSERT INTO plt_mk_midias(org_id,mime,dados,prompt,criado_ms) VALUES(1,'image/jpeg',?, 'x', 1)").bind(Buffer.from("JPEG").toString("base64")).run();

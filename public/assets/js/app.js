@@ -2201,27 +2201,203 @@
             h("td", {}, pode("AGENTE") ? botao("Remover", async () => { await mk(`palavras/${p.id}/remover`, { metodo: "POST", corpo: {} }); navegar(); }, "btn-secundario btn-pequeno") : null));
         })))) : h("div", { class: "cartao vidro" }, vazio("Nenhuma palavra-chave ainda", "Adicione as buscas mais importantes para esta marca.", ICONES.caixa)));
   }
+  // Desempenho no Google: qualquer período de 7 dias a 18 meses (ou datas escolhidas), comparação, detalhe, gráfico dia a dia e planilha.
+  const PERIODOS_G = [["7", "7 dias"], ["30", "30 dias"], ["60", "60 dias"], ["90", "90 dias"], ["180", "6 meses"], ["365", "12 meses"], ["540", "18 meses"], ["mes", "Este mês"], ["mes_passado", "Mês passado"], ["datas", "Escolher datas"]];
+  const METRICAS_G = [
+    ["visualizacoes", "Visualizações do perfil", "Vezes que o perfil apareceu no Google (Pesquisa + Maps)"],
+    ["interacoes", "Interações", "Ligações, rotas, cliques no site, mensagens e reservas somados"],
+    ["ligacoes", "Ligações", "Toques no botão Ligar"],
+    ["rotas", "Pedidos de rota", "Pessoas que pediram o caminho até a loja"],
+    ["cliques_site", "Cliques no site", "Toques no botão Site"],
+    ["mensagens", "Mensagens", "Conversas iniciadas pelo perfil"],
+    ["buscas", "Aparições na Pesquisa", "Vezes que apareceu na Pesquisa Google"],
+    ["maps", "Aparições no Maps", "Vezes que apareceu no Google Maps"],
+    ["reservas", "Reservas", "Agendamentos feitos pelo perfil"],
+    ["pedidos_comida", "Pedidos de comida", "Pedidos feitos pelo perfil"],
+    ["cliques_cardapio", "Cliques no cardápio", "Toques no cardápio"]
+  ];
+  const ORIGENS_G = [["maps_celular", "Google Maps — celular"], ["maps_computador", "Google Maps — computador"], ["pesquisa_celular", "Pesquisa Google — celular"], ["pesquisa_computador", "Pesquisa Google — computador"]];
+  const nomeMetricaG = k => (METRICAS_G.find(m => m[0] === k) || [k, k])[1];
+  function variacaoPct(atual, antes) {
+    if (antes == null) return null;
+    if (!antes) return atual ? { texto: "novo", sobe: true } : null;
+    const v = Math.round(((atual - antes) / antes) * 1000) / 10;
+    return v === 0 ? { texto: "= igual", zero: true } : { texto: `${v > 0 ? "▲" : "▼"} ${String(Math.abs(v)).replace(".", ",")}%`, sobe: v > 0 };
+  }
+  // Agrupa a série por dia, semana (segunda a domingo) ou mês.
+  function agruparSerie(diario, modo, campo) {
+    if (modo === "dia") return diario.map(d => ({ chave: d.data, rotulo: dataCompleta(d.data), curto: dataCurta(d.data), valor: d[campo] || 0 }));
+    const grupos = new Map();
+    for (const d of diario) {
+      let chave = d.data.slice(0, 7);
+      if (modo === "semana") { const t = new Date(d.data + "T12:00:00Z"); t.setUTCDate(t.getUTCDate() - ((t.getUTCDay() + 6) % 7)); chave = t.toISOString().slice(0, 10); }
+      const g = grupos.get(chave) || { chave, valor: 0, dias: 0, ini: d.data, fim: d.data };
+      g.valor += d[campo] || 0; g.dias++; g.fim = d.data;
+      grupos.set(chave, g);
+    }
+    const fmtMes = new Intl.DateTimeFormat(LOCALE, { month: "short", year: "numeric", timeZone: "UTC" });
+    return [...grupos.values()].map(g => modo === "mes"
+      ? { ...g, rotulo: fmtMes.format(new Date(g.chave + "-15T12:00:00Z")) + (g.dias < new Date(Date.UTC(+g.chave.slice(0, 4), +g.chave.slice(5, 7), 0)).getUTCDate() ? ` (${g.dias} dias)` : ""), curto: fmtMes.format(new Date(g.chave + "-15T12:00:00Z")) }
+      : { ...g, rotulo: `${dataCompleta(g.ini)} a ${dataCompleta(g.fim)}`, curto: dataCurta(g.ini) });
+  }
+  // Gráfico de linha (uma métrica por vez, um só eixo), com a comparação tracejada e o valor de cada ponto ao passar o dedo/mouse.
+  function graficoLinha(pontos, comparacao, nomeAtual, nomeComp) {
+    const estreito = window.innerWidth < 640, L = estreito ? 360 : 760, A = estreito ? 240 : 260, m = { e: estreito ? 40 : 52, d: estreito ? 10 : 16, t: 14, b: 30 };
+    const larg = L - m.e - m.d, alt = A - m.t - m.b;
+    const max = Math.max(1, ...pontos.map(p => p.valor), ...(comparacao || []).map(p => p.valor));
+    const passo = (() => { const bruto = max / 4, ordem = Math.pow(10, Math.floor(Math.log10(bruto))); const n = [1, 2, 2.5, 5, 10].find(x => x * ordem >= bruto); return n * ordem; })();
+    const topo = passo * Math.ceil(max / passo);
+    const x = i => m.e + (pontos.length < 2 ? larg / 2 : (i / (pontos.length - 1)) * larg);
+    const y = v => m.t + alt - (v / topo) * alt;
+    const svg = document.createElementNS(SVG_NS, "svg");
+    const el = (tag, at) => { const n = document.createElementNS(SVG_NS, tag); for (const [k, v] of Object.entries(at)) n.setAttribute(k, v); return n; };
+    svg.setAttribute("viewBox", `0 0 ${L} ${A}`); svg.setAttribute("class", "grafico-svg"); svg.setAttribute("role", "img");
+    svg.setAttribute("aria-label", `${nomeAtual}: ${pontos.length} pontos, máximo ${numero(Math.max(...pontos.map(p => p.valor)))}`);
+    for (let v = 0; v <= topo + 1e-9; v += passo) {
+      svg.appendChild(el("line", { x1: m.e, x2: L - m.d, y1: y(v), y2: y(v), class: "grafico-grade" }));
+      const t = el("text", { x: m.e - 8, y: y(v) + 4, class: "grafico-eixo", "text-anchor": "end" }); t.textContent = numero(v); svg.appendChild(t);
+    }
+    const marcas = Math.min(estreito ? 3 : 6, pontos.length);
+    for (let j = 0; j < marcas; j++) {
+      const i = marcas < 2 ? 0 : Math.round((j / (marcas - 1)) * (pontos.length - 1));
+      const t = el("text", { x: x(i), y: A - 8, class: "grafico-eixo", "text-anchor": j === 0 && marcas > 1 ? "start" : j === marcas - 1 && marcas > 1 ? "end" : "middle" }); t.textContent = pontos[i].curto; svg.appendChild(t);
+    }
+    const caminho = serie => serie.map((p, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(p.valor).toFixed(1)}`).join("");
+    if (comparacao && comparacao.length) svg.appendChild(el("path", { d: caminho(comparacao.slice(0, pontos.length)), class: "grafico-linha-comp" }));
+    svg.appendChild(el("path", { d: caminho(pontos), class: "grafico-linha" }));
+    if (pontos.length === 1) svg.appendChild(el("circle", { cx: x(0), cy: y(pontos[0].valor), r: 4, class: "grafico-ponto" }));
+    const guia = el("line", { y1: m.t, y2: m.t + alt, class: "grafico-guia", visibility: "hidden" });
+    const ponto = el("circle", { r: 5, class: "grafico-ponto", visibility: "hidden" });
+    svg.appendChild(guia); svg.appendChild(ponto);
+    const area = el("rect", { x: m.e, y: m.t, width: larg, height: alt, class: "grafico-area" });
+    svg.appendChild(area);
+    const dica = h("div", { class: "grafico-dica oculto", role: "status" });
+    const caixa = h("div", { class: "grafico" }, svg, dica);
+    const mostrar = ev => {
+      const r = svg.getBoundingClientRect();
+      const px = ((ev.clientX - r.left) / r.width) * L;
+      const i = Math.max(0, Math.min(pontos.length - 1, Math.round(pontos.length < 2 ? 0 : ((px - m.e) / larg) * (pontos.length - 1))));
+      const p = pontos[i], c = comparacao && comparacao[i];
+      guia.setAttribute("x1", x(i)); guia.setAttribute("x2", x(i)); guia.setAttribute("visibility", "visible");
+      ponto.setAttribute("cx", x(i)); ponto.setAttribute("cy", y(p.valor)); ponto.setAttribute("visibility", "visible");
+      trocar(dica, h("strong", { text: p.rotulo }), h("span", { text: `${nomeAtual}: ${numero(p.valor)}` }), c ? h("span", { class: "grafico-dica-comp", text: `${nomeComp} (${c.rotulo}): ${numero(c.valor)}` }) : null);
+      dica.classList.remove("oculto");
+      const esquerda = (x(i) / L) * r.width;
+      dica.style.left = Math.min(Math.max(esquerda, 90), r.width - 90) + "px";
+    };
+    area.addEventListener("pointermove", mostrar);
+    area.addEventListener("pointerdown", mostrar);
+    area.addEventListener("pointerleave", () => { guia.setAttribute("visibility", "hidden"); ponto.setAttribute("visibility", "hidden"); dica.classList.add("oculto"); });
+    return caixa;
+  }
+  function baixarCsv(nome, linhas) {
+    const esc = v => { const s = v == null ? "" : String(v); return /[";\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+    const texto = "﻿" + linhas.map(l => l.map(esc).join(";")).join("\r\n");
+    const url = URL.createObjectURL(new Blob([texto], { type: "text/csv;charset=utf-8" }));
+    const a = h("a", { href: url, download: nome });
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  }
+
   async function abaDesempenho(area, marcaId) {
-    const [lista, vivoG] = await Promise.all([mk(`metricas?marca=${marcaId}`).then(r => r.metricas || []), mk(`google/desempenho?marca=${marcaId}`).catch(() => ({ conectada: false }))]);
+    const f = estado.desempenhoG = estado.desempenhoG || { periodo: "30", de: "", ate: "", comparar: "anterior", metrica: "visualizacoes", agrupar: "auto", tabela: false };
+    const q = new URLSearchParams({ marca: marcaId, comparar: f.comparar });
+    if (f.periodo === "datas" && f.de && f.ate) { q.set("de", f.de); q.set("ate", f.ate); }
+    else if (f.periodo === "mes" || f.periodo === "mes_passado") q.set("atalho", f.periodo);
+    else q.set("dias", f.periodo === "datas" ? "30" : f.periodo);
+    const [lista, vivoG] = await Promise.all([mk(`metricas?marca=${marcaId}`).then(r => r.metricas || []), mk(`google/desempenho?${q}`).catch(e => ({ conectada: true, erro: e.message }))]);
     const CAMPOS_M = [["visualizacoes", "Visualizações do perfil"], ["buscas", "Aparições em buscas"], ["ligacoes", "Ligações"], ["rotas", "Pedidos de rota"], ["cliques_site", "Cliques no site"], ["mensagens", "Mensagens"], ["nota_media", "Nota média"], ["total_avaliacoes", "Total de avaliações"]];
     const ents = Object.fromEntries(CAMPOS_M.map(([k]) => [k, h("input", { class: "entrada", type: "number", min: "0", step: k === "nota_media" ? "0.1" : "1" })]));
     const ultima = lista[0] || {}, anterior = lista[1] || {};
     const variacao = k => ultima[k] != null && anterior[k] ? Math.round(((ultima[k] - anterior[k]) / anterior[k]) * 100) : null;
-    const blocoGoogle = vivoG.conectada ? (vivoG.erro ? h("section", { class: "cartao vidro" }, h("p", { class: "nota nota-alerta", text: vivoG.erro }))
-      : h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: `Últimos 30 dias no Google (${dataCurta(vivoG.de)} a ${dataCurta(vivoG.ate)})` }),
-        h("div", { class: "grade grade-4" }, [["visualizacoes", "Vezes que o perfil apareceu"], ["ligacoes", "Ligações"], ["rotas", "Pedidos de rota"], ["cliques_site", "Cliques no site"], ["buscas", "Aparições na Pesquisa"], ["mensagens", "Mensagens"]].map(([k, n]) => metrica(n, numero(vivoG.totais[k] || 0), ""))),
-        vivoG.palavras && vivoG.palavras.length ? h("div", {}, h("h4", { text: "O que as pessoas pesquisaram para achar o perfil (mês passado)" }),
-          h("div", { class: "tabela-caixa" }, h("table", {}, h("thead", {}, h("tr", {}, h("th", { text: "Busca" }), h("th", { text: "Pessoas" }))),
-            h("tbody", {}, vivoG.palavras.map(p => h("tr", {}, h("td", { text: p.palavra }), h("td", { text: p.buscas != null ? numero(p.buscas) : `menos de ${p.menos_de}` }))))))) : null)) : null;
-    trocar(area, 
+
+    // Barra de período (uma linha acima de tudo) — vale para todos os números da aba.
+    const recarregar = () => abaDesempenho(area, marcaId).catch(e => aviso(e.message, "erro"));
+    const deE = h("input", { class: "entrada", type: "date", value: f.de || vivoG.de || "", min: vivoG.primeiro_dia || "", max: vivoG.ultimo_dia || "", "aria-label": "Data de início" });
+    const ateE = h("input", { class: "entrada", type: "date", value: f.ate || vivoG.ate || "", min: vivoG.primeiro_dia || "", max: vivoG.ultimo_dia || "", "aria-label": "Data de fim" });
+    const compE = h("select", { class: "entrada", "aria-label": "Comparar com", onchange: e => { f.comparar = e.target.value; recarregar(); } },
+      [["anterior", "Comparar: período anterior"], ["ano", "Comparar: mesmo período do ano passado"], ["nada", "Sem comparação"]].map(([v, n]) => h("option", { value: v, selected: f.comparar === v, text: n })));
+    const barra = h("section", { class: "cartao vidro filtros-desempenho" },
+      h("div", { class: "abas abas-chips", role: "group", "aria-label": "Período" }, PERIODOS_G.map(([v, n]) => h("button", { type: "button", class: "aba" + (f.periodo === v ? " ativo" : ""), "aria-pressed": f.periodo === v ? "true" : "false", onclick: () => { f.periodo = v; if (v !== "datas") recarregar(); else navegarDatas(); } }, n))),
+      h("div", { class: "linha-filtros" },
+        f.periodo === "datas" ? h("div", { class: "linha-datas" }, h("label", {}, "De ", deE), h("label", {}, "até ", ateE),
+          botao("Ver período", () => { if (!deE.value || !ateE.value) return aviso("Escolha as duas datas.", "erro"); f.de = deE.value; f.ate = ateE.value; recarregar(); }, "btn-primario btn-pequeno")) : null,
+        compE));
+    function navegarDatas() { f.de = f.de || vivoG.de || ""; f.ate = f.ate || vivoG.ate || ""; recarregar(); }
+
+    let blocoGoogle = null;
+    if (vivoG.conectada && vivoG.erro) blocoGoogle = h("section", { class: "cartao vidro" }, h("p", { class: "nota nota-alerta", text: vivoG.erro }));
+    else if (vivoG.conectada) {
+      const t = vivoG.totais || {}, comp = vivoG.comparacao && !vivoG.comparacao.indisponivel ? vivoG.comparacao : null, ct = comp ? comp.totais : null;
+      const nomeComp = comp ? (comp.modo === "ano" ? "Ano passado" : "Período anterior") : "";
+      const visiveis = METRICAS_G.filter(([k]) => !["reservas", "pedidos_comida", "cliques_cardapio"].includes(k) || t[k] || (ct && ct[k]));
+      if (!visiveis.some(m => m[0] === f.metrica)) f.metrica = "visualizacoes";
+      const cartoes = h("section", { class: "grade grade-4" }, visiveis.map(([k, n, ajuda]) => {
+        const v = ct ? variacaoPct(t[k] || 0, ct[k] || 0) : null;
+        return h("button", { type: "button", class: "metrica vidro metrica-botao" + (f.metrica === k ? " ativo" : ""), title: ajuda, "aria-pressed": f.metrica === k ? "true" : "false", onclick: () => { f.metrica = k; recarregar(); } },
+          h("span", { text: n }), h("strong", { text: numero(t[k] || 0) }),
+          h("small", {}, v ? h("span", { class: v.zero ? "" : v.sobe ? "sobe" : "desce", text: v.texto }) : null, ct ? ` ${v ? "vs" : ""} ${numero(ct[k] || 0)} no ${nomeComp.toLowerCase()}` : ajuda));
+      }));
+      const agrupar = f.agrupar !== "auto" ? f.agrupar : vivoG.dias <= 92 ? "dia" : vivoG.dias <= 370 ? "semana" : "mes";
+      const pontos = agruparSerie(vivoG.diario || [], agrupar, f.metrica);
+      const pontosComp = comp ? agruparSerie(comp.diario || [], agrupar, f.metrica) : null;
+      const agruparE = h("select", { class: "entrada entrada-pequena", "aria-label": "Agrupar por", onchange: e => { f.agrupar = e.target.value; recarregar(); } },
+        [["auto", "Agrupar: automático"], ["dia", "Por dia"], ["semana", "Por semana"], ["mes", "Por mês"]].map(([v, n]) => h("option", { value: v, selected: f.agrupar === v, text: n })));
+      const tabelaSerie = h("div", { class: "tabela-caixa lista-rolavel" }, h("table", {}, h("thead", {}, h("tr", {}, h("th", { text: agrupar === "dia" ? "Dia" : agrupar === "semana" ? "Semana" : "Mês" }), h("th", { text: nomeMetricaG(f.metrica) }), comp ? h("th", { text: nomeComp }) : null)),
+        h("tbody", {}, pontos.map((p, i) => h("tr", {}, h("td", { text: p.rotulo }), h("td", { text: numero(p.valor) }), comp ? h("td", { text: pontosComp[i] ? `${numero(pontosComp[i].valor)} (${pontosComp[i].rotulo})` : "—" }) : null)))));
+      const legenda = comp ? h("div", { class: "grafico-legenda" }, h("span", { class: "leg-atual", text: `${dataCompleta(vivoG.de)} a ${dataCompleta(vivoG.ate)}` }), h("span", { class: "leg-comp", text: `${nomeComp}: ${dataCompleta(comp.de)} a ${dataCompleta(comp.ate)}` })) : null;
+      const blocoGrafico = h("section", { class: "cartao vidro" },
+        h("div", { class: "cabeca-grafico" }, h("h3", { style: "margin:0", text: `${nomeMetricaG(f.metrica)} ${agrupar === "dia" ? "dia a dia" : agrupar === "semana" ? "por semana" : "por mês"}` }),
+          h("div", { class: "acoes" }, agruparE, botao(f.tabela ? "Ver gráfico" : "Ver tabela", () => { f.tabela = !f.tabela; recarregar(); }, "btn-secundario btn-pequeno"))),
+        h("p", { class: "sub", style: "margin:4px 0 10px", text: "Toque nos cartões acima para trocar o número do gráfico. Passe o dedo ou o mouse na linha para ver cada valor." }),
+        legenda, pontos.length ? (f.tabela ? tabelaSerie : graficoLinha(pontos, pontosComp, nomeMetricaG(f.metrica), nomeComp)) : vazio("Sem números neste período", "O Google ainda não tem dados para essas datas."));
+      // De onde vieram as visualizações (Maps x Pesquisa, celular x computador).
+      const totalOrig = ORIGENS_G.reduce((s, [k]) => s + ((vivoG.detalhe || {})[k] || 0), 0);
+      const blocoOrigem = h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "De onde vieram as visualizações" }),
+        h("div", { class: "tabela-caixa" }, h("table", {}, h("thead", {}, h("tr", {}, h("th", { text: "Onde" }), h("th", { text: "Vezes" }), h("th", { text: "Parte do total" }), comp ? h("th", { text: nomeComp }) : null, comp ? h("th", { text: "Variação" }) : null)),
+          h("tbody", {}, ORIGENS_G.map(([k, n]) => {
+            const val = (vivoG.detalhe || {})[k] || 0, ant = comp ? (comp.detalhe || {})[k] || 0 : null, pct = totalOrig ? Math.round((val / totalOrig) * 100) : 0, v = comp ? variacaoPct(val, ant) : null;
+            return h("tr", {}, h("td", { text: n }), h("td", { text: numero(val) }), h("td", {}, h("div", { class: "barra-parte" }, h("i", { style: `width:${pct}%` })), ` ${pct}%`),
+              comp ? h("td", { text: numero(ant) }) : null, comp ? h("td", {}, v ? h("span", { class: v.zero ? "" : v.sobe ? "sobe" : "desce", text: v.texto }) : "—") : null);
+          })))));
+      // Taxa de conversão: de cada 100 pessoas que viram o perfil, quantas agiram.
+      const taxa = t.visualizacoes ? Math.round((t.interacoes / t.visualizacoes) * 1000) / 10 : 0;
+      const taxaAnt = ct && ct.visualizacoes ? Math.round((ct.interacoes / ct.visualizacoes) * 1000) / 10 : null;
+      const mediaDia = vivoG.dias ? Math.round((t.interacoes / vivoG.dias) * 10) / 10 : 0;
+      const blocoResumo = h("section", { class: "grade grade-3" },
+        metrica("Taxa de ação", `${String(taxa).replace(".", ",")}%`, taxaAnt != null ? `De cada 100 que viram, ${String(taxa).replace(".", ",")} agiram (antes: ${String(taxaAnt).replace(".", ",")})` : "De cada 100 pessoas que viram o perfil"),
+        metrica("Interações por dia", String(mediaDia).replace(".", ","), "Média no período"),
+        metrica("Dia mais forte", (() => { const d = (vivoG.diario || []).reduce((a, b) => (b.interacoes > (a?.interacoes ?? -1) ? b : a), null); return d && d.interacoes ? dataCompleta(d.data) : "—"; })(), "Dia com mais interações"));
+      const plv = vivoG.palavras || [];
+      const fmtMes = s => { const [a, mm] = String(s || "").split("-"); return mm ? `${mm}/${a}` : ""; };
+      const blocoPalavras = h("section", { class: "cartao vidro" },
+        h("div", { class: "cabeca-grafico" }, h("h3", { style: "margin:0", text: "O que as pessoas pesquisaram para achar o perfil" }),
+          plv.length ? botao("Baixar buscas (planilha)", () => baixarCsv(`buscas-google-${vivoG.palavras_de}-${vivoG.palavras_ate}.csv`, [["Busca", "Pessoas"], ...plv.map(p => [p.palavra, p.buscas != null ? p.buscas : `menos de ${p.menos_de}`])]), "btn-secundario btn-pequeno") : null),
+        h("p", { class: "sub", style: "margin:4px 0 10px", text: vivoG.palavras_de ? `Meses ${fmtMes(vivoG.palavras_de)}${vivoG.palavras_ate !== vivoG.palavras_de ? " a " + fmtMes(vivoG.palavras_ate) : ""} — o Google só divulga as buscas por mês fechado.` : "" }),
+        plv.length ? h("div", { class: "tabela-caixa lista-rolavel" }, h("table", {}, h("thead", {}, h("tr", {}, h("th", { text: "#" }), h("th", { text: "Busca" }), h("th", { text: "Pessoas" }))),
+          h("tbody", {}, plv.map((p, i) => h("tr", {}, h("td", { text: String(i + 1) }), h("td", { text: p.palavra }), h("td", { text: p.buscas != null ? numero(p.buscas) : `menos de ${p.menos_de}` })))))) : vazio("Sem buscas para esses meses", "O Google ainda não divulgou as buscas desse período."));
+      const planilha = () => baixarCsv(`desempenho-google-${vivoG.de}-a-${vivoG.ate}.csv`, [
+        ["Dia", ...METRICAS_G.map(m => m[1]), ...ORIGENS_G.map(o => o[1])],
+        ...(vivoG.diario || []).map(d => [dataCompleta(d.data), ...METRICAS_G.map(m => d[m[0]] || 0), ...ORIGENS_G.map(o => d[o[0]] || 0)]),
+        ["Total", ...METRICAS_G.map(m => t[m[0]] || 0), ...ORIGENS_G.map(o => (vivoG.detalhe || {})[o[0]] || 0)],
+        ...(ct ? [[`${nomeComp} (${dataCompleta(comp.de)} a ${dataCompleta(comp.ate)})`, ...METRICAS_G.map(m => ct[m[0]] || 0), ...ORIGENS_G.map(o => (comp.detalhe || {})[o[0]] || 0)]] : [])]);
+      blocoGoogle = [
+        h("div", { class: "cabeca-grafico" }, h("div", {}, h("h3", { style: "margin:0", text: `${vivoG.perfil || "Google"} — ${dataCompleta(vivoG.de)} a ${dataCompleta(vivoG.ate)} (${numero(vivoG.dias)} dias)` }),
+          h("p", { class: "sub", style: "margin:2px 0 0", text: vivoG.comparacao && vivoG.comparacao.indisponivel ? vivoG.comparacao.indisponivel : comp ? `Comparando com ${dataCompleta(comp.de)} a ${dataCompleta(comp.ate)}. O Google libera os números com 2 dias de atraso e guarda 18 meses.` : "O Google libera os números com 2 dias de atraso e guarda 18 meses." })),
+          botao("Baixar planilha do período", planilha, "btn-secundario btn-pequeno")),
+        cartoes, blocoGrafico, blocoResumo, blocoOrigem, blocoPalavras];
+    }
+    trocar(area,
+      vivoG.conectada ? barra : null,
       blocoGoogle,
-      h("section", { class: "grade grade-4" }, ["visualizacoes", "ligacoes", "rotas", "cliques_site"].map(k => {
+      !vivoG.conectada ? h("section", { class: "grade grade-4" }, ["visualizacoes", "ligacoes", "rotas", "cliques_site"].map(k => {
         const v = variacao(k);
         return metrica((CAMPOS_M.find(c => c[0] === k) || [k, k])[1], ultima[k] != null ? numero(ultima[k]) : "—", v == null ? (ultima.semana ? "semana de " + dataCurta(ultima.semana) : "sem dados ainda") : `${v >= 0 ? "▲" : "▼"} ${Math.abs(v)}% em relação à semana anterior`);
-      })),
-      lista.length ? h("div", { class: "tabela-caixa" }, h("table", {}, h("thead", {}, h("tr", {}, h("th", { text: "Semana" }), CAMPOS_M.map(([, n]) => h("th", { text: n })))),
-        h("tbody", {}, lista.map(m => h("tr", {}, h("td", { text: dataCurta(m.semana) }), CAMPOS_M.map(([k]) => h("td", { text: m[k] == null ? "—" : String(m[k]).replace(".", ",") }))))))) : null,
-      pode("AGENTE") ? h("section", { class: "cartao vidro formulario" }, h("h3", { style: "margin:0", text: "Registrar a semana" }),
+      })) : null,
+      lista.length ? h("details", { class: "cartao vidro", open: !vivoG.conectada }, h("summary", { text: `Semanas registradas (${lista.length})` }),
+        h("div", { class: "tabela-caixa" }, h("table", {}, h("thead", {}, h("tr", {}, h("th", { text: "Semana" }), CAMPOS_M.map(([, n]) => h("th", { text: n })))),
+          h("tbody", {}, lista.map(m => h("tr", {}, h("td", { text: dataCompleta(m.semana) }), CAMPOS_M.map(([k]) => h("td", { text: m[k] == null ? "—" : String(m[k]).replace(".", ",") })))))))) : null,
+      pode("AGENTE") && !vivoG.conectada ? h("section", { class: "cartao vidro formulario" }, h("h3", { style: "margin:0", text: "Registrar a semana" }),
         h("p", { style: "margin:0;color:var(--texto-2);font-size:14px", text: "Os números ficam em Google Meu Negócio → Desempenho. Depois da conexão com o Google, eles são importados sozinhos toda semana." }),
         h("div", { class: "linha-form" }, CAMPOS_M.map(([k, n]) => campo(n, ents[k]))),
         h("div", { class: "acoes" }, botao("Salvar semana", async () => { try { const corpo = { marca_id: marcaId, semana: isoLocal(new Date()) }; CAMPOS_M.forEach(([k]) => { corpo[k] = ents[k].value; }); await mk("metricas", { metodo: "POST", corpo }); aviso("Semana registrada.", "ok"); navegar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario"))) : null);
