@@ -1042,6 +1042,43 @@ test("Triagem 1★ — confere a base de clientes, aponta o tópico de denúncia
   assert.equal((await p.req("/api/orgs/1/mk/avaliacoes/triagem", { metodo: "POST", quem: "admin", corpo: { marca_id: marca } })).dados.feitas, 0, "não refaz o que já foi analisado");
 });
 
+test("Google — perfil com milhares de avaliações é lido em partes, e dá para apagar resposta e marcar denúncias em lote", async () => {
+  const p = await criarPlataforma({ GOOGLE_CLIENT_ID: "c", GOOGLE_CLIENT_SECRET: "s" });
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  const marca = (await p.req("/api/orgs/1/mk/marcas", { metodo: "POST", quem: "admin", corpo: { nome: "Shopping" } })).dados.id;
+  await p.req("/api/orgs/1/mk/google/estado", { quem: "admin" });
+  p.env.DB.prepare("INSERT INTO plt_mk_google(org_id,marca_id,conta_nome,local_nome,local_titulo,token_cifrado,criado_ms,atualizado_ms) VALUES(1,?,?,?,?,?,1,1)").bind(marca, "accounts/1", "locations/2", "Shopping", "x").run();
+  // 2.100 avaliações = 42 páginas de 50: a leitura completa precisa de 3 chamadas (20 páginas cada).
+  const TOTAL = 2100, apagadas = [];
+  p.google = (url, metodo) => {
+    if (url.startsWith("https://oauth2.googleapis.com/token")) return { access_token: "t", expires_in: 3599 };
+    if (metodo === "DELETE") { apagadas.push(url); return {}; }
+    if (url.includes("/reviews?")) {
+      const pag = Number(new URL(url).searchParams.get("pageToken") || 0);
+      const reviews = Array.from({ length: 50 }, (_, i) => { const n = pag * 50 + i; return { reviewId: "g" + n, reviewer: { displayName: "Pessoa " + n }, starRating: n % 2 ? "ONE" : "FIVE", comment: "t" + n, ...(n === 1 ? { reviewReply: { comment: "Resposta antiga" } } : {}) }; });
+      return { reviews, totalReviewCount: TOTAL, averageRating: 3, ...((pag + 1) * 50 < TOTAL ? { nextPageToken: String(pag + 1) } : {}) };
+    }
+    return { multiDailyMetricTimeSeries: [] };
+  };
+  let continuar = false, voltas = 0, r;
+  do { r = (await p.req("/api/orgs/1/mk/google/sincronizar", { metodo: "POST", quem: "admin", corpo: { marca_id: marca, continuar } })).dados; continuar = true; voltas++; } while (!r.completo && voltas < 10);
+  assert.equal(voltas, 3);
+  assert.equal(p.env.DB.q("SELECT COUNT(*) n FROM plt_mk_avaliacoes WHERE marca_id=?", marca)[0].n, TOTAL, "todas as 2.100 avaliações estão na DENIA");
+  const est = (await p.req("/api/orgs/1/mk/google/estado", { quem: "admin" })).dados.contas[0];
+  assert.deepEqual([est.total_google, est.lendo], [TOTAL, 0]);
+  const neg = (await p.req(`/api/orgs/1/mk/avaliacoes?marca=${marca}&nota_max=2&pagina=0&por_pagina=50`, { quem: "admin" })).dados;
+  assert.deepEqual([neg.resumo.n1, neg.resumo.com_resposta, neg.encontradas, neg.avaliacoes.length], [1050, 1, 1050, 50]);
+  // Apagar a resposta de uma avaliação: some também no Google.
+  const comResp = p.env.DB.q("SELECT id FROM plt_mk_avaliacoes WHERE google_id='g1'")[0].id;
+  assert.equal((await p.req(`/api/orgs/1/mk/avaliacoes/${comResp}/apagar-resposta`, { metodo: "POST", quem: "admin", corpo: {} })).status, 200);
+  assert.match(apagadas[0], /reviews\/g1\/reply$/);
+  // Marcar várias como denunciadas de uma vez.
+  const ids = neg.avaliacoes.slice(0, 10).map(a => a.id);
+  assert.equal((await p.req("/api/orgs/1/mk/avaliacoes/denuncia-lote", { metodo: "POST", quem: "admin", corpo: { ids, status: "DENUNCIADA" } })).dados.marcadas, 10);
+  const den = (await p.req(`/api/orgs/1/mk/avaliacoes?marca=${marca}&nota_max=2&pagina=0&denuncia=DENUNCIADA`, { quem: "admin" })).dados;
+  assert.deepEqual([den.encontradas, den.resumo.denunciadas], [10, 10]);
+});
+
 test("Google Meu Negócio — sem os secrets, a plataforma diz o que falta", async () => {
   const p = await criarPlataforma();
   await p.entrar("admin", ADMIN, SENHA_ADMIN);

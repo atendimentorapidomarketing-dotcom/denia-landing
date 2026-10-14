@@ -1866,85 +1866,158 @@
             botao("Copiar", () => copiar(resp.value), "btn-secundario btn-pequeno")) : null);
     }
   }
-  // Triagem das avaliações de 1 e 2 estrelas: a DENIA separa as que parecem falsas e indica o tópico de denúncia.
+  // Triagem das avaliações de 1 e 2 estrelas: central de reputação para quem cuida do Google da empresa.
+  // Lista completa (paginada), filtros, seleção em lote, respostas (ver, escrever, apagar) e a denúncia guiada.
   async function abaTriagem(area, marcaId) {
-    const [lista, g] = await Promise.all([mk(`avaliacoes?marca=${marcaId}&nota_max=2`).then(r => r.avaliacoes || []), estadoGoogle(true)]);
-    const conectada = Boolean(contaGoogleDa(g, marcaId));
+    const g = await estadoGoogle(true);
+    const conta = contaGoogleDa(g, marcaId), conectada = Boolean(conta);
+    const f = estado.filtroTri && estado.filtroTri.marca === String(marcaId) ? estado.filtroTri : (estado.filtroTri = { marca: String(marcaId), nota: "", veredito: "", resposta: "", denuncia: "", busca: "" });
+    const consulta = pagina => `avaliacoes?marca=${marcaId}&nota_max=2&pagina=${pagina}&por_pagina=50&nota=${f.nota}&veredito=${f.veredito}&resposta=${f.resposta}&denuncia=${f.denuncia}&busca=${encodeURIComponent(f.busca)}`;
+    const primeira = await mk(consulta(0));
+    const res = primeira.resumo || {};
     const json_ = v => { try { return JSON.parse(v || "null"); } catch { return null; } };
-    const negativas = lista.filter(a => Number(a.nota) <= 2).map(a => ({ ...a, t: json_(a.triagem), d: json_(a.denuncia) }));
-    const ativas = negativas.filter(a => !a.removida_ms), removidas = negativas.filter(a => a.removida_ms);
     const NOME_V = { PROVAVEL_FALSA: ["Provavelmente falsa", "erro"], DUVIDOSA: ["Duvidosa", "alerta"], PARECE_REAL: ["Parece de cliente real", "info"] };
-    const ordemV = { PROVAVEL_FALSA: 0, DUVIDOSA: 1, PARECE_REAL: 2 };
-    ativas.sort((x, y) => (ordemV[x.t?.veredito] ?? 3) - (ordemV[y.t?.veredito] ?? 3));
+    const selecionadas = new Set();
     const progresso = h("p", { class: "nota oculto" });
-    const triar = async (b, refazer) => {
-      const lote = refazer ? String(Date.now()) : "";
-      b.disabled = true;
+    const mostrar = t => { progresso.classList.remove("oculto"); progresso.textContent = t; };
+
+    // Ações gerais
+    const buscarTodas = async (_e, b) => {
+      b.textContent = "Buscando no Google…";
       try {
-        // Primeiro traz do Google todas as avaliações (inclusive as antigas), para a triagem ver a lista completa.
-        if (conectada) {
-          progresso.classList.remove("oculto");
-          progresso.textContent = "Buscando todas as avaliações no Google…";
-          try {
-            const s = await mk("google/sincronizar", { metodo: "POST", corpo: { marca_id: marcaId } });
-            progresso.textContent = `Google: ${s.avaliacoes_total} avaliação(ões) no perfil.`;
-          } catch (e) { aviso("A busca no Google falhou (" + e.message + "). A triagem segue com as avaliações que já estão na DENIA.", "erro"); }
+        let lidas = 0, continuar = false, r;
+        for (let volta = 0; volta < 40; volta++) {
+          r = await mk("google/sincronizar", { metodo: "POST", corpo: { marca_id: marcaId, continuar } });
+          lidas += r.avaliacoes_lidas || 0;
+          mostrar(`Lendo o perfil no Google: ${numero(lidas)} de ${numero(r.avaliacoes_total || lidas)} avaliações…`);
+          if (r.completo) break;
+          continuar = true;
         }
-        const antes = (await mk(`avaliacoes?marca=${marcaId}&nota_max=2`)).avaliacoes || [];
-        const baixas = antes.filter(a => !a.removida_ms).length;
-        if (!baixas) {
-          progresso.classList.remove("oculto");
-          progresso.textContent = conectada ? `Não há avaliações de 1 ou 2 estrelas neste perfil do Google. Confira se a marca escolhida no topo é a certa e se o perfil conectado é o desta marca (aba Conexão).` : "Ainda não há avaliações desta marca na DENIA: conecte o Google da marca (Marcas → Conectar Google).";
-          aviso(progresso.textContent, "erro");
-          return;
-        }
-        for (let volta = 0; volta < 30; volta++) {
-          const r = await mk("avaliacoes/triagem", { metodo: "POST", corpo: { marca_id: marcaId, refazer, lote } });
-          progresso.classList.remove("oculto");
-          progresso.textContent = `Analisando… faltam ${r.restantes} de ${r.total}.${r.base_clientes ? ` Base de clientes consultada: ${numero(r.base_clientes.whatsapp)} contatos do WhatsApp e ${numero(r.base_clientes.cadastro)} do cadastro.` : " Base de clientes indisponível agora: a triagem segue com os outros sinais."}`;
+        aviso(`Pronto: ${numero(lidas)} avaliações lidas do Google.${r && r.avaliacoes_removidas ? ` ${r.avaliacoes_removidas} saíram do perfil (removidas).` : ""}`, "ok");
+        cacheGoogle = null; navegar();
+      } catch (e) { aviso("O Google recusou a busca: " + e.message, "erro"); } finally { b.textContent = "Buscar todas no Google"; }
+    };
+    const analisar = async (b, ids) => {
+      const original = b.textContent; b.disabled = true;
+      const lote = String(Date.now());
+      try {
+        for (let volta = 0; volta < 500; volta++) {
+          const r = await mk("avaliacoes/triagem", { metodo: "POST", corpo: { marca_id: marcaId, ids: ids || undefined, refazer: Boolean(ids), lote } });
+          mostrar(`Analisando… faltam ${numero(r.restantes)}.${r.base_clientes ? ` Base de clientes: ${numero(r.base_clientes.whatsapp)} contatos do WhatsApp e ${numero(r.base_clientes.cadastro)} do cadastro.` : " Base de clientes indisponível agora: a análise segue com os outros sinais."}`);
           if (!r.restantes || !r.feitas) break;
         }
-        aviso(`Triagem concluída: ${baixas} avaliação(ões) de 1 e 2 estrelas analisadas.`, "ok"); navegar();
-      } catch (e) { aviso(e.message, "erro"); } finally { b.disabled = false; }
+        aviso("Análise concluída.", "ok"); navegar();
+      } catch (e) { aviso(e.message, "erro"); } finally { b.disabled = false; b.textContent = original; }
     };
     const abrirPerfil = async () => { try { const r = await mk(`google/link?marca=${marcaId}`); if (r.url) window.open(r.url, "_blank", "noopener"); else aviso("O Google não informou o link do perfil.", "erro"); } catch (e) { aviso(e.message, "erro"); } };
-    const marcar = async (a, status) => { try { await mk(`avaliacoes/${a.id}/denuncia`, { metodo: "POST", corpo: { status, categoria: a.t && a.t.categoria } }); navegar(); } catch (e) { aviso(e.message, "erro"); } };
-    const conta = v => ativas.filter(a => a.t && a.t.veredito === v).length;
-    trocar(area, 
+    const marcarLote = async (ids, status) => {
+      if (!ids.length) { aviso("Selecione pelo menos uma avaliação.", "erro"); return; }
+      try { const r = await mk("avaliacoes/denuncia-lote", { metodo: "POST", corpo: { ids, status } }); aviso(`${r.marcadas} avaliação(ões) atualizada(s).`, "ok"); navegar(); } catch (e) { aviso(e.message, "erro"); }
+    };
+    // Denúncia guiada: copia nome + trecho + tópico, abre o perfil no Google e confirma na volta.
+    const denunciar = async (a, t) => {
+      const trecho = String(a.texto || "").slice(0, 80);
+      try { await navigator.clipboard.writeText(a.autor || trecho); } catch { /* sem área de transferência */ }
+      abrirPerfil();
+      const ok = await modal({ titulo: "Denunciar no Google", confirmar: "Já denunciei", conteudo: [
+        `O perfil foi aberto em outra aba e o nome "${a.autor || "Cliente"}" foi copiado.`,
+        h("ol", { class: "passos" }, h("li", {}, "No Google Maps, abra Avaliações e use \"Pesquisar avaliações\": cole o nome (Ctrl+V)."),
+          h("li", {}, "Toque nos três pontinhos da avaliação → Denunciar avaliação."),
+          h("li", {}, "Escolha: ", h("strong", { text: (t && t.categoria) || "o tópico que melhor descreve o problema" }), "."),
+          h("li", {}, "Volte aqui e clique em \"Já denunciei\".")),
+        trecho ? h("p", { class: "nota", text: `Trecho da avaliação: "${trecho}${String(a.texto || "").length > 80 ? "…" : ""}"` }) : ""] });
+      if (ok) marcarLote([a.id], "DENUNCIADA");
+    };
+
+    // Cartão de cada avaliação
+    function cartao(a) {
+      const t = json_(a.triagem), d = json_(a.denuncia), v = t ? NOME_V[t.veredito] : null;
+      const temResposta = Boolean(String(a.resposta || "").trim());
+      const marca = h("input", { type: "checkbox", "aria-label": "Selecionar" });
+      marca.addEventListener("change", () => { marca.checked ? selecionadas.add(a.id) : selecionadas.delete(a.id); contador.textContent = `${selecionadas.size} selecionada(s)`; });
+      const editor = h("div", { class: "oculto" });
+      const caixa = h("textarea", { class: "entrada", value: a.resposta || a.resposta_sugerida || "", style: "min-height:90px", placeholder: "Resposta pública da empresa" });
+      editor.append(caixa, h("div", { class: "acoes" },
+        botao("✦ Sugerir com IA", async (_e, b) => { b.textContent = "Escrevendo…"; try { caixa.value = (await mk(`avaliacoes/${a.id}/sugerir`, { metodo: "POST", corpo: {} })).resposta; } catch (e) { aviso(e.message, "erro"); } finally { b.textContent = "✦ Sugerir com IA"; } }, "btn-secundario btn-pequeno"),
+        botao(a.google_id ? "Publicar no Google" : "Salvar resposta", async () => { try { const r = await mk(`avaliacoes/${a.id}/responder`, { metodo: "POST", corpo: { resposta: caixa.value } }); aviso(r.publicada_google ? "Resposta publicada no Google." : "Resposta salva.", "ok"); navegar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario btn-pequeno")));
+      return h("article", { class: "sugestao vidro" + (t && t.veredito === "PROVAVEL_FALSA" ? " sugestao-alerta" : "") },
+        h("div", { class: "sugestao-topo" }, pode("AGENTE") ? marca : null, h("strong", { text: a.autor || "Cliente" }), h("span", { class: "estrelas", text: "★".repeat(a.nota) + "☆".repeat(5 - a.nota) }),
+          a.data ? h("span", { class: "sub", text: dataCurta(a.data) }) : null,
+          v ? selo(v[0], v[1]) : selo("Não analisada", ""), temResposta ? selo("Respondida", "ok") : selo("Sem resposta", "alerta"),
+          d && d.status === "DENUNCIADA" ? selo("Denunciada em " + new Date(d.em).toLocaleDateString(LOCALE), "info") : d && d.status === "RECUSADA" ? selo("Google recusou", "alerta") : null),
+        h("p", { style: "margin:0;color:var(--texto-2)", text: a.texto || "(sem texto, só a nota)" }),
+        temResposta ? h("div", { class: "resposta-publicada" }, h("span", { class: "sub", text: "Resposta da empresa:" }), h("p", { style: "margin:4px 0 0", text: a.resposta })) : null,
+        t ? h("div", { class: "analise-avaliacao" },
+          t.motivo ? h("p", { class: "nota", text: t.motivo }) : null,
+          (t.sinais || []).length ? h("ul", { class: "lista-simples" }, t.sinais.map(x => h("li", { text: x }))) : null,
+          t.categoria ? h("p", { class: "nota nota-alerta" }, "Tópico de denúncia: ", h("strong", { text: t.categoria })) : h("p", { class: "nota", text: "Sem base para denúncia: o melhor caminho é uma boa resposta." }),
+          t.justificativa && t.categoria ? h("p", { class: "nota", text: "Justificativa: " + t.justificativa }) : null) : null,
+        editor,
+        pode("AGENTE") ? h("div", { class: "acoes" },
+          t && t.categoria && !d ? botao("Denunciar no Google", () => denunciar(a, t), "btn-primario btn-pequeno") : null,
+          !d && !(t && t.categoria) ? botao("Já denunciei", () => marcarLote([a.id], "DENUNCIADA"), "btn-secundario btn-pequeno") : null,
+          d && d.status === "DENUNCIADA" ? botao("O Google recusou", () => marcarLote([a.id], "RECUSADA"), "btn-secundario btn-pequeno") : null,
+          d ? botao("Desfazer marcação", () => marcarLote([a.id], ""), "btn-secundario btn-pequeno") : null,
+          botao(temResposta ? "Editar resposta" : "✦ Escrever resposta", () => editor.classList.toggle("oculto"), "btn-secundario btn-pequeno"),
+          temResposta && pode("ADMIN") ? botao("Apagar resposta", async () => { if (!(await modal({ titulo: "Apagar esta resposta?", conteudo: a.google_id ? "A resposta é apagada também no Google." : "A resposta é apagada.", confirmar: "Apagar", perigo: true }))) return; try { await mk(`avaliacoes/${a.id}/apagar-resposta`, { metodo: "POST", corpo: {} }); aviso("Resposta apagada.", "ok"); navegar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-perigo btn-pequeno") : null,
+          botao(t ? "Analisar de novo" : "✦ Analisar esta", (_e, b) => analisar(b, [a.id]), "btn-secundario btn-pequeno"),
+          t && t.justificativa ? botao("Copiar justificativa", () => copiar(t.justificativa), "btn-secundario btn-pequeno") : null) : null);
+    }
+
+    // Filtros
+    const sel = (valor, opcoes) => { const e = h("select", { class: "entrada" }, opcoes.map(([v, n]) => h("option", { value: v, text: n, selected: String(valor) === String(v) }))); e.addEventListener("change", aplicar); return e; };
+    const fNota = sel(f.nota, [["", `1 e 2 estrelas (${numero(res.total || 0)})`], ["1", `Só 1 estrela (${numero(res.n1 || 0)})`], ["2", `Só 2 estrelas (${numero(res.n2 || 0)})`]]);
+    const fVer = sel(f.veredito, [["", "Todas"], ["PROVAVEL_FALSA", `Provavelmente falsas (${numero(res.falsas || 0)})`], ["DUVIDOSA", `Duvidosas (${numero(res.duvidosas || 0)})`], ["PARECE_REAL", `Parecem reais (${numero(res.reais || 0)})`], ["SEM", `Não analisadas (${numero(res.sem_triagem || 0)})`]]);
+    const fResp = sel(f.resposta, [["", "Com e sem resposta"], ["COM", `Com resposta (${numero(res.com_resposta || 0)})`], ["SEM", `Sem resposta (${numero((res.total || 0) - (res.com_resposta || 0))})`]]);
+    const fDen = sel(f.denuncia, [["", "Todas"], ["NAO", "Não denunciadas"], ["DENUNCIADA", `Denunciadas (${numero(res.denunciadas || 0)})`], ["RECUSADA", `Recusadas (${numero(res.recusadas || 0)})`]]);
+    const fBusca = h("input", { class: "entrada", type: "search", value: f.busca, placeholder: "Nome ou trecho do texto (Enter)" });
+    fBusca.addEventListener("keydown", e => { if (e.key === "Enter") aplicar(); });
+    function aplicar() { Object.assign(f, { nota: fNota.value, veredito: fVer.value, resposta: fResp.value, denuncia: fDen.value, busca: fBusca.value.trim() }); navegar(); }
+
+    // Lista e seleção
+    const contador = h("span", { class: "sub", text: "0 selecionada(s)" });
+    const listaEl = h("div", { class: "grade" });
+    let pagina = 0, carregadas = 0;
+    const adicionar = itens => { itens.forEach(a => listaEl.appendChild(cartao(a))); carregadas += itens.length; };
+    adicionar(primeira.avaliacoes || []);
+    const mais = h("div", { class: "acoes", style: "justify-content:center" });
+    const atualizarMais = () => mais.replaceChildren(...(carregadas < (primeira.encontradas || 0) ? [botao(`Mostrar mais (${numero(carregadas)} de ${numero(primeira.encontradas)})`, async (_e, b) => {
+      b.textContent = "Carregando…";
+      try { adicionar((await mk(consulta(++pagina))).avaliacoes || []); atualizarMais(); } catch (e) { aviso(e.message, "erro"); }
+    }, "btn-secundario")] : []));
+    atualizarMais();
+    const marcarTodas = h("input", { type: "checkbox", "aria-label": "Selecionar todas as carregadas" });
+    marcarTodas.addEventListener("change", () => { listaEl.querySelectorAll('input[type="checkbox"]').forEach(c => { if (c.checked !== marcarTodas.checked) { c.checked = marcarTodas.checked; c.dispatchEvent(new Event("change")); } }); });
+    const lote = pode("AGENTE") ? h("section", { class: "cartao vidro barra-lote" }, h("label", { class: "acoes", style: "gap:8px" }, marcarTodas, h("span", { text: "Selecionar todas as carregadas" })), contador,
+      h("div", { class: "acoes" },
+        botao("✦ Analisar selecionadas", (_e, b) => selecionadas.size ? analisar(b, [...selecionadas]) : aviso("Selecione pelo menos uma avaliação.", "erro"), "btn-secundario btn-pequeno"),
+        botao("Marcar como denunciadas", () => marcarLote([...selecionadas], "DENUNCIADA"), "btn-secundario btn-pequeno"),
+        botao("Marcar como recusadas", () => marcarLote([...selecionadas], "RECUSADA"), "btn-secundario btn-pequeno"),
+        botao("Limpar marcação", () => marcarLote([...selecionadas], ""), "btn-secundario btn-pequeno"))) : null;
+
+    trocar(area,
       h("section", { class: "cartao vidro" },
-        h("h3", { style: "margin-top:0", text: "Triagem das avaliações de 1 e 2 estrelas" }),
-        h("p", { style: "margin:0;color:var(--texto-2)", text: "A DENIA confere se quem avaliou está na sua base de clientes (WhatsApp e cadastro importado), procura avaliações em sequência, textos repetidos e conteúdo fora do tema, e indica o tópico certo de denúncia do Google. Você confirma e denuncia uma a uma — o Google não permite denúncia automática, e denúncia sem fundamento pode prejudicar o perfil." }),
-        !conectada ? h("p", { class: "nota nota-alerta", text: "Conecte o Google desta marca (Marcas → Conectar Google) para trazer as avaliações." })
-          : h("p", { class: "nota", text: `Perfil conectado: ${contaGoogleDa(g, marcaId).local_titulo}. Na DENIA: ${ativas.length} avaliação(ões) de 1 ou 2 estrelas.${contaGoogleDa(g, marcaId).sincronizado_ms ? " Última busca no Google: " + new Date(contaGoogleDa(g, marcaId).sincronizado_ms).toLocaleString(LOCALE) + "." : ""}` }),
-        conectada && contaGoogleDa(g, marcaId).erro ? h("p", { class: "nota nota-alerta", text: "Última tentativa com o Google falhou: " + contaGoogleDa(g, marcaId).erro }) : null,
+        h("h3", { style: "margin-top:0", text: "Central de reputação — avaliações de 1 e 2 estrelas" }),
+        conectada ? h("p", { class: "nota", text: `Perfil: ${conta.local_titulo}.${conta.total_google != null ? ` No Google: ${numero(conta.total_google)} avaliações${conta.media_google ? `, nota ${String(Number(conta.media_google).toFixed(1)).replace(".", ",")}` : ""}.` : ""} Na DENIA: ${numero(res.n1 || 0)} de 1 estrela e ${numero(res.n2 || 0)} de 2 estrelas.${conta.lendo ? " A última leitura completa do Google não terminou: clique em \"Buscar todas no Google\"." : ""}${conta.sincronizado_ms ? " Última busca: " + new Date(conta.sincronizado_ms).toLocaleString(LOCALE) + "." : ""}` })
+          : h("p", { class: "nota nota-alerta", text: "Conecte o Google desta marca (Marcas → Conectar Google) para trazer as avaliações." }),
+        conectada && conta.erro ? h("p", { class: "nota nota-alerta", text: "Última tentativa com o Google falhou: " + conta.erro }) : null,
+        h("p", { style: "margin:6px 0 0;color:var(--texto-2);font-size:14px", text: "A DENIA confere se quem avaliou está na sua base de clientes, procura avaliações em sequência, textos repetidos e conteúdo fora do tema, e indica o tópico de denúncia do Google. A denúncia em si é um toque no Google (ele não permite denúncia automática); o botão \"Denunciar no Google\" já abre o perfil e copia o nome para você achar a avaliação." }),
         h("div", { class: "acoes", style: "margin-top:12px" },
-          pode("AGENTE") ? botao(ativas.some(a => !a.t) ? "✦ Fazer a triagem" : "✦ Refazer a triagem", (_e, b) => triar(b, !ativas.some(a => !a.t)), "btn-primario") : null,
+          conectada && pode("AGENTE") ? botao("Buscar todas no Google", buscarTodas, "btn-secundario") : null,
+          pode("AGENTE") && res.sem_triagem ? botao(`✦ Analisar as ${numero(res.sem_triagem)} que faltam`, (_e, b) => analisar(b, null), "btn-primario") : null,
           conectada ? botao("Abrir o perfil no Google Maps", abrirPerfil, "btn-secundario") : null),
         progresso),
-      h("section", { class: "grade grade-4" }, metrica("Provavelmente falsas", numero(conta("PROVAVEL_FALSA")), "com indícios fortes"), metrica("Duvidosas", numero(conta("DUVIDOSA")), "confira antes de denunciar"),
-        metrica("Denunciadas", numero(ativas.filter(a => a.d && a.d.status === "DENUNCIADA").length), "aguardando o Google"), metrica("Removidas pelo Google", numero(removidas.length), "saíram do perfil")),
-      h("details", { class: "cartao vidro" }, h("summary", { text: "Como denunciar no Google (passo a passo)" }),
-        h("ol", { class: "passos" }, h("li", {}, "Clique em \"Abrir o perfil no Google Maps\" e vá em Avaliações."), h("li", {}, "Ache a avaliação pelo nome de quem avaliou e toque nos três pontinhos ao lado dela."),
-          h("li", {}, "Toque em \"Denunciar avaliação\" e escolha o tópico que a DENIA indicou."), h("li", {}, "Volte aqui e clique em \"Já denunciei\". Quando o Google remover, a avaliação aparece em \"Removidas\" sozinha."),
-          h("li", {}, "Se o Google recusar, você pode pedir uma nova análise uma vez, pela ferramenta de gerenciamento de avaliações do Google, usando a justificativa abaixo de cada avaliação."))),
-      ...(ativas.length ? ativas.map(a => {
-        const v = a.t ? NOME_V[a.t.veredito] : null;
-        return h("article", { class: "sugestao vidro" + (a.t && a.t.veredito === "PROVAVEL_FALSA" ? " sugestao-alerta" : "") },
-          h("div", { class: "sugestao-topo" }, h("strong", { text: a.autor || "Cliente" }), h("span", { class: "estrelas", text: "★".repeat(a.nota) + "☆".repeat(5 - a.nota) }), v ? selo(v[0], v[1]) : selo("Ainda não analisada", ""),
-            a.d && a.d.status === "DENUNCIADA" ? selo("Denunciada em " + new Date(a.d.em).toLocaleDateString(LOCALE), "info") : a.d && a.d.status === "RECUSADA" ? selo("Google recusou", "alerta") : null),
-          h("p", { style: "margin:0;color:var(--texto-2)", text: a.texto || "(sem texto, só a nota)" }),
-          a.t ? h("div", { class: "analise-avaliacao" },
-            a.t.motivo ? h("p", { class: "nota", text: a.t.motivo }) : null,
-            (a.t.sinais || []).length ? h("ul", { class: "lista-simples" }, a.t.sinais.map(x => h("li", { text: x }))) : null,
-            a.t.categoria ? h("p", { class: "nota nota-alerta" }, "Tópico de denúncia: ", h("strong", { text: a.t.categoria })) : h("p", { class: "nota", text: "Sem base para denúncia: o melhor caminho é responder bem (aba Avaliações)." }),
-            a.t.justificativa && a.t.categoria ? h("p", { class: "nota", text: "Justificativa: " + a.t.justificativa }) : null) : null,
-          pode("AGENTE") && a.t && a.t.categoria ? h("div", { class: "acoes" },
-            !a.d ? botao("Já denunciei", () => marcar(a, "DENUNCIADA"), "btn-primario btn-pequeno") : botao("Desfazer", () => marcar(a, ""), "btn-secundario btn-pequeno"),
-            a.d && a.d.status === "DENUNCIADA" ? botao("O Google recusou", () => marcar(a, "RECUSADA"), "btn-secundario btn-pequeno") : null,
-            a.t.justificativa ? botao("Copiar justificativa", () => copiar(a.t.justificativa), "btn-secundario btn-pequeno") : null) : null);
-      }) : [h("div", { class: "cartao vidro" }, vazio("Nenhuma avaliação de 1 ou 2 estrelas", "", ICONES.caixa))]),
-      removidas.length ? h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: `Removidas pelo Google (${removidas.length})` }),
-        h("ul", { class: "lista-simples" }, removidas.map(a => h("li", { text: `${a.autor || "Cliente"} (${a.nota}★) — removida em ${new Date(a.removida_ms).toLocaleDateString(LOCALE)}` })))) : null);
+      h("section", { class: "grade grade-4" },
+        metrica("1 estrela", numero(res.n1 || 0), "na DENIA"), metrica("2 estrelas", numero(res.n2 || 0), "na DENIA"),
+        metrica("Sem resposta", numero((res.total || 0) - (res.com_resposta || 0)), `${numero(res.com_resposta || 0)} já respondidas`),
+        metrica("Provavelmente falsas", numero(res.falsas || 0), `${numero(res.duvidosas || 0)} duvidosas · ${numero(res.reais || 0)} parecem reais`),
+        metrica("Denunciadas", numero(res.denunciadas || 0), `${numero(res.recusadas || 0)} recusadas pelo Google`), metrica("Removidas pelo Google", numero(res.removidas || 0), "saíram do perfil"),
+        metrica("Não analisadas", numero(res.sem_triagem || 0), "clique em Analisar")),
+      h("section", { class: "cartao vidro" }, h("div", { class: "linha-form" }, campo("Nota", fNota), campo("Triagem", fVer), campo("Resposta", fResp), campo("Denúncia", fDen), campo("Buscar", fBusca)),
+        h("p", { class: "nota", style: "margin:8px 0 0", text: `${numero(primeira.encontradas || 0)} avaliação(ões) com esses filtros.` })),
+      lote,
+      (primeira.avaliacoes || []).length ? listaEl : h("div", { class: "cartao vidro" }, vazio("Nenhuma avaliação com esses filtros", "", ICONES.caixa)),
+      mais);
   }
   async function abaRelatorio(area, marcaId) {
     const lista = (await mk(`relatorios?marca=${marcaId}`)).relatorios || [];

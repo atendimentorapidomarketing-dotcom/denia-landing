@@ -22,7 +22,9 @@ const IDIOMA_GOOGLE = { "pt-BR": "pt-BR", en: "en", es: "es", de: "de", it: "it"
 const DDL = [
   `CREATE TABLE IF NOT EXISTS plt_mk_google (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, marca_id INTEGER NOT NULL, conta_nome TEXT NOT NULL, local_nome TEXT NOT NULL, local_titulo TEXT, token_cifrado TEXT NOT NULL, criado_por TEXT, criado_ms INTEGER NOT NULL, atualizado_ms INTEGER NOT NULL, sincronizado_ms INTEGER, UNIQUE(org_id, marca_id))`
 ];
-const ALTERS = ["ALTER TABLE plt_mk_google ADD COLUMN desempenho_ms INTEGER", "ALTER TABLE plt_mk_google ADD COLUMN erro TEXT", "ALTER TABLE plt_mk_google ADD COLUMN maps_uri TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN removida_ms INTEGER"];
+const ALTERS = ["ALTER TABLE plt_mk_google ADD COLUMN desempenho_ms INTEGER", "ALTER TABLE plt_mk_google ADD COLUMN erro TEXT", "ALTER TABLE plt_mk_google ADD COLUMN maps_uri TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN removida_ms INTEGER",
+  "ALTER TABLE plt_mk_avaliacoes ADD COLUMN visto_ms INTEGER", "ALTER TABLE plt_mk_google ADD COLUMN sync_token TEXT", "ALTER TABLE plt_mk_google ADD COLUMN sync_inicio_ms INTEGER",
+  "ALTER TABLE plt_mk_google ADD COLUMN total_google INTEGER", "ALTER TABLE plt_mk_google ADD COLUMN media_google REAL"];
 const prontos = new WeakSet();
 async function garantir(env) {
   if (prontos.has(env.DB)) return;
@@ -108,7 +110,7 @@ export async function rotasGoogle(request, env, k, orgId, papel, resto) {
   const url = new URL(request.url);
 
   if (resto === "google/estado" && metodo === "GET") {
-    const contas = (await env.DB.prepare("SELECT marca_id, local_titulo, atualizado_ms, sincronizado_ms, erro FROM plt_mk_google WHERE org_id=?").bind(orgId).all())?.results || [];
+    const contas = (await env.DB.prepare("SELECT marca_id, local_titulo, atualizado_ms, sincronizado_ms, erro, total_google, media_google, sync_token IS NOT NULL AS lendo FROM plt_mk_google WHERE org_id=?").bind(orgId).all())?.results || [];
     return json({ configurada: googleConfigurada(env), faltando: faltando(env), contas });
   }
   if (resto === "google/conectar" && metodo === "GET") {
@@ -169,7 +171,7 @@ export async function rotasGoogle(request, env, k, orgId, papel, resto) {
     if (erro) return erro;
     const conta = await contaGoogleDe(env, orgId, Number(corpo.marca_id));
     if (!conta) return json({ erro: "Esta marca ainda não está conectada ao Google (Marcas → Conectar Google)." }, 409);
-    try { return json({ ok: true, ...(await sincronizarConta(env, k, conta)) }); }
+    try { return json({ ok: true, ...(await sincronizarConta(env, k, conta, { continuar: corpo.continuar === true })) }); }
     catch (e) {
       await env.DB.prepare("UPDATE plt_mk_google SET erro=? WHERE id=?").bind(String(e?.message || e).slice(0, 400), conta.id).run();
       return json({ erro: e.message }, 502);
@@ -234,14 +236,18 @@ export async function publicarGoogle(env, k, conta, p, imagem) {
 }
 
 // ----- Avaliações: busca no Google e grava (as novas ficam "sem resposta" para a DENIA sugerir).
-// paginas: na rodada automática só as primeiras (as novas chegam no topo); na busca manual, o perfil inteiro.
-// Grava em poucas consultas (lotes em JSON): um perfil com centenas de avaliações não estoura o limite
-// de consultas por execução do banco (D1).
-async function sincronizarAvaliacoes(env, k, conta, token, paginas = 30) {
-  let pagina = "", completo = false;
+// Busca as avaliações em partes (até `paginas` páginas de 50 por vez): perfis com milhares de avaliações são lidos
+// em várias chamadas seguidas, continuando de onde parou (sync_token). Grava em poucas consultas (lotes em JSON),
+// para não estourar o limite de consultas por execução do banco (D1). Numa leitura completa, o que não apareceu
+// mais no Google é marcado como removido (por exemplo, depois de uma denúncia aceita).
+async function sincronizarAvaliacoes(env, k, conta, token, { paginas = 20, continuar = false, rapida = false } = {}) {
+  const agoraMs = k.agora(env);
+  let pagina = continuar && conta.sync_token ? conta.sync_token : "", completo = false, info = {};
+  const inicioPassada = continuar && conta.sync_token ? Number(conta.sync_inicio_ms || agoraMs) : agoraMs;
   const doGoogle = [];
   for (let i = 0; i < paginas; i++) {
     const d = await chamar("GET", `${API_V4}/${caminhoV4(conta)}/reviews?pageSize=50${pagina ? "&pageToken=" + encodeURIComponent(pagina) : ""}`, token);
+    if (d.totalReviewCount != null) info = { total: Number(d.totalReviewCount), media: d.averageRating != null ? Number(d.averageRating) : null };
     for (const r of d.reviews || []) doGoogle.push({
       id: String(r.reviewId), autor: String(r.reviewer?.displayName || "Cliente").slice(0, 120), nota: ESTRELAS[r.starRating] || 0,
       texto: String(r.comment || "").slice(0, 3000), data: String(r.createTime || "").slice(0, 10) || null, r: r.reviewReply?.comment ? String(r.reviewReply.comment).slice(0, 4000) : null
@@ -249,28 +255,38 @@ async function sincronizarAvaliacoes(env, k, conta, token, paginas = 30) {
     pagina = d.nextPageToken || "";
     if (!pagina) { completo = true; break; }
   }
-  const nossas = (await env.DB.prepare("SELECT google_id, resposta, removida_ms FROM plt_mk_avaliacoes WHERE org_id=? AND marca_id=? AND google_id IS NOT NULL").bind(conta.org_id, conta.marca_id).all())?.results || [];
-  const ja = new Map(nossas.map(a => [a.google_id, a]));
+  const ids = doGoogle.map(r => r.id);
+  const ja = new Map();
+  for (let i = 0; i < ids.length; i += 400) {
+    const r = (await env.DB.prepare("SELECT google_id, resposta, removida_ms FROM plt_mk_avaliacoes WHERE org_id=? AND marca_id=? AND google_id IN (SELECT value FROM json_each(?))").bind(conta.org_id, conta.marca_id, JSON.stringify(ids.slice(i, i + 400))).all())?.results || [];
+    for (const a of r) ja.set(a.google_id, a);
+  }
   const novas = doGoogle.filter(r => !ja.has(r.id));
-  const respondidas = doGoogle.filter(r => r.r && ja.has(r.id) && ja.get(r.id).resposta !== r.r);
-  const voltaram = doGoogle.filter(r => ja.has(r.id) && ja.get(r.id).removida_ms);
+  const mudouResposta = doGoogle.filter(r => ja.has(r.id) && (ja.get(r.id).resposta || null) !== (r.r || null));
   const st = [];
   for (let i = 0; i < novas.length; i += 150) {
-    st.push(env.DB.prepare(`INSERT INTO plt_mk_avaliacoes(org_id,marca_id,autor,nota,texto,data,resposta,status,criado_ms,google_id)
+    st.push(env.DB.prepare(`INSERT INTO plt_mk_avaliacoes(org_id,marca_id,autor,nota,texto,data,resposta,status,criado_ms,google_id,visto_ms)
       SELECT ?, ?, json_extract(value,'$.autor'), json_extract(value,'$.nota'), json_extract(value,'$.texto'), json_extract(value,'$.data'), json_extract(value,'$.r'),
-        CASE WHEN json_extract(value,'$.r') IS NULL THEN 'PENDENTE' ELSE 'RESPONDIDA' END, ?, json_extract(value,'$.id') FROM json_each(?)`)
-      .bind(conta.org_id, conta.marca_id, k.agora(env), JSON.stringify(novas.slice(i, i + 150))));
+        CASE WHEN json_extract(value,'$.r') IS NULL THEN 'PENDENTE' ELSE 'RESPONDIDA' END, ?, json_extract(value,'$.id'), ? FROM json_each(?)`)
+      .bind(conta.org_id, conta.marca_id, agoraMs, agoraMs, JSON.stringify(novas.slice(i, i + 150))));
   }
-  if (respondidas.length) st.push(env.DB.prepare(`UPDATE plt_mk_avaliacoes SET status='RESPONDIDA',
-      resposta=(SELECT json_extract(value,'$.r') FROM json_each(?1) WHERE json_extract(value,'$.id')=plt_mk_avaliacoes.google_id)
-      WHERE org_id=?2 AND marca_id=?3 AND google_id IN (SELECT json_extract(value,'$.id') FROM json_each(?1))`).bind(JSON.stringify(respondidas.map(r => ({ id: r.id, r: r.r }))), conta.org_id, conta.marca_id));
-  if (voltaram.length) st.push(env.DB.prepare("UPDATE plt_mk_avaliacoes SET removida_ms=NULL WHERE org_id=? AND marca_id=? AND google_id IN (SELECT value FROM json_each(?))").bind(conta.org_id, conta.marca_id, JSON.stringify(voltaram.map(r => r.id))));
-  // Lista completa: o que sumiu do Google foi removido (por exemplo, depois de uma denúncia aceita).
-  const vistos = new Set(doGoogle.map(r => r.id));
-  const sumiram = completo ? nossas.filter(a => !a.removida_ms && !vistos.has(a.google_id)).map(a => a.google_id) : [];
-  if (sumiram.length) st.push(env.DB.prepare("UPDATE plt_mk_avaliacoes SET removida_ms=? WHERE org_id=? AND marca_id=? AND google_id IN (SELECT value FROM json_each(?))").bind(k.agora(env), conta.org_id, conta.marca_id, JSON.stringify(sumiram)));
+  // Resposta publicada ou apagada direto no Google: acompanha.
+  for (let i = 0; i < mudouResposta.length; i += 150) st.push(env.DB.prepare(`UPDATE plt_mk_avaliacoes SET
+      resposta=(SELECT json_extract(value,'$.r') FROM json_each(?1) WHERE json_extract(value,'$.id')=plt_mk_avaliacoes.google_id),
+      status=CASE WHEN (SELECT json_extract(value,'$.r') FROM json_each(?1) WHERE json_extract(value,'$.id')=plt_mk_avaliacoes.google_id) IS NULL THEN 'PENDENTE' ELSE 'RESPONDIDA' END
+      WHERE org_id=?2 AND marca_id=?3 AND google_id IN (SELECT json_extract(value,'$.id') FROM json_each(?1))`).bind(JSON.stringify(mudouResposta.slice(i, i + 150).map(r => ({ id: r.id, r: r.r }))), conta.org_id, conta.marca_id));
+  // Vistas agora no Google: não estão removidas.
+  for (let i = 0; i < ids.length; i += 400) st.push(env.DB.prepare("UPDATE plt_mk_avaliacoes SET visto_ms=?, removida_ms=NULL WHERE org_id=? AND marca_id=? AND google_id IN (SELECT value FROM json_each(?))").bind(agoraMs, conta.org_id, conta.marca_id, JSON.stringify(ids.slice(i, i + 400))));
+  if (!rapida) st.push(env.DB.prepare("UPDATE plt_mk_google SET sync_token=?, sync_inicio_ms=? WHERE id=?").bind(completo ? null : pagina, completo ? null : inicioPassada, conta.id));
+  if (info.total != null) st.push(env.DB.prepare("UPDATE plt_mk_google SET total_google=?, media_google=? WHERE id=?").bind(info.total, info.media, conta.id));
   if (st.length) await env.DB.batch(st);
-  return { novas: novas.length, total: doGoogle.length, removidas: sumiram.length };
+  let removidas = 0;
+  if (completo) {
+    // Leitura completa (do começo ao fim): o que não foi visto nesta passada saiu do Google.
+    const r = await env.DB.prepare("UPDATE plt_mk_avaliacoes SET removida_ms=? WHERE org_id=? AND marca_id=? AND google_id IS NOT NULL AND removida_ms IS NULL AND (visto_ms IS NULL OR visto_ms < ?)").bind(agoraMs, conta.org_id, conta.marca_id, inicioPassada).run();
+    removidas = Number(r?.meta?.changes || 0);
+  }
+  return { novas: novas.length, total: info.total ?? doGoogle.length, lidas: doGoogle.length, removidas, completo };
 }
 // Endereço do perfil no Google Maps (para abrir e denunciar uma avaliação).
 export async function linkDoPerfil(env, k, conta) {
@@ -280,6 +296,14 @@ export async function linkDoPerfil(env, k, conta) {
   const uri = d?.metadata?.mapsUri || null;
   if (uri) await env.DB.prepare("UPDATE plt_mk_google SET maps_uri=? WHERE id=?").bind(uri, conta.id).run();
   return uri;
+}
+
+// Apaga no Google a resposta de uma avaliação.
+export async function apagarRespostaGoogle(env, k, avaliacao) {
+  const conta = await contaGoogleDe(env, avaliacao.org_id, avaliacao.marca_id);
+  if (!conta) throw new Error("A marca não está mais conectada ao Google.");
+  const token = await tokenDa(env, k, conta);
+  await chamar("DELETE", `${API_V4}/${caminhoV4(conta)}/reviews/${encodeURIComponent(avaliacao.google_id)}/reply`, token);
 }
 
 // Publica no Google a resposta de uma avaliação que veio de lá.
@@ -340,16 +364,17 @@ export async function desempenhoAoVivo(env, k, conta) {
   return { perfil: conta.local_titulo, de: ini.toISOString().slice(0, 10), ate: fim.toISOString().slice(0, 10), totais, palavras };
 }
 
-export async function sincronizarConta(env, k, conta, { forcarDesempenho = true, completa = true } = {}) {
+export async function sincronizarConta(env, k, conta, { forcarDesempenho = true, completa = true, continuar = false } = {}) {
   const token = await tokenDa(env, k, conta);
-  const av = await sincronizarAvaliacoes(env, k, conta, token, completa ? 30 : 2);
+  // completa: lê o perfil inteiro em partes de 20 páginas (1.000 avaliações) por chamada; rápida: só as 2 primeiras (as novas).
+  const av = await sincronizarAvaliacoes(env, k, conta, token, completa ? { paginas: 20, continuar } : { paginas: 2, rapida: true });
   let desempenho = null;
   if (forcarDesempenho || !conta.desempenho_ms || conta.desempenho_ms < k.agora(env) - DESEMPENHO_A_CADA_MS) {
     try { await gravarSemanas(env, k, conta, token); desempenho = true; await env.DB.prepare("UPDATE plt_mk_google SET desempenho_ms=? WHERE id=?").bind(k.agora(env), conta.id).run(); }
     catch (e) { desempenho = false; console.error("google desempenho", e?.message); }
   }
   await env.DB.prepare("UPDATE plt_mk_google SET sincronizado_ms=?, erro=NULL WHERE id=?").bind(k.agora(env), conta.id).run();
-  return { avaliacoes_novas: av.novas, avaliacoes_total: av.total, avaliacoes_removidas: av.removidas, desempenho };
+  return { avaliacoes_novas: av.novas, avaliacoes_total: av.total, avaliacoes_lidas: av.lidas, avaliacoes_removidas: av.removidas, completo: av.completo, desempenho };
 }
 
 // Cron: a cada 10 minutos traz as avaliações novas; o desempenho, a cada 6 horas.
