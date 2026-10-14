@@ -1790,6 +1790,8 @@
       }
     } catch (e) { falha(area, e); }
   }
+  // replaceChildren escreve "null" na tela para itens vazios: estas abas montam a lista sem eles.
+  const trocar = (el, ...itens) => el.replaceChildren(...itens.flat().filter(x => x != null && x !== false && x !== ""));
   async function abaAvaliacoes(area, marcaId) {
     const [lista, g, cfg] = await Promise.all([mk(`avaliacoes?marca=${marcaId}`).then(r => (r.avaliacoes || []).filter(a => !a.removida_ms)), estadoGoogle(), mk("config").catch(() => ({}))]);
     const conectada = Boolean(contaGoogleDa(g, marcaId));
@@ -1813,7 +1815,7 @@
       x.resumo ? h("p", { class: "nota", text: x.resumo }) : null,
       x.precisa_humano ? h("p", { class: "nota nota-alerta", text: "Precisa de você: " + (x.motivo_humano || "uma pessoa da equipe deve ler e decidir antes de responder.") }) : null,
       x.viola_politica ? h("div", { class: "nota nota-alerta" }, h("strong", { text: "Pode violar as regras do Google" + (x.politica ? ` (${x.politica})` : "") + "." }), h("p", { style: "margin:6px 0 0", text: x.como_remover || "" })) : null) : null;
-    area.replaceChildren(
+    trocar(area, 
       h("section", { class: "grade grade-4" }, metrica("Nota média", media, `${lista.length} avaliação(ões) registradas`), metrica("Sem resposta", numero(lista.filter(a => a.status === "PENDENTE").length), "responda em até 24 h"), metrica("Precisam de você", numero(lista.filter(precisaDeVoce).length), "graves ou que podem violar as regras do Google"), metrica("Negativas", numero(lista.filter(a => Number(a.nota) <= 3).length), "3 estrelas ou menos")),
       conectada ? h("section", { class: "cartao vidro" }, h("p", { style: "margin:0", text: "Perfil conectado: as avaliações do Google chegam sozinhas, a cada 10 minutos. A resposta salva aqui é publicada direto no Google." }),
         h("div", { style: "margin-top:12px;max-width:440px" }, campo("Como responder as avaliações", modoAuto, "No modo automático, a DENIA lê cada avaliação, escreve a resposta no jeito da empresa e publica. Graves, suspeitas de violar as regras do Google e as que pedem contato nunca saem sozinhas: ficam aqui e você recebe o aviso.")),
@@ -1863,7 +1865,7 @@
           try {
             const s = await mk("google/sincronizar", { metodo: "POST", corpo: { marca_id: marcaId } });
             progresso.textContent = `Google: ${s.avaliacoes_total} avaliação(ões) no perfil.`;
-          } catch (e) { progresso.textContent = "O Google recusou a busca das avaliações: " + e.message; aviso(progresso.textContent, "erro"); return; }
+          } catch (e) { aviso("A busca no Google falhou (" + e.message + "). A triagem segue com as avaliações que já estão na DENIA.", "erro"); }
         }
         const antes = (await mk(`avaliacoes?marca=${marcaId}&nota_max=2`)).avaliacoes || [];
         const baixas = antes.filter(a => !a.removida_ms).length;
@@ -1885,7 +1887,7 @@
     const abrirPerfil = async () => { try { const r = await mk(`google/link?marca=${marcaId}`); if (r.url) window.open(r.url, "_blank", "noopener"); else aviso("O Google não informou o link do perfil.", "erro"); } catch (e) { aviso(e.message, "erro"); } };
     const marcar = async (a, status) => { try { await mk(`avaliacoes/${a.id}/denuncia`, { metodo: "POST", corpo: { status, categoria: a.t && a.t.categoria } }); navegar(); } catch (e) { aviso(e.message, "erro"); } };
     const conta = v => ativas.filter(a => a.t && a.t.veredito === v).length;
-    area.replaceChildren(
+    trocar(area, 
       h("section", { class: "cartao vidro" },
         h("h3", { style: "margin-top:0", text: "Triagem das avaliações de 1 e 2 estrelas" }),
         h("p", { style: "margin:0;color:var(--texto-2)", text: "A DENIA confere se quem avaliou está na sua base de clientes (WhatsApp e cadastro importado), procura avaliações em sequência, textos repetidos e conteúdo fora do tema, e indica o tópico certo de denúncia do Google. Você confirma e denuncia uma a uma — o Google não permite denúncia automática, e denúncia sem fundamento pode prejudicar o perfil." }),
@@ -1924,7 +1926,7 @@
   async function abaRelatorio(area, marcaId) {
     const lista = (await mk(`relatorios?marca=${marcaId}`)).relatorios || [];
     const atual = lista[0];
-    area.replaceChildren(h("section", { class: "cartao vidro" },
+    trocar(area, h("section", { class: "cartao vidro" },
       h("div", { class: "sugestao-topo" }, h("h3", { style: "margin:0", text: atual ? `Relatório da semana de ${dataCurta(atual.semana)}` : "Relatório semanal" }),
         pode("AGENTE") ? botao("✦ Gerar relatório agora", async (_e, b) => { b.textContent = "Analisando os dados…"; try { await mk("relatorios/gerar", { metodo: "POST", corpo: { marca_id: marcaId } }); navegar(); } catch (e) { aviso(e.message, "erro"); } finally { b.textContent = "✦ Gerar relatório agora"; } }, "btn-primario btn-pequeno") : null),
       atual ? h("div", { class: "relatorio-texto", text: atual.texto }) : vazio("Nenhum relatório ainda", "Toda segunda-feira a DENIA analisa o Google e as redes de cada marca conectada e escreve o relatório com o plano da semana. Você também pode gerar agora.", ICONES.caixa)),
@@ -1936,7 +1938,7 @@
     const semanas = Array.from({ length: 6 }, (_, i) => isoLocal(somarDias(segundaDe(new Date()), -7 * (5 - i))));
     const palavra = h("input", { class: "entrada", placeholder: "Ex.: assistência técnica de geladeira" });
     const cidade = h("input", { class: "entrada", value: (marca && marca.cidade) || "", placeholder: "Cidade ou bairro" });
-    area.replaceChildren(
+    trocar(area, 
       pode("AGENTE") ? h("section", { class: "cartao vidro formulario" }, h("h3", { style: "margin:0", text: "Acompanhar palavra-chave" }),
         h("p", { style: "margin:0;color:var(--texto-2);font-size:14px", text: "As buscas que trazem clientes. A posição é o lugar do perfil no Google Maps para aquela busca, na cidade indicada." }),
         h("div", { class: "linha-form" }, campo("Palavra-chave", palavra), campo("Cidade", cidade)),
@@ -1966,7 +1968,7 @@
         vivoG.palavras && vivoG.palavras.length ? h("div", {}, h("h4", { text: "O que as pessoas pesquisaram para achar o perfil (mês passado)" }),
           h("div", { class: "tabela-caixa" }, h("table", {}, h("thead", {}, h("tr", {}, h("th", { text: "Busca" }), h("th", { text: "Pessoas" }))),
             h("tbody", {}, vivoG.palavras.map(p => h("tr", {}, h("td", { text: p.palavra }), h("td", { text: p.buscas != null ? numero(p.buscas) : `menos de ${p.menos_de}` }))))))) : null)) : null;
-    area.replaceChildren(
+    trocar(area, 
       blocoGoogle,
       h("section", { class: "grade grade-4" }, ["visualizacoes", "ligacoes", "rotas", "cliques_site"].map(k => {
         const v = variacao(k);
