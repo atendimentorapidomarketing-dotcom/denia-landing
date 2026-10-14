@@ -202,7 +202,7 @@ select.entrada option { background: #0b1020; }
 .aviso-ok { border-color: rgba(34, 197, 94, 0.5); }
 .aviso-erro { border-color: rgba(244, 63, 94, 0.55); color: #fecdd3; }
 .modal { position: fixed; inset: 0; z-index: 70; display: grid; place-items: center; padding: 20px; background: rgba(2, 4, 10, 0.7); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
-.modal-caixa { width: min(520px, 100%); padding: 26px; background: rgba(10, 14, 28, 0.96); }
+.modal-caixa { width: min(520px, 100%); padding: 26px; background: rgba(10, 14, 28, 0.96); max-height: calc(100vh - 40px); overflow-y: auto; }
 .modal-caixa h2 { margin: 0 0 10px; font-size: 19px; }
 .modal-texto { color: var(--texto-2); font-size: 14.5px; }
 .modal-texto p { margin: 0 0 10px; }
@@ -414,3 +414,7 @@ body.ao-vivo .denia-orbe span { animation-duration: 0.9s; box-shadow: 0 0 26px r
 .relatorio-texto { white-space: pre-wrap; line-height: 1.6; font-size: 14.5px; margin-top: 12px; }
 .contador-alerta { background: #ef4444; color: #fff; }
 .lista-simples { margin: 4px 0; padding-left: 18px; color: var(--texto-2); font-size: 13.5px; display: grid; gap: 2px; }
+/* Listas longas dentro de janelas (perfis do Google, páginas da Meta): rolam com o mouse */
+.lista-rolavel { max-height: min(52vh, 460px); overflow-y: auto; overscroll-behavior: contain; padding-right: 6px; margin-top: 8px; }
+.lista-rolavel::-webkit-scrollbar { width: 10px; }
+.lista-rolavel::-webkit-scrollbar-thumb { background: rgba(127, 127, 127, 0.45); border-radius: 999px; }
