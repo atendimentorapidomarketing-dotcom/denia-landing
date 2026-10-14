@@ -1143,9 +1143,38 @@
   // Canais
   // ---------------------------------------------------------------------------
 
+  // Diagnóstico do WhatsApp: lê o estado do motor e explica, em português, por que a IA não está respondendo.
+  function diagnosticar(st) {
+    const itens = [], quando = ms => new Date(ms).toLocaleString(LOCALE);
+    if (!st) return [["erro", "A plataforma não consegue falar com a IA do WhatsApp (Worker denia). Se você colou um motor novo, confira se colou o arquivo inteiro, sem faltar nada no fim, e clicou em Deploy."]];
+    if (st.pausa_geral) itens.push(["erro", "A IA está PAUSADA para todos os clientes. Vá no Painel e clique em \"Retomar IA\" (ou peça à DENIA: \"retome a IA do WhatsApp\")."]);
+    if (st.d1 && !st.d1.operacional) itens.push(["erro", "O banco de dados do motor não está respondendo" + (st.d1.erro ? `: ${st.d1.erro}` : ".") + " A IA entra no modo de contingência."]);
+    if (!st.openai_configurado) itens.push(["erro", "Falta a chave da OpenAI no Worker denia (secret OPENAI_API_KEY)."]);
+    else if (st.teste_openai && !st.teste_openai.ok) itens.push(["erro", st.teste_openai.codigo === 401 ? "A OpenAI RECUSOU a chave do Worker denia (OPENAI_API_KEY): ela foi apagada ou trocada. Crie uma chave nova em platform.openai.com → API keys e cole no secret OPENAI_API_KEY do Worker denia." : st.teste_openai.codigo === 429 ? "A conta da OpenAI está SEM CRÉDITO ou no limite. Adicione crédito em platform.openai.com → Billing." : "A OpenAI respondeu com erro: " + st.teste_openai.erro]);
+    if (!st.whatsapp_configurado) itens.push(["erro", "Falta o token do WhatsApp no Worker denia (secret WHATSAPP_TOKEN)."]);
+    else if (st.teste_whatsapp && !st.teste_whatsapp.ok) itens.push(["erro", st.teste_whatsapp.codigo === 190 ? "O TOKEN DO WHATSAPP EXPIROU ou foi revogado. Gere um token permanente (Meta Business → Usuários do sistema → Gerar token, com whatsapp_business_messaging) e cole no secret WHATSAPP_TOKEN do Worker denia." : "A Meta recusou o token do WhatsApp: " + st.teste_whatsapp.erro]);
+    if (st.assinatura_invalida_ms && (!st.ultima_recebida_ms || st.assinatura_invalida_ms > st.ultima_recebida_ms)) itens.push(["erro", `A Meta está mandando as mensagens, mas o motor está RECUSANDO (assinatura não confere, última vez em ${quando(st.assinatura_invalida_ms)}). O secret META_APP_SECRET do Worker denia não é a chave secreta atual do app da Meta — provavelmente ela foi redefinida. Copie a chave secreta atual (Configurações do app → Básico → Mostrar) e cole no META_APP_SECRET do Worker denia.`]);
+    if (st.ultima_recebida_ms && Date.now() - st.ultima_recebida_ms > 6 * 3600000 && !itens.length) itens.push(["alerta", `Nenhuma mensagem chega ao motor desde ${quando(st.ultima_recebida_ms)}. Confira no app da Meta → WhatsApp → Configuração se o webhook está verificado e com o campo "messages" assinado.`]);
+    (st.erros_24h || []).slice(0, 2).forEach(x => itens.push(["alerta", `Erro ao processar mensagens (${quando(x.em)}): ${x.erro}`]));
+    if (st.falhas_envio_24h && st.falhas_envio_24h.n) itens.push(["alerta", `${st.falhas_envio_24h.n} resposta(s) não foram entregues nas últimas 24 h. Último motivo: ${st.falhas_envio_24h.ultima || "—"}`]);
+    if (st.versao && st.versao < "30.9") itens.push(["info", `O motor está na versão ${st.versao}. Cole o motor mais novo no Worker denia para ter as correções e este diagnóstico completo.`]);
+    if (!itens.some(i => i[0] === "erro")) itens.push(["ok", `Motor funcionando${st.enviadas_24h != null ? `: ${numero(st.enviadas_24h)} resposta(s) da IA nas últimas 24 h` : ""}${st.ultima_recebida_ms ? `, última mensagem recebida em ${quando(st.ultima_recebida_ms)}` : ""}.${st.teste_whatsapp && st.teste_whatsapp.ok ? ` Token do WhatsApp válido (${st.teste_whatsapp.numero || "número ok"}).` : ""}${st.teste_openai && st.teste_openai.ok ? " Chave da OpenAI válida." : ""}`]);
+    return itens;
+  }
+  function cartaoDiagnostico(inicial) {
+    const lista = h("div", { class: "grade" });
+    const desenhar = st => lista.replaceChildren(...diagnosticar(st).map(([nivel, texto]) => h("p", { class: "nota" + (nivel === "erro" ? " nota-alerta diag-erro" : nivel === "alerta" ? " nota-alerta" : ""), text: (nivel === "erro" ? "⛔ " : nivel === "alerta" ? "⚠️ " : nivel === "ok" ? "✅ " : "ℹ️ ") + texto })));
+    desenhar(inicial);
+    return h("section", { class: "cartao vidro" }, h("div", { class: "sugestao-topo" }, h("h3", { style: "margin:0", text: "Diagnóstico do WhatsApp" }),
+      botao("Verificar agora", async (_e, b) => { b.textContent = "Testando as chaves…"; try { desenhar(await eng("status?completo=1", { fresco: true })); } catch (e) { desenhar(null); aviso(e.message, "erro"); } finally { b.textContent = "Verificar agora"; } }, "btn-primario btn-pequeno")),
+      h("p", { class: "nota", text: "\"Verificar agora\" testa de verdade o token do WhatsApp e a chave da OpenAI do motor, além de pausas, erros e entregas das últimas 24 horas." }), lista);
+  }
   async function paginaWhatsapp(el, _p, vivo) {
     el.appendChild(cabeca("WhatsApp", "O canal principal da IA: atendimento aos clientes e conversa com os profissionais, pela API oficial do WhatsApp Business."));
     if (!estado.org.conectada) { falha(el, new ErroApi("A IA desta empresa ainda não foi conectada.", 503, { codigo: "ENGINE_NAO_CONFIGURADO" })); return; }
+    const diag = h("div", {}, carregando());
+    el.appendChild(diag);
+    eng("status", { fresco: true }).then(st => { if (vivo()) diag.replaceChildren(cartaoDiagnostico(st)); }).catch(() => { if (vivo()) diag.replaceChildren(cartaoDiagnostico(null)); });
     const area = h("div", { class: "grade grade-2" }, h("div", { class: "esqueleto" }), h("div", { class: "esqueleto" }));
     el.appendChild(area);
     let s;

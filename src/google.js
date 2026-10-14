@@ -31,6 +31,12 @@ async function garantir(env) {
   await env.DB.batch(DDL.map(s => env.DB.prepare(s)));
   await env.DB.prepare("ALTER TABLE plt_mk_avaliacoes ADD COLUMN google_id TEXT").run().catch(() => { }); // coluna já existe
   for (const a of ALTERS) await env.DB.prepare(a).run().catch(() => { });
+  // Duas buscas ao mesmo tempo (a automática e a do botão) chegaram a gravar a mesma avaliação duas vezes:
+  // apaga as cópias (fica a mais antiga, que guarda análise e respostas) e impede que aconteça de novo.
+  if (!(await env.DB.prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name='plt_mk_av_google_unico'").first().catch(() => null))) {
+    await env.DB.prepare(`DELETE FROM plt_mk_avaliacoes WHERE google_id IS NOT NULL AND id NOT IN (SELECT MIN(id) FROM plt_mk_avaliacoes WHERE google_id IS NOT NULL GROUP BY org_id, marca_id, google_id)`).run().catch(e => console.error("dedup", e?.message));
+    await env.DB.prepare("CREATE UNIQUE INDEX IF NOT EXISTS plt_mk_av_google_unico ON plt_mk_avaliacoes(org_id, marca_id, google_id)").run().catch(e => console.error("índice", e?.message));
+  }
   prontos.add(env.DB);
 }
 
@@ -259,14 +265,16 @@ async function sincronizarAvaliacoes(env, k, conta, token, { paginas = 20, conti
   const ids = doGoogle.map(r => r.id);
   const ja = new Map();
   for (let i = 0; i < ids.length; i += 400) {
-    const r = (await env.DB.prepare("SELECT google_id, resposta, removida_ms FROM plt_mk_avaliacoes WHERE org_id=? AND marca_id=? AND google_id IN (SELECT value FROM json_each(?))").bind(conta.org_id, conta.marca_id, JSON.stringify(ids.slice(i, i + 400))).all())?.results || [];
+    const r = (await env.DB.prepare("SELECT google_id, resposta, removida_ms, nota, texto FROM plt_mk_avaliacoes WHERE org_id=? AND marca_id=? AND google_id IN (SELECT value FROM json_each(?))").bind(conta.org_id, conta.marca_id, JSON.stringify(ids.slice(i, i + 400))).all())?.results || [];
     for (const a of r) ja.set(a.google_id, a);
   }
   const novas = doGoogle.filter(r => !ja.has(r.id));
   const mudouResposta = doGoogle.filter(r => ja.has(r.id) && (ja.get(r.id).resposta || null) !== (r.r || null));
+  // O cliente pode editar a avaliação no Google (nota ou texto): atualiza e manda ler de novo.
+  const editadas = doGoogle.filter(r => ja.has(r.id) && (Number(ja.get(r.id).nota) !== r.nota || String(ja.get(r.id).texto || "") !== r.texto));
   const st = [];
   for (let i = 0; i < novas.length; i += 150) {
-    st.push(env.DB.prepare(`INSERT INTO plt_mk_avaliacoes(org_id,marca_id,autor,nota,texto,data,resposta,status,criado_ms,google_id,visto_ms)
+    st.push(env.DB.prepare(`INSERT OR IGNORE INTO plt_mk_avaliacoes(org_id,marca_id,autor,nota,texto,data,resposta,status,criado_ms,google_id,visto_ms)
       SELECT ?, ?, json_extract(value,'$.autor'), json_extract(value,'$.nota'), json_extract(value,'$.texto'), json_extract(value,'$.data'), json_extract(value,'$.r'),
         CASE WHEN json_extract(value,'$.r') IS NULL THEN 'PENDENTE' ELSE 'RESPONDIDA' END, ?, json_extract(value,'$.id'), ? FROM json_each(?)`)
       .bind(conta.org_id, conta.marca_id, agoraMs, agoraMs, JSON.stringify(novas.slice(i, i + 150))));
@@ -276,6 +284,11 @@ async function sincronizarAvaliacoes(env, k, conta, token, { paginas = 20, conti
       resposta=(SELECT json_extract(value,'$.r') FROM json_each(?1) WHERE json_extract(value,'$.id')=plt_mk_avaliacoes.google_id),
       status=CASE WHEN (SELECT json_extract(value,'$.r') FROM json_each(?1) WHERE json_extract(value,'$.id')=plt_mk_avaliacoes.google_id) IS NULL THEN 'PENDENTE' ELSE 'RESPONDIDA' END
       WHERE org_id=?2 AND marca_id=?3 AND google_id IN (SELECT json_extract(value,'$.id') FROM json_each(?1))`).bind(JSON.stringify(mudouResposta.slice(i, i + 150).map(r => ({ id: r.id, r: r.r }))), conta.org_id, conta.marca_id));
+  for (let i = 0; i < editadas.length; i += 150) st.push(env.DB.prepare(`UPDATE plt_mk_avaliacoes SET
+      nota=(SELECT json_extract(value,'$.nota') FROM json_each(?1) WHERE json_extract(value,'$.id')=plt_mk_avaliacoes.google_id),
+      texto=(SELECT json_extract(value,'$.texto') FROM json_each(?1) WHERE json_extract(value,'$.id')=plt_mk_avaliacoes.google_id),
+      analise=NULL, triagem=NULL
+      WHERE org_id=?2 AND marca_id=?3 AND google_id IN (SELECT json_extract(value,'$.id') FROM json_each(?1))`).bind(JSON.stringify(editadas.slice(i, i + 150).map(r => ({ id: r.id, nota: r.nota, texto: r.texto }))), conta.org_id, conta.marca_id));
   // Vistas agora no Google: não estão removidas.
   for (let i = 0; i < ids.length; i += 400) st.push(env.DB.prepare("UPDATE plt_mk_avaliacoes SET visto_ms=?, removida_ms=NULL WHERE org_id=? AND marca_id=? AND google_id IN (SELECT value FROM json_each(?))").bind(agoraMs, conta.org_id, conta.marca_id, JSON.stringify(ids.slice(i, i + 400))));
   if (!rapida) st.push(env.DB.prepare("UPDATE plt_mk_google SET sync_token=?, sync_inicio_ms=?, completo_ms=COALESCE(?, completo_ms) WHERE id=?").bind(completo ? null : pagina, completo ? null : inicioPassada, completo ? agoraMs : null, conta.id));

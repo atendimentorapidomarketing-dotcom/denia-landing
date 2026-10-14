@@ -1,5 +1,13 @@
 # Changelog — DENIA Engine
 
+## 30.9.0 — 2026-10-14
+
+### Novo
+- Diagnóstico completo em `/platform/status` (o painel mostra em WhatsApp → Diagnóstico):
+  última mensagem recebida, erros e falhas de entrega das últimas 24 h, respostas enviadas,
+  webhooks recusados por assinatura (META_APP_SECRET diferente do app) e, com `?completo=1`,
+  teste real do token do WhatsApp e da chave da OpenAI.
+
 ## 30.8.0 — 2026-10-14
 
 ### Novo
