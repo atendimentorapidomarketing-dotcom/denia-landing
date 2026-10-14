@@ -63,7 +63,7 @@ const ROTAS_ENGINE = [
   ["POST", /^import\/clients$/, "ADMIN", "IMPORTACAO"],
   ["POST", /^pause$/, "ADMIN", "PAUSA_GERAL"]
 ];
-const PARAMS_ENGINE = { limit: /^\d{1,3}$/, status: /^(PENDENTE|APROVADA|REJEITADA)$/ };
+const PARAMS_ENGINE = { limit: /^\d{1,3}$/, status: /^(PENDENTE|APROVADA|REJEITADA)$/, completo: /^1$/ };
 
 // ---------------------------------------------------------------------------
 // Utilidades

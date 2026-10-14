@@ -35,7 +35,7 @@
 //       relatório diário. Nunca inicia conversa nova por conta própria.
 // ============================================================================
 
-const VERSAO = "30.8.0";
+const VERSAO = "30.9.0";
 const SCHEMA_VERSAO = "30.3.0-a";
 const EMPRESA_ID = 1;
 const PHONE_ID_PADRAO = "473474732510163";
@@ -1989,7 +1989,11 @@ async function assinaturaValida(bytes, request, env) {
 
 async function webhookPost(request, env, ctx) {
   const bytes = await request.arrayBuffer();
-  if (!(await assinaturaValida(bytes, request, env))) return new Response("assinatura inválida", { status: 401 });
+  if (!(await assinaturaValida(bytes, request, env))) {
+    // Guarda para o diagnóstico: se o META_APP_SECRET não bate com o app da Meta, nenhuma mensagem é aceita.
+    try { await env.DB.prepare("INSERT OR REPLACE INTO d30_meta(chave,valor) VALUES('assinatura_invalida',?)").bind(String(Date.now())).run(); } catch { /* sem banco */ }
+    return new Response("assinatura inválida", { status: 401 });
+  }
   let payload;
   try { payload = JSON.parse(new TextDecoder().decode(bytes)); } catch { return new Response("EVENT_RECEIVED", { status: 200 }); }
   const c = criarContexto(env);
@@ -2217,7 +2221,7 @@ async function platformApi(request, env, caminho, metodo) {
   await garantirSchema(c);
   const corpo = metodo === "POST" ? await request.json().catch(() => ({})) : {};
   let m;
-  if (caminho === "/platform/status") return json({ sucesso: true, versao: VERSAO, ...(await saude(c)) });
+  if (caminho === "/platform/status") return json({ sucesso: true, versao: VERSAO, ...(await saude(c, { completo: new URL(request.url).searchParams.get("completo") === "1" })) });
   if (caminho === "/platform/conversations" && metodo === "GET") {
     const lim = Math.min(Math.max(Number(new URL(request.url).searchParams.get("limit")) || 100, 1), 250);
     const r = await c.db.prepare(`SELECT p.id pessoa_id, p.nome, p.telefone, p.tipo, m.conteudo ultima_mensagem, m.criado_em ultima_mensagem_em, m.direcao ultima_direcao, m.origem ultima_origem
@@ -2368,7 +2372,7 @@ async function platformApi(request, env, caminho, metodo) {
 // SAÚDE (testa funcionamento real, não só se o binding existe)
 // ============================================================================
 
-async function saude(c) {
+async function saude(c, { completo = false } = {}) {
   const env = c.env;
   const r = {
     versao: VERSAO, modelo: modelo(env),
@@ -2390,6 +2394,31 @@ async function saude(c) {
     } catch (e) { r.erro_estatisticas = txt(e?.message, 200); }
   }
   r.pausa_geral = await pausaGeralAtiva(c).catch(() => null);
+  // Diagnóstico: chegam mensagens? há erros? os envios estão falhando? a assinatura da Meta bate?
+  if (r.d1.operacional) {
+    const q = async (sql, ...a) => c.db.prepare(sql).bind(...a).first().catch(() => null);
+    const qa = async (sql, ...a) => ((await c.db.prepare(sql).bind(...a).all().catch(() => null))?.results || []);
+    const dia = c.agora() - 86400000;
+    r.ultima_recebida_ms = Number((await q("SELECT MAX(recebido_ms) m FROM d30_fila"))?.m || 0) || null;
+    r.erros_24h = (await qa("SELECT erro, atualizado_ms FROM d30_fila WHERE status='ERRO' AND recebido_ms > ? ORDER BY atualizado_ms DESC LIMIT 3", dia)).map(x => ({ erro: txt(x.erro, 300), em: x.atualizado_ms }));
+    const falhas = await qa("SELECT descricao, criado_ms FROM d30_eventos WHERE tipo='FALHA_ENVIO_CLIENTE' AND criado_ms > ? ORDER BY id DESC LIMIT 50", dia);
+    r.falhas_envio_24h = { n: falhas.length, ultima: falhas[0] ? txt(falhas[0].descricao, 300) : null, em: falhas[0]?.criado_ms || null };
+    r.enviadas_24h = Number((await q("SELECT COUNT(*) n FROM mensagens WHERE direcao='SAIDA' AND origem='IA' AND criado_em > datetime('now','-1 day')"))?.n || 0);
+    r.assinatura_invalida_ms = Number((await q("SELECT valor FROM d30_meta WHERE chave='assinatura_invalida'"))?.valor || 0) || null;
+  }
+  // Teste real das chaves (só quando pedido): o token do WhatsApp e a chave da OpenAI ainda valem?
+  if (completo) {
+    try {
+      const w = await fetch(`https://graph.facebook.com/${GRAPH}/${phoneId(env)}?fields=display_phone_number,quality_rating`, { headers: { authorization: `Bearer ${String(env.WHATSAPP_TOKEN || "").trim()}` }, signal: AbortSignal.timeout(15000) });
+      const d = await w.json().catch(() => ({}));
+      r.teste_whatsapp = w.ok ? { ok: true, numero: d.display_phone_number || null, qualidade: d.quality_rating || null } : { ok: false, codigo: d?.error?.code || w.status, erro: txt(d?.error?.message || `HTTP ${w.status}`, 300) };
+    } catch (e) { r.teste_whatsapp = { ok: false, erro: txt(e?.message, 200) }; }
+    try {
+      const o = await fetch("https://api.openai.com/v1/models", { headers: { authorization: `Bearer ${String(env.OPENAI_API_KEY || "").trim()}` }, signal: AbortSignal.timeout(15000) });
+      const d = await o.json().catch(() => ({}));
+      r.teste_openai = o.ok ? { ok: true } : { ok: false, codigo: o.status, erro: txt(d?.error?.message || `HTTP ${o.status}`, 300) };
+    } catch (e) { r.teste_openai = { ok: false, erro: txt(e?.message, 200) }; }
+  }
   r.limites_envio = LIMITES_ENVIO;
   r.ok = r.d1.operacional && r.openai_configurado && r.whatsapp_configurado;
   return r;

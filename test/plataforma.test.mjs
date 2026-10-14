@@ -1046,7 +1046,10 @@ test("Google — perfil com milhares de avaliações é lido em partes, e dá pa
   const p = await criarPlataforma({ GOOGLE_CLIENT_ID: "c", GOOGLE_CLIENT_SECRET: "s" });
   await p.entrar("admin", ADMIN, SENHA_ADMIN);
   const marca = (await p.req("/api/orgs/1/mk/marcas", { metodo: "POST", quem: "admin", corpo: { nome: "Shopping" } })).dados.id;
+  // Cópias antigas (duas buscas ao mesmo tempo) são apagadas e não voltam.
+  p.env.DB.prepare("INSERT INTO plt_mk_avaliacoes(org_id,marca_id,autor,nota,texto,status,criado_ms,google_id) VALUES(1,?,?,1,'t','PENDENTE',1,'g0'),(1,?,?,1,'t','PENDENTE',1,'g0')").bind(marca, "Pessoa 0", marca, "Pessoa 0").run();
   await p.req("/api/orgs/1/mk/google/estado", { quem: "admin" });
+  assert.equal(p.env.DB.q("SELECT COUNT(*) n FROM plt_mk_avaliacoes WHERE google_id='g0'")[0].n, 1);
   p.env.DB.prepare("INSERT INTO plt_mk_google(org_id,marca_id,conta_nome,local_nome,local_titulo,token_cifrado,criado_ms,atualizado_ms) VALUES(1,?,?,?,?,?,1,1)").bind(marca, "accounts/1", "locations/2", "Shopping", "x").run();
   // 2.100 avaliações = 42 páginas de 50: a leitura completa precisa de 3 chamadas (20 páginas cada).
   const TOTAL = 2100, apagadas = [];
