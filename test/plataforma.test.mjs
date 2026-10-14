@@ -1171,3 +1171,76 @@ test("Consumo e custos — cada chamada da OpenAI entra na conta com tokens e cu
   const errada = await p.req("/api/orgs/1/mk/uso/chave-admin", { metodo: "POST", quem: "admin", corpo: { chave: "sk-normal-1234567890abcdefghijkl" } });
   assert.equal(errada.status, 400);
 });
+
+test("Instagram e Facebook por dentro — perfil, números, publicações, comentários (responder, ocultar, apagar, IA) e concorrente", async () => {
+  const p = await criarPlataforma({ META_APP_ID: "123456", META_APP_SECRET: "segredo-do-app", OPENAI_API_KEY: "sk-teste" });
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  const marca = (await p.req("/api/orgs/1/mk/marcas", { metodo: "POST", quem: "admin", corpo: { nome: "Clínica Sol" } })).dados.id;
+  const ida = await p.req(`/api/orgs/1/mk/meta/conectar?marca=${marca}`, { quem: "admin" });
+  const dialogo = new URL(ida.r.headers.get("location"));
+  assert.match(dialogo.searchParams.get("scope"), /instagram_manage_comments/);
+  assert.match(dialogo.searchParams.get("scope"), /instagram_manage_insights/);
+  assert.match(dialogo.searchParams.get("scope"), /pages_manage_engagement/);
+  p.meta = (url) => {
+    if (url.includes("oauth/access_token")) return { access_token: "longo" };
+    if (url.includes("me/accounts")) return { data: [{ id: "PAG1", name: "Clínica Sol", access_token: "token-da-pagina", instagram_business_account: { id: "IG1", username: "clinicasol" } }] };
+    return { error: { message: "inesperado " + url } };
+  };
+  const nonce = (await (await p.req(`/api/meta/retorno?code=abc&state=${encodeURIComponent(dialogo.searchParams.get("state"))}`)).r.text()).match(/meta-([A-Za-z0-9_-]+)/)[1];
+  await p.req("/api/orgs/1/mk/meta/escolher", { metodo: "POST", quem: "admin", corpo: { n: nonce, pagina_id: "PAG1" } });
+
+  const feitas = [];
+  p.meta = (url, metodo, corpo) => {
+    const u = new URL(url);
+    feitas.push({ caminho: u.pathname, metodo, corpo, q: Object.fromEntries(u.searchParams) });
+    assert.ok((u.searchParams.get("access_token") || corpo?.access_token) === "token-da-pagina", "usa o token da página");
+    if (u.pathname.endsWith("/IG1") && u.searchParams.get("fields").startsWith("business_discovery")) return { business_discovery: { username: "rival", followers_count: 1000, media_count: 50, media: { data: [{ like_count: 30, comments_count: 10, media_type: "IMAGE" }, { like_count: 50, comments_count: 10, media_type: "IMAGE" }] } } };
+    if (u.pathname.endsWith("/IG1")) return { id: "IG1", username: "clinicasol", followers_count: 1234, media_count: 80 };
+    if (u.pathname.endsWith("/IG1/insights") && u.searchParams.get("metric_type") === "total_value" && u.searchParams.get("metric") !== "follower_demographics") return { data: [{ name: "reach", total_value: { value: 500 } }, { name: "views", total_value: { value: 900 } }, { name: "total_interactions", total_value: { value: 70 } }] };
+    if (u.pathname.endsWith("/IG1/insights") && u.searchParams.get("metric") === "reach") return { data: [{ name: "reach", values: [{ value: 20, end_time: "2026-10-10T07:00:00+0000" }] }] };
+    if (u.pathname.endsWith("/IG1/insights") && u.searchParams.get("metric") === "follower_count") return { data: [{ name: "follower_count", values: [{ value: 3, end_time: "2026-10-10T07:00:00+0000" }, { value: 2, end_time: "2026-10-11T07:00:00+0000" }] }] };
+    if (u.pathname.endsWith("/IG1/insights")) return { data: [{ total_value: { breakdowns: [{ results: [{ dimension_values: ["Niterói"], value: 300 }] }] } }] };
+    if (u.pathname.endsWith("/IG1/media") && u.searchParams.get("fields").includes("comments.limit")) return { data: [{ id: "M1", caption: "Promoção de clareamento", permalink: "https://instagram.com/p/1", comments: { data: [
+      { id: "C1", text: "Quanto custa?", username: "ana", timestamp: "2026-10-12T10:00:00Z", replies: { data: [] } },
+      { id: "C2", text: "Amei!", username: "bia", timestamp: "2026-10-11T10:00:00Z", replies: { data: [{ id: "R1", text: "Obrigada, Bia!", username: "clinicasol" }] } },
+      { id: "C3", text: "resposta da própria marca", username: "clinicasol", timestamp: "2026-10-10T10:00:00Z" }] } }] };
+    if (u.pathname.endsWith("/IG1/media")) return { data: [{ id: "M1", caption: "Promoção", media_type: "IMAGE", media_product_type: "FEED", media_url: "https://cdn/1.jpg", permalink: "https://instagram.com/p/1", timestamp: "2026-10-01T10:00:00Z", like_count: 40, comments_count: 3 }], paging: { cursors: { after: "XYZ" }, next: "https://graph/next" } };
+    if (u.pathname.endsWith("/M1/insights")) return { data: [{ name: "reach", values: [{ value: 321 }] }, { name: "saved", values: [{ value: 9 }] }] };
+    if (u.pathname.endsWith("/C1/replies") && metodo === "POST") return { id: "R2" };
+    if (u.pathname.endsWith("/C1") && metodo === "POST") return { success: true };
+    if (u.pathname.endsWith("/C1") && metodo === "DELETE") return { success: true };
+    return { error: { message: "inesperado " + url } };
+  };
+  const base = `/api/orgs/1/mk/social`;
+  const perfil = (await p.req(`${base}/perfil?marca=${marca}&canal=instagram`, { quem: "admin" })).dados.perfil;
+  assert.deepEqual([perfil.usuario, perfil.seguidores, perfil.publicacoes], ["clinicasol", 1234, 80]);
+  const ins = (await p.req(`${base}/insights?marca=${marca}&canal=instagram&dias=60`, { quem: "admin" })).dados;
+  assert.equal(ins.dias, 60);
+  assert.equal(ins.totais.alcance, 1000, "60 dias = duas janelas de 30 somadas");
+  assert.equal(ins.totais.visualizacoes, 1800);
+  assert.equal(ins.totais.novos_seguidores, 5);
+  assert.equal(ins.publico.city[0].nome, "Niterói");
+  assert.ok(ins.anterior && ins.anterior.totais.alcance === 1000, "compara com o período anterior");
+  const mid = (await p.req(`${base}/midias?marca=${marca}&canal=instagram`, { quem: "admin" })).dados;
+  assert.equal(mid.itens[0].curtidas, 40); assert.equal(mid.proximo, "XYZ");
+  const met = (await p.req(`${base}/midias/M1?marca=${marca}&canal=instagram&tipo=FOTO`, { quem: "admin" })).dados.metricas;
+  assert.equal(met.reach, 321); assert.equal(met.saved, 9);
+  const com = (await p.req(`${base}/comentarios?marca=${marca}&canal=instagram`, { quem: "admin" })).dados;
+  assert.equal(com.comentarios.length, 2, "os comentários da própria marca ficam de fora");
+  assert.equal(com.sem_resposta, 1);
+  assert.equal(com.comentarios.find(c => c.id === "C2").respondido, true);
+  p.openai = () => resposta({ resposta: "Oi, Ana! Te mandamos os valores no direct 😊", tipo: "INTERESSE", acao: "LEVAR_PARA_PRIVADO", precisa_humano: false, motivo: "Pergunta de preço" });
+  const sug = (await p.req(`${base}/comentarios/C1/sugerir`, { metodo: "POST", quem: "admin", corpo: { marca_id: marca, canal: "instagram", comentario: "Quanto custa?", autor: "ana", post: "Promoção" } })).dados;
+  assert.equal(sug.tipo, "INTERESSE"); assert.match(sug.resposta, /direct/);
+  assert.equal((await p.req(`${base}/comentarios/C1/responder`, { metodo: "POST", quem: "admin", corpo: { marca_id: marca, canal: "instagram", texto: sug.resposta } })).dados.ok, true);
+  assert.equal(feitas.find(f => f.caminho.endsWith("/C1/replies")).corpo.message, sug.resposta);
+  await p.req(`${base}/comentarios/C1/ocultar`, { metodo: "POST", quem: "admin", corpo: { marca_id: marca, canal: "instagram", ocultar: true } });
+  assert.equal(feitas.find(f => f.caminho.endsWith("/C1") && f.metodo === "POST").corpo.hide, "true");
+  await p.req(`${base}/comentarios/C1/apagar`, { metodo: "POST", quem: "admin", corpo: { marca_id: marca, canal: "instagram" } });
+  assert.ok(feitas.find(f => f.caminho.endsWith("/C1") && f.metodo === "DELETE"), "apaga pela API");
+  const rival = (await p.req(`${base}/concorrente?marca=${marca}&canal=instagram&usuario=@rival`, { quem: "admin" })).dados;
+  assert.equal(rival.seguidores, 1000); assert.equal(rival.engajamento_medio, 50); assert.equal(rival.taxa_engajamento, 5);
+  // Tudo isso entra no consumo da Meta.
+  const uso = (await p.req("/api/orgs/1/mk/uso?dias=7", { quem: "admin" })).dados;
+  assert.ok(uso.linhas.filter(l => l.servico === "meta").reduce((s, l) => s + l.chamadas, 0) >= 10);
+});

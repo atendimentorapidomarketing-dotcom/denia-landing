@@ -1007,7 +1007,7 @@ function comSeguranca(resposta, request) {
   const h = new Headers(resposta.headers);
   h.set("content-security-policy", [
     "default-src 'self'", "script-src 'self'", "style-src 'self' https://fonts.googleapis.com",
-    "font-src 'self' https://fonts.gstatic.com", "img-src 'self' data: blob:", "media-src 'self' blob:", "connect-src 'self' https://api.openai.com",
+    "font-src 'self' https://fonts.gstatic.com", "img-src 'self' data: blob: https://*.cdninstagram.com https://*.fbcdn.net", "media-src 'self' blob:", "connect-src 'self' https://api.openai.com",
     "manifest-src 'self'", "frame-ancestors 'none'", "base-uri 'none'", "form-action 'self'", "object-src 'none'"
   ].join("; "));
   h.set("strict-transport-security", "max-age=31536000; includeSubDomains");

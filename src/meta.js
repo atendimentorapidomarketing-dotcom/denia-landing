@@ -11,7 +11,9 @@ import { registrarUso, lerLimitesMeta, orgDoUso, recursoDo, comOrgUso } from "./
 import { contaGoogleDe, publicarGoogle, googleConfigurada } from "./google.js";
 
 const GRAPH_PADRAO = "v25.0";
-const PERMISSOES = ["pages_show_list", "pages_read_engagement", "pages_manage_posts", "instagram_basic", "instagram_content_publish", "business_management"];
+// Publicar, ler os números (insights), responder e moderar comentários do Instagram e da página.
+const PERMISSOES = ["pages_show_list", "pages_read_engagement", "pages_manage_posts", "pages_manage_engagement", "pages_read_user_content", "read_insights",
+  "instagram_basic", "instagram_content_publish", "instagram_manage_comments", "instagram_manage_insights", "business_management"];
 const VALIDADE_STATE_MS = 15 * 60000;
 const MAX_TENTATIVAS = 3;
 const JANELA_ATRASO_MS = 48 * 3600000; // post agendado há mais de 48 h não sai sozinho (evita surpresa)
@@ -20,7 +22,7 @@ const DDL = [
   `CREATE TABLE IF NOT EXISTS plt_mk_contas (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, marca_id INTEGER NOT NULL, pagina_id TEXT NOT NULL, pagina_nome TEXT, ig_id TEXT, ig_usuario TEXT, token_cifrado TEXT NOT NULL, criado_por TEXT, criado_ms INTEGER NOT NULL, atualizado_ms INTEGER NOT NULL, UNIQUE(org_id, marca_id))`
 ];
 const prontos = new WeakSet();
-async function garantir(env) {
+export async function garantir(env) {
   if (prontos.has(env.DB)) return;
   await env.DB.batch(DDL.map(s => env.DB.prepare(s)));
   await env.DB.prepare("ALTER TABLE plt_mk_posts ADD COLUMN publicacao TEXT").run().catch(() => { });
@@ -36,10 +38,10 @@ function operacaoMeta(metodo, caminho) {
   const partes = String(caminho).split("?")[0].split("/").filter(x => x && !/^\d+$/.test(x));
   return `${metodo} ${partes.slice(-1)[0] || "objeto"}`.slice(0, 50);
 }
-async function graph(env, metodo, caminho, params = {}) {
+export async function graph(env, metodo, caminho, params = {}) {
   const url = new URL(`https://graph.facebook.com/${versao(env)}/${caminho.replace(/^\//, "")}`);
   const init = { method: metodo, signal: AbortSignal.timeout(30000) };
-  if (metodo === "GET") for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
+  if (metodo === "GET" || metodo === "DELETE") for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
   else { init.body = new URLSearchParams(params); init.headers = { "content-type": "application/x-www-form-urlencoded" }; }
   const inicio = Date.now(), org = orgDoUso(env);
   let r;
@@ -58,7 +60,7 @@ async function graph(env, metodo, caminho, params = {}) {
 function explicarErro(err, status) {
   const c = err?.code, msg = String(err?.message || `HTTP ${status}`);
   if (c === 190) return "O acesso à conta da Meta expirou ou foi removido. Conecte de novo em Marcas.";
-  if (c === 10 || c === 200 || c === 3) return "A Meta não deu permissão para esta ação. Conecte de novo e aceite todas as permissões pedidas.";
+  if (c === 10 || c === 200 || c === 3 || (c >= 200 && c < 300)) return "A Meta não deu permissão para esta ação. Conecte a marca de novo (Marcas → Conectar Instagram e Facebook) e aceite todas as permissões pedidas — as novas liberam números, comentários e respostas.";
   if (c === 4 || c === 17 || c === 32 || c === 613) return "Limite de publicações da Meta atingido por agora. A DENIA tenta de novo mais tarde.";
   if (c === 9004 || /image|imagem|media/i.test(msg) && c === 100) return "O Instagram não conseguiu baixar a imagem do post. Gere a arte de novo e tente outra vez.";
   return "A Meta respondeu: " + msg.slice(0, 220);
