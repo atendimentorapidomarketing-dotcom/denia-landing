@@ -61,6 +61,8 @@ const ROTAS_ENGINE = [
   ["GET", /^learning$/, "VISUALIZADOR"],
   ["POST", /^learning\/start$/, "ADMIN", "APRENDIZADO"],
   ["GET", /^learning\/suggestions$/, "VISUALIZADOR"],
+  ["GET", /^study$/, "VISUALIZADOR"],
+  ["POST", /^study\/run$/, "ADMIN", "APRENDIZADO"],
   ["POST", /^learning\/suggestions\/\d{1,12}$/, "ADMIN", "APRENDIZADO"],
   ["GET", /^import\/clients$/, "VISUALIZADOR"],
   ["POST", /^import\/clients$/, "ADMIN", "IMPORTACAO"],

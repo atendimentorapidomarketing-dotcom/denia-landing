@@ -827,10 +827,35 @@
   const TIPOS = { RESPOSTA_PADRAO: ["Resposta padrão", "info"], PRECO_PRATICADO: ["Preço praticado", "alerta"], QUEM_ATENDE: ["Quem atende", "info"], REGRA: ["Regra", ""], ESTILO: ["Jeito de falar", "ok"], INFORMACAO: ["Informação", ""] };
   let timerAprendizado = null;
 
+  // Estudo diário: toda noite a DENIA relê o dia, encontra os próprios erros e escreve lições que valem no dia seguinte.
+  async function blocoEstudo(caixa) {
+    let st;
+    try { st = await eng("study", { fresco: true }); }
+    catch (e) { if (e.status === 404) trocar(caixa, h("section", { class: "cartao vidro" }, h("p", { class: "nota", text: "Cole o motor 31.6 no Worker denia para a DENIA estudar sozinha todos os dias." }))); return; }
+    const rel = (st.relatorios || []).filter(r => r.tipo === "ESTUDO_DIARIO");
+    const ultimo = rel[0];
+    const licoes = String(st.licoes || "").split("\n").map(l => l.replace(/^[-•]\s*/, "").trim()).filter(Boolean);
+    const notas = rel.slice().reverse().filter(r => r.nota != null).map(r => ({ data: String(r.dia || new Date(r.em).toISOString().slice(0, 10)), v: r.nota }));
+    trocar(caixa, h("section", { class: "cartao vidro" },
+      h("div", { class: "cabeca-grafico" }, h("h3", { style: "margin:0", text: "Estudo diário da DENIA" }),
+        pode("ADMIN") ? h("div", { class: "acoes" },
+          botao("Estudar o dia agora", async (_e, b) => { b.textContent = "Estudando…"; try { await eng("study/run", { metodo: "POST", corpo: {} }); aviso("Estudo concluído.", "ok"); await blocoEstudo(caixa); } catch (e) { aviso(e.message, "erro"); b.textContent = "Estudar o dia agora"; } }, "btn-primario btn-pequeno"),
+          botao("Pesquisar boas práticas", async (_e, b) => { b.textContent = "Pesquisando na internet…"; try { await eng("study/run", { metodo: "POST", corpo: { tipo: "pesquisa" } }); aviso("Pesquisa concluída.", "ok"); await blocoEstudo(caixa); } catch (e) { aviso(e.message, "erro"); b.textContent = "Pesquisar boas práticas"; } }, "btn-secundario btn-pequeno")) : null),
+      h("p", { class: "sub", text: "Toda noite ela relê as conversas do dia, aponta os próprios erros e escreve lições que já valem no atendimento seguinte. Uma vez por semana pesquisa na internet boas práticas de atendimento com empatia." }),
+      ultimo ? h("section", { class: "grade grade-3" }, metrica("Nota do último dia", ultimo.nota != null ? `${String(ultimo.nota).replace(".", ",")}/10` : "—", ultimo.dia ? dataCompleta(ultimo.dia) : ""), metrica("Conversas estudadas", numero(ultimo.conversas || 0), ""), metrica("Lições que ela segue", numero(licoes.length), `${numero(ultimo.licoes_novas || 0)} nova(s) no último estudo`)) : h("p", { class: "nota", text: "Ainda não houve estudo. Ele acontece sozinho depois das 21h, ou clique em \"Estudar o dia agora\"." }),
+      notas.length > 1 ? h("div", { style: "margin-top:10px" }, h("h4", { style: "margin:0 0 4px", text: "Nota por dia" }), graficoLinha(notas.map(n => ({ chave: n.data, rotulo: dataCompleta(n.data), curto: dataCurta(n.data), valor: n.v })), null, "Nota do dia", "")) : null,
+      ultimo && ultimo.resumo ? h("p", { style: "margin:10px 0 0", text: ultimo.resumo }) : null,
+      ultimo && (ultimo.erros || []).length ? h("details", {}, h("summary", { text: `Erros que ela encontrou no último dia (${ultimo.erros.length})` }),
+        h("ul", { class: "lista-saude" }, ultimo.erros.map(e => h("li", {}, h("span", {}, h("strong", { text: e.erro }), h("span", { class: "sub", text: "Como deveria ser: " + e.correcao })))))) : null,
+      licoes.length ? h("details", { open: true }, h("summary", { text: `Lições que ela segue (${licoes.length})` }), h("ol", { class: "passos" }, licoes.map(l => h("li", { text: l })))) : null));
+  }
   async function paginaAprendizados(el, param, vivo) {
     clearTimeout(timerAprendizado);
     const filtro = ["PENDENTE", "APROVADA", "REJEITADA"].includes(String(param).toUpperCase()) ? String(param).toUpperCase() : "PENDENTE";
-    el.appendChild(cabeca("Aprendizados", "A IA lê as conversas dos últimos 6 meses — principalmente as respostas das atendentes — e sugere o que aprender. Nada entra no treinamento sem a sua aprovação."));
+    el.appendChild(cabeca("Aprendizados", "A IA lê as conversas dos últimos 6 meses — principalmente as respostas das atendentes — e sugere o que aprender. Conhecimento novo (preços, serviços, regras) só entra com a sua aprovação."));
+    const estudo = h("div", {});
+    el.appendChild(estudo);
+    blocoEstudo(estudo).catch(() => {});
     const topo = h("div", { class: "cartao vidro" }, carregando());
     const lista = h("div", { class: "grade" });
     el.append(topo, lista);
@@ -2513,7 +2538,9 @@
   }
   // Gráfico de linha (uma métrica por vez, um só eixo), com a comparação tracejada e o valor de cada ponto ao passar o dedo/mouse.
   function graficoLinha(pontos, comparacao, nomeAtual, nomeComp) {
-    const estreito = window.innerWidth < 640, L = estreito ? 360 : 760, A = estreito ? 240 : 260, m = { e: estreito ? 40 : 52, d: estreito ? 10 : 16, t: 14, b: 30 };
+    // O desenho tem o tamanho real da área (sem "zoom"): letras e linhas ficam com o mesmo tamanho em qualquer tela.
+    const disponivel = Math.round(Math.max(300, Math.min(1500, ((document.getElementById("conteudo") || {}).clientWidth || window.innerWidth) - 96)));
+    const estreito = disponivel < 600, L = disponivel, A = estreito ? 220 : 240, m = { e: estreito ? 40 : 56, d: estreito ? 10 : 16, t: 14, b: 30 };
     const larg = L - m.e - m.d, alt = A - m.t - m.b;
     const max = Math.max(1, ...pontos.map(p => p.valor), ...(comparacao || []).map(p => p.valor));
     const passo = (() => { const bruto = max / 4, ordem = Math.pow(10, Math.floor(Math.log10(bruto))); const n = [1, 2, 2.5, 5, 10].find(x => x * ordem >= bruto); return n * ordem; })();
@@ -2528,7 +2555,7 @@
       svg.appendChild(el("line", { x1: m.e, x2: L - m.d, y1: y(v), y2: y(v), class: "grafico-grade" }));
       const t = el("text", { x: m.e - 8, y: y(v) + 4, class: "grafico-eixo", "text-anchor": "end" }); t.textContent = numero(v); svg.appendChild(t);
     }
-    const marcas = Math.min(estreito ? 3 : 6, pontos.length);
+    const marcas = Math.min(Math.max(3, Math.floor(L / 120)), pontos.length);
     for (let j = 0; j < marcas; j++) {
       const i = marcas < 2 ? 0 : Math.round((j / (marcas - 1)) * (pontos.length - 1));
       const t = el("text", { x: x(i), y: A - 8, class: "grafico-eixo", "text-anchor": j === 0 && marcas > 1 ? "start" : j === marcas - 1 && marcas > 1 ? "end" : "middle" }); t.textContent = pontos[i].curto; svg.appendChild(t);

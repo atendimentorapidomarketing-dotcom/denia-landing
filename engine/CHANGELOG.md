@@ -1,5 +1,23 @@
 # Changelog — DENIA Engine
 
+## 31.6.0 — 2026-10-15
+
+### Corrigido — a DENIA não sabia o que a equipe combinou por fora
+- Mensagem da equipe pelo celular (ex.: "Serviço agendado… data… valor") agora é ligada ao
+  atendimento certo e a IA relê o caso e atualiza a etapa (AGENDADO etc.) e a consulta ao profissional.
+- Antes de responder um profissional, se a equipe mexeu no caso depois da consulta, a DENIA relê tudo e
+  atualiza o caso primeiro — não pergunta mais "consegue pegar? qual o valor?" de algo já agendado.
+- Serviço já agendado: a DENIA responde o profissional como alguém da equipe (curto, com os dados certos);
+  só chama a equipe se ele quer remarcar, cancelar ou relata problema. "Ok"/"combinado" não geram resposta.
+
+### Novo — estudo diário e pesquisa semanal
+- Toda noite (depois das 21h) relê as conversas do dia, dá uma nota, lista os próprios erros e escreve
+  lições que passam a valer no atendimento seguinte (campo `licoes_diarias` do treinamento, versionado,
+  até 30 lições). Conhecimento novo (preço, serviço, regra) vai para Aprendizados e só vale aprovado.
+- Uma vez por semana pesquisa na internet boas práticas de atendimento com empatia e transforma em lições.
+- `/platform/study` (relatórios e lições) e `/platform/study/run` (estudar agora).
+- Respostas mais curtas e humanas: 1 a 2 frases, no máximo 1 pergunta, no jeito da equipe.
+
 ## 31.5.0 — 2026-10-15
 
 ### Novo — memória completa do cliente
