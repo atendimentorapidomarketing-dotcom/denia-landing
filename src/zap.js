@@ -6,6 +6,7 @@
 // algo que a busca por palavra não resolve, com o modelo mais barato).
 
 import { openaiResposta } from "./marketing.js";
+import { acessoDa, lerPlanos } from "./planos.js";
 
 const GRAPH = "https://graph.facebook.com/v21.0";
 export const DDL_ZAP = [
@@ -20,7 +21,8 @@ export const DDL_ZAP = [
   `CREATE INDEX IF NOT EXISTS idx_zap_msgs_conversa ON plt_zap_msgs(org_id, telefone, id)`,
   `CREATE INDEX IF NOT EXISTS idx_zap_msgs_tempo ON plt_zap_msgs(org_id, criado_ms)`,
   `CREATE TABLE IF NOT EXISTS plt_zap_buscas (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, telefone TEXT, nome TEXT, item_id INTEGER, tipo TEXT, titulo TEXT, caminho TEXT, texto TEXT, via TEXT, resultados INTEGER, criado_ms INTEGER NOT NULL)`,
-  `CREATE INDEX IF NOT EXISTS idx_zap_buscas_tempo ON plt_zap_buscas(org_id, criado_ms)`
+  `CREATE INDEX IF NOT EXISTS idx_zap_buscas_tempo ON plt_zap_buscas(org_id, criado_ms)`,
+  `CREATE TABLE IF NOT EXISTS plt_zap_tg (chat_id TEXT NOT NULL, message_id INTEGER NOT NULL, org_id INTEGER NOT NULL, telefone TEXT NOT NULL, criado_ms INTEGER NOT NULL, PRIMARY KEY (chat_id, message_id))`
 ];
 
 export const ZAP_PADRAO = {
@@ -33,6 +35,10 @@ export const ZAP_PADRAO = {
   rede_nome: "", rede_url: "",
   sobre: "",
   modelo_ia: "gpt-5-nano",
+  exibicao_inicio: "AUTO",
+  // Treinamento da IA completa (modo IA): o jeito de atender e o que ela pode dizer desta empresa.
+  nome_atendente: "", ia_tom: "", ia_servicos: "", ia_precos: "", ia_regras: "", ia_exemplos: "",
+  modelo_conversa: "gpt-5-mini",
   limite_ia_dia: 300,
   avisar_buscas: true
 };
@@ -50,6 +56,12 @@ async function hmacHex(segredo, texto) {
   return [...new Uint8Array(await crypto.subtle.sign("HMAC", k, e.encode(texto)))].map(b => b.toString(16).padStart(2, "0")).join("");
 }
 function iguais(a, b) { a = String(a); b = String(b); let d = a.length ^ b.length; for (let i = 0; i < Math.max(a.length, b.length); i++) d |= (a.charCodeAt(i) || 0) ^ (b.charCodeAt(i) || 0); return d === 0; }
+// Modo de atendimento que o plano permite: IA completa > botões + IA > só botões.
+function modoPermitido(modo, rec) {
+  if (modo === "IA") return rec.includes("ia_completa") ? "IA" : rec.includes("chatbot_ia") ? "MISTO" : "BOTOES";
+  if (modo === "MISTO") return rec.includes("chatbot_ia") ? "MISTO" : "BOTOES";
+  return "BOTOES";
+}
 function lerConfig(conta) { let c = {}; try { c = JSON.parse(conta?.config || "{}") || {}; } catch { c = {}; } return { ...ZAP_PADRAO, ...c }; }
 
 // ---------------------------------------------------------------------------
@@ -92,19 +104,32 @@ function lista(z, corpo, secao, linhas, origem) {
     `${corpo} [lista: ${linhas.map(l => l.titulo).join(", ")}]`, origem);
 }
 
-async function telegram(z, texto) {
-  if (z.sim || !z.conta.telegram_cifrado) return false;
-  let t = {};
-  try { t = JSON.parse(await z.k.decifrar(z.env, z.conta.telegram_cifrado) || "{}"); } catch { t = {}; }
-  if (!t.token || !t.chat) return false;
+// Telegram: o bot da própria DENIA (conectado com um toque, pelo link) ou um bot próprio da empresa.
+export function tokenTelegramPlataforma(env) { return String(env.TELEGRAM_BOT_TOKEN_PLATAFORMA || env.TELEGRAM_BOT_TOKEN || "").trim(); }
+async function destinoTelegram(env, k, conta) {
+  if (conta?.telegram_chat && tokenTelegramPlataforma(env)) return { token: tokenTelegramPlataforma(env), chat: conta.telegram_chat };
+  if (!conta?.telegram_cifrado) return null;
+  try { const t = JSON.parse(await k.decifrar(env, conta.telegram_cifrado) || "{}"); return t.token && t.chat ? t : null; } catch { return null; }
+}
+async function tgApi(token, metodo, corpo) {
   try {
-    const r = await fetch(`https://api.telegram.org/bot${t.token}/sendMessage`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ chat_id: t.chat, text: cortar(texto, 3500), disable_web_page_preview: true }), signal: AbortSignal.timeout(10000) });
-    return r.ok;
-  } catch { return false; }
+    const r = await fetch(`https://api.telegram.org/bot${token}/${metodo}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(corpo), signal: AbortSignal.timeout(10000) });
+    return await r.json().catch(() => ({ ok: r.ok }));
+  } catch { return { ok: false }; }
+}
+async function telegram(z, texto, telCliente) {
+  if (z.sim) return false;
+  const d = await destinoTelegram(z.env, z.k, z.conta);
+  if (!d) return false;
+  const r = await tgApi(d.token, "sendMessage", { chat_id: d.chat, text: cortar(texto, 3500) + (telCliente ? "\n\n↩️ Responda esta mensagem aqui no Telegram e a resposta vai para o cliente no WhatsApp." : ""), disable_web_page_preview: true });
+  const id = r?.result?.message_id;
+  // Guarda de qual cliente é o aviso, para a equipe responder pelo próprio Telegram.
+  if (id && telCliente) await z.env.DB.prepare("INSERT OR REPLACE INTO plt_zap_tg(chat_id,message_id,org_id,telefone,criado_ms) VALUES(?,?,?,?,?)").bind(String(d.chat), id, z.org, telCliente, z.agora).run().catch(() => {});
+  return Boolean(r?.ok);
 }
 async function alertarEquipe(z, texto) {
   if (z.sim) return;
-  if (await telegram(z, texto)) return;
+  if (await telegram(z, texto, z.tel)) return;
   if (z.k.alertarEmail) await z.k.alertarEmail(z.org, "DENIA — cliente quer falar com a equipe no WhatsApp", texto).catch(() => {});
 }
 
@@ -142,11 +167,21 @@ function descricaoDe(i, cfg, m) {
   return "";
 }
 
+async function lembrarMenu(z, menuId) {
+  if (!z.sim) await z.env.DB.prepare("UPDATE plt_zap_contatos SET ultimo_menu=? WHERE org_id=? AND telefone=?").bind(menuId, z.org, z.tel).run().catch(() => {});
+}
 async function mostrarMenu(z, menuId = 0, pagina = 0, prefixo = "") {
   const m = await carregarMenu(z);
   const pai = menuId ? m.porId.get(menuId) : null;
   const itens = m.filhos(menuId);
   const corpo = (prefixo ? prefixo + "\n\n" : "") + (pai ? (pai.texto || `${pai.titulo}: escolha uma opção.`) : z.cfg.boas_vindas);
+  await lembrarMenu(z, menuId);
+  // Texto numerado: sem limite de opções (o WhatsApp só deixa 3 botões ou 10 itens por lista).
+  const exibicao = pai ? pai.exibicao : z.cfg.exibicao_inicio;
+  if (itens.length && exibicao === "NUMERADO") {
+    const linhas = itens.map((i, n) => `*${n + 1}* · ${i.titulo}${i.descricao ? ` — ${i.descricao}` : ""}`);
+    return enviarTexto(z, `${corpo}\n\n${linhas.join("\n")}\n\nResponda com o *número* ou escreva o que procura.${menuId ? "\n*0* · Voltar ao menu inicial" : ""}`);
+  }
   if (!itens.length) {
     if (!menuId) return enviarTexto(z, corpo + (z.cfg.sobre ? "" : "\n\n(Em breve teremos mais opções por aqui.)"));
     return mostrarMenu(z, 0, 0, "Essa opção ainda não tem nada cadastrado.");
@@ -156,7 +191,7 @@ async function mostrarMenu(z, menuId = 0, pagina = 0, prefixo = "") {
   const linhas = parte.map(i => ({ id: "z:i:" + i.id, titulo: i.titulo, descricao: descricaoDe(i, z.cfg, m) }));
   if (ini + porPagina < itens.length) linhas.push({ id: `z:pg:${menuId}:${pagina + 1}`, titulo: "➡️ Mais opções", descricao: "Ver as próximas" });
   else if (menuId || pagina) linhas.push({ id: "z:inicio", titulo: "🏠 Menu inicial", descricao: "Voltar ao começo" });
-  return lista(z, corpo + "\n\nToque em \"Ver opções\" e escolha.", pai ? pai.titulo : "Opções", linhas);
+  return lista(z, corpo + (itens.length > porPagina ? `\n\nSão ${itens.length} opções: toque em "Ver opções" (as próximas ficam em "Mais opções") ou escreva o que procura.` : "\n\nToque em \"Ver opções\" e escolha."), pai ? pai.titulo : "Opções", linhas);
 }
 async function rodape(z, item) {
   const lista = [{ id: "z:inicio", titulo: "🏠 Menu inicial" }];
@@ -171,7 +206,7 @@ async function registrarBusca(z, item, via, resultados, caminho) {
     z.env.DB.prepare("INSERT INTO plt_zap_buscas(org_id,telefone,nome,item_id,tipo,titulo,caminho,texto,via,resultados,criado_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?)").bind(z.org, z.tel, z.nome || "", item.id, item.tipo, item.titulo, caminho, cortar(z.texto, 300), via, resultados, z.agora)
   ]);
   if (z.cfg.avisar_buscas && !(repetida?.results || []).length)
-    await telegram(z, `🔎 ${z.nomeEmpresa} — nova busca no WhatsApp\nCliente: ${z.nome || "sem nome"} (${z.tel})\nBuscou: ${caminho}${via !== "BOTAO" && z.texto ? ` (escreveu: "${cortar(z.texto, 120)}")` : ""}${z.resultados ? `\nIndicados: ${z.resultados}` : ""}`);
+    await telegram(z, `🔎 ${z.nomeEmpresa} — nova busca no WhatsApp\nCliente: ${z.nome || "sem nome"} (${z.tel})\nBuscou: ${caminho}${via !== "BOTAO" && z.texto ? ` (escreveu: "${cortar(z.texto, 120)}")` : ""}${z.resultados ? `\nIndicados: ${z.resultados}` : ""}`, z.tel);
 }
 async function abrirItem(z, item, via) {
   const m = await carregarMenu(z);
@@ -226,9 +261,16 @@ async function responder(z, texto, acao) {
   const alvo = norm(texto).trim();
   if (!alvo) return mostrarMenu(z, 0, 0, z.cfg.nao_entendi);
   if (QUER_HUMANO.test(alvo)) { const h = m.todos.find(i => i.tipo === "HUMANO"); await transferir(z, h?.texto); return h ? registrarBusca(z, h, "PALAVRA", 0, caminhoDe(m, h)) : null; }
+  // IA completa: a conversa é com a IA (os botões continuam funcionando); sem IA disponível, cai no menu.
+  if (z.modo === "IA" && !/^\d{1,3}$/.test(alvo)) { if (await atenderComIA(z, texto, m)) return; }
   if (SAUDACAO.test(alvo) && alvo.length < 30) return mostrarMenu(z);
-  // Número do menu ("1", "2"...): a ordem das opções do menu inicial.
-  if (/^\d{1,2}$/.test(alvo)) { const it = m.filhos(0)[Number(alvo) - 1]; if (it) return abrirItem(z, it, "PALAVRA"); }
+  // Número ("1", "12"...): a opção do último menu que a pessoa recebeu; "0" volta ao início.
+  if (/^\d{1,3}$/.test(alvo)) {
+    if (alvo === "0") return mostrarMenu(z);
+    const ultimo = Number(z.ultimoMenu || 0);
+    const it = m.filhos(m.porId.has(ultimo) ? ultimo : 0)[Number(alvo) - 1];
+    if (it) return abrirItem(z, it, "BOTAO");
+  }
   const candidatos = m.todos.filter(i => m.visivel(i) && i.tipo !== "HUMANO").map(i => ({ i, p: pontos(i, alvo) + (i.tipo === "MENU" ? -0.5 : 0) })).filter(x => x.p > 0).sort((x, y) => y.p - x.p);
   if (candidatos.length && (candidatos.length === 1 || candidatos[0].p >= candidatos[1].p + 1.5)) return abrirItem(z, candidatos[0].i, "PALAVRA");
   // Nome de uma loja/contato do catálogo escrito na mensagem.
@@ -237,6 +279,75 @@ async function responder(z, texto, acao) {
   if (achado) { await enviarTexto(z, cartaoContato(achado) + (z.cfg.rodape_lista ? "\n\n" + z.cfg.rodape_lista : "")); return rodape(z, null); }
   if (z.modo === "MISTO") { const feito = await comIA(z, texto, m, cat, candidatos); if (feito) return; }
   return mostrarMenu(z, 0, 0, z.cfg.nao_entendi);
+}
+
+// ---------------------------------------------------------------------------
+// IA completa (modo IA): conversa como uma pessoa, com o treinamento desta empresa, a memória deste
+// cliente e a conversa recente. Tudo filtrado pela empresa (org_id): nunca mistura empresas.
+// ---------------------------------------------------------------------------
+
+const INSTRUCOES_CONVERSA = `Você atende os clientes de UMA empresa pelo WhatsApp, como uma pessoa experiente da equipe: calorosa, segura, objetiva.
+REGRAS
+- Responda no MESMO idioma em que o cliente escreveu.
+- Mensagens curtas, como no WhatsApp (1 a 3 frases; no máximo uma pergunta por vez). Nada de textão, listas longas ou tom de robô.
+- Leia a CONVERSA e a MEMÓRIA antes de responder: não pergunte o que o cliente já disse, não repita saudação no meio da conversa, chame pelo nome quando souber.
+- Use SOMENTE as informações da EMPRESA abaixo. Nunca invente preço, prazo, endereço, telefone, horário, estoque ou promessa. Se não souber, diga que vai confirmar com a equipe e ponha "humano": true.
+- Preços: só os que estão em PREÇOS AUTORIZADOS.
+- Se uma OPÇÃO do menu responde exatamente o que a pessoa quer (ex.: lista de lojas, cardápio), ponha o id em "abrir".
+- Ponha "menu": true só se a pessoa pedir as opções ou estiver perdida.
+- Reclamação séria, pedido de falar com alguém, negociação fora das regras ou assunto sensível: "humano": true e uma resposta curta e acolhedora.
+- Se perguntarem com sinceridade se você é uma IA, diga que é a assistente virtual da empresa e que a equipe pode assumir quando quiser.
+- Em "lembrar", anote só FATOS NOVOS e úteis sobre o cliente para as próximas conversas (nome, preferências, endereço que ele informou, o que comprou/pediu), em frases curtas. Senão, vazio.
+Responda SEMPRE em JSON: {"resposta":"","abrir":0,"menu":false,"humano":false,"lembrar":""}`;
+
+function blocosTreino(cfg) {
+  const b = [["JEITO DE ATENDER", cfg.ia_tom], ["SOBRE A EMPRESA (horário, endereço, pagamento, perguntas frequentes)", cfg.sobre], ["PRODUTOS E SERVIÇOS", cfg.ia_servicos], ["PREÇOS AUTORIZADOS", cfg.ia_precos], ["REGRAS DA EMPRESA", cfg.ia_regras], ["EXEMPLOS DE COMO A EQUIPE RESPONDE", cfg.ia_exemplos]];
+  return b.filter(x => String(x[1] || "").trim()).map(([t, v]) => `${t}:\n${cortar(v, 4000)}`).join("\n\n") || "(a empresa ainda não preencheu o treinamento)";
+}
+async function reservarIA(z) {
+  const hoje = new Date(z.agora - 3 * 3600000).toISOString().slice(0, 10);
+  const chaveDia = `zap_ia_${z.org}_${hoje}`, chaveMes = `zap_ia_mes_${z.org}_${hoje.slice(0, 7)}`;
+  const [d1, m1] = await z.env.DB.batch([z.env.DB.prepare("SELECT valor FROM plt_meta WHERE chave=?").bind(chaveDia), z.env.DB.prepare("SELECT valor FROM plt_meta WHERE chave=?").bind(chaveMes)]);
+  const usadas = Number(d1?.results?.[0]?.valor || 0), doMes = Number(m1?.results?.[0]?.valor || 0);
+  if (usadas >= Number(z.cfg.limite_ia_dia || 300) || (z.limiteMes && doMes >= z.limiteMes)) return false;
+  await z.env.DB.batch([z.env.DB.prepare("INSERT OR REPLACE INTO plt_meta(chave,valor) VALUES(?,?)").bind(chaveDia, String(usadas + 1)), z.env.DB.prepare("INSERT OR REPLACE INTO plt_meta(chave,valor) VALUES(?,?)").bind(chaveMes, String(doMes + 1))]);
+  return true;
+}
+async function atenderComIA(z, texto, m) {
+  if (z.sim && z.k.semIA) return false;
+  const envIA = await z.k.comIA(z.env, z.org);
+  if (!envIA.OPENAI_API_KEY || !(await reservarIA(z))) return false;
+  const [hist, ctt, cat] = z.sim ? [{ results: (z.historico || []) }, { results: [{ memoria: "" }] }, await z.env.DB.prepare("SELECT nome, local FROM plt_zap_catalogo WHERE org_id=? AND ativo=1 LIMIT 200").bind(z.org).all()] : await z.env.DB.batch([
+    z.env.DB.prepare("SELECT direcao, origem, texto, criado_ms FROM plt_zap_msgs WHERE org_id=? AND telefone=? ORDER BY id DESC LIMIT 24").bind(z.org, z.tel),
+    z.env.DB.prepare("SELECT memoria FROM plt_zap_contatos WHERE org_id=? AND telefone=?").bind(z.org, z.tel),
+    z.env.DB.prepare("SELECT nome, local FROM plt_zap_catalogo WHERE org_id=? AND ativo=1 LIMIT 200").bind(z.org)
+  ]);
+  const conversa = (hist?.results || []).slice().reverse().map(x => `${x.direcao === "E" ? "CLIENTE" : x.origem === "EQUIPE" ? "EQUIPE" : "VOCÊ"}: ${cortar(x.texto, 400)}`).join("\n");
+  const memoria = String(ctt?.results?.[0]?.memoria || "");
+  const opcoes = m.todos.filter(i => m.visivel(i)).map(i => `${i.id}|${caminhoDe(m, i)}`).join("\n");
+  const contatos = (cat?.results || []).length ? `\n\n${z.cfg.rotulo_catalogo.toUpperCase()} CADASTRADOS: ${cortar(cat.results.map(c => c.nome + (c.local ? ` (${c.local})` : "")).join(", "), 2500)}` : "";
+  const quando = new Date(z.agora - 3 * 3600000);
+  const entrada = `EMPRESA: ${z.nomeEmpresa}${z.cfg.nome_atendente ? `\nSEU NOME NO ATENDIMENTO: ${z.cfg.nome_atendente}` : ""}\nAGORA: ${quando.toISOString().slice(0, 16).replace("T", " ")} (horário de Brasília)\n\n${blocosTreino(z.cfg)}\n\nOPÇÕES DO MENU (id|caminho):\n${opcoes || "(sem menu)"}${contatos}\n\nCLIENTE: ${z.nome || "sem nome"}\nMEMÓRIA DO CLIENTE:\n${memoria || "(primeiro contato ou nada anotado)"}\n\nCONVERSA RECENTE:\n${conversa || "(nenhuma)"}\n\nMENSAGEM NOVA DO CLIENTE: "${cortar(texto, 1500)}"`;
+  let o;
+  try { o = await openaiResposta(envIA, { modelo: z.cfg.modelo_conversa || "gpt-5-mini", instrucoes: INSTRUCOES_CONVERSA, entrada, maxTokens: 700, esforco: "low", recurso: "chatbot/ia-completa" }); }
+  catch (e) { console.warn("IA completa", e?.message); return false; }
+  // O cliente mandou outra mensagem enquanto a IA pensava: quem responde é a mais nova (com tudo junto).
+  if (!z.sim && z.msgId) {
+    const nova = await z.env.DB.prepare("SELECT MAX(id) id FROM plt_zap_msgs WHERE org_id=? AND telefone=? AND direcao='E'").bind(z.org, z.tel).first();
+    if (Number(nova?.id || 0) > z.msgId) return true;
+  }
+  const lembrar = cortar(o?.lembrar, 300);
+  if (lembrar && !z.sim) {
+    const nova = cortar([memoria, "- " + lembrar.replace(/^-\s*/, "")].filter(Boolean).join("\n"), 2000);
+    await z.env.DB.prepare("UPDATE plt_zap_contatos SET memoria=? WHERE org_id=? AND telefone=?").bind(nova.length > 1800 ? nova.slice(-1800) : nova, z.org, z.tel).run().catch(() => {});
+  }
+  const resp = cortar(o?.resposta, 1500);
+  if (o?.humano === true) { await transferir(z, resp || undefined); return true; }
+  if (resp) await enviarTexto(z, resp, "IA");
+  const item = m.porId.get(Number(o?.abrir) || -1);
+  if (item && m.visivel(item)) { await abrirItem(z, item, "IA"); return true; }
+  if (o?.menu === true) { await mostrarMenu(z); return true; }
+  return Boolean(resp);
 }
 
 const INSTRUCOES_IA = `Você é a atendente virtual de uma empresa no WhatsApp. Responda SEMPRE em JSON {"item":0,"resposta":"","humano":false}.
@@ -250,9 +361,12 @@ async function comIA(z, texto, m, cat, candidatos) {
   const chaveDia = `zap_ia_${z.org}_${hoje}`;
   const usadas = Number((await z.env.DB.prepare("SELECT valor FROM plt_meta WHERE chave=?").bind(chaveDia).first().catch(() => null))?.valor || 0);
   if (usadas >= Number(z.cfg.limite_ia_dia || 300)) return false;
+  const chaveMes = `zap_ia_mes_${z.org}_${hoje.slice(0, 7)}`;
+  const doMes = Number((await z.env.DB.prepare("SELECT valor FROM plt_meta WHERE chave=?").bind(chaveMes).first().catch(() => null))?.valor || 0);
+  if (z.limiteMes && doMes >= z.limiteMes) return false; // limite de IA do plano no mês
   const envIA = await z.k.comIA(z.env, z.org);
   if (!envIA.OPENAI_API_KEY) return false;
-  await z.env.DB.prepare("INSERT OR REPLACE INTO plt_meta(chave,valor) VALUES(?,?)").bind(chaveDia, String(usadas + 1)).run();
+  await z.env.DB.batch([z.env.DB.prepare("INSERT OR REPLACE INTO plt_meta(chave,valor) VALUES(?,?)").bind(chaveDia, String(usadas + 1)), z.env.DB.prepare("INSERT OR REPLACE INTO plt_meta(chave,valor) VALUES(?,?)").bind(chaveMes, String(doMes + 1))]);
   const opcoes = m.todos.filter(i => m.visivel(i)).map(i => `${i.id}|${caminhoDe(m, i)}${i.palavras ? " (" + cortar(i.palavras, 80) + ")" : ""}${i.tipo === "RESPOSTA" && i.texto ? " => " + cortar(i.texto, 160) : ""}`).join("\n");
   const contatos = cat.length && cat.length <= 200 ? `\n\nCONTATOS DO CATÁLOGO: ${cortar(cat.map(c => c.nome).join(", "), 2500)}` : "";
   let o;
@@ -301,7 +415,7 @@ async function processarWebhook(env, k, d, bruto, assinatura) {
     const pnid = String(v?.metadata?.phone_number_id || "");
     if (!pnid) continue;
     if (!contas.has(pnid)) {
-      const conta = await env.DB.prepare("SELECT c.*, o.nome org_nome, o.status org_status FROM plt_zap_contas c JOIN plt_organizacoes o ON o.id=c.org_id WHERE c.phone_number_id=?").bind(pnid).first();
+      const conta = await env.DB.prepare("SELECT c.*, o.nome org_nome, o.status org_status, o.plano, o.plano_status, o.teste_ate, o.pago_ate FROM plt_zap_contas c JOIN plt_organizacoes o ON o.id=c.org_id WHERE c.phone_number_id=?").bind(pnid).first();
       let valida = Boolean(conta);
       if (conta) {
         const segredos = [conta.segredo_cifrado ? await k.decifrar(env, conta.segredo_cifrado) : "", String(env.META_APP_SECRET || "")].filter(Boolean);
@@ -317,6 +431,8 @@ async function processarWebhook(env, k, d, bruto, assinatura) {
         .bind(String(s.status || "").toUpperCase().slice(0, 20), s.errors?.[0] ? cortar(`${s.errors[0].code}: ${s.errors[0].error_data?.details || s.errors[0].title || ""}`, 300) : null, String(s.id || ""), conta.org_id)));
     }
     if (!conta.ativo || conta.org_status !== "ATIVA") continue;
+    // Plano: sem teste ou pagamento em dia, as mensagens só ficam registradas (o robô não responde).
+    if (!conta.acesso) conta.acesso = acessoDa(conta, k.agora(env), (await lerPlanos(env)).planos);
     const nomes = new Map((v.contacts || []).map(c => [digitos(c.wa_id), String(c?.profile?.name || "").slice(0, 80)]));
     for (const msg of (v.messages || []).slice(0, 10)) await receberMensagem(env, k, conta, msg, nomes.get(digitos(msg.from)) || "");
   }
@@ -332,21 +448,26 @@ async function receberMensagem(env, k, conta, msg, nome) {
   const wamid = String(msg.id || "");
   if (!tel || !wamid) return;
   const agora = k.agora(env);
-  const z = { env, k, org: conta.org_id, conta, cfg: lerConfig(conta), modo: conta.modo, tel, nome, agora, nomeEmpresa: conta.org_nome, enviadas: 0 };
+  const rec = conta.acesso?.recursos || [];
+  const z = { env, k, org: conta.org_id, conta, cfg: lerConfig(conta), modo: modoPermitido(conta.modo, rec), tel, nome, agora, nomeEmpresa: conta.org_nome, enviadas: 0, limiteMes: Number(conta.acesso?.limites?.ia_mes || 0) };
   const e = lerEntrada(msg);
-  const [ins, , ctt, recentes] = await env.DB.batch([
+  const [ins, , ctt, recentes, idMsg] = await env.DB.batch([
     env.DB.prepare("INSERT OR IGNORE INTO plt_zap_msgs(org_id,telefone,direcao,origem,texto,wamid,status,criado_ms) VALUES(?,?,?,?,?,?,'RECEBIDA',?)").bind(z.org, tel, "E", "CLIENTE", cortar(e.rotulo, 4000), wamid, agora),
     env.DB.prepare("INSERT INTO plt_zap_contatos(org_id,telefone,nome,ultima_entrada_ms,ultimo_ms) VALUES(?,?,?,?,?) ON CONFLICT(org_id,telefone) DO UPDATE SET nome=COALESCE(NULLIF(excluded.nome,''),nome), ultima_entrada_ms=excluded.ultima_entrada_ms, ultimo_ms=excluded.ultimo_ms").bind(z.org, tel, nome, agora, agora),
-    env.DB.prepare("SELECT pausado_ate, nome FROM plt_zap_contatos WHERE org_id=? AND telefone=?").bind(z.org, tel),
-    env.DB.prepare("SELECT COUNT(*) n FROM plt_zap_msgs WHERE org_id=? AND telefone=? AND direcao='S' AND criado_ms>?").bind(z.org, tel, agora - 600000)
+    env.DB.prepare("SELECT pausado_ate, nome, ultimo_menu FROM plt_zap_contatos WHERE org_id=? AND telefone=?").bind(z.org, tel),
+    env.DB.prepare("SELECT COUNT(*) n FROM plt_zap_msgs WHERE org_id=? AND telefone=? AND direcao='S' AND criado_ms>?").bind(z.org, tel, agora - 600000),
+    env.DB.prepare("SELECT id FROM plt_zap_msgs WHERE wamid=?").bind(wamid)
   ]);
+  z.msgId = Number(idMsg?.results?.[0]?.id || 0);
   if (!Number(ins?.meta?.changes)) return; // a Meta reenviou a mesma mensagem
   const enviadaMs = Number(msg.timestamp || 0) * 1000;
   if (enviadaMs && agora - enviadaMs > 30 * 60000) return; // mensagem velha (reenvio depois de queda): não responde fora de hora
   const c = ctt?.results?.[0] || {};
   if (Number(c.pausado_ate || 0) > agora) return; // a equipe está atendendo
   if (Number(recentes?.results?.[0]?.n || 0) >= 25) return; // trava contra robô conversando com robô
+  if (!rec.includes("chatbot")) return;
   z.nome = nome || c.nome || "";
+  z.ultimoMenu = c.ultimo_menu;
   await responder(z, e.texto, e.acao);
 }
 
@@ -364,7 +485,7 @@ async function conferirNumero(pnid, token) {
 function publicaConta(c, extra) {
   return {
     conectada: Boolean(c?.phone_number_id && c?.token_cifrado), phone_number_id: c?.phone_number_id || "", waba_id: c?.waba_id || "", numero: c?.numero || "", nome_verificado: c?.nome_verificado || "",
-    tem_token: Boolean(c?.token_cifrado), tem_segredo: Boolean(c?.segredo_cifrado), telegram: Boolean(c?.telegram_cifrado), ativo: c ? Boolean(c.ativo) : true, modo: c?.modo || "BOTOES", ...extra
+    tem_token: Boolean(c?.token_cifrado), tem_segredo: Boolean(c?.segredo_cifrado), telegram: Boolean(c?.telegram_cifrado || c?.telegram_chat), telegram_nome: c?.telegram_nome || "", ativo: c ? Boolean(c.ativo) : true, modo: c?.modo || "BOTOES", ...extra
   };
 }
 async function linhasDe(env, sql, ...args) { return (await env.DB.prepare(sql).bind(...args).all())?.results || []; }
@@ -429,6 +550,24 @@ export async function rotasZap(request, env, k, orgId, papel, resto) {
     }
     return json({ ok: true });
   }
+  if (r === "telegram" && metodo === "GET") {
+    const c = await contaDa(env, orgId);
+    const bot = (await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave='tg_bot_usuario'").first().catch(() => null))?.valor || "";
+    return json({ disponivel: Boolean(tokenTelegramPlataforma(env) && bot), bot, conectado: Boolean(c?.telegram_chat || c?.telegram_cifrado), grupo: c?.telegram_nome || (c?.telegram_cifrado ? "bot próprio" : ""), proprio: Boolean(c?.telegram_cifrado) });
+  }
+  if (r === "telegram/link" && metodo === "POST") {
+    const negado = precisa("ADMIN"); if (negado) return negado;
+    const bot = (await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave='tg_bot_usuario'").first().catch(() => null))?.valor || "";
+    if (!bot || !tokenTelegramPlataforma(env)) return json({ erro: "O bot do Telegram da plataforma ainda não foi ligado pelo administrador geral." }, 503);
+    const codigo = [...crypto.getRandomValues(new Uint8Array(12))].map(b => b.toString(36).padStart(2, "0")).join("").slice(0, 20);
+    await env.DB.prepare("INSERT OR REPLACE INTO plt_meta(chave,valor) VALUES(?,?)").bind("tg_codigo:" + codigo, JSON.stringify({ org: orgId, ate: agora + 3600000 })).run();
+    return json({ grupo: `https://t.me/${bot}?startgroup=${codigo}`, privado: `https://t.me/${bot}?start=${codigo}`, codigo });
+  }
+  if (r === "telegram/desligar" && metodo === "POST") {
+    const negado = precisa("ADMIN"); if (negado) return negado;
+    await env.DB.prepare("UPDATE plt_zap_contas SET telegram_chat=NULL, telegram_nome=NULL, telegram_cifrado=NULL WHERE org_id=?").bind(orgId).run();
+    return json({ ok: true });
+  }
   if (r === "config" && metodo === "GET") {
     const c = await contaDa(env, orgId);
     return json({ config: lerConfig(c), modo: c?.modo || "BOTOES", ativo: c ? Boolean(c.ativo) : true, padrao: ZAP_PADRAO });
@@ -438,12 +577,15 @@ export async function rotasZap(request, env, k, orgId, papel, resto) {
     const { corpo, erro } = await ler(); if (erro) return erro;
     const c = await contaDa(env, orgId), cfg = lerConfig(c);
     for (const [ch, v] of Object.entries(ZAP_PADRAO)) {
-      if (typeof v === "string" && typeof corpo[ch] === "string") cfg[ch] = corpo[ch].slice(0, ch === "sobre" ? 6000 : 1000);
+      if (typeof v === "string" && typeof corpo[ch] === "string") cfg[ch] = corpo[ch].slice(0, ch === "sobre" || ch.startsWith("ia_") ? 6000 : 1000);
       if (typeof v === "boolean" && typeof corpo[ch] === "boolean") cfg[ch] = corpo[ch];
       if (typeof v === "number" && corpo[ch] != null) cfg[ch] = Math.max(0, Math.min(5000, Number(corpo[ch]) || 0));
     }
     if (!["gpt-5-nano", "gpt-5-mini", "gpt-4o-mini", "gpt-4.1-mini"].includes(cfg.modelo_ia)) cfg.modelo_ia = "gpt-5-nano";
-    const modo = ["BOTOES", "MISTO"].includes(corpo.modo) ? corpo.modo : c?.modo || "BOTOES";
+    if (cfg.exibicao_inicio !== "NUMERADO") cfg.exibicao_inicio = "AUTO";
+    const modo = ["BOTOES", "MISTO", "IA"].includes(corpo.modo) ? corpo.modo : c?.modo || "BOTOES";
+    if (modo !== "BOTOES" && k.acesso && modoPermitido(modo, k.acesso.recursos) !== modo) return json({ erro: modo === "IA" ? "A IA completa faz parte do plano Start ou superior. Atualize em Plano e pagamento." : "A IA no chatbot faz parte de um plano superior. Atualize em Plano e pagamento.", codigo: "PLANO_RECURSO" }, 402);
+    if (!["gpt-5-mini", "gpt-5-nano", "gpt-4o-mini", "gpt-4.1-mini", "gpt-4.1"].includes(cfg.modelo_conversa)) cfg.modelo_conversa = "gpt-5-mini";
     const ativo = typeof corpo.ativo === "boolean" ? (corpo.ativo ? 1 : 0) : c ? c.ativo : 1;
     await env.DB.prepare("INSERT INTO plt_zap_contas(org_id,config,modo,ativo,atualizado_ms) VALUES(?,?,?,?,?) ON CONFLICT(org_id) DO UPDATE SET config=excluded.config, modo=excluded.modo, ativo=excluded.ativo, atualizado_ms=excluded.atualizado_ms").bind(orgId, JSON.stringify(cfg), modo, ativo, agora).run();
     await auditar(env, request, sessao, orgId, "CHATBOT", `Mensagens e modo do chatbot (${modo === "MISTO" ? "botões + IA" : "só botões"}${ativo ? "" : ", desligado"})`);
@@ -468,10 +610,10 @@ export async function rotasZap(request, env, k, orgId, papel, resto) {
     const pai = Number(corpo.pai_id) || 0;
     if (pai) { const p = await env.DB.prepare("SELECT tipo FROM plt_zap_itens WHERE id=? AND org_id=?").bind(pai, orgId).first(); if (!p || p.tipo !== "MENU") return json({ erro: "A opção só pode ficar dentro de um submenu." }, 400); }
     if (Number(corpo.id) && pai === Number(corpo.id)) return json({ erro: "Uma opção não pode ficar dentro dela mesma." }, 400);
-    const campos = [pai, tipo, titulo, k.txt(corpo.descricao, 72), k.txt(corpo.texto, 3000), k.txt(corpo.palavras, 500), Number(corpo.ordem) || 0, corpo.ativo === false ? 0 : 1];
+    const campos = [pai, tipo, titulo, k.txt(corpo.descricao, 72), k.txt(corpo.texto, 3000), k.txt(corpo.palavras, 500), Number(corpo.ordem) || 0, corpo.ativo === false ? 0 : 1, corpo.exibicao === "NUMERADO" ? "NUMERADO" : "AUTO"];
     let id = Number(corpo.id) || 0;
-    if (id) { const x = await env.DB.prepare("UPDATE plt_zap_itens SET pai_id=?, tipo=?, titulo=?, descricao=?, texto=?, palavras=?, ordem=?, ativo=? WHERE id=? AND org_id=?").bind(...campos, id, orgId).run(); if (!x.meta.changes) return json({ erro: "Opção não encontrada." }, 404); }
-    else id = (await env.DB.prepare("INSERT INTO plt_zap_itens(pai_id,tipo,titulo,descricao,texto,palavras,ordem,ativo,org_id) VALUES(?,?,?,?,?,?,?,?,?) RETURNING id").bind(...campos, orgId).first())?.id;
+    if (id) { const x = await env.DB.prepare("UPDATE plt_zap_itens SET pai_id=?, tipo=?, titulo=?, descricao=?, texto=?, palavras=?, ordem=?, ativo=?, exibicao=? WHERE id=? AND org_id=?").bind(...campos, id, orgId).run(); if (!x.meta.changes) return json({ erro: "Opção não encontrada." }, 404); }
+    else id = (await env.DB.prepare("INSERT INTO plt_zap_itens(pai_id,tipo,titulo,descricao,texto,palavras,ordem,ativo,exibicao,org_id) VALUES(?,?,?,?,?,?,?,?,?,?) RETURNING id").bind(...campos, orgId).first())?.id;
     return json({ ok: true, id });
   }
   if ((m = r.match(/^itens\/(\d{1,12})\/excluir$/)) && metodo === "POST") {
@@ -618,30 +760,164 @@ export async function rotasZap(request, env, k, orgId, papel, resto) {
       await env.DB.prepare("UPDATE plt_zap_contatos SET pausado_ate=? WHERE org_id=? AND telefone=?").bind(corpo.ligar ? 0 : agora + PAUSA_HUMANO_MS, orgId, m[1]).run();
       return json({ ok: true });
     }
-    const texto = k.txt(corpo.texto, 4000);
-    if (!texto) return json({ erro: "Escreva a mensagem." }, 400);
-    if (agora - Number(c.ultima_entrada_ms || 0) >= JANELA_24H) return json({ erro: "Passaram 24 horas desde a última mensagem do cliente. Pela regra da Meta, só dá para responder depois que ele escrever de novo (ou com um modelo aprovado)." }, 409);
-    const conta = await contaDa(env, orgId);
-    if (!conta?.token_cifrado) return json({ erro: "Conecte o WhatsApp primeiro (Chatbot → Conexão)." }, 409);
-    const z = { env, k, org: orgId, conta, tel: m[1], agora, enviadas: 0 };
     const autor = sessao?.usuario?.nome || sessao?.usuario?.email || "Equipe";
-    const ok = await enviarTexto(z, texto, "EQUIPE");
-    await env.DB.prepare("UPDATE plt_zap_contatos SET pausado_ate=?, ultimo_ms=? WHERE org_id=? AND telefone=?").bind(agora + PAUSA_HUMANO_MS, agora, orgId, m[1]).run();
-    if (!ok) return json({ erro: "A Meta não aceitou a mensagem. Veja o motivo na conversa." }, 502);
+    const r2 = await enviarDaEquipe(env, k, orgId, m[1], k.txt(corpo.texto, 4000));
+    if (r2.erro) return json({ erro: r2.erro }, r2.status || 400);
     await auditar(env, request, sessao, orgId, "CONVERSA", `Respondeu ${m[1]} pelo chatbot (${autor})`);
     return json({ ok: true });
+  }
+  // Assistente: a pessoa descreve o negócio e a IA monta menu, mensagens e treinamento (pergunta só o essencial).
+  if (r === "assistente" && metodo === "POST") {
+    const negado = precisa("AGENTE"); if (negado) return negado;
+    const { corpo, erro } = await ler(30000); if (erro) return erro;
+    if (corpo.acao === "aplicar") return aplicarPlanoChatbot(env, k, orgId, corpo, json, request);
+    const descricao = k.txt(corpo.descricao, 6000);
+    if (descricao.length < 20) return json({ erro: "Conte um pouco mais sobre o negócio (o que vende ou faz, para quem, horário, como atende)." }, 400);
+    const envIA = await k.comIA(env, orgId);
+    if (!envIA.OPENAI_API_KEY) return json({ erro: "A IA da plataforma ainda não está ligada. Fale com a equipe DENIA." }, 503);
+    const respostas = (Array.isArray(corpo.respostas) ? corpo.respostas : []).slice(0, 8).map(x => `P: ${k.txt(x.pergunta, 300)}\nR: ${k.txt(x.resposta, 1000)}`).join("\n");
+    const org = await env.DB.prepare("SELECT nome, segmento FROM plt_organizacoes WHERE id=?").bind(orgId).first();
+    try {
+      const o = await openaiResposta(envIA, { modelo: "gpt-5-mini", esforco: "low", maxTokens: 6000, recurso: "chatbot/assistente", instrucoes: INSTRUCOES_ASSISTENTE,
+        entrada: `EMPRESA: ${org?.nome || ""}${org?.segmento ? " (" + org.segmento + ")" : ""}\n\nCOMO A PESSOA DESCREVEU O NEGÓCIO E O QUE QUER:\n${descricao}${respostas ? `\n\nRESPOSTAS ÀS SUAS PERGUNTAS:\n${respostas}` : ""}\n\n${respostas || corpo.sem_perguntas ? "Agora monte o plano completo (sem perguntas)." : "Se faltar algo ESSENCIAL, faça até 4 perguntas; senão, monte o plano."}` });
+      if (Array.isArray(o?.perguntas) && o.perguntas.length && !respostas && !corpo.sem_perguntas) return json({ perguntas: o.perguntas.slice(0, 4).map(x => k.txt(x, 300)).filter(Boolean) });
+      return json({ plano: limparPlano(o?.plano || o, k) });
+    } catch (e) { return json({ erro: "A IA não conseguiu montar agora: " + e.message }, 502); }
   }
   // Testar como cliente: nada vai para o WhatsApp e nada entra nas métricas.
   if (r === "testar" && metodo === "POST") {
     const { corpo, erro } = await ler(); if (erro) return erro;
     const conta = (await contaDa(env, orgId)) || { org_id: orgId, modo: "BOTOES", config: "{}" };
     const org = await env.DB.prepare("SELECT nome FROM plt_organizacoes WHERE id=?").bind(orgId).first();
-    const modo = ["BOTOES", "MISTO"].includes(corpo.modo) ? corpo.modo : conta.modo;
-    const z = { env, k, org: orgId, conta, cfg: lerConfig(conta), modo, tel: "0", nome: "Teste", agora, nomeEmpresa: org?.nome || "", sim: true, registro: [], enviadas: 0 };
+    const modo = ["BOTOES", "MISTO", "IA"].includes(corpo.modo) ? corpo.modo : conta.modo;
+    const historico = (Array.isArray(corpo.historico) ? corpo.historico : []).slice(-20).map(x => ({ direcao: x.cliente ? "E" : "S", origem: x.cliente ? "CLIENTE" : "IA", texto: k.txt(x.texto, 600) })).reverse();
+    const z = { historico, env, k, org: orgId, conta, cfg: lerConfig(conta), modo: k.acesso ? modoPermitido(modo, k.acesso.recursos) : modo, tel: "0", nome: "Teste", agora, nomeEmpresa: org?.nome || "", sim: true, registro: [], enviadas: 0, limiteMes: Number(k.acesso?.limites?.ia_mes || 0) };
     await responder(z, k.txt(corpo.texto, 500), String(corpo.acao || "").slice(0, 40));
     return json({ respostas: z.registro });
   }
   return json({ erro: "Rota do chatbot não encontrada." }, 404);
+}
+
+const INSTRUCOES_ASSISTENTE = `Você é especialista em atendimento pelo WhatsApp e monta chatbots para pequenas e grandes empresas brasileiras.
+A partir da descrição, monte o atendimento automático ideal: menu enxuto e fácil (no máximo 3 opções no menu inicial quando possível, para virar botões), submenus para organizar, respostas prontas curtas e úteis, listas de contatos quando a empresa indica lojas/profissionais, e sempre uma opção para falar com a equipe.
+Escreva como uma pessoa simpática, em português do Brasil, frases curtas, emoji com moderação no começo dos títulos.
+Títulos das opções: no máximo 24 caracteres. Use as palavras-chave que os clientes realmente escreveriam (com e sem acento, sinônimos, erros comuns).
+Nunca invente preço, endereço, telefone ou horário que não esteja na descrição: quando faltar, deixe um marcador como "[preencha o horário]".
+Tipos: MENU (abre outras opções; tem "filhos"), RESPOSTA (texto pronto), LISTA (lista de contatos/lojas cadastrados depois), HUMANO (falar com a equipe).
+Se faltar informação ESSENCIAL e ainda não houver respostas, devolva {"perguntas":["..."]} (no máximo 4, objetivas).
+Senão devolva {"plano":{"modo":"BOTOES|MISTO|IA","boas_vindas":"","nao_entendi":"","humano":"","encerramento":"","rotulo_catalogo":"","sobre":"","ia_tom":"","ia_servicos":"","ia_precos":"","ia_regras":"","menu":[{"tipo":"MENU","titulo":"","texto":"","palavras":"","filhos":[{"tipo":"RESPOSTA","titulo":"","texto":"","palavras":""}]}]}}.
+Escolha o modo: BOTOES quando é só direcionar (ex.: guia de lojas), MISTO quando há dúvidas variadas, IA quando o atendimento é consultivo (vendas, orçamentos, agendamentos).`;
+function limparPlano(p, k) {
+  const tipo = t => TIPOS.includes(t) ? t : "RESPOSTA";
+  let total = 0;
+  const no = (x, prof) => {
+    if (!x || total >= 150) return null;
+    total++;
+    const t = prof >= 3 && x.tipo === "MENU" ? "RESPOSTA" : tipo(x.tipo);
+    return { tipo: t, titulo: cortar(k.txt(x.titulo, 60), 24) || "Opção", texto: k.txt(x.texto, 3000), palavras: k.txt(x.palavras, 500), filhos: t === "MENU" ? (Array.isArray(x.filhos) ? x.filhos : []).slice(0, 40).map(f => no(f, prof + 1)).filter(Boolean) : [] };
+  };
+  const menu = (Array.isArray(p?.menu) ? p.menu : []).slice(0, 12).map(x => no(x, 1)).filter(Boolean);
+  const campos = {};
+  for (const c of ["boas_vindas", "nao_entendi", "humano", "encerramento", "rotulo_catalogo", "sobre", "ia_tom", "ia_servicos", "ia_precos", "ia_regras"]) if (typeof p?.[c] === "string") campos[c] = k.txt(p[c], c === "sobre" || c.startsWith("ia_") ? 6000 : 1000);
+  return { modo: ["BOTOES", "MISTO", "IA"].includes(p?.modo) ? p.modo : "MISTO", ...campos, menu };
+}
+async function aplicarPlanoChatbot(env, k, orgId, corpo, json, request) {
+  const plano = limparPlano(corpo.plano, k);
+  if (!plano.menu.length) return json({ erro: "O plano não tem menu." }, 400);
+  const existentes = Number((await env.DB.prepare("SELECT COUNT(*) n FROM plt_zap_itens WHERE org_id=?").bind(orgId).first())?.n || 0);
+  if (existentes && !corpo.substituir) return json({ erro: "O menu já tem opções. Marque \"substituir o menu atual\" para trocar.", codigo: "MENU_EXISTE" }, 409);
+  if (existentes) await env.DB.batch([env.DB.prepare("DELETE FROM plt_zap_cat_itens WHERE item_id IN (SELECT id FROM plt_zap_itens WHERE org_id=?)").bind(orgId), env.DB.prepare("DELETE FROM plt_zap_itens WHERE org_id=?").bind(orgId)]);
+  let n = 0;
+  const criar = async (lista, pai) => {
+    for (const [i, x] of lista.entries()) {
+      const id = (await env.DB.prepare("INSERT INTO plt_zap_itens(org_id,pai_id,tipo,titulo,texto,palavras,ordem,ativo,exibicao) VALUES(?,?,?,?,?,?,?,1,'AUTO') RETURNING id").bind(orgId, pai, x.tipo, x.titulo, x.texto, x.palavras, i + 1).first()).id;
+      n++;
+      if (x.filhos.length) await criar(x.filhos, id);
+    }
+  };
+  await criar(plano.menu, 0);
+  const c = await contaDa(env, orgId), cfg = lerConfig(c);
+  for (const [ch, v] of Object.entries(plano)) if (ch !== "menu" && ch !== "modo" && typeof v === "string" && v) cfg[ch] = v;
+  const acesso = k.acesso;
+  const modo = acesso ? modoPermitido(plano.modo, acesso.recursos) : plano.modo;
+  await env.DB.prepare("INSERT INTO plt_zap_contas(org_id,config,modo,atualizado_ms) VALUES(?,?,?,?) ON CONFLICT(org_id) DO UPDATE SET config=excluded.config, modo=excluded.modo, atualizado_ms=excluded.atualizado_ms").bind(orgId, JSON.stringify(cfg), modo, k.agora(env)).run();
+  await k.auditar(env, request, k.sessao, orgId, "CHATBOT", `Chatbot montado pela IA (${n} opções, modo ${modo})`);
+  return json({ ok: true, opcoes: n, modo });
+}
+
+// A equipe responde o cliente (pelo painel ou pelo Telegram): o robô fica em pausa nessa conversa.
+export async function enviarDaEquipe(env, k, orgId, tel, texto) {
+  const agora = k.agora(env);
+  if (!texto) return { erro: "Escreva a mensagem.", status: 400 };
+  const c = await env.DB.prepare("SELECT * FROM plt_zap_contatos WHERE org_id=? AND telefone=?").bind(orgId, tel).first();
+  if (!c) return { erro: "Conversa não encontrada.", status: 404 };
+  if (agora - Number(c.ultima_entrada_ms || 0) >= JANELA_24H) return { erro: "Passaram 24 horas desde a última mensagem do cliente. Pela regra da Meta, só dá para responder depois que ele escrever de novo (ou com um modelo aprovado).", status: 409 };
+  const conta = await contaDa(env, orgId);
+  if (!conta?.token_cifrado) return { erro: "Conecte o WhatsApp primeiro (Chatbot → Conexão).", status: 409 };
+  const z = { env, k, org: orgId, conta, tel, agora, enviadas: 0 };
+  const ok = await enviarTexto(z, texto, "EQUIPE");
+  await env.DB.prepare("UPDATE plt_zap_contatos SET pausado_ate=?, ultimo_ms=? WHERE org_id=? AND telefone=?").bind(agora + PAUSA_HUMANO_MS, agora, orgId, tel).run();
+  return ok ? { ok: true, nome: c.nome } : { erro: "A Meta não aceitou a mensagem. Veja o motivo na conversa.", status: 502 };
+}
+
+// ---------------------------------------------------------------------------
+// Bot do Telegram da plataforma: conecta o grupo com um toque e deixa a equipe responder por lá.
+// ---------------------------------------------------------------------------
+
+export async function segredoTelegram(env, k) { return (await k.hmac(await k.segredo(env), "telegram-webhook-v1")).replace(/[^A-Za-z0-9_-]/g, "").slice(0, 48); }
+export async function webhookTelegram(request, env, k) {
+  if (!iguais(String(request.headers.get("x-telegram-bot-api-secret-token") || ""), await segredoTelegram(env, k))) return new Response("Não autorizado.", { status: 401 });
+  const token = tokenTelegramPlataforma(env);
+  let u;
+  try { u = await request.json(); } catch { return new Response("ok"); }
+  const msg = u?.message || u?.channel_post;
+  const texto = String(msg?.text || "").trim();
+  const chat = msg?.chat;
+  if (!msg || !chat || !token) return new Response("ok");
+  const responder = t => tgApi(token, "sendMessage", { chat_id: chat.id, text: t, reply_to_message_id: msg.message_id, disable_web_page_preview: true });
+  const agora = k.agora(env);
+  // /start CODIGO (ou /start@bot CODIGO): liga este grupo/conversa à empresa.
+  const cod = texto.match(/^\/start(?:@\w+)?\s+([A-Za-z0-9_-]{8,40})$/);
+  if (cod) {
+    const reg = await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave=?").bind("tg_codigo:" + cod[1]).first();
+    let dado = null; try { dado = JSON.parse(reg?.valor || "null"); } catch { dado = null; }
+    if (!dado || dado.ate < agora) { await responder("Esse link de conexão venceu. Gere outro no painel da DENIA (Chatbot do WhatsApp → Conexão → Telegram)."); return new Response("ok"); }
+    const nomeChat = cortar(chat.title || [chat.first_name, chat.last_name].filter(Boolean).join(" ") || String(chat.id), 80);
+    await env.DB.batch([
+      env.DB.prepare("INSERT INTO plt_zap_contas(org_id,telegram_chat,telegram_nome,config,atualizado_ms) VALUES(?,?,?,'{}',?) ON CONFLICT(org_id) DO UPDATE SET telegram_chat=excluded.telegram_chat, telegram_nome=excluded.telegram_nome, atualizado_ms=excluded.atualizado_ms").bind(dado.org, String(chat.id), nomeChat, agora),
+      env.DB.prepare("DELETE FROM plt_meta WHERE chave=?").bind("tg_codigo:" + cod[1])
+    ]);
+    const org = await env.DB.prepare("SELECT nome FROM plt_organizacoes WHERE id=?").bind(dado.org).first();
+    await responder(`✅ Pronto! Este ${chat.type === "private" ? "chat" : "grupo"} está conectado à DENIA (${org?.nome || "empresa"}).\n\nAqui chegam: pedidos de atendimento humano e as buscas do WhatsApp.\nPara responder um cliente, responda a mensagem do aviso.\n\nComandos: /resumo (números de hoje), /ajuda.`);
+    return new Response("ok");
+  }
+  const conta = await env.DB.prepare("SELECT * FROM plt_zap_contas WHERE telegram_chat=?").bind(String(chat.id)).first();
+  if (!conta) { if (/^\/(start|ajuda|help)/.test(texto)) await responder("Olá! Eu sou o bot de avisos da DENIA. Para conectar este grupo, use o link do painel: Chatbot do WhatsApp → Conexão → Telegram."); return new Response("ok"); }
+  if (/^\/(ajuda|help)/.test(texto)) { await responder("• Responda um aviso para falar com o cliente no WhatsApp (o robô pausa nessa conversa).\n• Responda um aviso com /robo para devolver a conversa ao robô.\n• /resumo — números de hoje."); return new Response("ok"); }
+  if (/^\/resumo/.test(texto)) {
+    const ini = Date.parse(new Date(agora - 3 * 3600000).toISOString().slice(0, 10) + "T03:00:00Z");
+    const [m1, b1, p1] = await env.DB.batch([
+      env.DB.prepare("SELECT COUNT(*) n, COUNT(DISTINCT telefone) c FROM plt_zap_msgs WHERE org_id=? AND direcao='E' AND criado_ms>=?").bind(conta.org_id, ini),
+      env.DB.prepare("SELECT titulo, COUNT(*) n FROM plt_zap_buscas WHERE org_id=? AND criado_ms>=? GROUP BY titulo ORDER BY n DESC LIMIT 5").bind(conta.org_id, ini),
+      env.DB.prepare("SELECT COUNT(*) n FROM plt_zap_contatos WHERE org_id=? AND pausado_ate>?").bind(conta.org_id, agora)
+    ]);
+    const mm = m1?.results?.[0] || {};
+    await responder(`📊 Hoje no WhatsApp\nMensagens recebidas: ${mm.n || 0} (${mm.c || 0} clientes)\nCom a equipe agora: ${p1?.results?.[0]?.n || 0}\nMais procurados: ${(b1?.results || []).map(x => `${x.titulo} (${x.n})`).join(", ") || "—"}`);
+    return new Response("ok");
+  }
+  const resp = msg.reply_to_message?.message_id;
+  if (!resp || !texto) return new Response("ok");
+  const alvo = await env.DB.prepare("SELECT * FROM plt_zap_tg WHERE chat_id=? AND message_id=? AND org_id=?").bind(String(chat.id), resp, conta.org_id).first();
+  if (!alvo) return new Response("ok");
+  if (/^\/robo/.test(texto)) {
+    await env.DB.prepare("UPDATE plt_zap_contatos SET pausado_ate=0 WHERE org_id=? AND telefone=?").bind(conta.org_id, alvo.telefone).run();
+    await responder("🤖 O robô voltou a atender esse cliente."); return new Response("ok");
+  }
+  const autor = [msg.from?.first_name, msg.from?.last_name].filter(Boolean).join(" ");
+  const r = await enviarDaEquipe(env, k, conta.org_id, alvo.telefone, cortar(texto, 4000));
+  if (r.ok) await k.auditar(env, request, null, conta.org_id, "CONVERSA", `Respondeu ${alvo.telefone} pelo Telegram (${autor || "equipe"})`);
+  await responder(r.ok ? `✅ Enviado para ${r.nome || alvo.telefone} no WhatsApp. O robô ficou em pausa nessa conversa por 12 h (responda o aviso com /robo para devolver).` : `⚠️ Não foi: ${r.erro}`);
+  return new Response("ok");
 }
 
 // Para o painel: empresas que usam o chatbot da plataforma.

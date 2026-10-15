@@ -75,7 +75,7 @@
 .lista-seguranca li { padding: 22px; display: grid; gap: 6px; }
 .lista-seguranca span { color: var(--texto-2); font-size: 15px; }
 
-.grade-planos { display: grid; grid-template-columns: repeat(4, 1fr); gap: 18px; align-items: stretch; }
+.grade-planos { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 18px; align-items: stretch; }
 .plano { padding: 28px 24px; position: relative; display: flex; flex-direction: column; }
 .plano h3 { margin: 0; font-size: 20px; }
 .plano-desc { color: var(--texto-3); font-size: 14px; margin: 6px 0 18px; }

@@ -234,6 +234,7 @@
     conta: { titulo: "Conta e segurança", render: paginaConta },
     guia: { titulo: "Guia de lojas", render: paginaGuia },
     chatbot: { titulo: "Chatbot do WhatsApp", render: paginaChatbot },
+    plano: { titulo: "Plano e pagamento", render: paginaPlano },
     whatsapp: { titulo: "WhatsApp", render: paginaWhatsapp },
     instagram: { titulo: "Instagram", render: (el, aba, vivo) => paginaCanalSocial(el, "instagram", vivo, aba) },
     facebook: { titulo: "Facebook", render: (el, aba, vivo) => paginaCanalSocial(el, "facebook", vivo, aba) },
@@ -278,6 +279,7 @@
       el.appendChild(h("div", { class: "cartao vidro" }, vazio("Acesso restrito", "Seu perfil não tem acesso a esta área.")));
       return;
     }
+    if (estado.org && !ROTAS_LIVRES.includes(nome) && !temRecurso(RECURSO_DA_ROTA[nome] || null) || estado.org && !estado.eu.usuario.super_admin && !acessoAtual().liberado && !ROTAS_LIVRES.includes(nome)) { telaTravada(el, RECURSO_DA_ROTA[nome]); return; }
     el.style.animation = "none"; void el.offsetWidth; el.style.animation = "";
     // Aviso da chave: só no Painel, e some de vez depois de colar a chave uma vez (ou ao tocar em "Agora não").
     if (estado.iaLigada === false && nome === "painel" && !sessao.ler("denia_faixa_ia") && !(estado.org && estado.org.chatbot && !estado.org.conectada)) {
@@ -327,6 +329,7 @@
     document.querySelectorAll("#lateral-nav a[data-super]").forEach(a => a.classList.toggle("oculto", !estado.eu.usuario.super_admin));
     document.querySelectorAll("#lateral-nav a[data-rota]:not([data-minimo]):not([data-super])").forEach(a => a.classList.toggle("oculto", ehRevisor() && !ROTAS_REVISOR.includes(a.dataset.rota)));
     aplicarModo();
+    aplicarPlano();
     // Título de grupo do menu some quando todos os links do grupo estão ocultos.
     document.querySelectorAll("#lateral-nav .lateral-grupo").forEach(g => {
       let el = g.nextElementSibling, algum = false;
@@ -1213,11 +1216,17 @@
     const nome = h("input", { class: "entrada", maxlength: "120" });
     const segmento = h("input", { class: "entrada", maxlength: "160", placeholder: "Ex.: Assistência técnica" });
     const cor = h("input", { class: "entrada", type: "color", value: "#4f8cff", style: "padding:4px;height:46px" });
+    let cfgPlanos = null;
+    try { cfgPlanos = await api("/api/admin/planos"); } catch { cfgPlanos = null; }
+    const nomesPlanos = cfgPlanos ? Object.values(cfgPlanos.planos).map(p => [p.id, p.nome]) : [["start", "Start"]];
+    const planoNovo = h("select", { class: "entrada" }, nomesPlanos.map(([v, n]) => h("option", { value: v, selected: v === "start", text: n })));
+    const situacaoNova = h("select", { class: "entrada" }, [["TESTE", "Teste grátis de 7 dias"], ["CORTESIA", "Cortesia — acesso total sem custo"]].map(([v, n]) => h("option", { value: v, text: n })));
     el.appendChild(h("section", { class: "cartao vidro formulario" }, h("h3", { style: "margin:0", text: "Nova empresa" }),
       h("div", { class: "linha-form" }, campo("Nome", nome), campo("Segmento", segmento), campo("Cor", cor)),
+      h("div", { class: "linha-form" }, campo("Plano", planoNovo), campo("Situação", situacaoNova)),
       h("div", { class: "acoes" }, botao("Criar empresa", async () => {
         try {
-          const r = await api("/api/admin/organizacoes", { metodo: "POST", corpo: { nome: nome.value, segmento: segmento.value, cor: cor.value } });
+          const r = await api("/api/admin/organizacoes", { metodo: "POST", corpo: { nome: nome.value, segmento: segmento.value, cor: cor.value, plano: planoNovo.value, plano_status: situacaoNova.value } });
           aviso("Empresa criada.", "ok");
           await recarregarEu(r.id);
           location.hash = "#/integracoes";
@@ -1225,10 +1234,12 @@
       }, "btn-primario"))));
     const lista = estado.eu.organizacoes;
     el.appendChild(h("div", { class: "tabela-caixa" }, h("table", {},
-      h("thead", {}, h("tr", {}, h("th", { text: "Empresa" }), h("th", { text: "IA" }), h("th", { text: "Situação" }), h("th", { text: "" }))),
+      h("thead", {}, h("tr", {}, h("th", { text: "Empresa" }), h("th", { text: "IA" }), h("th", { text: "Plano" }), h("th", { text: "Situação" }), h("th", { text: "" }))),
       h("tbody", {}, lista.map(o => h("tr", {},
         h("td", {}, h("strong", { text: o.nome }), h("span", { class: "sub", text: o.segmento || "—" })),
-        h("td", {}, o.conectada ? selo("Conectada", "ok") : selo("Não conectada", "alerta")),
+        h("td", {}, o.conectada ? selo("Conectada", "ok") : o.chatbot ? selo("Chatbot", "ok") : selo("Não conectada", "alerta")),
+        h("td", {}, h("strong", { text: (o.acesso || {}).nome || o.plano }), h("span", { class: "sub", text: (NOME_STATUS_PLANO[(o.acesso || {}).status] || "") + ((o.acesso || {}).dias != null && !(o.acesso || {}).cortesia ? ` · ${(o.acesso || {}).dias} dia(s)` : "") }),
+          botao("Mudar", () => mudarPlanoEmpresa(o, nomesPlanos), "btn-secundario btn-pequeno")),
         h("td", {}, o.status === "ATIVA" ? selo("Ativa", "ok") : selo("Suspensa", "erro")),
         h("td", {}, h("div", { class: "acoes", style: "justify-content:flex-end" },
           botao("Abrir painel", () => { escolherEmpresa(o.id); location.hash = "#/painel"; }, "btn-secundario btn-pequeno"),
@@ -1238,6 +1249,37 @@
             try { await api("/api/admin/organizacoes/" + o.id, { metodo: "POST", corpo: { status: suspender ? "SUSPENSA" : "ATIVA" } }); await recarregarEu(); navegar(); }
             catch (e) { aviso(e.message, "erro"); }
           }, o.status === "ATIVA" ? "btn-perigo btn-pequeno" : "btn-secundario btn-pequeno")))))))));
+    if (cfgPlanos) el.appendChild(cartaoValoresPlanos(cfgPlanos));
+    el.appendChild(h("section", { class: "cartao vidro formulario" }, h("h3", { style: "margin:0", text: "Bot do Telegram da plataforma" }),
+      h("p", { class: "sub", style: "margin:0", text: "Um bot só para todas as empresas: cada uma conecta o grupo com um toque. Crie o bot no @BotFather, salve o token no secret TELEGRAM_BOT_TOKEN_PLATAFORMA do Worker da plataforma e clique abaixo." }),
+      h("div", { class: "acoes" }, botao("Ligar o bot", async () => { try { const r = await api("/api/admin/telegram", { metodo: "POST", corpo: {} }); aviso(`Bot @${r.bot} ligado.`, "ok"); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario btn-pequeno"))));
+  }
+  function mudarPlanoEmpresa(o, nomesPlanos) {
+    const plano = h("select", { class: "entrada" }, nomesPlanos.map(([v, n]) => h("option", { value: v, selected: v === o.plano, text: n })));
+    const sit = h("select", { class: "entrada" }, [["TESTE", "Teste grátis"], ["ATIVO", "Ativo (pago)"], ["CORTESIA", "Cortesia — acesso total sem custo"], ["CANCELADO", "Cancelado"], ["BLOQUEADO", "Bloqueado"]].map(([v, n]) => h("option", { value: v, selected: v === o.plano_status, text: n })));
+    const dias = h("input", { class: "entrada", type: "number", min: "0", max: "365", value: "0" });
+    const ate = h("input", { class: "entrada", type: "date" });
+    const fechar = gaveta(`Plano de ${o.nome}`, [
+      campo("Plano", plano), campo("Situação", sit, "Cortesia libera todos os recursos sem cobrança — só para as empresas que você aprovar."),
+      campo("Mais dias de teste", dias), campo("Liberado (pago) até", ate, "Use para pagamentos recebidos fora da plataforma."),
+      h("div", { class: "acoes" }, botao("Salvar", async () => {
+        try { await api("/api/admin/organizacoes/" + o.id, { metodo: "POST", corpo: { plano: plano.value, plano_status: sit.value, mais_dias_teste: Number(dias.value) || 0, pago_ate: ate.value || undefined } }); aviso("Plano atualizado.", "ok"); fechar(); await recarregarEu(); navegar(); }
+        catch (e) { aviso(e.message, "erro"); }
+      }, "btn-primario"))]);
+  }
+  function cartaoValoresPlanos(cfg) {
+    const ent = {};
+    const desconto = h("input", { class: "entrada", type: "number", min: "0", max: "50", value: String(Math.round(cfg.desconto_anual * 100)) });
+    return h("section", { class: "cartao vidro formulario" }, h("h3", { style: "margin:0", text: "Valores dos planos" }),
+      h("p", { class: "sub", style: "margin:0", text: cfg.cobranca ? "Cobrança on-line ligada (Asaas)." : "Cobrança on-line desligada: crie no Worker da plataforma ASAAS_API_KEY e ASAAS_WEBHOOK_TOKEN para receber por Pix, boleto e cartão." }),
+      h("div", { class: "tabela-caixa" }, h("table", {}, h("thead", {}, h("tr", {}, ["Plano", "Mensal (R$)", "Anual (R$, vazio = automático)", "Pessoas", "IA do chatbot/mês", "Aparece"].map(t => h("th", { text: t })))),
+        h("tbody", {}, Object.values(cfg.planos).map(p => { ent[p.id] = { mensal: h("input", { class: "entrada entrada-preco", type: "number", min: "0", value: String(p.mensal) }), anual: h("input", { class: "entrada entrada-preco", type: "number", min: "0", placeholder: String(p.anual) }), usuarios: h("input", { class: "entrada entrada-preco", type: "number", min: "1", value: String(p.limites.usuarios) }), ia: h("input", { class: "entrada entrada-preco", type: "number", min: "0", value: String(p.limites.ia_mes) }), visivel: h("input", { type: "checkbox", checked: p.visivel }) };
+          return h("tr", {}, h("td", {}, h("strong", { text: p.nome })), h("td", {}, ent[p.id].mensal), h("td", {}, ent[p.id].anual), h("td", {}, ent[p.id].usuarios), h("td", {}, ent[p.id].ia), h("td", {}, ent[p.id].visivel)); })))),
+      campo("Desconto do plano anual (%)", desconto),
+      h("div", { class: "acoes" }, botao("Salvar valores", async () => {
+        try { await api("/api/admin/planos", { metodo: "POST", corpo: { desconto_anual: (Number(desconto.value) || 0) / 100, planos: Object.fromEntries(Object.entries(ent).map(([id, e]) => [id, { mensal: Number(e.mensal.value), anual: Number(e.anual.value) || 0, visivel: e.visivel.checked, limites: { usuarios: Number(e.usuarios.value), ia_mes: Number(e.ia.value) } }])) } }); aviso("Valores salvos.", "ok"); }
+        catch (e) { aviso(e.message, "erro"); }
+      }, "btn-primario")));
   }
 
   // ---------------------------------------------------------------------------
@@ -1713,6 +1755,7 @@
         h("div", { class: "conversa-cabeca" }, h("button", { type: "button", class: "btn btn-secundario btn-pequeno so-celular", onclick: () => { estado.zapAberta = ""; grade.classList.remove("com-aberta"); } }, "‹ Voltar"),
           h("h3", { text: c.nome || telefone(c.telefone) }), h("span", { class: "sub", text: telefone(c.telefone) }),
           h("div", { class: "acoes" }, pode("AGENTE") ? botao(c.pausado ? "Devolver ao robô" : "Assumir (pausar o robô)", async () => { try { await zap(`conversas/${tel}/robo`, { metodo: "POST", corpo: { ligar: c.pausado } }); aviso(c.pausado ? "O robô voltou a atender esta conversa." : "Robô em pausa nesta conversa.", "ok"); abrir(tel); } catch (e) { aviso(e.message, "erro"); } }, c.pausado ? "btn-primario btn-pequeno" : "btn-secundario btn-pequeno") : null)),
+        c.memoria ? h("details", { class: "detalhes", style: "padding:0 18px" }, h("summary", { text: "O que a IA lembra deste cliente" }), h("p", { class: "sub", style: "white-space:pre-wrap", text: c.memoria })) : null,
         msgs,
         h("div", { class: "compor" }, texto, botao("Enviar", async () => {
           const t = texto.value.trim(); if (!t) return;
@@ -1736,9 +1779,12 @@
     const palavras = h("textarea", { class: "entrada", maxlength: "500", style: "min-height:70px", placeholder: "celular, smartphone, iphone" }); palavras.value = item.palavras || "";
     const ordem = h("input", { class: "entrada", type: "number", min: "0", max: "999", value: String(item.ordem || 0) });
     const ativo = h("input", { type: "checkbox", checked: item.ativo !== 0 });
+    const exibicao = h("select", { class: "entrada" }, [["AUTO", "Automático: até 3 = botões; até 10 = lista; mais = lista com \"Mais opções\""], ["NUMERADO", "Texto numerado: todas as opções numa mensagem só, sem limite (o cliente responde o número)"]].map(([v, n]) => h("option", { value: v, selected: (item.exibicao || "AUTO") === v, text: n })));
+    const campoExibicao = campo("Como mostrar as opções deste submenu", exibicao, "O WhatsApp permite no máximo 3 botões ou 10 itens por lista. Com mais opções, use a lista automática (com \"Mais opções\") ou o texto numerado, que não tem limite.");
     const rotTexto = h("label", {}), dicaTexto = h("p", { class: "dica", style: "margin:0;font-size:13px;color:var(--texto-3)" });
     const ajustar = () => {
       const t = tipo.value;
+      campoExibicao.classList.toggle("oculto", t !== "MENU");
       rotTexto.textContent = { MENU: "Mensagem ao abrir o submenu", RESPOSTA: "Resposta que o cliente recebe", LISTA: "Texto antes da lista (opcional)", HUMANO: "Mensagem ao chamar a equipe (opcional)" }[t];
       dicaTexto.textContent = { MENU: "Ex.: Qual produto você procura?", RESPOSTA: "Endereço, horário, link do cardápio, preços autorizados… O robô envia exatamente este texto.", LISTA: "Os contatos ligados a esta opção (em Contatos e lojas) aparecem com o link do WhatsApp de cada um.", HUMANO: "O robô fica em pausa nessa conversa por 12 h e a equipe é avisada (Telegram ou e-mail)." }[t];
     };
@@ -1747,12 +1793,49 @@
     const fechar = gaveta(item.id ? "Editar opção" : "Nova opção do menu", [
       campo("Tipo", tipo), campo("Nome no botão (até 24 letras)", titulo, "Pode usar emoji. Em botões, o WhatsApp mostra até 20 letras."), campo("Onde fica", pai),
       h("div", { class: "campo" }, rotTexto, texto, dicaTexto),
-      campo("Descrição na lista", descricao), campo("Palavras-chave", palavras, "Se o cliente escrever em vez de tocar, o robô procura por estas palavras primeiro — sem gastar IA."),
+      campoExibicao, campo("Descrição na lista", descricao), campo("Palavras-chave", palavras, "Se o cliente escrever em vez de tocar, o robô procura por estas palavras primeiro — sem gastar IA."),
       campo("Ordem (menor aparece primeiro)", ordem), h("label", { class: "guia-cat" }, ativo, "Aparece no menu"),
       h("div", { class: "acoes" }, botao("Salvar", async () => {
-        try { await zap("itens", { metodo: "POST", corpo: { id: item.id, tipo: tipo.value, titulo: titulo.value, pai_id: Number(pai.value), texto: texto.value, descricao: descricao.value, palavras: palavras.value, ordem: Number(ordem.value) || 0, ativo: ativo.checked } }); aviso("Opção salva.", "ok"); fechar(); recarregar(); }
+        try { await zap("itens", { metodo: "POST", corpo: { id: item.id, tipo: tipo.value, titulo: titulo.value, pai_id: Number(pai.value), texto: texto.value, descricao: descricao.value, palavras: palavras.value, ordem: Number(ordem.value) || 0, ativo: ativo.checked, exibicao: exibicao.value } }); aviso("Opção salva.", "ok"); fechar(); recarregar(); }
         catch (e) { aviso(e.message, "erro"); }
       }, "btn-primario"))]);
+  }
+  // Assistente: a pessoa conta como é o negócio e a IA monta tudo (menu, mensagens e treinamento).
+  function criarComIA(temMenu) {
+    const desc = h("textarea", { class: "entrada", maxlength: "6000", style: "min-height:180px", placeholder: "Ex.: Sou o Shopping Infomix, em Niterói. Temos 120 lojas de celular, informática e games, e serviços como conserto de celular. Quero que o cliente escolha o que procura e receba o WhatsApp das lojas. Horário: seg a sáb, 10h às 22h. Quando pedir atendente, avisar no Telegram." });
+    const area = h("div", { class: "grade" });
+    let perguntas = [], plano = null;
+    const substituir = h("input", { type: "checkbox" });
+    const desenharPlano = () => {
+      const linhas = [];
+      const desce = (lista, n) => lista.forEach(x => { linhas.push(h("div", { class: "zap-no", style: `margin-left:${n * 18}px` }, h("span", { class: "zap-no-titulo" }, h("strong", { text: x.titulo }), h("small", { class: "sub", text: " · " + TIPOS_ITEM[x.tipo].split(" (")[0] + (x.texto ? ` — ${x.texto.slice(0, 90)}${x.texto.length > 90 ? "…" : ""}` : "") })))); desce(x.filhos || [], n + 1); });
+      desce(plano.menu, 0);
+      trocar(area, h("p", { class: "nota", text: `Pronto! Modo sugerido: ${({ BOTOES: "só botões", MISTO: "botões + IA", IA: "IA completa" })[plano.modo]}. Confira e aplique; depois você ajusta qualquer coisa.` }),
+        plano.boas_vindas ? h("div", { class: "msg msg-saida", style: "max-width:100%" }, plano.boas_vindas) : null,
+        h("div", { class: "zap-arvore" }, linhas),
+        temMenu ? h("label", { class: "guia-cat" }, substituir, "Substituir o menu atual") : null,
+        h("div", { class: "acoes" }, botao("Aplicar no meu chatbot", async () => {
+          try { const r = await zap("assistente", { metodo: "POST", corpo: { acao: "aplicar", plano, substituir: substituir.checked } }); aviso(`Chatbot montado: ${r.opcoes} opções.`, "ok"); fechar(); navegar(); }
+          catch (e) { aviso(e.message, "erro"); }
+        }, "btn-primario"), botao("Gerar de novo", () => gerar(), "btn-secundario")));
+    };
+    const gerar = async (respostas) => {
+      trocar(area, carregando("A IA está montando o seu atendimento…"));
+      try {
+        const r = await zap("assistente", { metodo: "POST", corpo: { descricao: desc.value, respostas, sem_perguntas: Boolean(respostas) } });
+        if (r.perguntas) {
+          perguntas = r.perguntas;
+          const ents = perguntas.map(() => h("textarea", { class: "entrada", style: "min-height:60px" }));
+          trocar(area, h("p", { class: "nota", text: "Só preciso de mais isto para montar certinho:" }), perguntas.map((q, i) => campo(q, ents[i])),
+            h("div", { class: "acoes" }, botao("Montar o chatbot", () => gerar(perguntas.map((q, i) => ({ pergunta: q, resposta: ents[i].value }))), "btn-primario"), botao("Montar sem responder", () => gerar([]), "btn-secundario")));
+          return;
+        }
+        plano = r.plano; desenharPlano();
+      } catch (e) { trocar(area); aviso(e.message, "erro"); }
+    };
+    const fechar = gaveta("✨ Criar o chatbot com a IA", [
+      h("p", { text: "Conte com suas palavras como é o negócio e como quer atender. A IA monta o menu, as mensagens, as palavras-chave e o treinamento — e pergunta só o essencial." }),
+      campo("Sobre o seu negócio", desc), h("div", { class: "acoes" }, botao("Montar com a IA", () => gerar(), "btn-primario")), area]);
   }
   async function abaZapMenu(area, vivo) {
     const d = await zap("itens");
@@ -1763,7 +1846,8 @@
     if (!itens.length) {
       const modelo = (tipo, nome, desc) => h("div", { class: "cartao vidro", style: "display:grid;gap:10px" }, h("h3", { style: "margin:0", text: nome }), h("p", { class: "sub", style: "margin:0", text: desc }),
         pode("AGENTE") ? botao("Usar este modelo", async () => { try { await zap("modelo", { metodo: "POST", corpo: { tipo } }); aviso("Menu criado. Agora ajuste do seu jeito.", "ok"); recarregar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario btn-pequeno") : null);
-      trocar(area, h("p", { class: "nota", text: "Comece por um modelo pronto (você muda tudo depois) ou crie as opções do zero." }),
+      trocar(area, pode("AGENTE") ? h("section", { class: "cartao vidro destaque-ia" }, h("h3", { style: "margin:0", text: "✨ Deixe a IA montar para você" }), h("p", { class: "sub", style: "margin:0", text: "Conte como é o negócio e a IA monta o menu, as mensagens e o treinamento em segundos." }), botao("Criar com a IA", () => criarComIA(false), "btn-primario")) : null,
+        h("p", { class: "nota", text: "Ou comece por um modelo pronto (você muda tudo depois), ou crie as opções do zero." }),
         h("section", { class: "grade grade-3" }, modelo("shopping", "🛍️ Shopping / guia de lojas", "Produtos e Serviços → categorias → lojas com o WhatsApp de cada uma. Ideal para importar a planilha de lojas."),
           modelo("servicos", "🔧 Empresa de serviços", "Nossos serviços, endereço e horário, falar com atendente."), modelo("restaurante", "🍽️ Restaurante / delivery", "Cardápio, delivery, endereço e horário, falar com atendente.")),
         pode("AGENTE") ? h("div", { class: "acoes" }, botao("Criar do zero", () => editarItem(null, itens, recarregar), "btn-secundario")) : null);
@@ -1771,6 +1855,7 @@
     }
     const linha = (i, nivel) => h("div", { class: "zap-no", style: `margin-left:${nivel * 22}px` },
       h("span", { class: "zap-no-titulo" }, /^\p{Extended_Pictographic}/u.test(i.titulo) ? null : h("span", { text: ICONE_TIPO[i.tipo] + " " }), h("strong", { text: i.titulo }), !i.ativo ? h("small", { text: " (desligada)" }) : null,
+        i.tipo === "MENU" && i.exibicao === "NUMERADO" ? h("small", { class: "sub", text: " · texto numerado" }) : null,
         h("small", { class: "sub", text: " · " + (i.tipo === "LISTA" ? `${numero(porItem.get(i.id) || 0)} contato(s)${porItem.get(i.id) ? "" : " — não aparece até ter contato"}` : i.tipo === "MENU" ? `${numero(itens.filter(x => x.pai_id === i.id).length)} opção(ões)` : TIPOS_ITEM[i.tipo].split(" (")[0]) })),
       pode("AGENTE") ? h("span", { class: "acoes" },
         i.tipo === "MENU" ? botao("+ Opção aqui", () => editarItem({ tipo: "LISTA", titulo: "", pai_id: i.id, ativo: 1 }, itens, recarregar), "btn-secundario btn-pequeno") : null,
@@ -1782,7 +1867,7 @@
     const raiz = itens.filter(i => !i.pai_id && i.ativo).length;
     trocar(area,
       h("section", { class: "cartao vidro" }, h("div", { class: "cabeca-grafico" }, h("h3", { style: "margin:0", text: "Menu do WhatsApp" }),
-        pode("AGENTE") ? h("div", { class: "acoes" }, botao("+ Nova opção", () => editarItem(null, itens, recarregar), "btn-primario btn-pequeno"), h("a", { class: "btn btn-secundario btn-pequeno", href: "#/chatbot/testar" }, "Testar")) : null),
+        pode("AGENTE") ? h("div", { class: "acoes" }, botao("+ Nova opção", () => editarItem(null, itens, recarregar), "btn-primario btn-pequeno"), botao("✨ Refazer com a IA", () => criarComIA(true), "btn-secundario btn-pequeno"), h("a", { class: "btn btn-secundario btn-pequeno", href: "#/chatbot/testar" }, "Testar")) : null),
         h("p", { class: "sub", text: `Com até 3 opções o cliente vê botões; com mais, uma lista (9 por vez + "Mais opções"). O menu inicial tem ${raiz} opção(ões): ${raiz <= 3 ? "aparece em botões" : "aparece em lista"}. Depois de cada resposta o robô oferece Menu inicial, Voltar e Finalizar.` }),
         h("div", { class: "zap-arvore" }, arvore)));
   }
@@ -1873,7 +1958,10 @@
     const d = await zap("config");
     if (!vivo()) return;
     const cfg = d.config || {};
-    const modo = h("select", { class: "entrada" }, [["BOTOES", "Só botões — sem IA, custo zero (recomendado para começar)"], ["MISTO", "Botões + IA — a IA responde o que o cliente escrever"]].map(([v, n]) => h("option", { value: v, selected: d.modo === v, text: n })));
+    const modo = h("select", { class: "entrada" }, [["BOTOES", "Só botões — sem IA, custo zero"], ["MISTO", "Botões + IA — a IA entra só quando a busca por palavra não acha"], ["IA", "IA completa — conversa como uma pessoa, com memória (os botões continuam)"]].map(([v, n]) => h("option", { value: v, selected: d.modo === v, text: n })));
+    const treino = {};
+    const CAMPOS_TREINO_ZAP = [["nome_atendente", "Nome da atendente (opcional)", "Ex.: Bia. Se ficar vazio, ela se apresenta como a equipe.", 1], ["ia_tom", "Jeito de atender", "Ex.: simpática, direta, trata por você, usa emoji com moderação.", 2], ["ia_servicos", "Produtos e serviços", "O que a empresa vende ou faz, o que NÃO faz, prazos.", 4], ["ia_precos", "Preços autorizados", "Só os valores que a IA pode informar. Fora daqui, ela diz que vai confirmar.", 3], ["ia_regras", "Regras", "Pagamento, entrega, garantia, trocas, regiões atendidas, quando chamar a equipe.", 3], ["ia_exemplos", "Exemplos de como a equipe responde", "Cole trechos reais: a IA imita o jeito de escrever.", 4]];
+    const modeloConversa = h("select", { class: "entrada" }, [["gpt-5-mini", "gpt-5-mini — ótimo e econômico (recomendado)"], ["gpt-4.1", "gpt-4.1 — mais caprichado, custa mais"], ["gpt-5-nano", "gpt-5-nano — o mais barato"]].map(([v, n]) => h("option", { value: v, selected: (cfg.modelo_conversa || "gpt-5-mini") === v, text: n })));
     const ativo = h("input", { type: "checkbox", checked: d.ativo !== false });
     const campos = [["boas_vindas", "Boas-vindas (aparece com o menu inicial)", "", 3], ["nao_entendi", "Quando o robô não entende", "", 1], ["humano", "Ao chamar a equipe", "", 2], ["rodape_lista", "Depois de uma lista de contatos", "", 2], ["encerramento", "Ao finalizar", "", 2], ["rotulo_catalogo", "Como chamar os contatos", "Ex.: lojas, profissionais, unidades. Aparece como \"3 lojas\" na lista.", 1], ["rede_nome", "Rede social (nome)", "Ex.: Instagram", 1], ["rede_url", "Rede social (link)", "Vai na mensagem de encerramento.", 1]];
     const ent = {};
@@ -1881,23 +1969,29 @@
     const modelo = h("select", { class: "entrada" }, [["gpt-5-nano", "gpt-5-nano — o mais barato (recomendado)"], ["gpt-5-mini", "gpt-5-mini — econômico, mais esperto"], ["gpt-4o-mini", "gpt-4o-mini — econômico"]].map(([v, n]) => h("option", { value: v, selected: cfg.modelo_ia === v, text: n })));
     const limite = h("input", { class: "entrada", type: "number", min: "0", max: "5000", value: String(cfg.limite_ia_dia ?? 300) });
     const avisar = h("input", { type: "checkbox", checked: cfg.avisar_buscas !== false });
+    const exibIni = h("select", { class: "entrada" }, [["AUTO", "Automático (botões ou lista)"], ["NUMERADO", "Texto numerado, sem limite de opções"]].map(([v, n]) => h("option", { value: v, selected: (cfg.exibicao_inicio || "AUTO") === v, text: n })));
     trocar(area,
       h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Modo de atendimento" }),
         campo("Como o robô atende", modo, "Nos dois modos os botões nunca gastam IA. No modo com IA, ela só entra quando a pessoa escreve algo que a busca por palavra não achou."),
         h("label", { class: "guia-cat" }, ativo, "Robô ligado (desligado: as mensagens só ficam registradas para a equipe)"),
-        h("label", { class: "guia-cat" }, avisar, "Avisar no Telegram cada busca (nome, número e o que procurou)")),
+        h("label", { class: "guia-cat" }, avisar, "Avisar no Telegram cada busca (nome, número e o que procurou)"),
+        campo("Como mostrar o menu inicial", exibIni)),
       h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Mensagens" }),
         campos.map(([k, rot, dica, l]) => { ent[k] = l > 1 ? h("textarea", { class: "entrada", maxlength: "1000", style: `min-height:${l * 34}px` }) : h("input", { class: "entrada", maxlength: "300" }); ent[k].value = cfg[k] || ""; return campo(rot, ent[k], dica); })),
-      h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "IA (só no modo Botões + IA)" }),
+      h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Treinamento da IA completa" }),
+        h("p", { class: "sub", text: "A IA atende como uma pessoa da equipe usando só o que estiver aqui, no campo \"O que a IA pode responder\" e no menu. Ela lembra de cada cliente (nome, preferências, o que já pediu), responde no idioma do cliente e chama a equipe quando não sabe." }),
+        CAMPOS_TREINO_ZAP.map(([k, rot, dica, l]) => { treino[k] = l > 1 ? h("textarea", { class: "entrada", maxlength: "6000", style: `min-height:${l * 40}px` }) : h("input", { class: "entrada", maxlength: "60" }); treino[k].value = cfg[k] || ""; return campo(rot, treino[k], dica); }),
+        campo("Modelo da IA completa", modeloConversa)),
+      h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "IA para dúvidas e limites" }),
         campo("O que a IA pode responder sobre a empresa", sobre, "A IA só responde com o que estiver aqui ou no menu. Nunca inventa preço, telefone ou horário."),
         h("div", { class: "grade grade-2" }, campo("Modelo", modelo), campo("Limite de respostas da IA por dia", limite, "Proteção de custo: passou disso, o robô volta a mostrar o menu."))),
       pode("AGENTE") ? h("div", { class: "acoes" }, botao("Salvar", async () => {
-        try { await zap("config", { metodo: "POST", corpo: { ...Object.fromEntries(Object.entries(ent).map(([k, e]) => [k, e.value])), sobre: sobre.value, modelo_ia: modelo.value, limite_ia_dia: Number(limite.value), avisar_buscas: avisar.checked, modo: modo.value, ativo: ativo.checked } }); aviso("Salvo.", "ok"); }
+        try { await zap("config", { metodo: "POST", corpo: { ...Object.fromEntries(Object.entries(ent).map(([k, e]) => [k, e.value])), sobre: sobre.value, modelo_ia: modelo.value, limite_ia_dia: Number(limite.value), avisar_buscas: avisar.checked, exibicao_inicio: exibIni.value, modo: modo.value, ativo: ativo.checked, modelo_conversa: modeloConversa.value, ...Object.fromEntries(Object.entries(treino).map(([k, e]) => [k, e.value])) } }); aviso("Salvo.", "ok"); }
         catch (e) { aviso(e.message, "erro"); }
       }, "btn-primario"), h("a", { class: "btn btn-secundario", href: "#/chatbot/testar" }, "Testar como cliente")) : null);
   }
   async function abaZapConexao(area, vivo) {
-    const c = await zap("conta");
+    const [c, tg] = await Promise.all([zap("conta"), zap("telegram").catch(() => ({}))]);
     if (!vivo()) return;
     const pnid = h("input", { class: "entrada", value: c.phone_number_id || "", inputmode: "numeric", placeholder: "Ex.: 473474732510163" });
     const waba = h("input", { class: "entrada", value: c.waba_id || "", inputmode: "numeric", placeholder: "opcional" });
@@ -1919,21 +2013,26 @@
           h("p", { class: "sub", text: "No app da Meta → WhatsApp → Configuração → Webhook → Editar: cole o endereço e o token abaixo, clique em Verificar e salvar, e depois assine o campo \"messages\". É o mesmo endereço para todas as empresas." }),
           copia("URL de retorno", c.webhook_url), c.verify_token ? copia("Token de verificação", c.verify_token) : h("p", { class: "nota", text: "Peça a um administrador o token de verificação." }),
           h("p", { class: "nota", text: "Se esse número hoje usa outro robô (ex.: Botpress), é só trocar o endereço do webhook. Para voltar, cole o endereço antigo. O número não sai da conta de vocês." }))),
-      h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "3. Avisos no Telegram (opcional)" }),
-        h("p", { class: "sub", text: "Cada busca e cada pedido de \"falar com alguém\" chega no grupo. Sem Telegram, os pedidos de atendimento chegam por e-mail aos administradores." }),
-        c.telegram ? h("p", {}, selo("Ligado", "ok")) : null,
-        h("div", { class: "grade grade-2" }, campo("Token do bot", tgToken), campo("ID do grupo", tgChat, "Adicione o bot ao grupo. O ID aparece em api.telegram.org/bot<token>/getUpdates.")),
-        pode("ADMIN") ? h("div", { class: "acoes" }, botao("Salvar e mandar teste", async () => { try { const r = await zap("conta/telegram", { metodo: "POST", corpo: { telegram_token: tgToken.value.trim(), telegram_chat: tgChat.value.trim() } }); aviso(r.aviso || "Telegram ligado: confira a mensagem de teste no grupo.", r.aviso ? "erro" : "ok"); navegar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario btn-pequeno"),
-          c.telegram ? botao("Desligar", async () => { await zap("conta/telegram", { metodo: "POST", corpo: { remover: true } }); navegar(); }, "btn-secundario btn-pequeno") : null) : null));
+      h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "3. Telegram da equipe (opcional)" }),
+        h("p", { class: "sub", text: "No grupo chegam os pedidos de \"falar com alguém\" e as buscas. A equipe responde o cliente respondendo o próprio aviso no Telegram, e o comando /resumo mostra os números do dia. Sem Telegram, os pedidos de atendimento chegam por e-mail." }),
+        tg.conectado ? h("p", {}, selo("Conectado", "ok"), " ", h("strong", { text: tg.grupo || "" })) : null,
+        tg.disponivel && pode("ADMIN") ? h("div", { class: "acoes" },
+          botao(tg.conectado ? "Conectar outro grupo" : "Conectar o grupo do Telegram", async () => { try { const l = await zap("telegram/link", { metodo: "POST", corpo: {} }); window.open(l.grupo, "_blank", "noopener"); await modal({ titulo: "Escolha o grupo no Telegram", conteudo: ["O Telegram abriu: escolha o grupo da equipe e toque em Adicionar. O bot confirma no grupo e pronto.", "Prefere receber no seu chat pessoal? Use este link: " + l.privado, "O link vale por 1 hora."], soInformar: true }); navegar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario btn-pequeno"),
+          tg.conectado ? botao("Desconectar", async () => { await zap("telegram/desligar", { metodo: "POST", corpo: {} }); navegar(); }, "btn-secundario btn-pequeno") : null) : null,
+        !tg.disponivel ? h("details", { class: "detalhes" }, h("summary", { text: "Usar um bot próprio (avançado)" }),
+          h("div", { class: "grade grade-2" }, campo("Token do bot", tgToken), campo("ID do grupo", tgChat, "Adicione o bot ao grupo. O ID aparece em api.telegram.org/bot<token>/getUpdates.")),
+          pode("ADMIN") ? h("div", { class: "acoes" }, botao("Salvar e mandar teste", async () => { try { const r = await zap("conta/telegram", { metodo: "POST", corpo: { telegram_token: tgToken.value.trim(), telegram_chat: tgChat.value.trim() } }); aviso(r.aviso || "Telegram ligado: confira a mensagem de teste no grupo.", r.aviso ? "erro" : "ok"); navegar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario btn-pequeno")) : null) : null));
   }
   function abaZapTestar(area) {
     const tela = h("div", { class: "mensagens guia-tela", "aria-live": "polite" });
     const entrada = h("input", { class: "entrada", placeholder: "Escreva como um cliente…", maxlength: "500" });
     const balao = (t, cli) => h("div", { class: "msg " + (cli ? "msg-entrada" : "msg-saida") }, t);
+    const historico = [];
     const enviar = async (texto, acao, rotulo) => {
       tela.appendChild(balao(rotulo || texto, true));
       try {
-        const r = await zap("testar", { metodo: "POST", corpo: { texto, acao } });
+        const r = await zap("testar", { metodo: "POST", corpo: { texto, acao, historico: historico.slice(-20) } });
+        historico.push({ cliente: true, texto: rotulo || texto }, ...(r.respostas || []).map(x => ({ cliente: false, texto: x.texto })));
         for (const x of r.respostas || []) {
           const it = x.interativo;
           if (!it) { tela.appendChild(balao(x.texto, false)); continue; }
@@ -1949,8 +2048,106 @@
     entrada.addEventListener("keydown", e => { if (e.key === "Enter") mandar(); });
     trocar(area, h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Testar como cliente" }),
       h("p", { class: "sub", text: "Simula a conversa: nada é enviado pelo WhatsApp e nada entra nas métricas. No modo Botões + IA, o que você escrever pode usar a IA (centavos)." }),
-      h("div", { class: "acoes", style: "margin:8px 0" }, botao("Começar (oi)", () => enviar("oi", "", "oi"), "btn-primario btn-pequeno"), botao("Limpar", () => tela.replaceChildren(), "btn-secundario btn-pequeno")),
+      h("div", { class: "acoes", style: "margin:8px 0" }, botao("Começar (oi)", () => enviar("oi", "", "oi"), "btn-primario btn-pequeno"), botao("Limpar", () => { tela.replaceChildren(); historico.length = 0; }, "btn-secundario btn-pequeno")),
       tela, h("div", { class: "compor" }, entrada, botao("Enviar", mandar, "btn-primario"))));
+  }
+
+  // ----- Plano e pagamento: teste grátis, planos (mensal/anual), assinatura (Pix, boleto, cartão) e histórico.
+  const RECURSO_DA_ROTA = {
+    conversas: "ia_completa", atendimentos: "ia_completa", profissionais: "ia_completa", treinamento: "ia_completa", aprendizados: "ia_completa", clientes: "ia_completa", whatsapp: "ia_completa", guia: "ia_completa",
+    chatbot: "chatbot", estudio: "marketing", calendario: "marketing", aprovacoes: "marketing", marcas: "marketing", instagram: "marketing", facebook: "marketing", google: "marketing", social: "marketing", denia: "voz"
+  };
+  window.DENIA_RECURSOS = window.DENIA_RECURSOS || { chatbot: "Chatbot do WhatsApp com botões e listas", chatbot_ia: "IA no chatbot", ia_completa: "IA completa de atendimento (atende como uma pessoa, com memória)", marketing: "Instagram, Facebook e Google: posts, artes, comentários e avaliações", voz: "DENIA por voz, ao vivo", multiempresa: "Várias empresas, marcas e unidades", temporada: "Locação por temporada" };
+  const ROTAS_LIVRES = ["plano", "conta", "equipe", "auditoria", "empresas", "contatos", "painel", "integracoes", "consumo"];
+  const acessoAtual = () => (estado.org && estado.org.acesso) || { liberado: true, recursos: [], status: "?" };
+  const temRecurso = r => !r || estado.eu.usuario.super_admin || (acessoAtual().liberado && (acessoAtual().recursos || []).includes(r));
+  const NOME_STATUS_PLANO = { TESTE: "Teste grátis", ATIVO: "Ativo", ATRASADO: "Pagamento pendente", CANCELADO: "Cancelado (usa até o fim do período)", CORTESIA: "Cortesia — acesso total", BLOQUEADO: "Bloqueado", TESTE_ACABOU: "Teste encerrado" };
+  function aplicarPlano() {
+    document.querySelectorAll("#lateral-nav a[data-rota]").forEach(a => {
+      const r = RECURSO_DA_ROTA[a.dataset.rota];
+      const travado = r && !temRecurso(r);
+      a.classList.toggle("travado", Boolean(travado));
+      a.title = travado ? "Disponível em um plano superior" : "";
+    });
+    const f = $("faixa-plano");
+    if (!f) return;
+    const a = acessoAtual();
+    const mostrar = estado.org && !estado.eu.usuario.super_admin && (a.status === "TESTE" || a.status === "TESTE_ACABOU" || a.status === "ATRASADO" || a.status === "BLOQUEADO");
+    if (!mostrar) { f.classList.add("oculto"); f.replaceChildren(); return; }
+    const txtF = a.status === "TESTE" ? `Teste grátis: ${a.dias <= 1 ? "último dia" : `faltam ${a.dias} dias`} do plano ${a.nome}.` : a.status === "TESTE_ACABOU" ? "Seu teste grátis terminou. O atendimento automático está pausado; seus dados continuam guardados." : a.status === "ATRASADO" ? "O pagamento do plano está pendente. O acesso continua por até 3 dias depois do vencimento." : "O plano desta empresa está bloqueado.";
+    f.className = "faixa-plano" + (a.status === "TESTE" ? "" : " faixa-plano-alerta");
+    f.replaceChildren(h("span", { text: txtF }), pode("ADMIN") ? h("a", { class: "btn btn-primario btn-pequeno", href: "#/plano" }, a.status === "TESTE" ? "Escolher plano" : "Regularizar") : null);
+  }
+  function telaTravada(el, recurso) {
+    const a = acessoAtual();
+    const bloqueado = !a.liberado;
+    el.appendChild(h("section", { class: "cartao vidro trava" }, h("div", { class: "trava-icone", text: "🔒" }),
+      h("h2", { text: bloqueado ? (a.status === "TESTE_ACABOU" ? "Seu teste grátis terminou" : "Plano pendente") : "Disponível em um plano superior" }),
+      h("p", { text: bloqueado ? "Escolha um plano para voltar a usar. Nada foi apagado: menu, treinamento, conversas e configurações continuam aqui." : `Seu plano ${a.nome} não inclui: ${(window.DENIA_RECURSOS || {})[recurso] || recurso}. Atualize o plano para liberar na hora.` }),
+      h("div", { class: "acoes", style: "justify-content:center" }, h("a", { class: "btn btn-primario", href: "#/plano" }, "Ver planos"))));
+  }
+  async function paginaPlano(el, _p, vivo) {
+    el.appendChild(cabeca("Plano e pagamento", "Sem fidelidade: mude de plano ou cancele quando quiser. No plano anual você economiza."));
+    const area = h("div", { class: "grade" }, carregando());
+    el.appendChild(area);
+    let d;
+    try { d = await org("plano"); } catch (e) { if (vivo()) falha(area, e); return; }
+    if (!vivo()) return;
+    window.DENIA_RECURSOS = d.recursos;
+    const a = d.acesso;
+    estado.org.acesso = a; aplicarPlano();
+    const f = estado.planoF = estado.planoF || { ciclo: "MENSAL" };
+    const real = v => dinheiro(v, "BRL");
+    const resumo = h("section", { class: "grade grade-4" },
+      metrica("Plano", a.nome, NOME_STATUS_PLANO[a.status] || a.status),
+      metrica(a.status === "TESTE" ? "Teste termina" : "Válido até", a.cortesia ? "Sem prazo" : a.ate ? new Date(a.ate).toLocaleDateString(LOCALE) : "—", a.dias != null && !a.cortesia ? `${a.dias} dia(s)` : a.cortesia ? "liberado pela equipe DENIA" : ""),
+      metrica("Pagamento", a.ciclo === "ANUAL" ? "Anual" : a.ciclo === "MENSAL" ? "Mensal" : "—", a.assinatura ? "assinatura ativa" : "sem assinatura"),
+      metrica("Equipe", `${numero(d.uso.usuarios)} / ${a.cortesia ? "∞" : numero(a.limites.usuarios)}`, "pessoas com acesso"));
+    const ciclo = h("div", { class: "abas abas-chips", role: "group", "aria-label": "Ciclo" }, [["MENSAL", "Mensal"], ["ANUAL", `Anual (−${Math.round(d.desconto_anual * 100)}%)`]].map(([v, n]) => h("button", { type: "button", class: "aba" + (f.ciclo === v ? " ativo" : ""), "aria-pressed": f.ciclo === v ? "true" : "false", onclick: () => { f.ciclo = v; navegar(); } }, n)));
+    const cartoes = h("section", { class: "grade-planos-app" }, d.planos.map(p => {
+      const atual = p.id === a.plano && ["ATIVO", "CORTESIA"].includes(a.status);
+      const preco = f.ciclo === "ANUAL" ? p.anual : p.mensal;
+      return h("article", { class: "cartao vidro plano-app" + (p.id === "growth" ? " plano-app-destaque" : "") },
+        h("h3", { style: "margin:0", text: p.nome }), h("p", { class: "sub", style: "margin:0", text: p.desc }),
+        h("p", { class: "plano-app-preco" }, h("strong", { text: real(preco) }), h("small", { text: f.ciclo === "ANUAL" ? "/ano" : "/mês" })),
+        f.ciclo === "ANUAL" ? h("p", { class: "sub", style: "margin:0", text: `equivale a ${real(p.anual / 12)}/mês` }) : null,
+        h("ul", { class: "lista-simples" }, p.recursos.map(r => h("li", { text: "✓ " + d.recursos[r] })), h("li", { text: `✓ Até ${numero(p.limites.usuarios)} pessoas na equipe` }), h("li", { text: `✓ ${numero(p.limites.ia_mes)} respostas de IA do chatbot por mês` })),
+        atual ? selo("Seu plano", "ok") : d.pode_assinar && !a.cortesia ? botao(a.status === "TESTE" && p.id === a.plano ? "Assinar este plano" : "Escolher", () => assinar(p, d), "btn-primario") : null);
+    }));
+    const pags = d.pagamentos || [];
+    const NOME_PAG = { PENDING: "Aguardando", RECEIVED: "Pago", CONFIRMED: "Pago", OVERDUE: "Vencido", REFUNDED: "Estornado", RECEIVED_IN_CASH: "Pago" };
+    trocar(area, resumo,
+      a.cortesia ? h("p", { class: "nota", text: "Esta empresa tem cortesia da equipe DENIA: acesso total, sem custo." }) : null,
+      h("section", { class: "cartao vidro filtros-desempenho" }, ciclo),
+      cartoes,
+      h("p", { class: "nota", text: "Pagamento por Pix, boleto ou cartão de crédito, com nota fiscal. A cobrança é feita pelo Asaas, instituição de pagamento autorizada pelo Banco Central. Mensagens do WhatsApp cobradas pela Meta não estão incluídas." }),
+      pags.length ? h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Pagamentos" }), h("div", { class: "tabela-caixa" }, h("table", {}, h("thead", {}, h("tr", {}, ["Vencimento", "Valor", "Forma", "Situação", ""].map(t => h("th", { text: t })))),
+        h("tbody", {}, pags.map(x => h("tr", {}, h("td", { text: dataCompleta(x.vencimento) }), h("td", { text: real(x.valor) }), h("td", { text: ({ PIX: "Pix", BOLETO: "Boleto", CREDIT_CARD: "Cartão", UNDEFINED: "A escolher" })[x.forma] || x.forma || "—" }), h("td", {}, selo(NOME_PAG[x.status] || x.status, ["RECEIVED", "CONFIRMED", "RECEIVED_IN_CASH"].includes(x.status) ? "ok" : x.status === "OVERDUE" ? "erro" : "alerta")),
+          h("td", {}, x.link ? h("a", { class: "btn btn-secundario btn-pequeno", href: x.link, target: "_blank", rel: "noopener" }, ["RECEIVED", "CONFIRMED"].includes(x.status) ? "Comprovante" : "Pagar") : null))))))) : null,
+      a.assinatura && d.pode_assinar && !a.cortesia ? h("div", { class: "acoes" }, botao("Cancelar assinatura", async () => {
+        if (!(await modal({ titulo: "Cancelar a assinatura?", conteudo: "Sem multa. Você continua usando até o fim do período já pago; depois o atendimento automático pausa (os dados ficam guardados).", confirmar: "Cancelar assinatura", perigo: true }))) return;
+        try { await org("plano/cancelar", { metodo: "POST", corpo: {} }); aviso("Assinatura cancelada.", "ok"); await recarregarEu(); navegar(); } catch (e) { aviso(e.message, "erro"); }
+      }, "btn-secundario")) : null);
+  }
+  function assinar(p, d) {
+    const f = estado.planoF;
+    const nome = h("input", { class: "entrada", maxlength: "120", placeholder: "Nome completo ou razão social" });
+    const doc = h("input", { class: "entrada", inputmode: "numeric", maxlength: "18", placeholder: "CPF ou CNPJ" });
+    const email = h("input", { class: "entrada", type: "email", value: estado.eu.usuario.email, maxlength: "200" });
+    const tel = h("input", { class: "entrada", inputmode: "tel", maxlength: "20", placeholder: "(21) 99999-9999 (opcional)" });
+    const preco = f.ciclo === "ANUAL" ? p.anual : p.mensal;
+    const fechar = gaveta(`Assinar o plano ${p.nome}`, [
+      h("p", {}, h("strong", { text: `${dinheiro(preco, "BRL")} ${f.ciclo === "ANUAL" ? "por ano" : "por mês"}` }), acessoAtual().status === "TESTE" ? " — a primeira cobrança vence no fim do teste grátis; você não perde nenhum dia." : ""),
+      campo("Nome ou razão social (vai na nota fiscal)", nome), campo("CPF ou CNPJ", doc), campo("E-mail para a cobrança e a nota", email), campo("Celular", tel),
+      h("p", { class: "sub", text: "Na próxima tela você escolhe Pix, boleto ou cartão de crédito. Sem fidelidade." }),
+      h("div", { class: "acoes" }, botao("Continuar para o pagamento", async () => {
+        try {
+          const r = await org("plano/assinar", { metodo: "POST", corpo: { plano: p.id, ciclo: f.ciclo, nome: nome.value, documento: doc.value, email: email.value, telefone: tel.value } });
+          fechar(); await recarregarEu();
+          if (r.link) { window.open(r.link, "_blank", "noopener"); aviso("Abrimos a página de pagamento. Quando o pagamento for confirmado, o plano é liberado sozinho.", "ok"); }
+          navegar();
+        } catch (e) { aviso(e.message, "erro"); }
+      }, "btn-primario"))]);
   }
 
   async function paginaWhatsapp(el, aba, vivo) {

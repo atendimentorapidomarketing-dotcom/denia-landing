@@ -34,6 +34,12 @@ async function criarPlataforma(extra = {}) {
       const r = p.google(String(url), op.method || "GET", corpo);
       return new Response(JSON.stringify(r), { status: r && r.error ? (r.error.code || 400) : 200, headers: { "content-type": "application/json" } });
     }
+    if (p && p.asaas && /^https:\/\/api(-sandbox)?\.asaas\.com\/v3\//.test(String(url))) {
+      const corpo = op.body ? JSON.parse(op.body) : null;
+      (p.asaasChamadas ||= []).push({ url: String(url), metodo: op.method || "GET", corpo, headers: op.headers });
+      const r = p.asaas(String(url).replace(/^https:\/\/api(-sandbox)?\.asaas\.com\/v3/, ""), op.method || "GET", corpo);
+      return new Response(JSON.stringify(r), { status: r && r.errors ? 400 : 200, headers: { "content-type": "application/json" } });
+    }
     if (String(url) === "https://api.resend.com/emails") { emails.push(JSON.parse(op.body)); return new Response(JSON.stringify({ id: "e1" }), { status: 200 }); }
     if (String(url).startsWith("https://engine.test/")) {
       chamadasEngine.push({ url: String(url), headers: op.headers, corpo: op.body ? JSON.parse(op.body) : null });
@@ -1486,4 +1492,225 @@ test("Chatbot — com a chave secreta do app, só aceita mensagem assinada pela 
   const r = await p.req("/webhook/whatsapp", { metodo: "POST", corpo: JSON.parse(corpo), cabecalhos: { "x-hub-signature-256": "sha256=" + createHmac("sha256", "a".repeat(32)).update(corpo).digest("hex") } });
   assert.equal(r.status, 200);
   assert.equal(enviadosPara(p, CLI).length, 1);
+});
+
+// ===== Planos: teste grátis de 7 dias, recursos por plano, cortesia e cobrança (Asaas)
+test("Planos — teste de 7 dias, recurso fora do plano, cortesia pelo administrador e limite da equipe", async () => {
+  const p = await criarPlataforma();
+  const r = await p.req("/api/cadastro", { metodo: "POST", quem: "ana", corpo: { nome: "Ana", empresa: "Loja da Ana", email: "ana@loja.test", senha: "SenhaMuitoForte#2026", aceite: true, plano: "essencial" } });
+  assert.equal(r.status, 200);
+  const eu = await p.req("/api/eu", { quem: "ana" });
+  const org = eu.dados.organizacoes[0];
+  assert.equal(org.acesso.status, "TESTE"); assert.equal(org.acesso.dias, 7); assert.equal(org.acesso.plano, "essencial");
+  assert.equal((await p.req(`/api/orgs/${org.id}/zap/itens`, { quem: "ana" })).status, 200, "chatbot faz parte do Essencial");
+  const mk = await p.req(`/api/orgs/${org.id}/mk/marcas`, { quem: "ana" });
+  assert.equal(mk.status, 402); assert.equal(mk.dados.codigo, "PLANO_RECURSO"); assert.equal(mk.dados.plano_minimo.id, "growth");
+  const plano = await p.req(`/api/orgs/${org.id}/plano`, { quem: "ana" });
+  assert.equal(plano.dados.planos.find(x => x.id === "start").anual, Math.round(690 * 12 * 0.8));
+  // Equipe: o Essencial permite 2 pessoas.
+  assert.equal((await p.req(`/api/orgs/${org.id}/membros`, { metodo: "POST", quem: "ana", corpo: { email: "b@loja.test", papel: "AGENTE" } })).status, 200);
+  const terceira = await p.req(`/api/orgs/${org.id}/membros`, { metodo: "POST", quem: "ana", corpo: { email: "c@loja.test", papel: "AGENTE" } });
+  assert.equal(terceira.status, 402); assert.equal(terceira.dados.codigo, "PLANO_LIMITE");
+  // Passaram 8 dias: só o plano fica aberto, e o robô do WhatsApp para.
+  p.env.DB.db.prepare("UPDATE plt_organizacoes SET teste_ate=? WHERE id=?").run(Date.now() - 86400000, org.id);
+  const fim = await p.req(`/api/orgs/${org.id}/zap/itens`, { quem: "ana" });
+  assert.equal(fim.status, 402); assert.equal(fim.dados.codigo, "PLANO_VENCIDO");
+  assert.equal((await p.req(`/api/orgs/${org.id}/plano`, { quem: "ana" })).dados.acesso.status, "TESTE_ACABOU");
+  // O administrador geral dá cortesia: acesso total sem custo.
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  assert.equal((await p.req(`/api/admin/organizacoes/${org.id}`, { metodo: "POST", quem: "admin", corpo: { plano_status: "CORTESIA" } })).status, 200);
+  assert.equal((await p.req(`/api/orgs/${org.id}/mk/marcas`, { quem: "ana" })).status, 200, "cortesia libera tudo");
+  assert.equal((await p.req("/api/eu", { quem: "admin" })).dados.organizacoes.find(o => o.id === 1).acesso.cortesia, true, "a Central é cortesia");
+});
+
+test("Planos — assinatura pelo Asaas (Pix, boleto ou cartão), pagamento confirmado libera, sem fidelidade", async () => {
+  const p = await criarPlataforma({ ASAAS_API_KEY: "aact_teste", ASAAS_SANDBOX: "1", ASAAS_WEBHOOK_TOKEN: "segredo-do-webhook-123" });
+  await p.req("/api/cadastro", { metodo: "POST", quem: "ana", corpo: { nome: "Ana", empresa: "Pousada Sol", email: "ana@sol.test", senha: "SenhaMuitoForte#2026", aceite: true, plano: "start" } });
+  const org = (await p.req("/api/eu", { quem: "ana" })).dados.organizacoes[0];
+  p.asaas = (caminho, metodo, corpo) => {
+    if (caminho === "/customers" && metodo === "POST") return { id: "cus_1" };
+    if (caminho === "/subscriptions" && metodo === "POST") return { id: "sub_1", ...corpo };
+    if (caminho === "/subscriptions/sub_1/payments") return { data: [{ id: "pay_1", value: 6624, status: "PENDING", dueDate: "2026-10-22", invoiceUrl: "https://sandbox.asaas.com/i/pay_1" }] };
+    return {};
+  };
+  const ruim = await p.req(`/api/orgs/${org.id}/plano/assinar`, { metodo: "POST", quem: "ana", corpo: { plano: "growth", ciclo: "ANUAL", nome: "Pousada Sol LTDA", documento: "11.111.111/1111-11", email: "fin@sol.test" } });
+  assert.equal(ruim.status, 400, "CNPJ inválido");
+  const ok = await p.req(`/api/orgs/${org.id}/plano/assinar`, { metodo: "POST", quem: "ana", corpo: { plano: "growth", ciclo: "ANUAL", nome: "Pousada Sol LTDA", documento: "11.222.333/0001-81", email: "fin@sol.test" } });
+  assert.equal(ok.status, 200, JSON.stringify(ok.dados));
+  assert.equal(ok.dados.link, "https://sandbox.asaas.com/i/pay_1");
+  const sub = p.asaasChamadas.find(c => c.url.endsWith("/subscriptions") && c.metodo === "POST").corpo;
+  assert.equal(sub.billingType, "UNDEFINED", "o cliente escolhe Pix, boleto ou cartão");
+  assert.equal(sub.cycle, "YEARLY"); assert.equal(sub.value, Math.round(1890 * 12 * 0.8));
+  assert.ok(p.asaasChamadas[0].url.startsWith("https://api-sandbox.asaas.com/"));
+  // Webhook sem o token: recusado.
+  assert.equal((await p.req("/webhook/asaas", { metodo: "POST", corpo: { event: "PAYMENT_RECEIVED", payment: { id: "pay_1", subscription: "sub_1" } } })).status, 401);
+  const pago = await p.req("/webhook/asaas", { metodo: "POST", cabecalhos: { "asaas-access-token": "segredo-do-webhook-123" }, corpo: { event: "PAYMENT_RECEIVED", payment: { id: "pay_1", subscription: "sub_1", value: 18144, status: "RECEIVED", billingType: "PIX", dueDate: "2026-10-22", paymentDate: "2026-10-22", externalReference: `org:${org.id}:growth:ANUAL` } } });
+  assert.equal(pago.status, 200);
+  const a = (await p.req(`/api/orgs/${org.id}/plano`, { quem: "ana" })).dados;
+  assert.equal(a.acesso.status, "ATIVO"); assert.equal(a.acesso.plano, "growth"); assert.equal(a.acesso.ciclo, "ANUAL");
+  assert.equal(a.pagamentos[0].status, "RECEIVED"); assert.equal(a.pagamentos[0].forma, "PIX");
+  assert.equal((await p.req(`/api/orgs/${org.id}/mk/marcas`, { quem: "ana" })).status, 200, "Growth libera o marketing");
+  // Cancelar: sem multa, continua até o fim do período pago.
+  assert.equal((await p.req(`/api/orgs/${org.id}/plano/cancelar`, { metodo: "POST", quem: "ana", corpo: {} })).status, 200);
+  const c = (await p.req(`/api/orgs/${org.id}/plano`, { quem: "ana" })).dados.acesso;
+  assert.equal(c.status, "CANCELADO"); assert.equal(c.liberado, true);
+});
+
+test("Planos — lembrete por e-mail quando o teste está acabando (uma vez só)", async () => {
+  const p = await criarPlataforma({ RESEND_API_KEY: "re_teste", EMAIL_REMETENTE: "DENIA <ola@denia.test>" });
+  await p.req("/api/cadastro", { metodo: "POST", quem: "ana", corpo: { nome: "Ana", empresa: "Loja da Ana", email: "ana@loja.test", senha: "SenhaMuitoForte#2026", aceite: true } });
+  const base = Date.parse("2026-10-21T13:00:00Z");
+  p.env.__agora = () => base;
+  p.env.DB.db.prepare("UPDATE plt_organizacoes SET teste_ate=? WHERE nome='Loja da Ana'").run(base + 1.5 * 86400000);
+  const mod = await import("../src/worker.js?lembrete");
+  await mod.default.scheduled({}, p.env, null);
+  const para = p.emails.filter(e => e.to[0] === "ana@loja.test");
+  assert.equal(para.length, 1); assert.match(para[0].subject, /termina em 2 dias/);
+  p.env.DB.db.prepare("DELETE FROM plt_meta WHERE chave='lembretes_plano_dia'").run();
+  await mod.default.scheduled({}, p.env, null);
+  assert.equal(p.emails.filter(e => e.to[0] === "ana@loja.test").length, 1, "não repete o mesmo aviso");
+});
+
+test("Chatbot — mais de 10 opções: lista com 'Mais opções' ou texto numerado sem limite, resposta pelo número", async () => {
+  const { p, inf } = await duasEmpresasComChatbot();
+  await p.req(`/api/orgs/${inf}/zap/modelo`, { metodo: "POST", quem: "admin", corpo: { tipo: "shopping" } });
+  const servicos = Array.from({ length: 22 }, (_, i) => "Serviço " + String(i + 1).padStart(2, "0")).join(", ");
+  await p.req(`/api/orgs/${inf}/zap/importar`, { metodo: "POST", quem: "admin", corpo: { linhas: [{ loja: "Faz Tudo", whatsapp: "21955554444", servicos }] } });
+  const serv = (await p.req(`/api/orgs/${inf}/zap/itens`, { quem: "admin" })).dados.itens.find(i => /Serviços/.test(i.titulo));
+  const CLI = "5521911110000";
+  await clicar(p, "111111111111", CLI, "z:i:" + serv.id);
+  const l = enviadosPara(p, CLI).at(-1).corpo.interactive;
+  assert.equal(l.type, "list"); assert.match(l.body.text, /São 22 opções/);
+  // Texto numerado: todas numa mensagem, e o cliente responde "17".
+  assert.equal((await p.req(`/api/orgs/${inf}/zap/itens`, { metodo: "POST", quem: "admin", corpo: { ...serv, exibicao: "NUMERADO" } })).status, 200);
+  await clicar(p, "111111111111", CLI, "z:i:" + serv.id);
+  const txt = enviadosPara(p, CLI).at(-1).corpo.text.body;
+  assert.match(txt, /\*22\* · Serviço 22/); assert.match(txt, /\*0\* · Voltar/);
+  await webhookZap(p, "111111111111", { from: CLI, type: "text", text: { body: "17" } });
+  assert.match(enviadosPara(p, CLI).at(-2).corpo.text.body, /\*Serviço 17\*[\s\S]*Faz Tudo/);
+  await webhookZap(p, "111111111111", { from: CLI, type: "text", text: { body: "0" } });
+  assert.equal(enviadosPara(p, CLI).at(-1).corpo.interactive.type, "button", "0 volta ao menu inicial");
+});
+
+test("Telegram — bot da plataforma conecta o grupo com um toque e a equipe responde o cliente pelo Telegram", async () => {
+  const { p, inf } = await duasEmpresasComChatbot();
+  p.env.TELEGRAM_BOT_TOKEN_PLATAFORMA = "999:" + "T".repeat(30);
+  const anterior = globalThis.fetch, tg = [];
+  let segredo = "";
+  globalThis.fetch = async (url, op = {}) => {
+    if (String(url).startsWith("https://api.telegram.org/bot999:")) {
+      const metodo = String(url).split("/").pop(), corpo = op.body ? JSON.parse(op.body) : {};
+      tg.push({ metodo, corpo });
+      if (metodo === "getMe") return new Response(JSON.stringify({ ok: true, result: { username: "DeniaAvisosBot" } }));
+      if (metodo === "setWebhook") { segredo = corpo.secret_token; return new Response(JSON.stringify({ ok: true })); }
+      return new Response(JSON.stringify({ ok: true, result: { message_id: 500 + tg.length } }));
+    }
+    return anterior(url, op);
+  };
+  try {
+    const liga = await p.req("/api/admin/telegram", { metodo: "POST", quem: "admin", corpo: {} });
+    assert.equal(liga.dados.bot, "DeniaAvisosBot");
+    assert.ok(segredo.length >= 20);
+    const link = await p.req(`/api/orgs/${inf}/zap/telegram/link`, { metodo: "POST", quem: "admin", corpo: {} });
+    assert.match(link.dados.grupo, /^https:\/\/t\.me\/DeniaAvisosBot\?startgroup=/);
+    const upd = (texto, extra = {}) => p.req("/webhook/telegram", { metodo: "POST", cabecalhos: { "x-telegram-bot-api-secret-token": segredo }, corpo: { message: { message_id: 10 + tg.length, chat: { id: -100777, type: "supergroup", title: "Equipe Infomix" }, from: { first_name: "Ana" }, text: texto, ...extra } } });
+    assert.equal((await p.req("/webhook/telegram", { metodo: "POST", corpo: { message: { text: "/start x" } } })).status, 401, "sem o segredo, recusado");
+    await upd(`/start@DeniaAvisosBot ${link.dados.codigo}`);
+    assert.match(tg.at(-1).corpo.text, /conectado à DENIA \(Shopping Infomix\)/);
+    assert.equal((await p.req(`/api/orgs/${inf}/zap/telegram`, { quem: "admin" })).dados.grupo, "Equipe Infomix");
+    // Cliente pede atendente: o aviso vai para o grupo pelo bot da plataforma.
+    await p.req(`/api/orgs/${inf}/zap/modelo`, { metodo: "POST", quem: "admin", corpo: { tipo: "servicos" } });
+    const CLI = "5521933332222";
+    await webhookZap(p, "111111111111", { from: CLI, type: "text", text: { body: "quero falar com atendente" } });
+    const aviso = tg.filter(x => x.metodo === "sendMessage").at(-1);
+    assert.equal(aviso.corpo.chat_id, "-100777"); assert.match(aviso.corpo.text, /Responda esta mensagem/);
+    const idAviso = 500 + tg.indexOf(aviso) + 1;
+    // A equipe responde o aviso no Telegram e o cliente recebe no WhatsApp.
+    await upd("Oi Marcos! Aqui é a Ana, já te ajudo.", { reply_to_message: { message_id: idAviso } });
+    assert.equal(enviadosPara(p, CLI).at(-1).corpo.text.body, "Oi Marcos! Aqui é a Ana, já te ajudo.");
+    assert.match(tg.at(-1).corpo.text, /Enviado para/);
+    await upd("/resumo");
+    assert.match(tg.at(-1).corpo.text, /Mensagens recebidas: 1/);
+    // Outro grupo (de outra empresa ou desconhecido) não consegue responder clientes do Infomix.
+    const antes = p.engine.enviados.length;
+    await p.req("/webhook/telegram", { metodo: "POST", cabecalhos: { "x-telegram-bot-api-secret-token": segredo }, corpo: { message: { message_id: 99, chat: { id: -100888, type: "group" }, text: "oi", reply_to_message: { message_id: idAviso } } } });
+    assert.equal(p.engine.enviados.length, antes);
+  } finally { globalThis.fetch = anterior; }
+});
+
+test("IA completa — qualquer empresa: conversa como gente, lembra do cliente, não mistura empresas e chama a equipe", async () => {
+  const { p, inf } = await duasEmpresasComChatbot();
+  await p.req("/api/orgs/1/ia/chave", { metodo: "POST", quem: "admin", corpo: { chave: "sk-proj-" + "d".repeat(40) } });
+  await p.req(`/api/orgs/${inf}/zap/modelo`, { metodo: "POST", quem: "admin", corpo: { tipo: "shopping" } });
+  await p.req(`/api/orgs/${inf}/zap/config`, { metodo: "POST", quem: "admin", corpo: { modo: "IA", nome_atendente: "Bia", sobre: "Shopping Infomix: aberto de segunda a sábado, 10h às 22h. Estacionamento grátis por 2 horas.", ia_tom: "Simpática e direta." } });
+  await p.req(`/api/orgs/1/zap/config`, { metodo: "POST", quem: "admin", corpo: { modo: "IA", sobre: "Central de Atendimento: eletricistas e chaveiros 24h." } });
+  const entradas = [];
+  p.openai = (url, corpo) => {
+    const t = corpo.input[0].content[0].text; entradas.push({ t, modelo: corpo.model });
+    const nova = t.match(/MENSAGEM NOVA DO CLIENTE: "([^"]*)"/)[1];
+    let o = { resposta: "Oi! Como posso ajudar?" };
+    if (/estacionamento/i.test(nova)) o = { resposta: "Temos estacionamento grátis por 2 horas! 🚗", lembrar: "Vem de carro." };
+    if (/meu nome é/i.test(nova)) o = { resposta: "Prazer, Marcos!", lembrar: "Chama-se Marcos." };
+    if (/parking/i.test(nova)) o = { resposta: "Yes! Free parking for 2 hours." };
+    if (/gerente|reembolso/i.test(nova)) o = { resposta: "Entendo. Vou chamar alguém da equipe agora.", humano: true };
+    return { output: [{ content: [{ type: "output_text", text: JSON.stringify(o) }] }], usage: { input_tokens: 900, output_tokens: 40 } };
+  };
+  const CLI = "5521977770000";
+  await webhookZap(p, "111111111111", { from: CLI, type: "text", text: { body: "Oi, meu nome é Marcos" } });
+  assert.equal(enviadosPara(p, CLI).at(-1).corpo.text.body, "Prazer, Marcos!");
+  await webhookZap(p, "111111111111", { from: CLI, type: "text", text: { body: "tem estacionamento?" } });
+  assert.match(enviadosPara(p, CLI).at(-1).corpo.text.body, /estacionamento grátis/);
+  const ultima = entradas.at(-1);
+  assert.equal(ultima.modelo, "gpt-5-mini");
+  assert.match(ultima.t, /SEU NOME NO ATENDIMENTO: Bia/);
+  assert.match(ultima.t, /Chama-se Marcos/, "lembra do que o cliente disse");
+  assert.match(ultima.t, /CLIENTE: Oi, meu nome é Marcos[\s\S]*VOCÊ: Prazer, Marcos!/, "lê a conversa");
+  assert.doesNotMatch(ultima.t, /eletricistas/, "só os dados desta empresa");
+  // O mesmo número falando com a outra empresa: memória e treinamento da outra empresa, sem misturar.
+  await webhookZap(p, "222222222222", { from: CLI, type: "text", text: { body: "boa noite" } });
+  const outra = entradas.at(-1).t;
+  assert.match(outra, /eletricistas/); assert.doesNotMatch(outra, /Chama-se|Vem de carro|Infomix|estacionamento|Prazer/);
+  // Idioma do cliente.
+  await webhookZap(p, "111111111111", { from: CLI, type: "text", text: { body: "do you have parking?" } });
+  assert.equal(enviadosPara(p, CLI).at(-1).corpo.text.body, "Yes! Free parking for 2 hours.");
+  // Assunto sensível: chama a equipe e pausa.
+  await webhookZap(p, "111111111111", { from: CLI, type: "text", text: { body: "quero reembolso de uma compra" } });
+  assert.match(enviadosPara(p, CLI).at(-1).corpo.text.body, /chamar alguém/);
+  const conv = (await p.req(`/api/orgs/${inf}/zap/conversas/${CLI}`, { quem: "admin" })).dados;
+  assert.equal(conv.contato.pausado, true); assert.match(conv.contato.memoria, /Vem de carro/);
+  // Botões continuam funcionando no modo IA, sem gastar IA.
+  await p.req(`/api/orgs/${inf}/zap/conversas/${CLI}/robo`, { metodo: "POST", quem: "admin", corpo: { ligar: true } });
+  const n = entradas.length;
+  await clicar(p, "111111111111", CLI, "z:inicio");
+  assert.equal(enviadosPara(p, CLI).at(-1).corpo.interactive.type, "button"); assert.equal(entradas.length, n);
+  // Plano sem IA completa (Essencial): não deixa ligar o modo IA.
+  const anaOrg = await p.req("/api/cadastro", { metodo: "POST", quem: "ana", corpo: { nome: "Ana", empresa: "Loja Ana", email: "ana@x.test", senha: "SenhaMuitoForte#2026", aceite: true, plano: "essencial" } });
+  const oa = (await p.req("/api/eu", { quem: "ana" })).dados.organizacoes[0];
+  const r = await p.req(`/api/orgs/${oa.id}/zap/config`, { metodo: "POST", quem: "ana", corpo: { modo: "IA" } });
+  assert.equal(r.status, 402); assert.match(r.dados.erro, /Start/);
+  assert.equal(anaOrg.status, 200);
+});
+
+test("Chatbot — a IA monta o chatbot a partir da descrição (pergunta o essencial e aplica)", async () => {
+  const { p, inf } = await duasEmpresasComChatbot();
+  await p.req("/api/orgs/1/ia/chave", { metodo: "POST", quem: "admin", corpo: { chave: "sk-proj-" + "e".repeat(40) } });
+  let vez = 0;
+  p.openai = () => {
+    vez++;
+    const o = vez === 1 ? { perguntas: ["Qual o horário de funcionamento?"] } : { plano: { modo: "BOTOES", boas_vindas: "Olá! Bem-vindo ao Infomix 👋", humano: "Já chamo alguém!", rotulo_catalogo: "lojas", sobre: "Seg a sáb, 10h às 22h.",
+      menu: [{ tipo: "MENU", titulo: "🛍️ Produtos com um título comprido demais", texto: "O que procura?", filhos: [{ tipo: "LISTA", titulo: "Celulares", palavras: "celular, smartphone" }] }, { tipo: "RESPOSTA", titulo: "🕒 Horário", texto: "Seg a sáb, 10h às 22h." }, { tipo: "HUMANO", titulo: "💬 Falar com alguém" }] } };
+    return { output: [{ content: [{ type: "output_text", text: JSON.stringify(o) }] }] };
+  };
+  const desc = "Shopping com lojas de celular e informática; quero que o cliente ache a loja pelo WhatsApp.";
+  const r1 = await p.req(`/api/orgs/${inf}/zap/assistente`, { metodo: "POST", quem: "admin", corpo: { descricao: desc } });
+  assert.deepEqual(r1.dados.perguntas, ["Qual o horário de funcionamento?"]);
+  const r2 = await p.req(`/api/orgs/${inf}/zap/assistente`, { metodo: "POST", quem: "admin", corpo: { descricao: desc, respostas: [{ pergunta: "Qual o horário?", resposta: "10h às 22h" }] } });
+  assert.equal(r2.dados.plano.menu[0].titulo.length <= 24, true);
+  const ap = await p.req(`/api/orgs/${inf}/zap/assistente`, { metodo: "POST", quem: "admin", corpo: { acao: "aplicar", plano: r2.dados.plano } });
+  assert.equal(ap.dados.opcoes, 4);
+  const cfg = (await p.req(`/api/orgs/${inf}/zap/config`, { quem: "admin" })).dados.config;
+  assert.equal(cfg.boas_vindas, "Olá! Bem-vindo ao Infomix 👋"); assert.equal(cfg.rotulo_catalogo, "lojas");
+  assert.equal((await p.req(`/api/orgs/${inf}/zap/assistente`, { metodo: "POST", quem: "admin", corpo: { acao: "aplicar", plano: r2.dados.plano } })).status, 409, "não apaga o menu sem confirmar");
+  const t = await p.req(`/api/orgs/${inf}/zap/testar`, { metodo: "POST", quem: "admin", corpo: { texto: "oi" } });
+  assert.match(t.dados.respostas[0].interativo.body.text, /Bem-vindo ao Infomix/);
 });
