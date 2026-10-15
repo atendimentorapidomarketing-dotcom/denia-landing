@@ -1799,13 +1799,15 @@ test("Temporada — conexão oficial (Channex): preço por plataforma, reserva e
   p.openai = (url, corpo) => {
     const t = corpo.input[0].content[0].text;
     assert.match(t, /Rede CasaBuzios/); assert.match(t, /Anna Müller/);
-    return { output: [{ content: [{ type: "output_text", text: JSON.stringify({ resposta: "Hallo Anna! Das WLAN heißt CasaBuzios, Passwort mar2026. 😊", traducao: "Olá Anna! O Wi-Fi é CasaBuzios, senha mar2026.", precisa_anfitriao: false, risco: "baixo" }) }] }] };
+    assert.match(t, /RESPONDER EM: no idioma em que o hóspede escreveu/);
+    return { output: [{ content: [{ type: "output_text", text: JSON.stringify({ resposta: "Hallo Anna! Das WLAN heißt CasaBuzios, Passwort mar2026. 😊", traducao: "Olá Anna! O Wi-Fi é CasaBuzios, senha mar2026.", traducao_hospede: "Olá! Qual é a senha do Wi-Fi?", precisa_anfitriao: false, risco: "baixo" }) }] }] };
   };
   await p.req(caminhoWebhook, { metodo: "POST", corpo: { event: "message", payload: { property_id: "prop-1", booking_id: "bk-9", id: "msg-1", message: "Hallo! Wie ist das WLAN-Passwort?", sender: "guest" } } });
   const enviada = p.channexChamadas.find(c => c.caminho === "/bookings/bk-9/messages");
   assert.match(enviada.corpo.message.message, /Hallo Anna/);
   const conv = (await p.req(`/api/orgs/1/tp/mensagens/${r.id}`, { quem: "admin" })).dados.mensagens;
   assert.equal(conv.length, 2); assert.match(conv[1].traducao, /Olá Anna/);
+  assert.equal(conv[0].traducao, "Olá! Qual é a senha do Wi-Fi?", "o anfitrião lê a mensagem do hóspede em português");
   // Visão geral: receita e reservas por plataforma.
   const v = (await p.req("/api/orgs/1/tp/visao?de=2026-11-01&ate=2026-11-30", { quem: "admin" })).dados;
   assert.equal(v.receita, 1500); assert.equal(v.por_canal[0].nome, "Booking.com"); assert.equal(v.noites_ocupadas, 3);

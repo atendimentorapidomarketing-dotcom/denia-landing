@@ -2307,7 +2307,7 @@
       const r = x.reserva;
       const rascunho = x.mensagens.filter(m => m.status === "RASCUNHO").at(-1);
       const caixa = h("textarea", { class: "entrada", placeholder: "Escreva a resposta…" }); caixa.value = rascunho ? rascunho.texto : "";
-      const msgs = h("div", { class: "mensagens" }, x.mensagens.filter(m => m.status !== "RASCUNHO" && m.status !== "DESCARTADA" && m.status !== "SUBSTITUIDA").map(m => h("div", { class: "msg " + (m.direcao === "E" ? "msg-entrada" : "msg-saida") + (m.origem === "ANFITRIAO" ? " msg-humano" : "") }, m.texto, m.traducao ? h("small", { text: "Tradução: " + m.traducao }) : null, h("small", { text: `${m.direcao === "E" ? "Hóspede" : m.origem === "IA" ? "IA" : "Você"} · ${quando(m.criado_ms)}` }))));
+      const msgs = h("div", { class: "mensagens" }, x.mensagens.filter(m => m.status !== "RASCUNHO" && m.status !== "DESCARTADA" && m.status !== "SUBSTITUIDA").map(m => h("div", { class: "msg " + (m.direcao === "E" ? "msg-entrada" : "msg-saida") + (m.origem === "ANFITRIAO" ? " msg-humano" : "") }, m.direcao === "E" && m.traducao && m.traducao !== m.texto ? [h("strong", { class: "msg-traducao", text: m.traducao }), h("small", { text: "Original: " + m.texto })] : m.texto, m.direcao !== "E" && m.traducao ? h("small", { text: "Em português: " + m.traducao }) : null, h("small", { text: `${m.direcao === "E" ? "Hóspede" : m.origem === "IA" ? "IA" : "Você"} · ${quando(m.criado_ms)}` }))));
       trocar(painel,
         h("div", { class: "conversa-cabeca" }, h("button", { type: "button", class: "btn btn-secundario btn-pequeno so-celular", onclick: () => { estado.tpConversa = null; grade.classList.remove("com-aberta"); } }, "‹ Voltar"), h("h3", { text: r.hospede || "Hóspede" }), seloCanal(r.canal), h("span", { class: "sub", text: `${r.imovel} · ${dmy(r.inicio)} → ${dmy(r.fim)}` })),
         r.risco && r.risco.nivel !== "baixo" ? h("p", { class: "nota nota-alerta", style: "margin:10px 18px", text: `⚠ Risco ${r.risco.nivel}: ${(r.risco.sinais || []).join("; ")}` }) : null,
@@ -2326,7 +2326,7 @@
         ims.imoveis.length ? [campo("Imóvel", imSel), campo("Mensagem do hóspede", msgH), h("div", { class: "acoes" }, botao("Sugerir resposta", async (_e, b) => {
           b.textContent = "Pensando…";
           try { const o = await tp("mensagens/sugerir", { metodo: "POST", corpo: { imovel_id: Number(imSel.value), texto: msgH.value } });
-            trocar(saida, h("div", { class: "msg msg-saida", style: "max-width:100%" }, o.resposta || "—"), o.traducao ? h("p", { class: "sub", text: "Tradução: " + o.traducao }) : null,
+            trocar(saida, o.traducao_hospede ? h("p", { class: "nota", text: "O hóspede disse: " + o.traducao_hospede }) : null, h("div", { class: "msg msg-saida", style: "max-width:100%" }, o.resposta || "—"), o.traducao ? h("p", { class: "sub", text: "A resposta em português: " + o.traducao }) : null,
               o.precisa_anfitriao ? h("p", { class: "nota nota-alerta", text: "Precisa de você: " + (o.motivo || "") }) : null, o.risco && o.risco !== "baixo" ? h("p", { class: "nota nota-alerta", text: `Risco ${o.risco}: ${(o.sinais || []).join("; ")}` }) : null,
               h("div", { class: "acoes" }, botao("Copiar resposta", () => copiar(o.resposta || ""), "btn-secundario btn-pequeno"))); }
           catch (e) { aviso(e.message, "erro"); } finally { b.textContent = "Sugerir resposta"; }
@@ -2405,6 +2405,7 @@
       vrbo: ["No Vrbo: Calendário → Importar/Exportar → Exportar calendário → copie o link.", "Para importar o da DENIA: Importar calendário → cole o link da DENIA do Vrbo."]
     };
     const idioma = h("select", { class: "entrada" }, ["português do Brasil", "English", "español", "italiano", "français", "Deutsch"].map(x => h("option", { value: x, selected: cfg.config.idioma === x, text: x })));
+    const idiomaResp = h("select", { class: "entrada" }, [["HOSPEDE", "No idioma do hóspede (ele entende) — você vê tudo traduzido no seu idioma"], ["ANFITRIAO", "Sempre no idioma do anfitrião"]].map(([v, n]) => h("option", { value: v, selected: (cfg.config.idioma_resposta || "HOSPEDE") === v, text: n })));
     trocar(area,
       h("section", { class: "grade grade-3" }, ["airbnb", "booking", "vrbo"].map(c => h("article", { class: "cartao vidro conexao-tp" }, h("h3", { style: "margin:0" }, seloCanal(c)),
         h("p", {}, cfg.channex ? selo("Conexão oficial disponível", "ok") : selo("Calendário (iCal) disponível", "info")),
@@ -2413,8 +2414,9 @@
       h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Seus imóveis" }),
         d.imoveis.length ? h("div", { class: "tabela-caixa" }, h("table", {}, h("thead", {}, h("tr", {}, ["Imóvel", "Calendários", "Conexão oficial", ""].map(t => h("th", { text: t })))),
           h("tbody", {}, d.imoveis.filter(i => i.ativo).map(im => h("tr", {}, h("td", { text: im.nome }), h("td", { text: numero(im.calendarios) }), h("td", {}, im.conectado_channex ? selo("Ligada", "ok") : selo("Não", "alerta")), h("td", {}, botao("Configurar", () => editarImovelTp(im, d), "btn-secundario btn-pequeno"))))))) : vazio("Nenhum imóvel", "")),
-      h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Idioma do anfitrião" }), h("p", { class: "sub", text: "A IA responde cada hóspede no idioma dele e mostra para você a tradução neste idioma." }), campo("Idioma", idioma),
-        pode("ADMIN") ? botao("Salvar", async () => { await tp("config", { metodo: "POST", corpo: { idioma: idioma.value } }); aviso("Salvo.", "ok"); }, "btn-primario btn-pequeno") : null));
+      h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Idiomas" }), h("p", { class: "sub", text: "Tudo o que o hóspede escreve aparece traduzido para o seu idioma, e cada resposta da IA também mostra a versão no seu idioma. Você entende tudo, mesmo que o hóspede só fale inglês." }),
+        campo("Seu idioma (anfitrião)", idioma), campo("A IA responde o hóspede", idiomaResp),
+        pode("ADMIN") ? botao("Salvar", async () => { await tp("config", { metodo: "POST", corpo: { idioma: idioma.value, idioma_resposta: idiomaResp.value } }); aviso("Salvo.", "ok"); }, "btn-primario btn-pequeno") : null));
   }
   async function tpLimpezas(area, vivo) {
     const d = await tp("limpezas");

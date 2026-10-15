@@ -184,8 +184,9 @@ export async function webhookChannex(request, env, k) {
   }
   if (ev === "message" && p.message) {
     const reserva = p.booking_id ? await env.DB.prepare("SELECT * FROM plt_tp_reservas WHERE org_id=? AND externo_id=?").bind(org, "cx:" + p.booking_id).first() : null;
-    const ins = await env.DB.prepare("INSERT OR IGNORE INTO plt_tp_msgs(org_id,imovel_id,reserva_id,canal,direcao,origem,texto,externo_id,criado_ms) VALUES(?,?,?,?,?,?,?,?,?)").bind(org, im.id, reserva?.id || null, reserva?.canal || "outro", p.sender === "property" ? "S" : "E", p.sender === "property" ? "ANFITRIAO" : "HOSPEDE", cortar(p.message, 4000), "cx:" + (p.id || p.message_id || crypto.randomUUID()), agora).run();
-    if (Number(ins?.meta?.changes) && p.sender !== "property" && reserva) await responderHospede(env, k, org, im, reserva, cortar(p.message, 4000), { channexBooking: p.booking_id });
+    const externoId = "cx:" + (p.id || p.message_id || crypto.randomUUID());
+    const ins = await env.DB.prepare("INSERT OR IGNORE INTO plt_tp_msgs(org_id,imovel_id,reserva_id,canal,direcao,origem,texto,externo_id,criado_ms) VALUES(?,?,?,?,?,?,?,?,?)").bind(org, im.id, reserva?.id || null, reserva?.canal || "outro", p.sender === "property" ? "S" : "E", p.sender === "property" ? "ANFITRIAO" : "HOSPEDE", cortar(p.message, 4000), externoId, agora).run();
+    if (Number(ins?.meta?.changes) && p.sender !== "property" && reserva) await responderHospede(env, k, org, im, reserva, cortar(p.message, 4000), { channexBooking: p.booking_id, externoId });
   }
   return new Response("ok");
 }
@@ -195,14 +196,14 @@ export async function webhookChannex(request, env, k) {
 // ---------------------------------------------------------------------------
 
 const INSTRUCOES_HOSPEDE = `Você é o anfitrião (ou a equipe do anfitrião) de um imóvel de temporada e responde hóspedes no Airbnb, Booking.com ou Vrbo.
-- Responda no MESMO idioma do hóspede. Em "traducao", escreva a mesma resposta no idioma do anfitrião (indicado abaixo).
+- IDIOMA DA RESPOSTA: siga a regra "RESPONDER EM" indicada abaixo. Em "traducao", escreva a sua resposta no idioma do anfitrião. Em "traducao_hospede", traduza a MENSAGEM NOVA DO HÓSPEDE para o idioma do anfitrião (se já estiver nesse idioma, repita). O anfitrião precisa entender tudo sem saber a língua do hóspede.
 - Seja caloroso, objetivo e humano, como um superanfitrião: mensagens curtas, sem textão, sem parecer robô. Use o JEITO DE ESCREVER do anfitrião.
 - Use SOMENTE as informações do IMÓVEL e da RESERVA. Nunca invente regra, preço, desconto, senha, endereço ou disponibilidade.
 - Não mande senha da fechadura nem endereço exato antes do dia do check-in, a menos que o treinamento mande.
 - Nunca combine pagamento ou contato fora da plataforma (é proibido pelas regras do Airbnb e do Booking).
 - Se pedirem desconto, exceção às regras, reembolso, reclamarem de algo sério, ou você não souber: "precisa_anfitriao": true e uma resposta curta dizendo que vai verificar.
 - "risco": avalie sinais de problema SÓ pelo comportamento (festa ou evento, mais pessoas que a capacidade, pedido para pagar fora, pressa estranha, recusa de regras). Nunca por nome, origem, gênero, idade, religião ou qualquer característica pessoal. Valores: "baixo", "medio", "alto".
-Responda em JSON: {"resposta":"","traducao":"","precisa_anfitriao":false,"motivo":"","risco":"baixo","sinais":[]}`;
+Responda em JSON: {"resposta":"","traducao":"","traducao_hospede":"","precisa_anfitriao":false,"motivo":"","risco":"baixo","sinais":[]}`;
 function textoTreino(im) {
   const t = json_(im.treinamento, {});
   return CAMPOS_TREINO_IMOVEL.map(([c, r]) => t[c] ? `${r.toUpperCase()}:\n${cortar(t[c], 2500)}` : "").filter(Boolean).join("\n\n") || "(o anfitrião ainda não preencheu o treinamento deste imóvel)";
@@ -212,14 +213,18 @@ export async function sugerirResposta(env, k, orgId, im, reserva, texto, histori
   if (!envIA.OPENAI_API_KEY) throw new Error("A IA da plataforma ainda não está ligada.");
   const cfg = json_((await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave=?").bind("tp_config_" + orgId).first().catch(() => null))?.valor, {});
   const conversa = historico.slice(-20).map(m => `${m.direcao === "E" ? "HÓSPEDE" : "ANFITRIÃO"}: ${cortar(m.texto, 500)}`).join("\n");
-  const entrada = `IDIOMA DO ANFITRIÃO: ${cfg.idioma || "português do Brasil"}\n\nIMÓVEL: ${im.nome}${im.cidade ? " — " + im.cidade : ""}\nCapacidade: ${im.capacidade || "?"} pessoas · Check-in ${im.checkin || "15:00"} · Check-out ${im.checkout || "11:00"}\n\n${textoTreino(im)}\n\n${reserva ? `RESERVA: ${CANAIS[reserva.canal] || reserva.canal} · ${reserva.hospede || "hóspede"} · ${reserva.inicio} a ${reserva.fim} (${noites(reserva.inicio, reserva.fim)} noites)${reserva.hospedes ? ` · ${reserva.hospedes} pessoas` : ""}\nHOJE: ${iso(k.agora(env))}` : "SEM RESERVA (pergunta antes de reservar)"}\n\nCONVERSA:\n${conversa || "(início)"}\n\nMENSAGEM NOVA DO HÓSPEDE: "${cortar(texto, 2000)}"`;
+  const idiomaAnfitriao = cfg.idioma || "português do Brasil";
+  const regra = cfg.idioma_resposta === "ANFITRIAO" ? `sempre em ${idiomaAnfitriao} (o idioma do anfitrião)` : `no idioma em que o hóspede escreveu (para ele entender)`;
+  const entrada = `IDIOMA DO ANFITRIÃO: ${idiomaAnfitriao}\nRESPONDER EM: ${regra}\n\nIMÓVEL: ${im.nome}${im.cidade ? " — " + im.cidade : ""}\nCapacidade: ${im.capacidade || "?"} pessoas · Check-in ${im.checkin || "15:00"} · Check-out ${im.checkout || "11:00"}\n\n${textoTreino(im)}\n\n${reserva ? `RESERVA: ${CANAIS[reserva.canal] || reserva.canal} · ${reserva.hospede || "hóspede"} · ${reserva.inicio} a ${reserva.fim} (${noites(reserva.inicio, reserva.fim)} noites)${reserva.hospedes ? ` · ${reserva.hospedes} pessoas` : ""}\nHOJE: ${iso(k.agora(env))}` : "SEM RESERVA (pergunta antes de reservar)"}\n\nCONVERSA:\n${conversa || "(início)"}\n\nMENSAGEM NOVA DO HÓSPEDE: "${cortar(texto, 2000)}"`;
   return openaiResposta(envIA, { modelo: cfg.modelo || "gpt-5-mini", esforco: "low", maxTokens: 1200, instrucoes: INSTRUCOES_HOSPEDE, entrada, recurso: "temporada/hospedes" });
 }
-async function responderHospede(env, k, orgId, im, reserva, texto, { channexBooking } = {}) {
+async function responderHospede(env, k, orgId, im, reserva, texto, { channexBooking, externoId } = {}) {
   const hist = ((await env.DB.prepare("SELECT direcao, texto FROM plt_tp_msgs WHERE org_id=? AND reserva_id=? ORDER BY id DESC LIMIT 20").bind(orgId, reserva.id).all())?.results || []).reverse();
   let o;
   try { o = await sugerirResposta(env, k, orgId, im, reserva, texto, hist.slice(0, -1)); } catch (e) { console.warn("temporada IA", e?.message); return; }
   const agora = k.agora(env);
+  // O anfitrião lê a mensagem do hóspede no idioma dele.
+  if (externoId && o?.traducao_hospede) await env.DB.prepare("UPDATE plt_tp_msgs SET traducao=? WHERE externo_id=? AND org_id=?").bind(cortar(o.traducao_hospede, 4000), externoId, orgId).run().catch(() => {});
   if (o?.risco && o.risco !== "baixo") await env.DB.prepare("UPDATE plt_tp_reservas SET risco=? WHERE id=?").bind(JSON.stringify({ nivel: o.risco, sinais: (o.sinais || []).slice(0, 5), em: agora }), reserva.id).run();
   const automatico = im.ia_modo === "AUTO" && !o?.precisa_anfitriao && o?.resposta && channexBooking && channexLigado(env);
   if (automatico) {
@@ -520,12 +525,12 @@ export async function rotasTemporada(request, env, k, orgId, papel, resto) {
   }
   if (r === "config" && metodo === "GET") {
     const cfg = json_((await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave=?").bind("tp_config_" + orgId).first())?.valor, {});
-    return json({ config: { idioma: "português do Brasil", modelo: "gpt-5-mini", ...cfg }, channex: channexLigado(env), webhook: channexLigado(env) ? new URL(`/webhook/channex?org=${orgId}&t=${(await k.hmac(await k.segredo(env), "channex:" + orgId)).slice(0, 32)}`, request.url).toString() : null });
+    return json({ config: { idioma: "português do Brasil", idioma_resposta: "HOSPEDE", modelo: "gpt-5-mini", ...cfg }, channex: channexLigado(env), webhook: channexLigado(env) ? new URL(`/webhook/channex?org=${orgId}&t=${(await k.hmac(await k.segredo(env), "channex:" + orgId)).slice(0, 32)}`, request.url).toString() : null });
   }
   if (r === "config" && metodo === "POST") {
     const negado = precisa("ADMIN"); if (negado) return negado;
     const { corpo, erro } = await ler(); if (erro) return erro;
-    const cfg = { idioma: k.txt(corpo.idioma, 60) || "português do Brasil", modelo: ["gpt-5-mini", "gpt-4.1", "gpt-5-nano"].includes(corpo.modelo) ? corpo.modelo : "gpt-5-mini" };
+    const cfg = { idioma: k.txt(corpo.idioma, 60) || "português do Brasil", idioma_resposta: corpo.idioma_resposta === "ANFITRIAO" ? "ANFITRIAO" : "HOSPEDE", modelo: ["gpt-5-mini", "gpt-4.1", "gpt-5-nano"].includes(corpo.modelo) ? corpo.modelo : "gpt-5-mini" };
     await env.DB.prepare("INSERT OR REPLACE INTO plt_meta(chave,valor) VALUES(?,?)").bind("tp_config_" + orgId, JSON.stringify(cfg)).run();
     return json({ ok: true, config: cfg });
   }
