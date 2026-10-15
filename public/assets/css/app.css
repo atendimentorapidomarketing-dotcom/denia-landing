@@ -636,3 +636,4 @@ details > summary { cursor: pointer; font-weight: 700; }
 .conexao-tp .lista-simples { margin: 0; padding-left: 18px; display: grid; gap: 6px; font-size: 14px; color: var(--texto-2); }
 @media print { .lateral, .barra-topo, .abas, .filtros-desempenho .acoes .btn, #faixa-plano, #faixa-global { display: none !important; } }
 @media (max-width: 720px) { .cal-tp .cal-tp-nome { min-width: 96px; max-width: 110px; white-space: normal; font-size: 11.5px; padding: 6px 8px; } .cal-tp thead th { min-width: 46px; } .legenda-tp .sub { font-size: 12.5px; } }
+.msg-traducao { display: block; font-weight: 600; }
