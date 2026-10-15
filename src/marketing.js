@@ -97,6 +97,13 @@ async function iaJSON(env, instrucoes, entrada, maxTokens = 2500) {
   });
   try { return JSON.parse(textoDaResposta(d)); } catch { throw new Error("A IA respondeu num formato inesperado. Tente de novo."); }
 }
+// Chamada curta e barata (chatbot): modelo escolhido pela empresa, raciocínio mínimo, resposta em JSON.
+export async function openaiResposta(env, { modelo, instrucoes, entrada, maxTokens = 400, recurso = "" }) {
+  const corpo = { model: String(modelo || "gpt-5-nano"), instructions: instrucoes, input: [{ role: "user", content: [{ type: "input_text", text: entrada }] }], text: { format: { type: "json_object" } }, max_output_tokens: maxTokens, store: false };
+  if (/^gpt-5(-mini|-nano)?$/.test(corpo.model)) corpo.reasoning = { effort: "minimal" };
+  const d = await openai(recurso ? comRecurso(env, recurso) : env, "responses", corpo, { timeout: 20000 });
+  try { return JSON.parse(textoDaResposta(d)); } catch { throw new Error("A IA respondeu num formato inesperado."); }
+}
 async function iaTexto(env, instrucoes, mensagens, maxTokens = 900) {
   const d = await openai(env, "responses", {
     model: String(env.OPENAI_MODEL || MODELO_TEXTO).trim(), instructions: instrucoes,

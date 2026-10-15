@@ -24,13 +24,14 @@ import { apiMarketing, apiAssistente, analisarAvaliacoesPendentes, relatoriosDaS
 import { retornoMeta, servirMidiaPublica, publicarPendentes } from "./meta.js";
 import { retornoGoogle, sincronizarGooglePendentes } from "./google.js";
 import { comOrgUso, comRecurso, descarregarUso } from "./uso.js";
+import { DDL_ZAP, webhookZap, rotasZap } from "./zap.js";
 
 const VERSAO = "3.1.0";
 // Versão dos Termos de uso e da Política de privacidade aceitas no cadastro.
 const VERSAO_TERMOS = "2026-10";
 // WhatsApp da Central de Atendimento (botão flutuante do site).
 const WHATSAPP_CENTRAL = "5521975469162";
-const SCHEMA = "2.4.0-a";
+const SCHEMA = "2.5.0";
 const COOKIE = "__Host-denia_sessao";
 const SESSAO_MS = 8 * 60 * 60 * 1000;
 const MAX_TENTATIVAS = 5;
@@ -138,7 +139,8 @@ const DDL = [
   `CREATE INDEX IF NOT EXISTS plt_idx_auditoria_org ON plt_auditoria(org_id, id)`,
   `CREATE TABLE IF NOT EXISTS plt_tentativas (chave TEXT PRIMARY KEY, n INTEGER NOT NULL, ate INTEGER NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS plt_redefinicoes (token_hash TEXT PRIMARY KEY, usuario_id INTEGER NOT NULL, expira_ms INTEGER NOT NULL, usado INTEGER NOT NULL DEFAULT 0, criado_ms INTEGER NOT NULL)`,
-  `CREATE TABLE IF NOT EXISTS plt_contatos (id INTEGER PRIMARY KEY AUTOINCREMENT, nome TEXT, email TEXT, empresa TEXT, telefone TEXT, assunto TEXT, mensagem TEXT, ip TEXT, lido INTEGER NOT NULL DEFAULT 0, criado_ms INTEGER NOT NULL)`
+  `CREATE TABLE IF NOT EXISTS plt_contatos (id INTEGER PRIMARY KEY AUTOINCREMENT, nome TEXT, email TEXT, empresa TEXT, telefone TEXT, assunto TEXT, mensagem TEXT, ip TEXT, lido INTEGER NOT NULL DEFAULT 0, criado_ms INTEGER NOT NULL)`,
+  ...DDL_ZAP
 ];
 let schemaPronto = false;
 // Empresa principal do site antigo = Central de Atendimento (a primeira empresa da plataforma).
@@ -489,12 +491,12 @@ async function loginLegado(env, email, senha) {
 
 async function organizacoesDo(env, usuario) {
   const sql = usuario.super_admin
-    ? `SELECT o.*, 'OWNER' papel, (SELECT 1 FROM plt_integracoes i WHERE i.org_id=o.id AND i.token_cifrado IS NOT NULL) conectada FROM plt_organizacoes o ORDER BY o.id`
-    : `SELECT o.*, m.papel, (SELECT 1 FROM plt_integracoes i WHERE i.org_id=o.id AND i.token_cifrado IS NOT NULL) conectada FROM plt_membros m JOIN plt_organizacoes o ON o.id=m.org_id WHERE m.usuario_id=? AND o.status='ATIVA' ORDER BY o.id`;
+    ? `SELECT o.*, 'OWNER' papel, (SELECT 1 FROM plt_integracoes i WHERE i.org_id=o.id AND i.token_cifrado IS NOT NULL) conectada, (SELECT 1 FROM plt_zap_contas z WHERE z.org_id=o.id AND (z.phone_number_id IS NOT NULL OR z.config IS NOT NULL)) chatbot FROM plt_organizacoes o ORDER BY o.id`
+    : `SELECT o.*, m.papel, (SELECT 1 FROM plt_integracoes i WHERE i.org_id=o.id AND i.token_cifrado IS NOT NULL) conectada, (SELECT 1 FROM plt_zap_contas z WHERE z.org_id=o.id AND (z.phone_number_id IS NOT NULL OR z.config IS NOT NULL)) chatbot FROM plt_membros m JOIN plt_organizacoes o ON o.id=m.org_id WHERE m.usuario_id=? AND o.status='ATIVA' ORDER BY o.id`;
   const st = env.DB.prepare(sql);
   const r = await (usuario.super_admin ? st : st.bind(usuario.id)).all();
   const primeira = conexaoCloudflare(env) || (env.ENGINE && typeof env.ENGINE.fetch === "function") ? await primeiraEmpresa(env) : 0;
-  return (r?.results || []).map(o => ({ id: o.id, nome: o.nome, slug: o.slug, segmento: o.segmento || "", cor: o.cor || "#4f8cff", status: o.status, papel: o.papel, conectada: Boolean(o.conectada) || o.id === primeira, plano: o.plano || (o.id === primeira ? "elite" : "start"), plano_status: o.plano_status || (o.id === primeira ? "ATIVO" : "TESTE") }));
+  return (r?.results || []).map(o => ({ id: o.id, nome: o.nome, slug: o.slug, segmento: o.segmento || "", cor: o.cor || "#4f8cff", status: o.status, papel: o.papel, conectada: Boolean(o.conectada) || o.id === primeira, chatbot: Boolean(o.chatbot), plano: o.plano || (o.id === primeira ? "elite" : "start"), plano_status: o.plano_status || (o.id === primeira ? "ATIVO" : "TESTE") }));
 }
 async function papelNa(env, usuario, orgId) {
   if (usuario.super_admin) {
@@ -610,6 +612,14 @@ async function proxyEngine(request, env, sessao, orgId, papel, caminho) {
 
 // Ferramentas que os módulos (marketing, Meta) usam.
 function kitBase(env) { return { env, json, lerCorpo, txt, pode, agora, auditar, cifrar, decifrar, hmac, segredo, b64url, deB64url }; }
+// Chatbot do WhatsApp (src/zap.js): IA da empresa, aviso por e-mail quando não há Telegram e o endereço do painel.
+async function kitZap(env, base) {
+  const url = base || String((await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave='base_url'").first().catch(() => null))?.valor || "").replace(/\/+$/, "");
+  return {
+    ...kitBase(env), comIA, base: url,
+    alertarEmail: async (orgId, assunto, texto) => { for (const para of await responsaveisDa(env, orgId)) await enviarEmail(env, para, assunto, texto); }
+  };
+}
 
 // Chave da OpenAI: a colada em Integrações (cifrada no banco) ou o secret OPENAI_API_KEY.
 async function chaveIA(env, orgId) {
@@ -753,6 +763,7 @@ async function apiOrg(request, env, sessao, orgId, resto) {
   const metodo = request.method;
   if (resto.startsWith("engine/")) return proxyEngine(request, env, sessao, orgId, papel, resto.slice(7));
   const kit = { ...kitBase(env), sessao };
+  if (resto === "zap" || resto.startsWith("zap/")) return rotasZap(request, env, { ...(await kitZap(env, new URL(request.url).origin)), sessao }, orgId, papel, resto);
   if (resto === "ia/chave" && metodo === "GET") {
     const k = await chaveIA(env, orgId);
     return json({ configurada: Boolean(k.chave), origem: k.origem, final: k.chave && pode(papel, "ADMIN") ? k.chave.slice(-4) : "" });
@@ -1039,10 +1050,12 @@ const ANTIGOS = {
   "/cadastro-en": "/cadastro", "/cadastro-es": "/cadastro", "/criar-conta": "/cadastro",
   "/index": "/", "/index-en": "/", "/index-es": "/", "/app-en": "/app", "/app-es": "/app"
 };
-async function rotear(request, env) {
+async function rotear(request, env, ctx) {
   const url = new URL(request.url);
   const caminho = url.pathname;
   if (caminho.startsWith("/api/")) return api(request, env, caminho);
+  // Um só webhook do WhatsApp para todas as empresas (cada mensagem diz de qual número ela é).
+  if (caminho === "/webhook/whatsapp") { await garantirSchema(env); return webhookZap(request, env, await kitZap(env), ctx); }
   if (!["GET", "HEAD"].includes(request.method)) return new Response("Método não permitido.", { status: 405 });
 
   // Imagens dos posts com link assinado: o Instagram e o Facebook baixam a arte por aqui.
@@ -1090,8 +1103,8 @@ function comSeguranca(resposta, request) {
 }
 
 export default {
-  async fetch(request, env) {
-    try { return comSeguranca(await rotear(request, env), request); }
+  async fetch(request, env, ctx) {
+    try { return comSeguranca(await rotear(request, env, ctx), request); }
     catch (e) {
       console.error("Erro não tratado:", e?.stack || e);
       return comSeguranca(json({ erro: "Erro interno. Tente novamente." }, 500), request);

@@ -12,7 +12,7 @@ class Stmt {
   async all() { return { results: this.h.db.prepare(this.sql).all(...this._a()).map(r => ({ ...r })) }; }
   async run() {
     const st = this.h.db.prepare(this.sql);
-    if (/\breturning\b/i.test(this.sql)) { const rows = st.all(...this._a()); return { meta: { changes: rows.length }, results: rows }; }
+    if (/\breturning\b/i.test(this.sql) || /^\s*select\b/i.test(this.sql)) { const rows = st.all(...this._a()); return { meta: { changes: rows.length }, results: rows }; }
     const r = st.run(...this._a());
     return { meta: { changes: Number(r.changes), last_row_id: Number(r.lastInsertRowid) } };
   }

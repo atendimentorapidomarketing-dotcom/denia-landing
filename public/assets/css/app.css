@@ -568,4 +568,12 @@ details > summary { cursor: pointer; font-weight: 700; }
 .guia-cat input { width: 18px; height: 18px; }
 .guia-tela { min-height: 320px; max-height: 60vh; border: 1px solid var(--borda); border-radius: 18px; margin-top: 8px; }
 .guia-botoes { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; white-space: normal; }
-.guia-botoes .btn { min-height: 34px; }
+.guia-botoes .btn { min-height: 34px; max-width: 100%; white-space: normal; text-align: left; }
+
+/* Chatbot do WhatsApp */
+.zap-arvore { display: grid; gap: 6px; margin-top: 12px; }
+.zap-no { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; padding: 10px 14px; border: 1px solid var(--borda); border-radius: 14px; background: rgba(255, 255, 255, 0.02); min-width: 0; }
+.zap-no-titulo { min-width: 0; overflow-wrap: anywhere; }
+.zap-no .acoes { gap: 6px; }
+.so-celular { display: none; }
+@media (max-width: 960px) { .so-celular { display: inline-flex; } }
