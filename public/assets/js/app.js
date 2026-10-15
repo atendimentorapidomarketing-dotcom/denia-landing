@@ -562,9 +562,17 @@
       // Entrega confirmada pela Meta (motor 31.2+): ✓ aceita, ✓✓ entregue, ✓✓ azul lida, ⚠ não chegou.
       const ENTREGA = { ACEITA: ["✓", "Aceita pela Meta, ainda sem confirmação de entrega"], SENT: ["✓", "Enviada"], DELIVERED: ["✓✓", "Entregue"], READ: ["✓✓", "Lida"], REENVIADA: ["↻", "Reenviada depois de uma falha da Meta"] };
       const falhou = saida && m.entrega === "FAILED";
+      // Sem confirmação da Meta, a mensagem nunca aparece como "enviada": motor antigo (sem confirmações)
+      // ou aceita há mais de 10 minutos sem nenhum aviso de entrega.
+      const versaoMotor = String((estado.status && estado.status.versao) || "");
+      const motorSemConfirmacao = saida && !m.entrega && m.whatsapp_message_id && versaoMotor && !/^(3[2-9]|31\.[2-9])/.test(versaoMotor);
+      const idadeMs = Date.now() - Date.parse(String(m.criado_em || "").replace(" ", "T") + (String(m.criado_em || "").includes("Z") ? "" : "Z"));
+      const semConfirmar = saida && m.entrega === "ACEITA" && idadeMs > 10 * 60000;
       const tique = saida && m.entrega && ENTREGA[m.entrega] ? h("span", { class: "tique" + (m.entrega === "READ" ? " tique-lida" : ""), title: ENTREGA[m.entrega][1], "aria-label": ENTREGA[m.entrega][1], text: " " + ENTREGA[m.entrega][0] }) : null;
       return h("div", { class: "msg " + (saida ? "msg-saida" + (humano ? " msg-humano" : "") + (falhou ? " msg-falhou" : "") : "msg-entrada") }, m.conteudo || "[sem texto]",
         falhou ? h("span", { class: "msg-falha", text: "⚠ NÃO CHEGOU: " + (m.entrega_erro || "a Meta não entregou esta mensagem.") }) : null,
+        semConfirmar ? h("span", { class: "msg-aviso", text: "⚠ A Meta aceitou, mas não confirmou a entrega. Provavelmente NÃO chegou — veja WhatsApp → Verificar agora." }) : null,
+        motorSemConfirmacao ? h("span", { class: "msg-aviso", text: `⚠ Entrega não confirmada: o motor ${versaoMotor} não sabe se chegou. Cole o motor 31.2.` }) : null,
         h("small", {}, (saida ? (humano ? "Equipe · " : "DENIA · ") : "") + quando(m.criado_em), tique));
     }));
     if (!(d.mensagens || []).length) msgs.appendChild(vazio("Sem mensagens", ""));
