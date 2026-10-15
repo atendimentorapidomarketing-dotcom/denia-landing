@@ -35,8 +35,8 @@
 //       relatório diário. Nunca inicia conversa nova por conta própria.
 // ============================================================================
 
-const VERSAO = "31.2.0";
-const SCHEMA_VERSAO = "30.3.0-a";
+const VERSAO = "31.3.0";
+const SCHEMA_VERSAO = "31.3.0"; // mude sempre que acrescentar tabela ou índice (senão o banco de produção não recebe)
 const EMPRESA_ID = 1;
 const PHONE_ID_PADRAO = "473474732510163";
 const GRAPH = "v25.0";
@@ -271,11 +271,35 @@ function ehMensagemSocial(t) {
 // CONTEXTO DE EXECUÇÃO
 // ============================================================================
 
+// ============================================================================
+// LIMITE DE CHAMADAS POR EXECUÇÃO
+// No plano gratuito da Cloudflare cada execução do Worker pode fazer só 50 chamadas externas, e cada
+// consulta ao banco D1 conta como uma. Passando disso, a chamada seguinte — muitas vezes o envio ao
+// WhatsApp — é recusada ("Too many subrequests"). Cada execução conta as próprias chamadas; quando
+// está perto do limite, a resposta vai para a fila de envio e sai na execução seguinte (segundos depois).
+// No plano pago (limite de milhares), defina LIMITE_CHAMADAS=900 no Worker.
+// ============================================================================
+function limiteChamadas(c) { const n = Number(c.env.LIMITE_CHAMADAS); return Number.isFinite(n) && n > 10 ? n : 45; }
+function sobram(c) { return limiteChamadas(c) - (c.chamadas || 0); }
+function gastar(c, n = 1) { if (c) c.chamadas = (c.chamadas || 0) + n; }
+function contarDB(db, c) {
+  if (!db || typeof db.prepare !== "function") return db;
+  const embrulhar = st => ({
+    _st: st,
+    bind: (...a) => embrulhar(st.bind(...a)),
+    first: (...a) => { gastar(c); return st.first(...a); },
+    all: (...a) => { gastar(c); return st.all(...a); },
+    run: (...a) => { gastar(c); return st.run(...a); },
+    raw: (...a) => { gastar(c); return st.raw(...a); }
+  });
+  return { prepare: sql => embrulhar(db.prepare(sql)), batch: sts => { gastar(c); return db.batch(sts.map(x => x?._st || x)); }, exec: q => { gastar(c); return db.exec(q); } };
+}
 function criarContexto(env, opcoes = {}) {
   const c = {
-    env, db: env.DB, sim: !!opcoes.simulacao, ignorarHorario: !!opcoes.ignorarHorario,
+    env, db: null, sim: !!opcoes.simulacao, ignorarHorario: !!opcoes.ignorarHorario, chamadas: 0,
     registro: [], agora: () => (typeof env.__agora === "function" ? env.__agora() : Date.now())
   };
+  c.db = contarDB(env.DB, c);
   c.saida = criarSaida(c);
   return c;
 }
@@ -325,6 +349,8 @@ const SQL_SCHEMA = [
   `CREATE INDEX IF NOT EXISTS d30_sugestoes_status ON d30_sugestoes(status, ocorrencias)`,
   `CREATE TABLE IF NOT EXISTS d30_ficha (id INTEGER PRIMARY KEY AUTOINCREMENT, telefone TEXT NOT NULL, dados_json TEXT NOT NULL, origem TEXT, importado_ms INTEGER NOT NULL)`,
   `CREATE INDEX IF NOT EXISTS d30_ficha_tel ON d30_ficha(telefone)`,
+  `CREATE TABLE IF NOT EXISTS d30_saida_fila (id INTEGER PRIMARY KEY AUTOINCREMENT, para TEXT NOT NULL, corpo TEXT NOT NULL, motivo TEXT, status TEXT NOT NULL DEFAULT 'PENDENTE', tentativas INTEGER NOT NULL DEFAULT 0, erro TEXT, wamid TEXT, criado_ms INTEGER NOT NULL, atualizado_ms INTEGER NOT NULL)`,
+  `CREATE INDEX IF NOT EXISTS d30_saida_fila_status ON d30_saida_fila(status, id)`,
   `CREATE TABLE IF NOT EXISTS d30_entregas (wamid TEXT PRIMARY KEY, telefone TEXT, status TEXT NOT NULL, codigo INTEGER, erro TEXT, detalhe TEXT, tentativas INTEGER NOT NULL DEFAULT 0, enviado_ms INTEGER, entregue_ms INTEGER, lido_ms INTEGER, falhou_ms INTEGER, atualizado_ms INTEGER NOT NULL)`,
   `CREATE INDEX IF NOT EXISTS d30_entregas_status ON d30_entregas(status, atualizado_ms)`,
   `CREATE INDEX IF NOT EXISTS d30_entregas_enviado ON d30_entregas(enviado_ms)`,
@@ -347,7 +373,9 @@ async function garantirSchema(c) {
   if (!c.db) throw new Error("Binding D1 'DB' ausente.");
   const r = await c.db.prepare("SELECT valor FROM d30_meta WHERE chave='schema'").first().catch(() => null);
   if (r?.valor !== SCHEMA_VERSAO) {
-    for (const s of SQL_SCHEMA) await c.db.prepare(s).run();
+    // Tudo numa só chamada ao banco (o plano gratuito conta cada consulta).
+    try { await c.db.batch(SQL_SCHEMA.map(x => c.db.prepare(x))); }
+    catch { for (const x of SQL_SCHEMA) await c.db.prepare(x).run(); }
     for (const s of SQL_INDICES_LEGADO) { try { await c.db.prepare(s).run(); } catch (e) { console.warn("Índice legado não criado:", e?.message); } }
     await c.db.prepare("INSERT OR REPLACE INTO d30_meta(chave,valor) VALUES('schema',?)").bind(SCHEMA_VERSAO).run();
   }
@@ -375,9 +403,15 @@ async function liberarChave(c, chave) {
 // ============================================================================
 
 async function buscarPessoa(c, tel) {
+  // Guardada durante a execução: a mesma pessoa era lida várias vezes por mensagem.
+  const chave = digitos(tel);
+  c.cachePessoas = c.cachePessoas || new Map();
+  if (c.cachePessoas.has(chave)) { const p = c.cachePessoas.get(chave); return p ? { ...p } : p; }
   const vs = variantesTel(tel);
-  return await c.db.prepare(`SELECT id,nome,telefone,tipo,email,criado_em FROM pessoas WHERE empresa_id=? AND telefone IN (${vs.map(() => "?").join(",")}) AND COALESCE(ativo,1)=1 ORDER BY id LIMIT 1`)
+  const p = await c.db.prepare(`SELECT id,nome,telefone,tipo,email,criado_em FROM pessoas WHERE empresa_id=? AND telefone IN (${vs.map(() => "?").join(",")}) AND COALESCE(ativo,1)=1 ORDER BY id LIMIT 1`)
     .bind(EMPRESA_ID, ...vs).first();
+  if (p) c.cachePessoas.set(chave, { ...p });
+  return p;
 }
 async function obterPessoa(c, tel, nome, tipo) {
   let p = await buscarPessoa(c, tel);
@@ -386,6 +420,7 @@ async function obterPessoa(c, tel, nome, tipo) {
       await c.db.prepare("INSERT INTO pessoas(empresa_id,nome,telefone,tipo,ativo,atualizado_em) VALUES(?,?,?,?,1,CURRENT_TIMESTAMP)")
         .bind(EMPRESA_ID, txt(nome, 120) || null, digitos(tel), tipo).run();
     } catch (e) { console.warn("pessoa concorrente", e?.message); }
+    c.cachePessoas?.delete(digitos(tel));
     p = await buscarPessoa(c, tel);
     if (p && tipo === "CLIENTE") await syncCliente(c, p);
   } else if (!p.nome && nome) {
@@ -796,16 +831,23 @@ function dentroHorarioPrestador(c) {
 // ============================================================================
 
 async function pausar(c, tel, ms, motivo) {
+  c.cachePausas?.clear();
   const ate = c.agora() + ms;
   await c.db.prepare("INSERT INTO d30_pausas(telefone,ate_ms,motivo) VALUES(?,?,?) ON CONFLICT(telefone) DO UPDATE SET ate_ms=MAX(d30_pausas.ate_ms, excluded.ate_ms), motivo=excluded.motivo")
     .bind(digitos(tel), ate, motivo).run();
 }
 async function liberarPausa(c, tel) {
+  c.cachePausas?.clear();
   for (const v of variantesTel(tel)) await c.db.prepare("DELETE FROM d30_pausas WHERE telefone=?").bind(v).run();
 }
 async function estaPausado(c, tel) {
+  const chave = digitos(tel);
+  c.cachePausas = c.cachePausas || new Map();
+  const g = c.cachePausas.get(chave);
+  if (g && g.ate > c.agora()) return g.pausado; // vale por 20 s dentro da mesma execução
   const vs = variantesTel(tel);
   const r = await c.db.prepare(`SELECT ate_ms FROM d30_pausas WHERE telefone IN (${vs.map(() => "?").join(",")}) AND ate_ms > ? LIMIT 1`).bind(...vs, c.agora()).first();
+  c.cachePausas.set(chave, { pausado: Boolean(r), ate: c.agora() + 20000 });
   return Boolean(r);
 }
 
@@ -830,21 +872,20 @@ async function metaPost(env, corpo) {
     return { ok: false, incerto: true, erro: "Falha de rede com a Meta: " + String(e?.message || e) };
   }
 }
-function metaTexto(env, to, texto) {
-  return metaPost(env, { messaging_product: "whatsapp", recipient_type: "individual", to: digitos(to), type: "text", text: { preview_url: false, body: String(texto).slice(0, 4000) } });
-}
-function metaMidia(env, to, tipo, mediaId, legenda) {
+function corpoTexto(to, texto) { return { messaging_product: "whatsapp", recipient_type: "individual", to: digitos(to), type: "text", text: { preview_url: false, body: String(texto).slice(0, 4000) } }; }
+function corpoMidia(to, tipo, mediaId, legenda) {
   const t = ["image", "video", "audio", "document"].includes(tipo) ? tipo : "document";
   const obj = { id: mediaId };
   if (legenda && t !== "audio") obj.caption = String(legenda).slice(0, 900);
-  return metaPost(env, { messaging_product: "whatsapp", recipient_type: "individual", to: digitos(to), type: t, [t]: obj });
+  return { messaging_product: "whatsapp", recipient_type: "individual", to: digitos(to), type: t, [t]: obj };
 }
-function metaTemplate(env, to, nome, params) {
-  return metaPost(env, {
+function corpoTemplate(env, to, nome, params) {
+  return {
     messaging_product: "whatsapp", recipient_type: "individual", to: digitos(to), type: "template",
     template: { name: nome, language: { code: String(env.WHATSAPP_TEMPLATE_IDIOMA || "pt_BR") }, components: [{ type: "body", parameters: params.map(p => ({ type: "text", text: txt(p, 900) || "-" })) }] }
-  });
+  };
 }
+function metaTexto(env, to, texto) { return metaPost(env, corpoTexto(to, texto)); }
 function foraDaJanela(r) { return Number(r?.codigo) === 131047 || /24.?hour|re-?engagement|janela/i.test(String(r?.erro || "")); }
 
 async function metaBaixarMidia(env, mediaId) {
@@ -912,7 +953,7 @@ const ORDEM_ENTREGA = { ACEITA: 1, SENT: 2, DELIVERED: 3, READ: 4 };
 function explicarEntrega(codigo, padrao) { return ERROS_ENTREGA[Number(codigo)] || txt(padrao || "A Meta não entregou a mensagem.", 300); }
 
 async function registrarEnvio(c, wamid, to) {
-  if (!wamid || c.sim) return;
+  if (!wamid || c.sim || sobram(c) < 3) return;
   try { await c.db.prepare("INSERT OR IGNORE INTO d30_entregas(wamid,telefone,status,enviado_ms,atualizado_ms) VALUES(?,?,'ACEITA',?,?)").bind(String(wamid), digitos(to), c.agora(), c.agora()).run(); }
   catch (e) { console.warn("entrega", e?.message); }
 }
@@ -990,24 +1031,98 @@ async function resumoEntregas(c, desdeMs) {
   return r;
 }
 
+// ----- Fila de envio: o que não coube nesta execução sai na próxima (cron a cada minuto ou próximo webhook).
+async function adiarEnvio(c, to, corpo, motivo) {
+  try {
+    const r = await c.db.prepare("INSERT INTO d30_saida_fila(para,corpo,motivo,status,tentativas,criado_ms,atualizado_ms) VALUES(?,?,?,'PENDENTE',0,?,?) RETURNING id")
+      .bind(digitos(to), JSON.stringify(corpo), txt(motivo, 200), c.agora(), c.agora()).first();
+    const id = r?.id;
+    if (!id) throw new Error("fila sem id");
+    console.warn("Envio adiado para a próxima execução:", motivo);
+    return { ok: true, id: "fila:" + id, adiado: true };
+  } catch (e) {
+    // Sem banco nesta execução: guarda no KV (tem limite próprio) para o cron enviar.
+    try {
+      if (c.env.MEMORIA) { const k = "saida:" + c.agora() + ":" + crypto.randomUUID(); await c.env.MEMORIA.put(k, JSON.stringify({ to: digitos(to), corpo, motivo }), { expirationTtl: 86400 }); return { ok: true, id: "kv:" + k, adiado: true }; }
+    } catch { /* nada a fazer */ }
+    return { ok: false, erro: "Não foi possível enviar nem guardar na fila: " + txt(motivo, 160) };
+  }
+}
+// Envia o que ficou na fila. Primeira coisa do cron, com a execução ainda "zerada".
+async function enviarFila(c, maximo = 12) {
+  let enviados = 0;
+  const itens = (await c.db.prepare("SELECT * FROM d30_saida_fila WHERE status='PENDENTE' ORDER BY id LIMIT ?").bind(maximo).all().catch(() => null))?.results || [];
+  for (const it of itens) {
+    if (sobram(c) < 8) break;
+    let corpo; try { corpo = JSON.parse(it.corpo); } catch { corpo = null; }
+    if (!corpo) { await c.db.prepare("UPDATE d30_saida_fila SET status='ERRO', erro='corpo inválido', atualizado_ms=? WHERE id=?").bind(c.agora(), it.id).run(); continue; }
+    gastar(c);
+    const r = await metaPost(c.env, corpo);
+    const ref = "fila:" + it.id;
+    if (r.ok) {
+      enviados++;
+      await c.db.batch([
+        c.db.prepare("UPDATE d30_saida_fila SET status='ENVIADA', wamid=?, atualizado_ms=? WHERE id=?").bind(r.id, c.agora(), it.id),
+        c.db.prepare("UPDATE mensagens SET whatsapp_message_id=? WHERE whatsapp_message_id=?").bind(r.id, ref),
+        c.db.prepare("INSERT INTO d30_saidas(telefone,criado_ms) VALUES(?,?)").bind(it.para, c.agora()),
+        c.db.prepare("INSERT OR IGNORE INTO d30_entregas(wamid,telefone,status,enviado_ms,atualizado_ms) VALUES(?,?,'ACEITA',?,?)").bind(r.id, it.para, c.agora(), c.agora())
+      ]);
+    } else if (Number(it.tentativas || 0) < 2 && (r.incerto || /subrequest/i.test(String(r.erro || "")))) {
+      await c.db.prepare("UPDATE d30_saida_fila SET tentativas=tentativas+1, erro=?, atualizado_ms=? WHERE id=?").bind(txt(r.erro, 300), c.agora(), it.id).run();
+    } else {
+      await c.db.batch([
+        c.db.prepare("UPDATE d30_saida_fila SET status='ERRO', erro=?, atualizado_ms=? WHERE id=?").bind(txt(r.erro, 300), c.agora(), it.id),
+        c.db.prepare("INSERT OR REPLACE INTO d30_entregas(wamid,telefone,status,codigo,erro,falhou_ms,atualizado_ms) VALUES(?,?,'FAILED',?,?,?,?)").bind(ref, it.para, r.codigo || null, txt(r.erro, 300), c.agora(), c.agora())
+      ]);
+      if (r.codigo) await anotarBloqueio(c, Number(r.codigo), r.erro);
+    }
+  }
+  // Envios guardados no KV quando nem o banco estava disponível.
+  if (c.env.MEMORIA && typeof c.env.MEMORIA.list === "function" && sobram(c) > 10) {
+    try {
+      const l = await c.env.MEMORIA.list({ prefix: "saida:", limit: 5 });
+      for (const k of l.keys || []) {
+        const v = JSON.parse((await c.env.MEMORIA.get(k.name)) || "null");
+        await c.env.MEMORIA.delete(k.name);
+        if (v?.corpo) { gastar(c); const r = await metaPost(c.env, v.corpo); if (r.ok) { enviados++; await c.db.prepare("UPDATE mensagens SET whatsapp_message_id=? WHERE whatsapp_message_id=?").bind(r.id, "kv:" + k.name).run().catch(() => {}); } }
+      }
+    } catch (e) { console.warn("fila KV", e?.message); }
+  }
+  return enviados;
+}
+
 // Toda saída passa por aqui. No painel de teste (simulação) nada sai de verdade.
 function criarSaida(c) {
   const env = c.env;
   const simular = (canal, para, conteudo, extra = {}) => { c.registro.push({ canal, para, texto: conteudo, ...extra }); return { ok: true, id: "sim." + crypto.randomUUID() }; };
-  const controlado = async (to, envio) => {
+  const controlado = async (to, corpo) => {
+    // Perto do limite de chamadas desta execução: vai para a fila e sai na próxima execução.
+    if (sobram(c) < 6) return await adiarEnvio(c, to, corpo, "limite de chamadas desta execução");
     const bloqueio = await verificarLimites(c, to);
     if (bloqueio) { console.warn("Envio bloqueado:", bloqueio); return { ok: false, bloqueado: true, erro: bloqueio }; }
-    const r = await envio();
-    if (r.ok) { await registrarSaidaTaxa(c, to); await registrarEnvio(c, r.id, to); }
+    gastar(c);
+    const r = await metaPost(env, corpo);
+    if (!r.ok && /too many subrequests|subrequest/i.test(String(r.erro || ""))) return await adiarEnvio(c, to, corpo, r.erro);
+    if (r.ok && !c.contingencia) {
+      // Taxa de envio e registro de entrega numa chamada só ao banco.
+      try {
+        await c.db.batch([
+          c.db.prepare("INSERT INTO d30_saidas(telefone,criado_ms) VALUES(?,?)").bind(digitos(to), c.agora()),
+          c.db.prepare("INSERT OR IGNORE INTO d30_entregas(wamid,telefone,status,enviado_ms,atualizado_ms) VALUES(?,?,'ACEITA',?,?)").bind(String(r.id), digitos(to), c.agora(), c.agora())
+        ]);
+      } catch (e) { console.warn("registro do envio", e?.message); }
+    } else if (r.ok) await registrarSaidaTaxa(c, to);
     else if (r.codigo) await anotarBloqueio(c, Number(r.codigo), r.erro);
     return r;
   };
   return {
-    texto: (to, t, info = {}) => c.sim ? simular("whatsapp", to, t, info) : controlado(to, () => metaTexto(env, to, t)),
-    midia: (to, m, info = {}) => c.sim ? simular("whatsapp-midia", to, `[${m.tipo}] ${m.legenda || ""}`, info) : controlado(to, () => metaMidia(env, to, m.tipo, m.mediaId, m.legenda)),
-    template: (to, nome, params, info = {}) => c.sim ? simular("whatsapp-template", to, `${nome}: ${params.join(" | ")}`, info) : controlado(to, () => metaTemplate(env, to, nome, params)),
+    texto: (to, t, info = {}) => c.sim ? simular("whatsapp", to, t, info) : controlado(to, corpoTexto(to, t)),
+    midia: (to, m, info = {}) => c.sim ? simular("whatsapp-midia", to, `[${m.tipo}] ${m.legenda || ""}`, info) : controlado(to, corpoMidia(to, m.tipo, m.mediaId, m.legenda)),
+    template: (to, nome, params, info = {}) => c.sim ? simular("whatsapp-template", to, `${nome}: ${params.join(" | ")}`, info) : controlado(to, corpoTemplate(env, to, nome, params)),
     telegram: async t => {
       if (c.sim) return simular("telegram", "equipe", t);
+      if (sobram(c) < 8) { console.warn("Telegram adiado (limite de chamadas):", String(t).slice(0, 200)); return { ok: false, erro: "limite de chamadas" }; }
+      gastar(c);
       if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID) { console.warn("Telegram não configurado:", t.slice(0, 200)); return { ok: false, erro: "Telegram não configurado" }; }
       return telegramEnviar(env, t);
     }
@@ -1028,12 +1143,15 @@ async function verificarLimites(c, to) {
   if (await pausaGeralAtiva(c)) return "DENIA pausada (pausa geral ativa).";
   if (c.contingencia) return null; // a contingência tem trava própria no KV
   const tel = digitos(to), agora = c.agora();
-  const conta = async (sql, ...b) => Number((await c.db.prepare(sql).bind(...b).first())?.n || 0);
   const desde = ms => agora - ms;
-  const n2 = await conta("SELECT COUNT(*) n FROM d30_saidas WHERE telefone=? AND criado_ms > ?", tel, desde(120000));
-  const n10 = await conta("SELECT COUNT(*) n FROM d30_saidas WHERE telefone=? AND criado_ms > ?", tel, desde(600000));
-  const n60 = await conta("SELECT COUNT(*) n FROM d30_saidas WHERE telefone=? AND criado_ms > ?", tel, desde(3600000));
-  const g10 = await conta("SELECT COUNT(*) n FROM d30_saidas WHERE criado_ms > ?", desde(600000));
+  // Uma consulta só (antes eram quatro).
+  const t = await c.db.prepare(`SELECT
+      SUM(CASE WHEN telefone=? AND criado_ms > ? THEN 1 ELSE 0 END) n2,
+      SUM(CASE WHEN telefone=? AND criado_ms > ? THEN 1 ELSE 0 END) n10,
+      SUM(CASE WHEN telefone=? THEN 1 ELSE 0 END) n60,
+      SUM(CASE WHEN criado_ms > ? THEN 1 ELSE 0 END) g10
+    FROM d30_saidas WHERE criado_ms > ?`).bind(tel, desde(120000), tel, desde(600000), tel, desde(600000), desde(3600000)).first();
+  const n2 = Number(t?.n2 || 0), n10 = Number(t?.n10 || 0), n60 = Number(t?.n60 || 0), g10 = Number(t?.g10 || 0);
   let motivo = "";
   if (g10 >= LIMITES_ENVIO.global10min) motivo = `limite geral: ${g10} mensagens em 10 min`;
   else if (n2 >= LIMITES_ENVIO.porTelefone2min || n10 >= LIMITES_ENVIO.porTelefone10min || n60 >= LIMITES_ENVIO.porTelefoneHora) motivo = `limite por contato (${tel}): ${n2} em 2 min, ${n10} em 10 min, ${n60} em 1 h`;
@@ -1123,7 +1241,7 @@ async function encaminharMidiasAoPrestador(c, consulta) {
 function modelo(env) { return String(env.OPENAI_MODEL || MODELO_PADRAO).trim(); }
 // Consumo da OpenAI por dia (a plataforma mostra em Consumo e custos). Nunca atrapalha a resposta.
 async function registrarUsoIA(c, operacao, modeloUsado, usage, erro) {
-  if (!c?.db || c.sim) return;
+  if (!c?.db || c.sim || sobram(c) < 12) return; // o envio ao cliente vem antes da contabilidade
   try {
     const det = usage?.input_tokens_details || {};
     await c.db.prepare(`INSERT INTO d30_uso (dia,operacao,modelo,chamadas,erros,tokens_entrada,tokens_saida,tokens_cache) VALUES (?,?,?,1,?,?,?,?)
@@ -1179,6 +1297,7 @@ async function openaiJSON(c, instrucoes, entrada, anexos = [], maxTokens = 1400)
   }
   const corpo = { model: modelo(env), instructions: instrucoes, input: [{ role: "user", content }], text: { format: { type: "json_object" } }, max_output_tokens: maxTokens, store: false };
   if (/^(gpt-5|o\d)/i.test(corpo.model)) corpo.reasoning = { effort: "low" };
+  gastar(c);
   const r = await fetch("https://api.openai.com/v1/responses", {
     method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${env.OPENAI_API_KEY}` },
     body: JSON.stringify(corpo), signal: AbortSignal.timeout(18000)
@@ -1199,6 +1318,7 @@ async function transcreverAudio(c, buffer, mime) {
   f.append("language", "pt");
   const ext = /mpeg|mp3/.test(mime) ? "mp3" : /wav/.test(mime) ? "wav" : /mp4|m4a|aac/.test(mime) ? "m4a" : "ogg";
   f.append("file", new Blob([buffer], { type: mime }), "audio." + ext);
+  gastar(c);
   const r = await fetch("https://api.openai.com/v1/audio/transcriptions", { method: "POST", headers: { Authorization: `Bearer ${c.env.OPENAI_API_KEY}` }, body: f, signal: AbortSignal.timeout(20000) });
   const d = await r.json().catch(() => ({}));
   await registrarUsoIA(c, "transcricao_audio", String(c.env.OPENAI_TRANSCRIPTION_MODEL || "gpt-4o-mini-transcribe"), d?.usage, !r.ok);
@@ -2040,6 +2160,8 @@ async function agruparEProcessar(c, tel, wamid) {
 
 async function processarPendentes(c, tel) {
   for (let volta = 0; volta < 3; volta++) {
+    // Sem chamadas suficientes nesta execução: deixa na fila; o cron (a cada minuto) responde com a execução zerada.
+    if (sobram(c) < 18) return;
     const lote = crypto.randomUUID(), agora = c.agora();
     const itens = (await c.db.prepare(`UPDATE d30_fila SET status='PROCESSANDO', lote=?, atualizado_ms=? WHERE telefone=? AND status='PENDENTE'
       AND NOT EXISTS (SELECT 1 FROM d30_fila f2 WHERE f2.telefone=? AND f2.status='PROCESSANDO' AND f2.atualizado_ms > ?) RETURNING wamid, payload, recebido_ms`)
@@ -2051,6 +2173,8 @@ async function processarPendentes(c, tel) {
       try { await processarLote(c, tel, itens); }
       catch (e) {
         if (e?.adiar) throw e;
+        // Estourou o limite de chamadas desta execução: devolve à fila para o cron responder (não é erro).
+        if (/too many (subrequests|api requests)/i.test(String(e?.message || "")) || sobram(c) < 18) { const x = new Error("limite de chamadas"); x.limite = true; throw x; }
         // Falha passageira (rede, banco, IA): tenta mais uma vez antes de desistir, para nenhuma conversa ficar sem resposta.
         console.error("lote (tentando de novo)", tel, e?.message);
         await sleep(Math.min(2000, janela(c.env)));
@@ -2058,6 +2182,11 @@ async function processarPendentes(c, tel) {
       }
     }
     catch (e) {
+      if (e?.limite || /too many (subrequests|api requests)/i.test(String(e?.message || ""))) {
+        try { await c.env.DB.prepare("UPDATE d30_fila SET status='PENDENTE', lote=NULL, atualizado_ms=? WHERE lote=?").bind(c.agora() - 180000, lote).run(); } catch { /* o cron recupera os PROCESSANDO presos */ }
+        console.warn("Limite de chamadas: mensagens de", tel, "voltaram para a fila do cron.");
+        return;
+      }
       if (e?.adiar) {
         // O cliente mandou mais mensagens enquanto a DENIA pensava: devolve tudo à fila e
         // responde uma vez só, depois que ele parar de escrever.
@@ -2183,6 +2312,8 @@ async function webhookPost(request, env, ctx) {
     return new Response("EVENT_RECEIVED", { status: 200 });
   }
   for (const st of statuses) ctx.waitUntil(processarStatus(c, st).catch(x => console.error("status", x)));
+  // Avisos de entrega chegam o tempo todo e gastam pouco: aproveita para mandar o que estiver na fila.
+  if (!mensagens.length && statuses.length) ctx.waitUntil(enviarFila(criarContexto(env), 4).catch(x => console.error("fila", x)));
   for (const eco of ecos) {
     try { await pausar(c, eco.para, PAUSA_HUMANA_MS, "HUMANO"); } catch { await pausaKV(env, eco.para); }
     ctx.waitUntil(processarEco(c, eco).catch(x => console.error("eco", x)));
@@ -2287,17 +2418,20 @@ async function contingencia(c, m, motivo = "") {
 
 async function cron(c) {
   await garantirSchema(c);
+  // 1º: o que ficou na fila de envio (respostas que não couberam na execução anterior).
+  await enviarFila(c).catch(e => console.error("fila de envio", e));
   const agora = c.agora();
   await c.db.prepare("UPDATE d30_fila SET status='PENDENTE', atualizado_ms=? WHERE status='PROCESSANDO' AND atualizado_ms < ? AND recebido_ms > ?")
     .bind(agora, agora - 180000, agora - LIMITE_ATRASO_MS).run();
   const tels = (await c.db.prepare("SELECT DISTINCT telefone FROM d30_fila WHERE status='PENDENTE' AND recebido_ms < ? LIMIT 10").bind(agora - 40000).all())?.results || [];
-  for (const t of tels) await processarPendentes(c, t.telefone);
-  await processarAgendados(c);
-  await processarSync(c).catch(e => console.error("sync", e));
-  await processarAprendizado(c).catch(e => console.error("aprendizado", e));
-  await relatorioDiario(c).catch(e => console.error("relatório", e));
-  await revisarCasosParados(c).catch(e => console.error("revisão de casos", e));
-  await vigiarEntregas(c).catch(e => console.error("entregas", e));
+  // Cada etapa só começa se ainda houver chamadas sobrando nesta execução; o resto fica para o próximo minuto.
+  for (const t of tels) { if (sobram(c) < 25) break; await processarPendentes(c, t.telefone); }
+  if (sobram(c) > 20) await processarAgendados(c);
+  if (sobram(c) > 20) await processarSync(c).catch(e => console.error("sync", e));
+  if (sobram(c) > 25) await processarAprendizado(c).catch(e => console.error("aprendizado", e));
+  if (sobram(c) > 25) await relatorioDiario(c).catch(e => console.error("relatório", e));
+  if (sobram(c) > 25) await revisarCasosParados(c).catch(e => console.error("revisão de casos", e));
+  if (sobram(c) > 10) await vigiarEntregas(c).catch(e => console.error("entregas", e));
   const dia = dataSP(agora);
   if (await reservarChave(c, "limpeza:" + dia)) {
     await c.db.prepare("DELETE FROM d30_fila WHERE recebido_ms < ?").bind(agora - 7 * 86400000).run();
@@ -2484,7 +2618,12 @@ async function platformApi(request, env, caminho, metodo) {
       const parte = ids.slice(i, i + 90);
       for (const e of (await c.db.prepare(`SELECT wamid,status,codigo,erro,detalhe FROM d30_entregas WHERE wamid IN (${parte.map(() => "?").join(",")})`).bind(...parte).all().catch(() => null))?.results || []) entregas.set(e.wamid, e);
     }
-    const mensagens = msgs.map(x => { const e = entregas.get(x.whatsapp_message_id); return e ? { ...x, entrega: e.status, entrega_erro: e.status === "FAILED" ? explicarEntrega(e.codigo, e.detalhe || e.erro) : null } : x; });
+    const mensagens = msgs.map(x => {
+      const e = entregas.get(x.whatsapp_message_id);
+      if (e) return { ...x, entrega: e.status, entrega_erro: e.status === "FAILED" ? explicarEntrega(e.codigo, e.detalhe || e.erro) : null };
+      if (/^(fila|kv):/.test(String(x.whatsapp_message_id || ""))) return { ...x, entrega: "FILA" };
+      return x;
+    });
     return json({ sucesso: true, pessoa: { ...p, profissional: daLista ? daLista.nome : null, oficial: Boolean(daLista && !TELS_EXTRAS.mapa.has(digitos(p.telefone))) }, ia_pausada: await estaPausado(c, p.telefone), caso_ativo: casos.ativo, casos_recentes: casos.recentes, mensagens });
   }
   // A equipe diz quem é a pessoa: profissional (opcionalmente ligado a um profissional da lista) ou cliente.
@@ -2662,6 +2801,9 @@ async function saude(c, { completo = false } = {}) {
     r.enviadas_24h = Number((await q("SELECT COUNT(*) n FROM mensagens WHERE direcao='SAIDA' AND origem='IA' AND criado_em > datetime('now','-1 day')"))?.n || 0);
     r.assinatura_invalida_ms = Number((await q("SELECT valor FROM d30_meta WHERE chave='assinatura_invalida'"))?.valor || 0) || null;
     r.entregas_24h = await resumoEntregas(c, dia);
+    const fl = await q("SELECT COUNT(*) n, MIN(criado_ms) m FROM d30_saida_fila WHERE status='PENDENTE'");
+    r.fila_envio = { pendentes: Number(fl?.n || 0), mais_antiga_ms: Number(fl?.m || 0) || null, adiadas_24h: Number((await q("SELECT COUNT(*) n FROM d30_saida_fila WHERE criado_ms > ?", dia))?.n || 0) };
+    r.limite_chamadas = limiteChamadas(c);
     try { r.entrega_bloqueada = JSON.parse((await q("SELECT valor FROM d30_meta WHERE chave='entrega_bloqueada'"))?.valor || "null"); } catch { r.entrega_bloqueada = null; }
     r.ultima_confirmacao_ms = Number((await q("SELECT MAX(atualizado_ms) m FROM d30_entregas WHERE status<>'ACEITA'"))?.m || 0) || null;
   }
