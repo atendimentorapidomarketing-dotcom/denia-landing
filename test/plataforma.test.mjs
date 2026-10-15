@@ -1347,3 +1347,143 @@ test("Plataforma — guia de lojas (motor em MODO=guia): status, importação, a
   assert.ok(acoes.some(d => /1 loja\(s\) importada/.test(d)), JSON.stringify(acoes));
   assert.ok(acoes.some(d => /excluiu/.test(d)));
 });
+
+// ===== Chatbot do WhatsApp da plataforma: qualquer empresa, sem Worker por empresa
+const TOKEN_META = "EAAG" + "x".repeat(60);
+const webhookZap = (p, pnid, msg, nome = "Marcos") => p.req("/webhook/whatsapp", { metodo: "POST", corpo: { object: "whatsapp_business_account", entry: [{ changes: [{ field: "messages", value: { metadata: { phone_number_id: pnid }, contacts: [{ wa_id: msg.from, profile: { name: nome } }], messages: [{ id: "wamid." + Math.random().toString(36).slice(2), timestamp: String(Math.floor(Date.now() / 1000)), ...msg }] } }] }] } });
+const clicar = (p, pnid, de, id) => webhookZap(p, pnid, { from: de, type: "interactive", interactive: { type: "list_reply", list_reply: { id, title: "x" } } });
+async function duasEmpresasComChatbot() {
+  const p = await criarPlataforma();
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  const nova = await p.req("/api/admin/organizacoes", { metodo: "POST", quem: "admin", corpo: { nome: "Shopping Infomix", segmento: "Shopping" } });
+  const inf = nova.dados.id;
+  for (const [org, pnid] of [[inf, "111111111111"], [1, "222222222222"]]) {
+    const c = await p.req(`/api/orgs/${org}/zap/conta`, { metodo: "POST", quem: "admin", corpo: { phone_number_id: pnid, token: TOKEN_META } });
+    assert.equal(c.status, 200, JSON.stringify(c.dados));
+  }
+  return { p, inf };
+}
+const enviadosPara = (p, tel) => p.engine.enviados.filter(e => e.to === tel);
+
+test("Chatbot — uma plataforma, um webhook, várias empresas: cada número cai na empresa certa, menu por botões sem IA", async () => {
+  const { p, inf } = await duasEmpresasComChatbot();
+  const conta = await p.req(`/api/orgs/${inf}/zap/conta`, { quem: "admin" });
+  assert.match(conta.dados.webhook_url, /\/webhook\/whatsapp$/);
+  const ver = await p.req(`/webhook/whatsapp?hub.mode=subscribe&hub.verify_token=${conta.dados.verify_token}&hub.challenge=123`);
+  assert.equal(await ver.r.text(), "123", "a Meta valida o webhook com o token mostrado no painel");
+  assert.equal((await p.req("/webhook/whatsapp?hub.mode=subscribe&hub.verify_token=errado&hub.challenge=1")).status, 403);
+  assert.equal((await p.req(`/api/orgs/1/zap/conta`, { metodo: "POST", quem: "admin", corpo: { phone_number_id: "111111111111", token: TOKEN_META } })).status, 409, "o mesmo número não entra em duas empresas");
+
+  assert.equal((await p.req(`/api/orgs/${inf}/zap/modelo`, { metodo: "POST", quem: "admin", corpo: { tipo: "shopping" } })).status, 200);
+  const imp = await p.req(`/api/orgs/${inf}/zap/importar`, { metodo: "POST", quem: "admin", corpo: { linhas: [
+    { loja: "Cell Center", whatsapp: "21988887777", local: "Loja 12", produtos: "Celulares, Capinhas", servicos: "Conserto de celular" },
+    { loja: "Tech Fix", whatsapp: "21977776666", servicos: "Conserto de celular, Conserto de notebook" },
+    { loja: "Game Zone", whatsapp: "21966665555", produtos: "Videogames" }] } });
+  assert.deepEqual([imp.dados.contatos, imp.dados.opcoes_novas], [3, 5]);
+  await p.req(`/api/orgs/1/zap/config`, { metodo: "POST", quem: "admin", corpo: { boas_vindas: "Central aqui!" } });
+
+  const CLI = "5521955556666";
+  await webhookZap(p, "111111111111", { from: CLI, type: "text", text: { body: "Oi" } });
+  let e = enviadosPara(p, CLI).at(-1);
+  assert.equal(e.corpo.interactive.type, "button");
+  assert.match(e.corpo.interactive.body.text, /bem-vindo/);
+  assert.deepEqual(e.corpo.interactive.action.buttons.map(b => b.reply.title), ["🛍️ Produtos", "🔧 Serviços", "💬 Falar com alguém"]);
+  await clicar(p, "111111111111", CLI, e.corpo.interactive.action.buttons[1].reply.id);
+  e = enviadosPara(p, CLI).at(-1);
+  assert.equal(e.corpo.interactive.type, "button", "até 3 opções: botões");
+  const rows = e.corpo.interactive.action.buttons.map(b => ({ id: b.reply.id, title: b.reply.title }));
+  assert.deepEqual(rows.map(r => r.title), ["Conserto de celular", "Conserto de notebook"]);
+  await clicar(p, "111111111111", CLI, rows[0].id);
+  const listaLojas = enviadosPara(p, CLI).at(-2).corpo.text.body;
+  assert.match(listaLojas, /Cell Center/); assert.match(listaLojas, /wa\.me\/5521977776666/); assert.doesNotMatch(listaLojas, /Game Zone/);
+  assert.equal(p.openaiChamadas.length, 0, "botões não usam IA");
+  // Mais de 3 opções: lista com descrição e paginação de 9 + "Mais opções".
+  const prod = (await p.req(`/api/orgs/${inf}/zap/itens`, { quem: "admin" })).dados.itens.find(i => /Produtos/.test(i.titulo));
+  const linhas = Array.from({ length: 12 }, (_, i) => ({ loja: "Loja " + i, whatsapp: "2190000" + String(1000 + i), produtos: "Cat " + String(i).padStart(2, "0") }));
+  await p.req(`/api/orgs/${inf}/zap/importar`, { metodo: "POST", quem: "admin", corpo: { linhas } });
+  await clicar(p, "111111111111", CLI, "z:i:" + prod.id);
+  let l = enviadosPara(p, CLI).at(-1).corpo.interactive;
+  assert.equal(l.type, "list"); assert.equal(l.action.sections[0].rows.length, 10);
+  assert.deepEqual([l.action.sections[0].rows[0].title, l.action.sections[0].rows[0].description], ["Celulares", "1 loja"]);
+  assert.equal(l.action.sections[0].rows.at(-1).id, `z:pg:${prod.id}:1`);
+  await clicar(p, "111111111111", CLI, `z:pg:${prod.id}:1`);
+  l = enviadosPara(p, CLI).at(-1).corpo.interactive;
+  assert.equal(l.action.sections[0].rows.at(-1).id, "z:inicio");
+  for (const r of l.action.sections[0].rows) assert.ok(r.title.length <= 24);
+  // Outra empresa, outro número: menu e mensagens dela, sem misturar.
+  await webhookZap(p, "222222222222", { from: CLI, type: "text", text: { body: "bom dia" } });
+  assert.equal(enviadosPara(p, CLI).at(-1).corpo.text.body, "Central aqui!\n\n(Em breve teremos mais opções por aqui.)");
+  // Número desconhecido: ignora.
+  const antes = p.engine.enviados.length;
+  await webhookZap(p, "999999999999", { from: CLI, type: "text", text: { body: "oi" } });
+  assert.equal(p.engine.enviados.length, antes);
+  const st = await p.req(`/api/orgs/${inf}/zap/stats`, { quem: "admin" });
+  assert.equal(st.dados.total_buscas, 1); assert.equal(st.dados.contatos, 1); assert.equal(st.dados.por_via[0].via, "BOTAO");
+  assert.equal((await p.req(`/api/orgs/1/zap/stats`, { quem: "admin" })).dados.total_buscas, 0, "métricas separadas por empresa");
+});
+
+test("Chatbot — palavra sem IA, IA barata só na dúvida, 'falar com alguém' pausa e a equipe responde pelo painel", async () => {
+  const { p, inf } = await duasEmpresasComChatbot();
+  await p.req(`/api/orgs/${inf}/zap/modelo`, { metodo: "POST", quem: "admin", corpo: { tipo: "shopping" } });
+  await p.req(`/api/orgs/${inf}/zap/importar`, { metodo: "POST", quem: "admin", corpo: { linhas: [{ loja: "Game Zone", whatsapp: "21966665555", produtos: "Videogames" }, { loja: "Tech Fix", whatsapp: "21977776666", servicos: "Conserto de notebook" }] } });
+  await p.req("/api/orgs/1/ia/chave", { metodo: "POST", quem: "admin", corpo: { chave: "sk-proj-" + "c".repeat(40) } });
+  const CLI = "5521944443333";
+  await webhookZap(p, "111111111111", { from: CLI, type: "text", text: { body: "vocês têm videogames?" } });
+  assert.match(enviadosPara(p, CLI).at(-2).corpo.text.body, /Game Zone/);
+  assert.equal(p.openaiChamadas.length, 0, "achou por palavra, sem IA");
+  // Só botões: pergunta sem palavra conhecida volta ao menu, sem IA.
+  await webhookZap(p, "111111111111", { from: CLI, type: "text", text: { body: "meu laptop não liga, quem arruma?" } });
+  assert.equal(p.openaiChamadas.length, 0);
+  assert.match(enviadosPara(p, CLI).at(-1).corpo.interactive.body.text, /Não entendi/);
+  // Botões + IA: aí sim usa o modelo barato.
+  await p.req(`/api/orgs/${inf}/zap/config`, { metodo: "POST", quem: "admin", corpo: { modo: "MISTO", sobre: "Aberto de segunda a sábado, das 10h às 22h." } });
+  const itens = (await p.req(`/api/orgs/${inf}/zap/itens`, { quem: "admin" })).dados.itens;
+  const note = itens.find(i => i.titulo === "Conserto de notebook");
+  p.openai = (url, corpo) => { const t = corpo.input[0].content[0].text; return { output: [{ content: [{ type: "output_text", text: JSON.stringify(/laptop/.test(t) ? { item: note.id } : { resposta: "Abrimos de segunda a sábado, das 10h às 22h." }) }] }], usage: { input_tokens: 300, output_tokens: 20 } }; };
+  await webhookZap(p, "111111111111", { from: CLI, type: "text", text: { body: "meu laptop não liga, quem arruma?" } });
+  assert.equal(p.openaiChamadas.length, 1); assert.equal(p.openaiChamadas[0].corpo.model, "gpt-5-nano");
+  assert.match(enviadosPara(p, CLI).at(-2).corpo.text.body, /Tech Fix/);
+  await webhookZap(p, "111111111111", { from: CLI, type: "text", text: { body: "que horas vocês fecham sábado?" } });
+  assert.match(enviadosPara(p, CLI).at(-2).corpo.text.body, /22h/);
+  // Falar com alguém: pausa, avisa no Telegram e a equipe responde pela plataforma.
+  await p.req(`/api/orgs/${inf}/zap/conta/telegram`, { metodo: "POST", quem: "admin", corpo: { telegram_token: "123456:" + "A".repeat(30), telegram_chat: "-100123456" } });
+  await webhookZap(p, "111111111111", { from: CLI, type: "text", text: { body: "quero falar com atendente" } });
+  assert.match(enviadosPara(p, CLI).at(-1).corpo.text.body, /chamar alguém da equipe/);
+  assert.ok(p.engine.telegram.some(t => /quer falar com alguém/.test(t)));
+  const n = enviadosPara(p, CLI).length;
+  await webhookZap(p, "111111111111", { from: CLI, type: "text", text: { body: "oi?" } });
+  assert.equal(enviadosPara(p, CLI).length, n, "em pausa, o robô não responde");
+  const conv = await p.req(`/api/orgs/${inf}/zap/conversas`, { quem: "admin" });
+  assert.equal(conv.dados.conversas[0].pausado, true);
+  assert.equal((await p.req(`/api/orgs/${inf}/zap/conversas/${CLI}/enviar`, { metodo: "POST", quem: "admin", corpo: { texto: "Oi Marcos, aqui é a Ana!" } })).status, 200);
+  assert.equal(enviadosPara(p, CLI).at(-1).corpo.text.body, "Oi Marcos, aqui é a Ana!");
+  const hist = await p.req(`/api/orgs/${inf}/zap/conversas/${CLI}`, { quem: "admin" });
+  assert.ok(hist.dados.mensagens.some(m => m.origem === "EQUIPE"));
+  await p.req(`/api/orgs/${inf}/zap/conversas/${CLI}/robo`, { metodo: "POST", quem: "admin", corpo: { ligar: true } });
+  await webhookZap(p, "111111111111", { from: CLI, type: "text", text: { body: "oi" } });
+  assert.equal(enviadosPara(p, CLI).at(-1).corpo.interactive.type, "button", "robô de volta");
+  // Simulador do painel não envia nada.
+  const antes = p.engine.enviados.length;
+  const t = await p.req(`/api/orgs/${inf}/zap/testar`, { metodo: "POST", quem: "admin", corpo: { texto: "oi" } });
+  assert.equal(t.dados.respostas[0].interativo.type, "button");
+  assert.equal(p.engine.enviados.length, antes);
+  // Mensagem repetida pela Meta não gera resposta duplicada.
+  const msg = { id: "wamid.fixo", from: CLI, type: "text", text: { body: "oi" } };
+  await webhookZap(p, "111111111111", msg); const depois1 = p.engine.enviados.length;
+  await webhookZap(p, "111111111111", msg);
+  assert.equal(p.engine.enviados.length, depois1);
+});
+
+test("Chatbot — com a chave secreta do app, só aceita mensagem assinada pela Meta", async () => {
+  const { p, inf } = await duasEmpresasComChatbot();
+  await p.req(`/api/orgs/${inf}/zap/modelo`, { metodo: "POST", quem: "admin", corpo: { tipo: "servicos" } });
+  assert.equal((await p.req(`/api/orgs/${inf}/zap/conta`, { metodo: "POST", quem: "admin", corpo: { app_secret: "a".repeat(32) } })).status, 200);
+  const CLI = "5521922221111";
+  await webhookZap(p, "111111111111", { from: CLI, type: "text", text: { body: "oi" } });
+  assert.equal(enviadosPara(p, CLI).length, 0, "sem assinatura: ignorada");
+  const { createHmac } = await import("node:crypto");
+  const corpo = JSON.stringify({ entry: [{ changes: [{ value: { metadata: { phone_number_id: "111111111111" }, messages: [{ id: "wamid.ass", from: CLI, timestamp: String(Math.floor(Date.now() / 1000)), type: "text", text: { body: "oi" } }] } }] }] });
+  const r = await p.req("/webhook/whatsapp", { metodo: "POST", corpo: JSON.parse(corpo), cabecalhos: { "x-hub-signature-256": "sha256=" + createHmac("sha256", "a".repeat(32)).update(corpo).digest("hex") } });
+  assert.equal(r.status, 200);
+  assert.equal(enviadosPara(p, CLI).length, 1);
+});

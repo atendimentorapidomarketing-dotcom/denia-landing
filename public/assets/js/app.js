@@ -233,6 +233,7 @@
     empresas: { titulo: "Empresas", render: paginaEmpresas, superAdmin: true },
     conta: { titulo: "Conta e segurança", render: paginaConta },
     guia: { titulo: "Guia de lojas", render: paginaGuia },
+    chatbot: { titulo: "Chatbot do WhatsApp", render: paginaChatbot },
     whatsapp: { titulo: "WhatsApp", render: paginaWhatsapp },
     instagram: { titulo: "Instagram", render: (el, aba, vivo) => paginaCanalSocial(el, "instagram", vivo, aba) },
     facebook: { titulo: "Facebook", render: (el, aba, vivo) => paginaCanalSocial(el, "facebook", vivo, aba) },
@@ -279,7 +280,7 @@
     }
     el.style.animation = "none"; void el.offsetWidth; el.style.animation = "";
     // Aviso da chave: só no Painel, e some de vez depois de colar a chave uma vez (ou ao tocar em "Agora não").
-    if (estado.iaLigada === false && nome === "painel" && !sessao.ler("denia_faixa_ia")) {
+    if (estado.iaLigada === false && nome === "painel" && !sessao.ler("denia_faixa_ia") && !(estado.org && estado.org.chatbot && !estado.org.conectada)) {
       const faixa = h("div", { class: "faixa-ia", role: "status" },
         h("span", {}, h("strong", { text: "Falta um passo para ligar a inteligência da DENIA. " }), "Cole a chave da OpenAI uma única vez em Integrações e pronto: vale para sempre e para todas as empresas."),
         pode("ADMIN") ? h("a", { class: "btn btn-primario btn-pequeno", href: "#/integracoes" }, "Colar a chave") : null,
@@ -362,6 +363,7 @@
     estado.status = null;
     $("contador-sugestoes").classList.add("oculto");
     if (!estado.org) { marcar("Sem empresa"); return; }
+    if (!estado.org.conectada && estado.org.chatbot) { marcar("Chatbot do WhatsApp", "ok"); return; }
     if (!estado.org.conectada) { marcar("IA não conectada", "alerta"); return; }
     const alvo = estado.org.id;
     marcar("Verificando…");
@@ -422,12 +424,21 @@
     el.appendChild(h("section", { class: "boas-vindas" }, h("div", { class: "orbe" }),
       selo(estado.org.nome, "info"),
       h("h2", {}, `${saudacao}${primeiro ? ", " + primeiro : ""}.`),
-      h("p", { text: estado.org.conectada ? "Este é o centro de comando da operação. Acompanhe a IA, as conversas e os atendimentos em tempo real." : "Vamos colocar a inteligência desta empresa para funcionar. O primeiro passo é conectar a IA." }),
+      h("p", { text: !estado.org.conectada && estado.org.chatbot ? "Acompanhe o atendimento automático do WhatsApp: mensagens, buscas, horários e quem precisa da equipe." : estado.org.conectada ? "Este é o centro de comando da operação. Acompanhe a IA, as conversas e os atendimentos em tempo real." : "Vamos colocar a inteligência desta empresa para funcionar. O primeiro passo é conectar a IA." }),
       h("div", { class: "acoes" },
-        estado.org.conectada ? h("a", { class: "btn btn-primario", href: "#/conversas" }, "Ver conversas") : h("a", { class: "btn btn-primario", href: "#/integracoes" }, "Conectar a IA"),
-        modoGuia() ? h("a", { class: "btn btn-secundario", href: "#/guia" }, "Guia de lojas") : h("a", { class: "btn btn-secundario", href: "#/treinamento" }, "Treinar a IA"))));
+        !estado.org.conectada && estado.org.chatbot ? h("a", { class: "btn btn-primario", href: "#/chatbot/conversas" }, "Ver conversas") : estado.org.conectada ? h("a", { class: "btn btn-primario", href: "#/conversas" }, "Ver conversas") : h("a", { class: "btn btn-primario", href: "#/chatbot" }, "Montar o chatbot"),
+        !estado.org.conectada && estado.org.chatbot ? h("a", { class: "btn btn-secundario", href: "#/chatbot/menu" }, "Editar o menu") : modoGuia() ? h("a", { class: "btn btn-secundario", href: "#/guia" }, "Guia de lojas") : h("a", { class: "btn btn-secundario", href: "#/treinamento" }, "Treinar a IA"))));
 
+    if (!estado.org.conectada && estado.org.chatbot) {
+      const area = h("div", { class: "grade" }, carregando());
+      el.appendChild(area);
+      try { await abaZapVisao(area, vivo); } catch (e) { if (vivo()) falha(area, e); }
+      return;
+    }
     if (!estado.org.conectada) {
+      el.appendChild(h("section", { class: "grade grade-2" },
+        passoInicial("A", "Chatbot do WhatsApp (pronto em minutos)", "Menu com botões e listas, contatos e lojas, e IA opcional para responder o que o cliente escrever. Sem programar.", "#/chatbot"),
+        passoInicial("B", "IA completa de atendimento", "A DENIA atende como uma pessoa, consulta profissionais e agenda. Precisa conectar o motor da IA em Integrações.", "#/integracoes")));
       el.appendChild(h("section", { class: "grade grade-3" },
         passoInicial("01", "Conectar a IA", "Informe o endereço e o token do DENIA Engine desta empresa.", "#/integracoes"),
         passoInicial("02", "Ensinar a empresa", "Serviços, preços autorizados, regras e o jeito de falar da equipe.", "#/treinamento"),
@@ -1179,7 +1190,7 @@
   // Auditoria
   // ---------------------------------------------------------------------------
 
-  const NOME_ACAO = { CONVERSA: "Conversa", ATENDIMENTO: "Atendimento", TREINAMENTO: "Treinamento", APRENDIZADO: "Aprendizado", IMPORTACAO: "Importação", PAUSA_GERAL: "Pausa geral", GUIA: "Guia de lojas", EQUIPE: "Equipe", INTEGRACAO: "Integração", EMPRESA: "Empresa" };
+  const NOME_ACAO = { CONVERSA: "Conversa", ATENDIMENTO: "Atendimento", TREINAMENTO: "Treinamento", APRENDIZADO: "Aprendizado", IMPORTACAO: "Importação", PAUSA_GERAL: "Pausa geral", GUIA: "Guia de lojas", WHATSAPP: "WhatsApp", CHATBOT: "Chatbot", EQUIPE: "Equipe", INTEGRACAO: "Integração", EMPRESA: "Empresa" };
   async function paginaAuditoria(el, _p, vivo) {
     el.appendChild(cabeca("Auditoria", "Tudo o que foi feito pelo painel nesta empresa: quem fez, o quê e quando."));
     const area = h("div", {}, carregando());
@@ -1394,6 +1405,10 @@
     const guia = modoGuia();
     document.querySelectorAll('#lateral-nav a[data-modo="guia"]').forEach(a => a.classList.toggle("oculto", !guia || ehRevisor()));
     document.querySelectorAll("#lateral-nav a[data-so-central]").forEach(a => a.classList.toggle("oculto", guia || ehRevisor()));
+    // Empresa só com o chatbot da plataforma (sem a IA completa conectada): esconde o que depende da IA completa.
+    const soChatbot = Boolean(estado.org && estado.org.chatbot && !estado.org.conectada);
+    document.querySelectorAll("#lateral-nav a[data-motor]").forEach(a => a.classList.toggle("oculto", soChatbot || ehRevisor()));
+    if (soChatbot) document.querySelectorAll("#lateral-nav a[data-so-central]").forEach(a => a.classList.add("oculto"));
   }
   const NOME_VIA = { BOTAO: "Pelos botões", PALAVRA: "Escreveu (achado sem IA)", IA: "Escreveu (achado pela IA)" };
   async function paginaGuia(el, aba, vivo) {
@@ -1603,6 +1618,337 @@
     entrada.addEventListener("keydown", e => { if (e.key === "Enter") mandar(); });
     trocar(area, h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Testar como cliente" }),
       h("p", { class: "sub", text: "Simula a conversa: nada é enviado pelo WhatsApp e nada entra nas buscas. Toque nos botões como o cliente faria." }),
+      h("div", { class: "acoes", style: "margin:8px 0" }, botao("Começar (oi)", () => enviar("oi", "", "oi"), "btn-primario btn-pequeno"), botao("Limpar", () => tela.replaceChildren(), "btn-secundario btn-pequeno")),
+      tela, h("div", { class: "compor" }, entrada, botao("Enviar", mandar, "btn-primario"))));
+  }
+
+  // ----- Chatbot do WhatsApp da plataforma (qualquer empresa, sem código): menu por botões e listas,
+  // contatos/lojas, mensagens, conversas com a equipe, métricas, conexão e teste.
+  const zap = (caminho, op) => org("zap/" + caminho, op);
+  const TIPOS_ITEM = { MENU: "Submenu (abre outras opções)", RESPOSTA: "Resposta pronta (texto, link, endereço)", LISTA: "Lista de contatos/lojas", HUMANO: "Falar com a equipe" };
+  const ICONE_TIPO = { MENU: "📂", RESPOSTA: "💬", LISTA: "📋", HUMANO: "🙋" };
+  const NOME_VIA_ZAP = { BOTAO: "Tocou nos botões", PALAVRA: "Escreveu (achado sem IA)", IA: "Escreveu (resolvido pela IA)" };
+  async function paginaChatbot(el, aba, vivo) {
+    el.appendChild(cabeca("Chatbot do WhatsApp", "Monte o atendimento automático da empresa sem programar: botões e listas oficiais do WhatsApp (sem custo de IA) e, se quiser, a IA para responder o que o cliente escrever."));
+    const abas = [["visao", "Visão geral"], ["conversas", "Conversas"], ["menu", "Menu"], ["contatos", "Contatos e lojas"], ["mensagens", "Mensagens e IA"], ["conexao", "Conexão"], ["testar", "Testar"]];
+    const atual = abas.some(a => a[0] === aba) ? aba : "visao";
+    el.appendChild(h("div", { class: "abas", role: "tablist" }, abas.map(([k, n]) => h("a", { class: "aba" + (k === atual ? " ativo" : ""), href: "#/chatbot/" + k, role: "tab" }, n))));
+    const area = h("div", { class: "grade" }, carregando());
+    el.appendChild(area);
+    try {
+      if (atual === "visao") return await abaZapVisao(area, vivo);
+      if (atual === "conversas") return await abaZapConversas(area, vivo);
+      if (atual === "menu") return await abaZapMenu(area, vivo);
+      if (atual === "contatos") return await abaZapContatos(area, vivo);
+      if (atual === "mensagens") return await abaZapMensagens(area, vivo);
+      if (atual === "conexao") return await abaZapConexao(area, vivo);
+      if (atual === "testar") return abaZapTestar(area);
+    } catch (e) { if (vivo()) falha(area, e); }
+  }
+  async function abaZapVisao(area, vivo) {
+    const f = estado.zapF = estado.zapF || { dias: 30, metrica: "buscas" };
+    const de = isoLocal(new Date(Date.now() - (f.dias - 1) * 86400000)), ate = isoLocal(new Date());
+    const [st, conta, itens] = await Promise.all([zap(`stats?de=${de}&ate=${ate}`), zap("conta"), zap("itens")]);
+    if (!vivo()) return;
+    const passos = [];
+    if (!conta.conectada) passos.push(["Conectar o número do WhatsApp", "Cole o ID do número e o token da Meta. Leva 5 minutos.", "#/chatbot/conexao"]);
+    if (!(itens.itens || []).length) passos.push(["Montar o menu", "Use um modelo pronto (shopping, serviços, restaurante) e ajuste.", "#/chatbot/menu"]);
+    if (conta.conectada && !conta.ultima_recebida_ms) passos.push(["Apontar o webhook na Meta", "Cole o endereço e o token de verificação no app da Meta.", "#/chatbot/conexao"]);
+    const dias = [];
+    for (let t = Date.parse(de + "T12:00:00Z"); t <= Date.parse(ate + "T12:00:00Z"); t += 86400000) dias.push(new Date(t).toISOString().slice(0, 10));
+    const mapa = l => new Map((l || []).map(x => [x.dia, Number(x.n || 0)]));
+    const mb = mapa(st.buscas_por_dia), mm = mapa(st.mensagens_por_dia);
+    const diario = dias.map(d => ({ data: d, buscas: mb.get(d) || 0, mensagens: mm.get(d) || 0 }));
+    const via = Object.fromEntries((st.por_via || []).map(x => [x.via, Number(x.n || 0)]));
+    const tot = st.total_buscas || 0, ms = st.mensagens || {}, en = st.entregas || {};
+    const semLoja = (st.por_opcao || []).reduce((s, x) => s + Number(x.sem || 0), 0);
+    const pontos = agruparSerie(diario, dias.length <= 92 ? "dia" : "semana", f.metrica);
+    const nomeM = f.metrica === "buscas" ? "Buscas no menu" : "Mensagens recebidas";
+    const csv = () => baixarCsv(`chatbot-${de}-a-${ate}.csv`, [["Dia", "Buscas", "Mensagens recebidas"], ...diario.map(d => [dataCompleta(d.data), d.buscas, d.mensagens]), [], ["Opção", "Buscas", "Sem contato cadastrado"], ...(st.por_opcao || []).map(x => [x.caminho, x.n, x.sem || 0])]);
+    trocar(area,
+      passos.length ? h("section", { class: "grade grade-3" }, passos.map(([t, d, l], i) => passoInicial(String(i + 1).padStart(2, "0"), t, d, l))) : null,
+      h("section", { class: "cartao vidro filtros-desempenho" }, h("div", { class: "abas abas-chips", role: "group", "aria-label": "Período" },
+        [[1, "Hoje"], [7, "7 dias"], [30, "30 dias"], [90, "90 dias"], [180, "6 meses"], [365, "12 meses"]].map(([v, n]) => h("button", { type: "button", class: "aba" + (f.dias === v ? " ativo" : ""), "aria-pressed": f.dias === v ? "true" : "false", onclick: () => { f.dias = v; navegar(); } }, n)))),
+      h("section", { class: "grade grade-4" },
+        h("button", { type: "button", class: "metrica vidro metrica-botao" + (f.metrica === "mensagens" ? " ativo" : ""), onclick: () => { f.metrica = "mensagens"; navegar(); } }, h("span", { text: "Mensagens recebidas" }), h("strong", { text: numero(ms.recebidas || 0) }), h("small", { text: `${numero(st.contatos || 0)} clientes diferentes` })),
+        h("button", { type: "button", class: "metrica vidro metrica-botao" + (f.metrica === "buscas" ? " ativo" : ""), onclick: () => { f.metrica = "buscas"; navegar(); } }, h("span", { text: "Buscas no menu" }), h("strong", { text: numero(tot) }), h("small", { text: `${numero(Math.round((tot / (dias.length || 1)) * 10) / 10)} por dia` })),
+        metrica("Sem gastar IA", tot ? `${Math.round((((via.BOTAO || 0) + (via.PALAVRA || 0)) / tot) * 100)}%` : "—", `${numero(ms.robo || 0)} respostas do robô · ${numero(ms.ia || 0)} da IA`),
+        metrica("Taxa de entrega", en.taxa != null ? String(en.taxa).replace(".", ",") + "%" : "—", `${numero(en.lidas || 0)} lidas · ${numero(en.falhas || 0)} não chegaram`)),
+      h("section", { class: "cartao vidro" }, h("div", { class: "cabeca-grafico" }, h("h3", { style: "margin:0", text: nomeM + " por dia" }), botao("Baixar planilha", csv, "btn-secundario btn-pequeno")),
+        pontos.some(p => p.valor) ? graficoLinha(pontos, null, nomeM, "") : vazio("Nada neste período", "Quando os clientes usarem o WhatsApp, os números aparecem aqui.")),
+      h("section", { class: "grade grade-2" },
+        h("div", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "O que mais procuram" }), (st.por_opcao || []).length ? barras(st.por_opcao.slice(0, 12).map(x => ({ rotulo: x.caminho, valor: Number(x.n || 0) }))) : vazio("Sem buscas", ""),
+          semLoja ? h("p", { class: "nota nota-alerta", text: `${numero(semLoja)} busca(s) caíram em opções sem contato cadastrado. Cadastre em Contatos e lojas.` }) : null),
+        h("div", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Como o cliente chegou à resposta" }), barras(["BOTAO", "PALAVRA", "IA"].map(k => ({ rotulo: NOME_VIA_ZAP[k], valor: via[k] || 0 }))),
+          h("p", { class: "sub", style: "margin:10px 0 0", text: "Só a última linha gasta IA. Palavras-chave nas opções do menu fazem o robô achar sem IA." }),
+          h("h3", { text: "Quem respondeu" }), barras([{ rotulo: "Robô (botões)", valor: ms.robo || 0 }, { rotulo: "IA", valor: ms.ia || 0 }, { rotulo: "Equipe", valor: ms.equipe || 0 }]))),
+      h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Horários com mais mensagens" }), mapaHorarios(st.horarios || Array.from({ length: 7 }, () => Array(24).fill(0)))));
+  }
+  async function abaZapConversas(area, vivo) {
+    const r = await zap("conversas");
+    if (!vivo()) return;
+    const lista = r.conversas || [];
+    const grade = h("div", { class: "conversas" + (estado.zapAberta ? " com-aberta" : ""), style: "height:calc(100vh - 230px)" });
+    const itens = h("div", { class: "conversas-itens" });
+    const painel = h("section", { class: "conversa-painel vidro" }, vazio("Escolha uma conversa", "As mensagens do WhatsApp aparecem aqui.", ICONES.conversa));
+    const busca = h("input", { class: "entrada", type: "search", placeholder: "Buscar por nome ou telefone", "aria-label": "Buscar conversa" });
+    const desenhar = () => {
+      const q = busca.value.trim().toLowerCase().replace(/[()\s-]/g, "");
+      const f = lista.filter(c => !q || String(c.nome || "").toLowerCase().includes(q) || String(c.telefone).includes(q));
+      itens.replaceChildren(...(f.length ? f.map(c => h("button", { type: "button", class: "conversa-item" + (c.telefone === estado.zapAberta ? " ativo" : ""), onclick: () => abrir(c.telefone) },
+        h("strong", {}, c.nome || telefone(c.telefone), c.pausado ? selo("Com a equipe", "alerta") : null), h("span", { text: c.ultima || "" }), h("span", { text: quando(c.ultimo_ms) }))) : [vazio("Nenhuma conversa", q ? "Nada encontrado." : "Quando um cliente escrever, a conversa aparece aqui.", ICONES.conversa)]));
+    };
+    busca.addEventListener("input", desenhar);
+    async function abrir(tel) {
+      estado.zapAberta = tel; grade.classList.add("com-aberta"); desenhar();
+      trocar(painel, carregando());
+      let d;
+      try { d = await zap("conversas/" + tel); } catch (e) { falha(painel, e); return; }
+      const c = d.contato;
+      const msgs = h("div", { class: "mensagens" }, (d.mensagens || []).map(m => h("div", { class: "msg " + (m.direcao === "E" ? "msg-entrada" : "msg-saida") + (m.origem === "EQUIPE" ? " msg-humano" : "") + (m.status === "FALHOU" || m.status === "FAILED" ? " msg-falhou" : "") },
+        m.texto, h("small", { text: `${m.direcao === "E" ? "" : ({ ROBO: "Robô", IA: "IA", EQUIPE: "Equipe" }[m.origem] || "") + " · "}${quando(m.criado_ms)}${m.direcao === "S" ? " " + ({ READ: "✓✓ lida", DELIVERED: "✓✓", ENVIADA: "✓", SENT: "✓", FALHOU: "⚠", FAILED: "⚠" }[m.status] || "") : ""}` }),
+        m.erro ? h("span", { class: "msg-falha", text: m.erro }) : null)));
+      const texto = h("textarea", { class: "entrada", placeholder: c.janela_aberta ? "Escreva a resposta… (o robô fica em pausa nesta conversa por 12 h)" : "Passaram 24 h desde a última mensagem do cliente: a Meta só deixa responder quando ele escrever de novo.", disabled: !c.janela_aberta || !pode("AGENTE"), "aria-label": "Mensagem" });
+      trocar(painel,
+        h("div", { class: "conversa-cabeca" }, h("button", { type: "button", class: "btn btn-secundario btn-pequeno so-celular", onclick: () => { estado.zapAberta = ""; grade.classList.remove("com-aberta"); } }, "‹ Voltar"),
+          h("h3", { text: c.nome || telefone(c.telefone) }), h("span", { class: "sub", text: telefone(c.telefone) }),
+          h("div", { class: "acoes" }, pode("AGENTE") ? botao(c.pausado ? "Devolver ao robô" : "Assumir (pausar o robô)", async () => { try { await zap(`conversas/${tel}/robo`, { metodo: "POST", corpo: { ligar: c.pausado } }); aviso(c.pausado ? "O robô voltou a atender esta conversa." : "Robô em pausa nesta conversa.", "ok"); abrir(tel); } catch (e) { aviso(e.message, "erro"); } }, c.pausado ? "btn-primario btn-pequeno" : "btn-secundario btn-pequeno") : null)),
+        msgs,
+        h("div", { class: "compor" }, texto, botao("Enviar", async () => {
+          const t = texto.value.trim(); if (!t) return;
+          try { await zap(`conversas/${tel}/enviar`, { metodo: "POST", corpo: { texto: t } }); texto.value = ""; abrir(tel); } catch (e) { aviso(e.message, "erro"); }
+        }, "btn-primario", { disabled: !c.janela_aberta || !pode("AGENTE") })));
+      msgs.scrollTop = msgs.scrollHeight;
+    }
+    desenhar();
+    trocar(area, h("div", { class: "acoes" }, botao("Atualizar", () => navegar(), "btn-secundario btn-pequeno")), grade);
+    grade.append(h("section", { class: "conversas-lista vidro" }, h("div", { class: "conversas-busca" }, busca), itens), painel);
+    if (estado.zapAberta && lista.some(c => c.telefone === estado.zapAberta)) abrir(estado.zapAberta);
+  }
+  function editarItem(item, itens, recarregar) {
+    item = item || { tipo: "RESPOSTA", titulo: "", texto: "", descricao: "", palavras: "", ordem: 0, pai_id: 0, ativo: 1 };
+    const tipo = h("select", { class: "entrada" }, Object.entries(TIPOS_ITEM).map(([v, n]) => h("option", { value: v, selected: item.tipo === v, text: n })));
+    const titulo = h("input", { class: "entrada", value: item.titulo, maxlength: "24", placeholder: "Ex.: 🛍️ Produtos" });
+    const menus = itens.filter(i => i.tipo === "MENU" && i.id !== item.id);
+    const pai = h("select", { class: "entrada" }, h("option", { value: "0", text: "Menu inicial" }), menus.map(m => h("option", { value: m.id, selected: Number(item.pai_id) === m.id, text: "Dentro de: " + m.titulo })));
+    const texto = h("textarea", { class: "entrada", maxlength: "3000", style: "min-height:120px" }); texto.value = item.texto || "";
+    const descricao = h("input", { class: "entrada", value: item.descricao || "", maxlength: "72", placeholder: "Aparece embaixo do nome, na lista (opcional)" });
+    const palavras = h("textarea", { class: "entrada", maxlength: "500", style: "min-height:70px", placeholder: "celular, smartphone, iphone" }); palavras.value = item.palavras || "";
+    const ordem = h("input", { class: "entrada", type: "number", min: "0", max: "999", value: String(item.ordem || 0) });
+    const ativo = h("input", { type: "checkbox", checked: item.ativo !== 0 });
+    const rotTexto = h("label", {}), dicaTexto = h("p", { class: "dica", style: "margin:0;font-size:13px;color:var(--texto-3)" });
+    const ajustar = () => {
+      const t = tipo.value;
+      rotTexto.textContent = { MENU: "Mensagem ao abrir o submenu", RESPOSTA: "Resposta que o cliente recebe", LISTA: "Texto antes da lista (opcional)", HUMANO: "Mensagem ao chamar a equipe (opcional)" }[t];
+      dicaTexto.textContent = { MENU: "Ex.: Qual produto você procura?", RESPOSTA: "Endereço, horário, link do cardápio, preços autorizados… O robô envia exatamente este texto.", LISTA: "Os contatos ligados a esta opção (em Contatos e lojas) aparecem com o link do WhatsApp de cada um.", HUMANO: "O robô fica em pausa nessa conversa por 12 h e a equipe é avisada (Telegram ou e-mail)." }[t];
+    };
+    tipo.addEventListener("change", ajustar); ajustar();
+    texto.id = "zap-txt"; rotTexto.setAttribute("for", "zap-txt");
+    const fechar = gaveta(item.id ? "Editar opção" : "Nova opção do menu", [
+      campo("Tipo", tipo), campo("Nome no botão (até 24 letras)", titulo, "Pode usar emoji. Em botões, o WhatsApp mostra até 20 letras."), campo("Onde fica", pai),
+      h("div", { class: "campo" }, rotTexto, texto, dicaTexto),
+      campo("Descrição na lista", descricao), campo("Palavras-chave", palavras, "Se o cliente escrever em vez de tocar, o robô procura por estas palavras primeiro — sem gastar IA."),
+      campo("Ordem (menor aparece primeiro)", ordem), h("label", { class: "guia-cat" }, ativo, "Aparece no menu"),
+      h("div", { class: "acoes" }, botao("Salvar", async () => {
+        try { await zap("itens", { metodo: "POST", corpo: { id: item.id, tipo: tipo.value, titulo: titulo.value, pai_id: Number(pai.value), texto: texto.value, descricao: descricao.value, palavras: palavras.value, ordem: Number(ordem.value) || 0, ativo: ativo.checked } }); aviso("Opção salva.", "ok"); fechar(); recarregar(); }
+        catch (e) { aviso(e.message, "erro"); }
+      }, "btn-primario"))]);
+  }
+  async function abaZapMenu(area, vivo) {
+    const d = await zap("itens");
+    if (!vivo()) return;
+    const itens = d.itens || [], cat = d.catalogo || [];
+    const porItem = new Map(); for (const c of cat) for (const i of c.itens || []) porItem.set(i, (porItem.get(i) || 0) + 1);
+    const recarregar = () => navegar();
+    if (!itens.length) {
+      const modelo = (tipo, nome, desc) => h("div", { class: "cartao vidro", style: "display:grid;gap:10px" }, h("h3", { style: "margin:0", text: nome }), h("p", { class: "sub", style: "margin:0", text: desc }),
+        pode("AGENTE") ? botao("Usar este modelo", async () => { try { await zap("modelo", { metodo: "POST", corpo: { tipo } }); aviso("Menu criado. Agora ajuste do seu jeito.", "ok"); recarregar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario btn-pequeno") : null);
+      trocar(area, h("p", { class: "nota", text: "Comece por um modelo pronto (você muda tudo depois) ou crie as opções do zero." }),
+        h("section", { class: "grade grade-3" }, modelo("shopping", "🛍️ Shopping / guia de lojas", "Produtos e Serviços → categorias → lojas com o WhatsApp de cada uma. Ideal para importar a planilha de lojas."),
+          modelo("servicos", "🔧 Empresa de serviços", "Nossos serviços, endereço e horário, falar com atendente."), modelo("restaurante", "🍽️ Restaurante / delivery", "Cardápio, delivery, endereço e horário, falar com atendente.")),
+        pode("AGENTE") ? h("div", { class: "acoes" }, botao("Criar do zero", () => editarItem(null, itens, recarregar), "btn-secundario")) : null);
+      return;
+    }
+    const linha = (i, nivel) => h("div", { class: "zap-no", style: `margin-left:${nivel * 22}px` },
+      h("span", { class: "zap-no-titulo" }, /^\p{Extended_Pictographic}/u.test(i.titulo) ? null : h("span", { text: ICONE_TIPO[i.tipo] + " " }), h("strong", { text: i.titulo }), !i.ativo ? h("small", { text: " (desligada)" }) : null,
+        h("small", { class: "sub", text: " · " + (i.tipo === "LISTA" ? `${numero(porItem.get(i.id) || 0)} contato(s)${porItem.get(i.id) ? "" : " — não aparece até ter contato"}` : i.tipo === "MENU" ? `${numero(itens.filter(x => x.pai_id === i.id).length)} opção(ões)` : TIPOS_ITEM[i.tipo].split(" (")[0]) })),
+      pode("AGENTE") ? h("span", { class: "acoes" },
+        i.tipo === "MENU" ? botao("+ Opção aqui", () => editarItem({ tipo: "LISTA", titulo: "", pai_id: i.id, ativo: 1 }, itens, recarregar), "btn-secundario btn-pequeno") : null,
+        botao("Editar", () => editarItem(i, itens, recarregar), "btn-secundario btn-pequeno"),
+        botao("Excluir", async () => { if (!(await modal({ titulo: "Excluir a opção?", conteudo: `"${i.titulo}" sai do menu.`, confirmar: "Excluir", perigo: true }))) return; try { await zap(`itens/${i.id}/excluir`, { metodo: "POST", corpo: {} }); recarregar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno")) : null);
+    const arvore = [];
+    const descer = (pai, nivel) => itens.filter(i => Number(i.pai_id) === pai).forEach(i => { arvore.push(linha(i, nivel)); if (i.tipo === "MENU" && nivel < 6) descer(i.id, nivel + 1); });
+    descer(0, 0);
+    const raiz = itens.filter(i => !i.pai_id && i.ativo).length;
+    trocar(area,
+      h("section", { class: "cartao vidro" }, h("div", { class: "cabeca-grafico" }, h("h3", { style: "margin:0", text: "Menu do WhatsApp" }),
+        pode("AGENTE") ? h("div", { class: "acoes" }, botao("+ Nova opção", () => editarItem(null, itens, recarregar), "btn-primario btn-pequeno"), h("a", { class: "btn btn-secundario btn-pequeno", href: "#/chatbot/testar" }, "Testar")) : null),
+        h("p", { class: "sub", text: `Com até 3 opções o cliente vê botões; com mais, uma lista (9 por vez + "Mais opções"). O menu inicial tem ${raiz} opção(ões): ${raiz <= 3 ? "aparece em botões" : "aparece em lista"}. Depois de cada resposta o robô oferece Menu inicial, Voltar e Finalizar.` }),
+        h("div", { class: "zap-arvore" }, arvore)));
+  }
+  async function abaZapContatos(area, vivo) {
+    const d = await zap("itens");
+    if (!vivo()) return;
+    const itens = d.itens || [], cat = d.catalogo || [];
+    const listas = itens.filter(i => i.tipo === "LISTA");
+    const nomeItem = new Map(itens.map(i => [i.id, i.titulo]));
+    const caminho = i => { const p = []; let x = i, n = 0; while (x && n++ < 6) { p.unshift(x.titulo); x = itens.find(y => y.id === x.pai_id); } return p.join(" › "); };
+    const recarregar = () => navegar();
+    const editar = c => {
+      c = c || { nome: "", telefone: "", whatsapp: "", local: "", descricao: "", destaque: 0, ativo: 1, itens: [] };
+      const nome = h("input", { class: "entrada", value: c.nome, maxlength: "80" }), zapI = h("input", { class: "entrada", value: c.whatsapp || "", maxlength: "30", inputmode: "tel", placeholder: "(21) 98888-7777" });
+      const tel = h("input", { class: "entrada", value: c.telefone || "", maxlength: "30", inputmode: "tel" }), local = h("input", { class: "entrada", value: c.local || "", maxlength: "80", placeholder: "Ex.: Loja 12, 1º piso" });
+      const desc = h("textarea", { class: "entrada", maxlength: "300", style: "min-height:70px" }); desc.value = c.descricao || "";
+      const destaque = h("input", { type: "checkbox", checked: Boolean(c.destaque) }), ativo = h("input", { type: "checkbox", checked: c.ativo !== 0 });
+      const marcadas = new Set(c.itens || []);
+      const grupos = new Map(); for (const l of listas) { const k = nomeItem.get(l.pai_id) || "Menu inicial"; if (!grupos.has(k)) grupos.set(k, []); grupos.get(k).push(l); }
+      const fechar = gaveta(c.id ? "Editar contato" : "Novo contato", [
+        campo("Nome", nome), campo("WhatsApp", zapI, "O cliente recebe o link para chamar direto."), campo("Telefone fixo (opcional)", tel), campo("Local / endereço", local), campo("Descrição", desc),
+        h("label", { class: "guia-cat" }, destaque, "Destaque (aparece primeiro)"), h("label", { class: "guia-cat" }, ativo, "Aparece para os clientes"),
+        listas.length ? [...grupos].map(([g, ls]) => h("fieldset", { class: "guia-cats" }, h("legend", { text: g }), ls.map(l => h("label", { class: "guia-cat" }, h("input", { type: "checkbox", checked: marcadas.has(l.id), onchange: e => { e.target.checked ? marcadas.add(l.id) : marcadas.delete(l.id); } }), l.titulo))))
+          : h("p", { class: "nota", text: "Crie no Menu uma opção do tipo \"Lista de contatos/lojas\" para ligar este contato a ela." }),
+        h("div", { class: "acoes" }, botao("Salvar", async () => {
+          try { await zap("catalogo", { metodo: "POST", corpo: { id: c.id, nome: nome.value, whatsapp: zapI.value, telefone: tel.value, local: local.value, descricao: desc.value, destaque: destaque.checked, ativo: ativo.checked, itens: [...marcadas] } }); aviso("Contato salvo.", "ok"); fechar(); recarregar(); }
+          catch (e) { aviso(e.message, "erro"); }
+        }, "btn-primario"))]);
+    };
+    const busca = h("input", { class: "entrada", type: "search", placeholder: "Buscar por nome, local ou opção", "aria-label": "Buscar contato" });
+    const corpo = h("tbody", {});
+    const desenhar = () => {
+      const q = busca.value.trim().toLowerCase();
+      const f = cat.filter(c => !q || [c.nome, c.local, ...(c.itens || []).map(i => nomeItem.get(i))].join(" ").toLowerCase().includes(q));
+      corpo.replaceChildren(...f.map(c => h("tr", {},
+        h("td", {}, h("strong", { text: c.nome }), c.destaque ? h("span", { text: " ★" }) : null, !c.ativo ? h("small", { style: "display:block;color:var(--texto-3)", text: "oculto" }) : null),
+        h("td", { text: c.local || "—" }),
+        h("td", { text: (d0 => d0 ? telefone(d0.length <= 11 ? "55" + d0 : d0) : "—")(String(c.whatsapp || c.telefone || "").replace(/\D/g, "")) }),
+        h("td", { text: (c.itens || []).map(i => nomeItem.get(i)).filter(Boolean).join(", ") || "—" }),
+        h("td", {}, pode("AGENTE") ? h("div", { class: "acoes" }, botao("Editar", () => editar(c), "btn-secundario btn-pequeno"),
+          botao("Excluir", async () => { if (!(await modal({ titulo: "Excluir o contato?", conteudo: `"${c.nome}" deixa de aparecer para os clientes.`, confirmar: "Excluir", perigo: true }))) return; try { await zap(`catalogo/${c.id}/excluir`, { metodo: "POST", corpo: {} }); recarregar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno")) : null))));
+      if (!f.length) corpo.appendChild(h("tr", {}, h("td", { colspan: "5", text: cat.length ? "Nada encontrado." : "Nenhum contato ainda. Importe a planilha ou cadastre o primeiro." })));
+    };
+    busca.addEventListener("input", desenhar); desenhar();
+    trocar(area,
+      h("section", { class: "grade grade-4" },
+        metrica("Contatos e lojas", numero(cat.filter(c => c.ativo).length), `${numero(cat.length)} cadastrados`),
+        metrica("Opções de lista", numero(listas.length), "no menu"),
+        metrica("Sem opção no menu", numero(cat.filter(c => !(c.itens || []).length).length), "não aparecem para o cliente"),
+        metrica("Opções sem contato", numero(listas.filter(l => !cat.some(c => (c.itens || []).includes(l.id))).length), "ficam escondidas")),
+      h("section", { class: "cartao vidro" },
+        h("div", { class: "cabeca-grafico" }, h("h3", { style: "margin:0", text: "Contatos e lojas" }),
+          pode("AGENTE") ? h("div", { class: "acoes" }, botao("Novo contato", () => editar(null), "btn-primario btn-pequeno"), botao("Importar planilha", () => importarZap(recarregar), "btn-secundario btn-pequeno"),
+            botao("Baixar planilha", () => baixarCsv("contatos-chatbot.csv", [["nome", "telefone", "whatsapp", "local", "descricao", "opcoes"], ...cat.map(c => [c.nome, c.telefone, c.whatsapp, c.local, c.descricao, (c.itens || []).map(i => caminho(itens.find(x => x.id === i))).join(", ")])]), "btn-secundario btn-pequeno")) : null),
+        h("div", { style: "margin:12px 0" }, busca),
+        h("div", { class: "tabela-caixa" }, h("table", {}, h("thead", {}, h("tr", {}, ["Nome", "Local", "WhatsApp", "Aparece em", ""].map(t => h("th", { text: t })))), corpo))));
+  }
+  function importarZap(recarregar) {
+    const entrada = h("input", { type: "file", accept: ".csv,text/csv,text/plain" });
+    const previa = h("div", {});
+    const fechar = gaveta("Importar planilha", [
+      h("p", { text: "Uma linha por contato/loja. Colunas: nome (ou loja), telefone, whatsapp, local, descricao, e onde aparece: produtos e servicos (para shopping) ou opcoes. Separe várias por vírgula (ex.: \"Celulares, Capinhas\"). As opções que não existirem são criadas no menu." }),
+      h("p", { class: "sub", text: "No Excel ou Google Planilhas: Arquivo → Baixar → CSV. Quem já existe (mesmo nome) é atualizado; nada é apagado." }),
+      botao("Baixar modelo", () => baixarCsv("modelo-contatos.csv", [["nome", "telefone", "whatsapp", "local", "produtos", "servicos", "descricao"], ["Cell Center", "(21) 3333-1111", "(21) 98888-7777", "Loja 12, 1º piso", "Celulares, Capinhas", "Conserto de celular", "Celulares novos e seminovos"]]), "btn-secundario btn-pequeno"),
+      h("label", { class: "soltar", style: "margin-top:12px" }, icone(ICONES.nuvem), h("strong", { text: "Escolha a planilha (CSV)" }), entrada), previa]);
+    entrada.addEventListener("change", async () => {
+      const arquivo = entrada.files[0]; if (!arquivo) return;
+      let texto = await arquivo.text();
+      if (texto.includes("�")) { try { texto = new TextDecoder("windows-1252").decode(await arquivo.arrayBuffer()); } catch { /* mantém */ } }
+      const linhas = lerCsv(texto);
+      const sem = s => String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().trim();
+      const cab = (linhas[0] || []).map(sem);
+      const col = (...n) => cab.findIndex(c => n.some(x => c === x || c.startsWith(x)));
+      const ix = { nome: col("nome", "loja", "empresa", "contato"), telefone: col("telefone", "fone", "fixo"), whatsapp: col("whatsapp", "whats", "celular", "zap"), local: col("local", "piso", "endereco", "localizacao"), produtos: col("produto"), servicos: col("servico"), opcoes: col("opco", "opca", "categoria", "segmento"), descricao: col("descricao", "observ", "sobre") };
+      if (ix.nome < 0) { trocar(previa, h("p", { class: "nota nota-alerta", text: "Não encontrei a coluna \"nome\" (ou \"loja\") na primeira linha." })); return; }
+      const dados = linhas.slice(1).map(l => Object.fromEntries(Object.entries(ix).map(([k, i]) => [k, i >= 0 ? String(l[i] || "").trim() : ""]))).filter(l => l.nome);
+      trocar(previa, h("p", { text: `${numero(dados.length)} contato(s). Primeiros: ${dados.slice(0, 4).map(x => x.nome).join(", ")}${dados.length > 4 ? "…" : ""}` }),
+        botao(`Importar ${numero(dados.length)}`, async () => {
+          let n = 0, novas = 0;
+          try {
+            for (let i = 0; i < dados.length; i += 300) { const r = await zap("importar", { metodo: "POST", corpo: { linhas: dados.slice(i, i + 300) } }); n += r.contatos || 0; novas += r.opcoes_novas || 0; }
+            aviso(`${numero(n)} contato(s) importado(s), ${numero(novas)} opção(ões) nova(s) no menu.`, "ok"); fechar(); recarregar();
+          } catch (e) { aviso(`Parou com ${numero(n)}: ${e.message}`, "erro"); }
+        }, "btn-primario"));
+    });
+  }
+  async function abaZapMensagens(area, vivo) {
+    const d = await zap("config");
+    if (!vivo()) return;
+    const cfg = d.config || {};
+    const modo = h("select", { class: "entrada" }, [["BOTOES", "Só botões — sem IA, custo zero (recomendado para começar)"], ["MISTO", "Botões + IA — a IA responde o que o cliente escrever"]].map(([v, n]) => h("option", { value: v, selected: d.modo === v, text: n })));
+    const ativo = h("input", { type: "checkbox", checked: d.ativo !== false });
+    const campos = [["boas_vindas", "Boas-vindas (aparece com o menu inicial)", "", 3], ["nao_entendi", "Quando o robô não entende", "", 1], ["humano", "Ao chamar a equipe", "", 2], ["rodape_lista", "Depois de uma lista de contatos", "", 2], ["encerramento", "Ao finalizar", "", 2], ["rotulo_catalogo", "Como chamar os contatos", "Ex.: lojas, profissionais, unidades. Aparece como \"3 lojas\" na lista.", 1], ["rede_nome", "Rede social (nome)", "Ex.: Instagram", 1], ["rede_url", "Rede social (link)", "Vai na mensagem de encerramento.", 1]];
+    const ent = {};
+    const sobre = h("textarea", { class: "entrada", maxlength: "6000", style: "min-height:160px", placeholder: "Horário, endereço, estacionamento, formas de pagamento, perguntas frequentes…" }); sobre.value = cfg.sobre || "";
+    const modelo = h("select", { class: "entrada" }, [["gpt-5-nano", "gpt-5-nano — o mais barato (recomendado)"], ["gpt-5-mini", "gpt-5-mini — econômico, mais esperto"], ["gpt-4o-mini", "gpt-4o-mini — econômico"]].map(([v, n]) => h("option", { value: v, selected: cfg.modelo_ia === v, text: n })));
+    const limite = h("input", { class: "entrada", type: "number", min: "0", max: "5000", value: String(cfg.limite_ia_dia ?? 300) });
+    const avisar = h("input", { type: "checkbox", checked: cfg.avisar_buscas !== false });
+    trocar(area,
+      h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Modo de atendimento" }),
+        campo("Como o robô atende", modo, "Nos dois modos os botões nunca gastam IA. No modo com IA, ela só entra quando a pessoa escreve algo que a busca por palavra não achou."),
+        h("label", { class: "guia-cat" }, ativo, "Robô ligado (desligado: as mensagens só ficam registradas para a equipe)"),
+        h("label", { class: "guia-cat" }, avisar, "Avisar no Telegram cada busca (nome, número e o que procurou)")),
+      h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Mensagens" }),
+        campos.map(([k, rot, dica, l]) => { ent[k] = l > 1 ? h("textarea", { class: "entrada", maxlength: "1000", style: `min-height:${l * 34}px` }) : h("input", { class: "entrada", maxlength: "300" }); ent[k].value = cfg[k] || ""; return campo(rot, ent[k], dica); })),
+      h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "IA (só no modo Botões + IA)" }),
+        campo("O que a IA pode responder sobre a empresa", sobre, "A IA só responde com o que estiver aqui ou no menu. Nunca inventa preço, telefone ou horário."),
+        h("div", { class: "grade grade-2" }, campo("Modelo", modelo), campo("Limite de respostas da IA por dia", limite, "Proteção de custo: passou disso, o robô volta a mostrar o menu."))),
+      pode("AGENTE") ? h("div", { class: "acoes" }, botao("Salvar", async () => {
+        try { await zap("config", { metodo: "POST", corpo: { ...Object.fromEntries(Object.entries(ent).map(([k, e]) => [k, e.value])), sobre: sobre.value, modelo_ia: modelo.value, limite_ia_dia: Number(limite.value), avisar_buscas: avisar.checked, modo: modo.value, ativo: ativo.checked } }); aviso("Salvo.", "ok"); }
+        catch (e) { aviso(e.message, "erro"); }
+      }, "btn-primario"), h("a", { class: "btn btn-secundario", href: "#/chatbot/testar" }, "Testar como cliente")) : null);
+  }
+  async function abaZapConexao(area, vivo) {
+    const c = await zap("conta");
+    if (!vivo()) return;
+    const pnid = h("input", { class: "entrada", value: c.phone_number_id || "", inputmode: "numeric", placeholder: "Ex.: 473474732510163" });
+    const waba = h("input", { class: "entrada", value: c.waba_id || "", inputmode: "numeric", placeholder: "opcional" });
+    const token = h("input", { class: "entrada", type: "password", autocomplete: "off", placeholder: c.tem_token ? "Já salvo — cole outro só para trocar" : "EAA…" });
+    const segredo = h("input", { class: "entrada", type: "password", autocomplete: "off", placeholder: c.tem_segredo ? "Já salva — cole outra só para trocar" : "32 letras e números" });
+    const tgToken = h("input", { class: "entrada", type: "password", autocomplete: "off", placeholder: c.telegram ? "Já configurado — cole outro só para trocar" : "123456:ABC… (do @BotFather)" });
+    const tgChat = h("input", { class: "entrada", placeholder: "-100123456789" });
+    const copia = (rot, valor) => h("div", { class: "campo" }, h("label", { text: rot }), h("div", { style: "display:flex;gap:8px" }, h("input", { class: "entrada", value: valor, readOnly: true }), botao("Copiar", () => copiar(valor), "btn-secundario btn-pequeno")));
+    trocar(area,
+      h("section", { class: "grade grade-2" },
+        h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "1. Número do WhatsApp (API oficial da Meta)" }),
+          c.conectada ? h("p", {}, selo("Conectado", "ok"), " ", h("strong", { text: c.numero || c.phone_number_id }), c.nome_verificado ? " · " + c.nome_verificado : "", c.ultima_recebida_ms ? h("span", { class: "sub", text: ` · última mensagem ${quandoFrase(c.ultima_recebida_ms)}` }) : h("span", { class: "sub", text: " · ainda não chegou mensagem (confira o passo 2)" })) : h("p", { class: "nota", text: "Em developers.facebook.com → seu app → WhatsApp → Configuração da API: copie o ID do número de telefone. O token permanente se cria em business.facebook.com → Configurações → Usuários do sistema → Gerar token (permissões whatsapp_business_messaging e whatsapp_business_management)." }),
+          campo("ID do número de telefone (Phone number ID)", pnid), campo("ID da conta do WhatsApp Business (opcional)", waba), campo("Token de acesso permanente", token), campo("Chave secreta do app (recomendado)", segredo, "Configurações do app → Básico → Chave secreta. Com ela, só mensagens assinadas pela Meta são aceitas."),
+          pode("ADMIN") ? h("div", { class: "acoes" }, botao(c.conectada ? "Salvar e testar" : "Conectar", async () => {
+            try { const r = await zap("conta", { metodo: "POST", corpo: { phone_number_id: pnid.value, waba_id: waba.value, ...(token.value.trim() ? { token: token.value.trim() } : {}), ...(segredo.value.trim() ? { app_secret: segredo.value.trim() } : {}) } }); aviso(`WhatsApp conectado: ${r.numero || "ok"}.`, "ok"); estado.org.chatbot = true; aplicarModo(); navegar(); }
+            catch (e) { aviso(e.message, "erro"); }
+          }, "btn-primario"), c.conectada ? botao("Desconectar", async () => { if (!(await modal({ titulo: "Desconectar o WhatsApp?", conteudo: "O robô para de responder neste número.", confirmar: "Desconectar", perigo: true }))) return; await zap("conta", { metodo: "POST", corpo: { desconectar: true } }); navegar(); }, "btn-secundario") : null) : h("p", { class: "nota", text: "Somente administradores mudam a conexão." })),
+        h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "2. Webhook (cole no app da Meta)" }),
+          h("p", { class: "sub", text: "No app da Meta → WhatsApp → Configuração → Webhook → Editar: cole o endereço e o token abaixo, clique em Verificar e salvar, e depois assine o campo \"messages\". É o mesmo endereço para todas as empresas." }),
+          copia("URL de retorno", c.webhook_url), c.verify_token ? copia("Token de verificação", c.verify_token) : h("p", { class: "nota", text: "Peça a um administrador o token de verificação." }),
+          h("p", { class: "nota", text: "Se esse número hoje usa outro robô (ex.: Botpress), é só trocar o endereço do webhook. Para voltar, cole o endereço antigo. O número não sai da conta de vocês." }))),
+      h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "3. Avisos no Telegram (opcional)" }),
+        h("p", { class: "sub", text: "Cada busca e cada pedido de \"falar com alguém\" chega no grupo. Sem Telegram, os pedidos de atendimento chegam por e-mail aos administradores." }),
+        c.telegram ? h("p", {}, selo("Ligado", "ok")) : null,
+        h("div", { class: "grade grade-2" }, campo("Token do bot", tgToken), campo("ID do grupo", tgChat, "Adicione o bot ao grupo. O ID aparece em api.telegram.org/bot<token>/getUpdates.")),
+        pode("ADMIN") ? h("div", { class: "acoes" }, botao("Salvar e mandar teste", async () => { try { const r = await zap("conta/telegram", { metodo: "POST", corpo: { telegram_token: tgToken.value.trim(), telegram_chat: tgChat.value.trim() } }); aviso(r.aviso || "Telegram ligado: confira a mensagem de teste no grupo.", r.aviso ? "erro" : "ok"); navegar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario btn-pequeno"),
+          c.telegram ? botao("Desligar", async () => { await zap("conta/telegram", { metodo: "POST", corpo: { remover: true } }); navegar(); }, "btn-secundario btn-pequeno") : null) : null));
+  }
+  function abaZapTestar(area) {
+    const tela = h("div", { class: "mensagens guia-tela", "aria-live": "polite" });
+    const entrada = h("input", { class: "entrada", placeholder: "Escreva como um cliente…", maxlength: "500" });
+    const balao = (t, cli) => h("div", { class: "msg " + (cli ? "msg-entrada" : "msg-saida") }, t);
+    const enviar = async (texto, acao, rotulo) => {
+      tela.appendChild(balao(rotulo || texto, true));
+      try {
+        const r = await zap("testar", { metodo: "POST", corpo: { texto, acao } });
+        for (const x of r.respostas || []) {
+          const it = x.interativo;
+          if (!it) { tela.appendChild(balao(x.texto, false)); continue; }
+          const caixa = balao((it.body || {}).text || "", false);
+          const ops = it.type === "button" ? it.action.buttons.map(b => ({ id: b.reply.id, title: b.reply.title })) : ((it.action.sections || [])[0] || {}).rows || [];
+          caixa.appendChild(h("div", { class: "guia-botoes" }, ops.map(o => h("button", { type: "button", class: "btn btn-secundario btn-pequeno", title: o.description || "", onclick: () => enviar(o.title, o.id, o.title) }, o.title + (o.description ? ` · ${o.description}` : "")))));
+          tela.appendChild(caixa);
+        }
+      } catch (e) { aviso(e.message, "erro"); }
+      tela.scrollTop = tela.scrollHeight;
+    };
+    const mandar = () => { const t = entrada.value.trim(); if (!t) return; entrada.value = ""; enviar(t, ""); };
+    entrada.addEventListener("keydown", e => { if (e.key === "Enter") mandar(); });
+    trocar(area, h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Testar como cliente" }),
+      h("p", { class: "sub", text: "Simula a conversa: nada é enviado pelo WhatsApp e nada entra nas métricas. No modo Botões + IA, o que você escrever pode usar a IA (centavos)." }),
       h("div", { class: "acoes", style: "margin:8px 0" }, botao("Começar (oi)", () => enviar("oi", "", "oi"), "btn-primario btn-pequeno"), botao("Limpar", () => tela.replaceChildren(), "btn-secundario btn-pequeno")),
       tela, h("div", { class: "compor" }, entrada, botao("Enviar", mandar, "btn-primario"))));
   }
