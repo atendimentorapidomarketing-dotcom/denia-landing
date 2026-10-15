@@ -683,6 +683,19 @@ async function vigiarWhatsapp(env) {
   }
 }
 
+// Cron (5 min): pede ao motor de cada empresa para enviar a fila de respostas e responder mensagens
+// recentes que ficaram para trás. Assim nada depende do cron do próprio motor (que a empresa pode deixar
+// desligado). O motor só responde o que é recente e nunca manda em massa.
+async function tickMotores(env) {
+  const orgs = new Set(((await env.DB.prepare("SELECT org_id FROM plt_integracoes LIMIT 50").all().catch(() => null))?.results || []).map(x => x.org_id));
+  const central = await primeiraEmpresa(env).catch(() => null);
+  if (central) orgs.add(central);
+  for (const org of orgs) {
+    try { const con = await conexaoDa(env, org); if (con?.token) await chamarEngine(con, "POST", "tick", {}); }
+    catch (e) { console.error("tick motor", org, e?.message); }
+  }
+}
+
 // O que a DENIA sabe da empresa quando conversa com a equipe no painel.
 async function contextoAssistente(env, orgId) {
   const o = await env.DB.prepare("SELECT nome FROM plt_organizacoes WHERE id=?").bind(orgId).first();
@@ -1082,6 +1095,7 @@ export default {
       await publicarPendentes(env, k).catch(e => console.error("publicação agendada", e?.message));
       await sincronizarGooglePendentes(env, k).catch(e => console.error("google", e?.message));
       await cuidarDasAvaliacoes(env, k).catch(e => console.error("avaliações", e?.message));
+      await tickMotores(env).catch(e => console.error("tick", e?.message));
       await vigiarWhatsapp(env).catch(e => console.error("whatsapp", e?.message));
     })().catch(e => console.error("cron", e?.message)).finally(() => descarregarUso(env));
     if (ctx && ctx.waitUntil) ctx.waitUntil(tarefa); else await tarefa;

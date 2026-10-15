@@ -1270,7 +1270,7 @@
     }
     // Limite de chamadas da Cloudflare (plano gratuito: 50 por execução).
     const limiteCF = /subrequest/i.test(String((st.falhas_envio_24h && st.falhas_envio_24h.ultima) || "")) || (st.fila_envio && st.fila_envio.adiadas_24h > 0);
-    if (st.fila_envio && st.fila_envio.pendentes && st.fila_envio.mais_antiga_ms && Date.now() - st.fila_envio.mais_antiga_ms > 5 * 60000) itens.push(["erro", `${numero(st.fila_envio.pendentes)} resposta(s) estão presas na fila de envio desde ${quando(st.fila_envio.mais_antiga_ms)}. Confira em Settings → Triggers do Worker denia se o cron "* * * * *" (a cada minuto) existe.`]);
+    if (st.fila_envio && st.fila_envio.pendentes && st.fila_envio.mais_antiga_ms && Date.now() - st.fila_envio.mais_antiga_ms > 5 * 60000) itens.push(["erro", `${numero(st.fila_envio.pendentes)} resposta(s) estão presas na fila de envio desde ${quando(st.fila_envio.mais_antiga_ms)}. A plataforma tenta enviar a fila a cada 5 minutos; confira se o motor 31.4 está colado e se a plataforma consegue falar com ele (Integrações → Testar).`]);
     if (limiteCF) itens.push(["alerta", `O plano gratuito da Cloudflare deixa o motor fazer só 50 chamadas por execução, e cada resposta usa quase isso. ${st.fila_envio && st.fila_envio.adiadas_24h ? `${numero(st.fila_envio.adiadas_24h)} resposta(s) nas últimas 24 h passaram pela fila de envio e saíram até 1 minuto depois.` : "O motor 31.3 coloca a resposta numa fila e envia na execução seguinte, sem perder nada."} Para responder sempre na hora: assine o Workers Paid (US$ 5/mês em dash.cloudflare.com → Workers → Planos) e crie no Worker denia a variável LIMITE_CHAMADAS = 900.`]);
     if (st.versao && /^31\.[0-2]\./.test(st.versao)) itens.push(["erro", `O motor ${st.versao} tem um erro: as tabelas novas não são criadas no banco, e no plano gratuito da Cloudflare as respostas podem não sair ("Too many subrequests"). Cole o motor 31.3 no Worker denia.`]);
     if (st.versao && !st.entregas_24h && !/^3[2-9]\./.test(st.versao)) itens.push(["alerta", `O motor ${st.versao} não sabe se as mensagens CHEGARAM (só se a Meta aceitou). Cole o motor 31.3 no Worker denia: ele confere cada entrega, avisa a equipe e mostra ✓✓ ou ⚠ em cada mensagem.`]);
@@ -2677,7 +2677,7 @@
   // ---------------------------------------------------------------------------
   // Consumo e custos: OpenAI (painel e WhatsApp), Meta (Instagram, Facebook, WhatsApp) e Google
   // ---------------------------------------------------------------------------
-  const NOME_SERVICO = { openai: "OpenAI", meta: "Meta (Instagram e Facebook)", google: "Google" };
+  const NOME_SERVICO = { openai: "OpenAI", elevenlabs: "ElevenLabs (voz)", meta: "Meta (Instagram e Facebook)", google: "Google" };
   const NOME_OPERACAO_IA = { texto: "Texto", imagem: "Imagens", transcricao: "Transcrição de áudio", voz_falada: "Voz falada", voz_sessao: "Abrir conversa por voz", voz_ao_vivo: "Conversa por voz ao vivo", atendimento: "Respostas no WhatsApp", transcricao_audio: "Áudios do WhatsApp" };
   const NOME_RECURSO = {
     "": "Outros", assistente: "Assistente DENIA", "assistente/voz": "DENIA por voz", "assistente/conversa": "Assistente DENIA", "assistente/ao-vivo": "DENIA por voz",
@@ -2723,7 +2723,7 @@
     const iaMotor = mot && !mot.erro ? (mot.ia || []) : [];
     for (const r of iaMotor) linhas.push({ dia: r.dia, servico: "openai", operacao: r.operacao, recurso: "whatsapp/motor", modelo: r.modelo, chamadas: r.chamadas, erros: r.erros, limitadas: 0, tokens_entrada: r.tokens_entrada, tokens_saida: r.tokens_saida, tokens_cache: r.tokens_cache, imagens: 0, caracteres: 0, custo_usd: custoTokens(precos, r.modelo, r.tokens_entrada, r.tokens_cache, r.tokens_saida), ms_total: 0 });
     const soma = (filtro, campo) => linhas.filter(filtro).reduce((s, l) => s + (Number(l[campo]) || 0), 0);
-    const ehIA = l => l.servico === "openai", ehMeta = l => l.servico === "meta", ehGoogle = l => l.servico === "google";
+    const ehIA = l => l.servico === "openai" || l.servico === "elevenlabs", ehMeta = l => l.servico === "meta", ehGoogle = l => l.servico === "google";
     const custoIA = soma(ehIA, "custo_usd");
     const metaPontos = mot && !mot.erro && mot.meta && mot.meta.pontos ? mot.meta.pontos : [];
     const custoWhats = metaPontos.reduce((s, p) => s + p.custo, 0);
@@ -2959,10 +2959,10 @@
   const esperarSimples = ms => new Promise(r => setTimeout(r, ms));
 
   // Fala e só termina quando o áudio acaba.
-  async function falar(texto) {
+  async function falar(texto, aoVivoRapido) {
     estadoAssistente("Falando…");
     try {
-      const r = await fetch(`/api/orgs/${estado.org.id}/assistente/falar`, { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json", "x-denia": "1", "x-denia-idioma": IDIOMA }, body: JSON.stringify({ texto: texto.slice(0, 1500) }) });
+      const r = await fetch(`/api/orgs/${estado.org.id}/assistente/falar`, { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json", "x-denia": "1", "x-denia-idioma": IDIOMA }, body: JSON.stringify({ texto: texto.slice(0, 1500), ao_vivo: Boolean(aoVivoRapido) }) });
       if (!r.ok) throw new Error("voz indisponível");
       const url = URL.createObjectURL(await r.blob());
       if (assistente.audio) assistente.audio.pause();
@@ -3070,6 +3070,7 @@
       aoVivo.fluxo = fluxo;
       const s = await api(`/api/orgs/${estado.org.id}/assistente/ao-vivo`, { metodo: "POST", corpo: {} });
       aoVivo.modelo = s.modelo || "";
+      aoVivo.minhaVoz = Boolean(s.minha_voz); // a conversa ao vivo devolve texto e o painel fala com a voz da pessoa
       if (!aoVivo.conectando) { fluxo.getTracks().forEach(t => t.stop()); return; }
       const pc = new RTCPeerConnection();
       aoVivo.pc = pc;
@@ -3124,7 +3125,10 @@
   }
   function eventoAoVivo(ev) {
     const t = ev.type || "";
-    if (t === "input_audio_buffer.speech_started") { estadoAssistente("Ouvindo…"); return; }
+    if (t === "input_audio_buffer.speech_started") { if (aoVivo.minhaVoz) pararFala(); estadoAssistente("Ouvindo…"); return; }
+    if (aoVivo.minhaVoz && (t === "response.output_text.done" || t === "response.text.done") && ev.text) {
+      assistente.msgs.push({ papel: "denia", texto: ev.text }); mostrarMsg("denia", ev.text); falar(ev.text, true); return;
+    }
     if (t === "input_audio_buffer.speech_stopped") { estadoAssistente("Pensando…"); return; }
     if (t === "output_audio_buffer.started") { estadoAssistente("Falando… (pode interromper)"); return; }
     if (t === "response.done" && ev.response && ev.response.usage) mk("uso/realtime", { metodo: "POST", corpo: { usage: ev.response.usage, modelo: aoVivo.modelo || "" } }).catch(() => {});
@@ -3430,6 +3434,91 @@
     }
   };
 
+  // ----- Voz da DENIA: vozes naturais ou a voz da própria pessoa (clonada com autorização)
+  const TEXTO_GRAVACAO = "Olá! Eu sou a voz da nossa empresa. Aqui a gente atende cada cliente com carinho e atenção, do primeiro contato até o serviço concluído. Se você precisa de um orçamento, de um horário ou só de uma informação, pode contar comigo. Vou te explicar tudo com calma, sem pressa, e te avisar de cada passo. Ah, e se preferir falar com alguém da equipe, é só pedir que eu chamo na hora. Obrigada pela confiança, e até já!";
+  async function cartaoVoz() {
+    const caixa = h("section", { class: "cartao vidro formulario" }, carregando());
+    let cfg;
+    try { cfg = await mk("voz/config"); } catch (e) { trocar(caixa, h("p", { class: "nota nota-alerta", text: e.message })); return caixa; }
+    const desenhar = () => {
+      const admin = pode("ADMIN");
+      const atual = cfg.provedor === "elevenlabs" ? `Sua voz clonada${cfg.eleven_nome ? ": " + cfg.eleven_nome : ""}` : (cfg.vozes_openai.find(v => v[0] === cfg.voz_openai) || [cfg.voz_openai, cfg.voz_openai])[1];
+      const ouvir = botao("▶ Ouvir a DENIA", async (_e, b) => { b.textContent = "Falando…"; try { await falar("Oi! Eu sou a DENIA. É assim que eu vou falar com você e com a sua equipe. Gostou da minha voz?"); } finally { b.textContent = "▶ Ouvir a DENIA"; } }, "btn-secundario btn-pequeno");
+      if (!admin) { trocar(caixa, h("h3", { style: "margin:0", text: "Voz da DENIA" }), h("p", { text: "Voz atual: " + atual }), h("div", { class: "acoes" }, ouvir)); return; }
+      const selVoz = h("select", { class: "entrada" }, cfg.vozes_openai.map(([v, n]) => h("option", { value: v, selected: v === cfg.voz_openai, text: n })));
+      const estilo = h("textarea", { class: "entrada", rows: "3", placeholder: cfg.estilo_padrao, value: cfg.estilo || "" });
+      const salvarNatural = botao("Usar esta voz", async () => { try { cfg = await mk("voz/config", { metodo: "POST", corpo: { provedor: "openai", voz_openai: selVoz.value, estilo: estilo.value } }); aviso("Voz salva.", "ok"); desenhar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario btn-pequeno");
+      // Minha voz (ElevenLabs)
+      const chave = h("input", { class: "entrada", type: "password", autocomplete: "off", placeholder: "sk_…" });
+      const passoChave = cfg.eleven_configurada
+        ? h("p", { class: "sub", text: "✅ Conta da ElevenLabs conectada." }, " ", botao("Desconectar", async () => { await mk("voz/eleven-chave", { metodo: "POST", corpo: { remover: true } }); cfg = await mk("voz/config"); desenhar(); }, "btn-secundario btn-pequeno"))
+        : h("div", { class: "formulario" }, h("p", { class: "sub", style: "margin:0", text: "1) Crie uma conta em elevenlabs.io (a clonagem de voz precisa do plano Starter, cerca de US$ 5/mês) e copie a chave em Configurações → Chaves de API." }),
+          h("div", { class: "linha-form" }, campo("Chave da ElevenLabs", chave)),
+          h("div", { class: "acoes" }, botao("Conectar", async () => { try { await mk("voz/eleven-chave", { metodo: "POST", corpo: { chave: chave.value } }); cfg = await mk("voz/config"); aviso("ElevenLabs conectada.", "ok"); desenhar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario btn-pequeno")));
+      const gravacao = { partes: [], gravador: null, inicio: 0, relogio: null, blob: null };
+      const tempo = h("strong", { text: "0:00" });
+      const ouvirGravacao = h("audio", { controls: true, class: "oculto", style: "width:100%" });
+      const consentimento = h("input", { type: "checkbox" });
+      const nomeVoz = h("input", { class: "entrada", value: (estado.eu && estado.eu.usuario && estado.eu.usuario.nome ? "Voz de " + estado.eu.usuario.nome : "Minha voz"), maxlength: "60" });
+      const btnGravar = botao("● Gravar minha voz", async (_e, b) => {
+        if (gravacao.gravador && gravacao.gravador.state === "recording") { gravacao.gravador.stop(); return; }
+        if (!navigator.mediaDevices || !window.MediaRecorder) return aviso("Este navegador não grava áudio. Use o Chrome ou envie um arquivo.", "erro");
+        let fluxo;
+        try { fluxo = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: true, autoGainControl: true } }); } catch { return aviso("Permita o microfone para gravar.", "erro"); }
+        gravacao.partes = [];
+        const g = new MediaRecorder(fluxo);
+        gravacao.gravador = g;
+        g.ondataavailable = ev => { if (ev.data.size) gravacao.partes.push(ev.data); };
+        g.onstop = () => { fluxo.getTracks().forEach(t => t.stop()); clearInterval(gravacao.relogio); gravacao.blob = new Blob(gravacao.partes, { type: g.mimeType || "audio/webm" }); ouvirGravacao.src = URL.createObjectURL(gravacao.blob); ouvirGravacao.classList.remove("oculto"); b.textContent = "● Gravar de novo"; };
+        g.start(1000);
+        gravacao.inicio = Date.now();
+        gravacao.relogio = setInterval(() => { const s = Math.floor((Date.now() - gravacao.inicio) / 1000); tempo.textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; if (s >= 180) g.stop(); }, 500);
+        b.textContent = "■ Parar gravação";
+      }, "btn-primario btn-pequeno");
+      const arquivo = h("input", { type: "file", accept: "audio/*", class: "entrada" });
+      const criar = botao("Criar a minha voz", async (_e, b) => {
+        const audio = gravacao.blob || (arquivo.files && arquivo.files[0]);
+        if (!audio) return aviso("Grave ou escolha um arquivo de áudio primeiro.", "erro");
+        if (!consentimento.checked) return aviso("Confirme que a voz é sua ou que a pessoa autorizou.", "erro");
+        const f = new FormData();
+        f.append("audio", audio, audio.name || "minha-voz.webm"); f.append("nome", nomeVoz.value); f.append("consentimento", "sim");
+        b.textContent = "Criando a voz…";
+        try {
+          const r = await fetch(`/api/orgs/${estado.org.id}/mk/voz/clonar`, { method: "POST", credentials: "same-origin", headers: { "x-denia": "1" }, body: f });
+          const d = await r.json().catch(() => ({}));
+          if (!r.ok) throw new Error(d.erro || "Não foi possível criar a voz.");
+          cfg = await mk("voz/config");
+          aviso(d.verificar ? "Voz criada. A ElevenLabs pede uma verificação rápida no site dela antes de liberar." : "Pronto! A DENIA agora fala com a sua voz.", "ok");
+          desenhar();
+        } catch (e) { aviso(e.message, "erro"); b.textContent = "Criar a minha voz"; }
+      }, "btn-primario");
+      const vozesConta = h("div", {});
+      const aoVivoChk = h("input", { type: "checkbox", checked: cfg.ao_vivo_com_minha_voz });
+      aoVivoChk.addEventListener("change", async () => { try { cfg = await mk("voz/config", { metodo: "POST", corpo: { ao_vivo_com_minha_voz: aoVivoChk.checked } }); } catch (e) { aviso(e.message, "erro"); } });
+      const passoGravar = cfg.eleven_configurada ? h("div", { class: "formulario" },
+        h("p", { class: "sub", style: "margin:0", text: "2) Grave de 1 a 3 minutos num lugar silencioso, falando como você fala com os clientes. Pode ler o texto abaixo:" }),
+        h("blockquote", { class: "texto-gravacao", text: TEXTO_GRAVACAO }),
+        h("div", { class: "acoes" }, btnGravar, tempo), ouvirGravacao,
+        h("p", { class: "sub", style: "margin:0", text: "Ou envie um áudio que você já tem (sem música, só a sua voz):" }), arquivo,
+        h("div", { class: "linha-form" }, campo("Nome da voz", nomeVoz)),
+        h("label", { class: "lembrar" }, consentimento, " Esta é a minha voz, ou tenho autorização por escrito da pessoa para usar a voz dela."),
+        h("div", { class: "acoes" }, criar, botao("Usar uma voz que já está na minha conta", async () => {
+          try { const r = await mk("voz/eleven-vozes"); trocar(vozesConta, h("div", { class: "acoes" }, (r.vozes || []).map(v => botao(v.nome, async () => { cfg = await mk("voz/config", { metodo: "POST", corpo: { voz_eleven: { id: v.id, nome: v.nome } } }); aviso("Voz escolhida: " + v.nome, "ok"); desenhar(); }, "btn-secundario btn-pequeno")))); } catch (e) { aviso(e.message, "erro"); }
+        }, "btn-secundario btn-pequeno")), vozesConta) : null;
+      trocar(caixa,
+        h("div", { class: "cabeca-grafico" }, h("h3", { style: "margin:0", text: "Voz da DENIA" }), ouvir),
+        h("p", { style: "margin:0" }, "Voz atual: ", h("strong", { text: atual })),
+        h("details", { open: cfg.provedor !== "elevenlabs" }, h("summary", { text: "Vozes naturais (prontas)" }),
+          h("div", { class: "formulario", style: "margin-top:10px" }, campo("Voz", selVoz), campo("Jeito de falar (opcional)", estilo, "Ex.: carioca, animada, fala devagar e sorrindo."), h("div", { class: "acoes" }, salvarNatural))),
+        h("details", { open: cfg.provedor === "elevenlabs" || cfg.eleven_configurada }, h("summary", { text: "Usar a minha voz" }),
+          h("div", { class: "formulario", style: "margin-top:10px" }, passoChave, passoGravar,
+            cfg.provedor === "elevenlabs" ? h("label", { class: "lembrar" }, aoVivoChk, " Usar a minha voz também na conversa ao vivo (a resposta demora cerca de 1 segundo a mais)") : null,
+            cfg.provedor === "elevenlabs" ? h("div", { class: "acoes" }, botao("Voltar para a voz natural", async () => { cfg = await mk("voz/config", { metodo: "POST", corpo: { provedor: "openai" } }); desenhar(); }, "btn-secundario btn-pequeno")) : null,
+            h("p", { class: "sub", style: "margin:0", text: "A voz é usada pela DENIA aqui no painel. Quando alguém perguntar com sinceridade, ela continua dizendo que é a assistente virtual." }))));
+    };
+    desenhar();
+    return caixa;
+  }
   async function paginaDenia(el, _p, vivo) {
     const msgs = h("div", { class: "assistente-msgs voz-msgs", id: "voz-msgs", "aria-live": "polite" });
     const texto = h("textarea", { class: "entrada voz-texto", placeholder: "Escreva aqui, ou toque no microfone ao lado para gravar e transcrever…", maxlength: "2000", rows: "2" });
@@ -3453,6 +3542,7 @@
     if (!assistente.msgs.length) msgs.appendChild(h("div", { class: "a-msg a-denia", text: "Oi! Sou a DENIA. Toque no microfone grande uma vez e converse comigo ao vivo, como numa ligação — pode me interromper quando quiser. Também dá para escrever abaixo; o microfone pequeno grava e transcreve para você revisar antes de enviar." }));
     marcarAoVivo();
     estadoAssistente(aoVivo.ativo ? "Ao vivo — pode falar" : "");
+    cartaoVoz().then(c => { if (vivo()) el.appendChild(c); });
     // A conversa ao vivo continua em qualquer tela: o painel flutuante mostra o que é dito.
   }
 
