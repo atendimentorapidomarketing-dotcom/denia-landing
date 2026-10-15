@@ -1270,6 +1270,38 @@
       botao("Verificar agora", async (_e, b) => { b.textContent = "Testando as chaves…"; try { desenhar(await eng("status?completo=1", { fresco: true })); } catch (e) { desenhar(null); aviso(e.message, "erro"); } finally { b.textContent = "Verificar agora"; } }, "btn-primario btn-pequeno")),
       h("p", { class: "nota", text: "\"Verificar agora\" testa de verdade o token do WhatsApp e a chave da OpenAI do motor, além de pausas, erros e entregas das últimas 24 horas." }), lista);
   }
+  // Números do WhatsApp (motor 31.2+): mensagens, contatos, atendimentos e entregas por dia, com gráfico.
+  async function blocoNumerosWhatsapp(caixa) {
+    const f = estado.numerosZap = estado.numerosZap || { dias: 30, metrica: "recebidas" };
+    const fim = new Date(), ini = new Date(Date.now() - (f.dias - 1) * 86400000);
+    const de = isoLocal(ini), ate = isoLocal(fim);
+    trocar(caixa, carregando());
+    let u;
+    try { u = await eng(`usage?de=${de}&ate=${ate}`, { fresco: true }); }
+    catch (e) { trocar(caixa, h("section", { class: "cartao vidro" }, h("p", { class: "nota" + (e.status === 404 ? "" : " nota-alerta"), text: e.status === 404 ? "Cole o motor 31.2 no Worker denia para ver os números do WhatsApp em gráficos." : e.message }))); return; }
+    const dias = [];
+    for (let t = Date.parse(u.de + "T00:00:00Z"); t <= Date.parse(u.ate + "T00:00:00Z"); t += 86400000) dias.push(new Date(t).toISOString().slice(0, 10));
+    const mapa = lista => new Map((lista || []).map(x => [x.dia, Number(x.n || 0)]));
+    const m = u.mensagens || {}, cs = u.casos || {};
+    const fontes = { recebidas: mapa(m.recebidas), pela_ia: mapa(m.pela_ia), pela_equipe: mapa(m.pela_equipe), novos: mapa(cs.novos), concluidos: mapa(cs.concluidos) };
+    const entregues = new Map(), falhas = new Map();
+    for (const x of m.entregas || []) { if (["DELIVERED", "READ"].includes(x.status)) entregues.set(x.dia, (entregues.get(x.dia) || 0) + x.n); if (x.status === "FAILED") falhas.set(x.dia, (falhas.get(x.dia) || 0) + x.n); }
+    const diario = dias.map(d => ({ data: d, recebidas: fontes.recebidas.get(d) || 0, pela_ia: fontes.pela_ia.get(d) || 0, pela_equipe: fontes.pela_equipe.get(d) || 0, novos: fontes.novos.get(d) || 0, concluidos: fontes.concluidos.get(d) || 0, entregues: entregues.get(d) || 0, falhas: falhas.get(d) || 0 }));
+    const soma = k => diario.reduce((t, d) => t + d[k], 0);
+    const en = u.entregas || {};
+    const METRICAS = [["recebidas", "Mensagens recebidas", ""], ["pela_ia", "Respondidas pela DENIA", ""], ["pela_equipe", "Enviadas pela equipe", ""], ["novos", "Atendimentos abertos", ""], ["concluidos", "Atendimentos concluídos", ""], ["entregues", "Entregues", ""], ["falhas", "Não entregues", ""]];
+    const recarregar = () => blocoNumerosWhatsapp(caixa);
+    const pontos = agruparSerie(diario, dias.length <= 92 ? "dia" : dias.length <= 370 ? "semana" : "mes", f.metrica);
+    const nomeM = (METRICAS.find(x => x[0] === f.metrica) || ["", ""])[1];
+    const csv = () => baixarCsv(`whatsapp-${u.de}-a-${u.ate}.csv`, [["Dia", ...METRICAS.map(x => x[1])], ...diario.map(d => [dataCompleta(d.data), ...METRICAS.map(x => d[x[0]])])]);
+    trocar(caixa, h("section", { class: "cartao vidro" },
+      h("div", { class: "cabeca-grafico" }, h("h3", { style: "margin:0", text: "Números do WhatsApp" }), botao("Baixar planilha", csv, "btn-secundario btn-pequeno")),
+      h("div", { class: "abas abas-chips", style: "margin:10px 0" }, [[7, "7 dias"], [30, "30 dias"], [60, "60 dias"], [90, "90 dias"], [180, "6 meses"], [365, "12 meses"]].map(([v, n]) => h("button", { type: "button", class: "aba" + (f.dias === v ? " ativo" : ""), onclick: () => { f.dias = v; recarregar(); } }, n))),
+      h("section", { class: "grade grade-4" }, METRICAS.map(([k, n]) => h("button", { type: "button", class: "metrica vidro metrica-botao" + (f.metrica === k ? " ativo" : ""), "aria-pressed": f.metrica === k ? "true" : "false", onclick: () => { f.metrica = k; recarregar(); } }, h("span", { text: n }), h("strong", { text: numero(soma(k)) }), h("small", { text: `${numero(Math.round((soma(k) / (dias.length || 1)) * 10) / 10)} por dia` }))),
+        h("div", { class: "metrica vidro" }, h("span", { text: "Taxa de entrega" }), h("strong", { text: en.taxa_entrega != null ? String(en.taxa_entrega).replace(".", ",") + "%" : "—" }), h("small", { text: `${numero(u.contatos || 0)} contatos diferentes no período` }))),
+      h("h4", { style: "margin:16px 0 4px", text: nomeM }),
+      pontos.some(p => p.valor) ? graficoLinha(pontos, null, nomeM, "") : vazio("Nada neste período", "")));
+  }
   async function paginaWhatsapp(el, _p, vivo) {
     el.appendChild(cabeca("WhatsApp", "O canal principal da IA: atendimento aos clientes e conversa com os profissionais, pela API oficial do WhatsApp Business."));
     if (!estado.org.conectada) { falha(el, new ErroApi("A IA desta empresa ainda não foi conectada.", 503, { codigo: "ENGINE_NAO_CONFIGURADO" })); return; }
@@ -1299,6 +1331,7 @@
           lim.porTelefone2min ? h("li", {}, "Limite por contato", h("strong", { text: `${lim.porTelefone2min} a cada 2 min · ${lim.porTelefoneHora} por hora` })) : null,
           h("li", {}, "Fora da janela de 24 horas", h("strong", { text: "só com modelo aprovado" }))),
         h("div", { class: "acoes", style: "margin-top:16px" }, h("a", { class: "btn btn-primario btn-pequeno", href: "#/conversas" }, "Abrir conversas"), h("a", { class: "btn btn-secundario btn-pequeno", href: "#/painel" }, "Controle da IA"))));
+    if (pode("ADMIN")) { const numeros = h("div", {}); el.appendChild(numeros); blocoNumerosWhatsapp(numeros); }
   }
 
   async function paginaContatos(el, _p, vivo) {

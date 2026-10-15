@@ -1137,10 +1137,19 @@ async function consumoDoPeriodo(c, de, ate) {
   if (!valida(de) || !valida(ate)) { ate = new Date(c.agora()).toISOString().slice(0, 10); de = new Date(c.agora() - 29 * 86400000).toISOString().slice(0, 10); }
   const ini = Date.parse(de + "T00:00:00Z"), fim = Date.parse(ate + "T00:00:00Z") + 86400000;
   const ia = (await c.db.prepare("SELECT dia,operacao,modelo,chamadas,erros,tokens_entrada,tokens_saida,tokens_cache FROM d30_uso WHERE dia BETWEEN ? AND ? ORDER BY dia").bind(de, ate).all().catch(() => null))?.results || [];
-  const recebidas = (await c.db.prepare("SELECT strftime('%Y-%m-%d', recebido_ms/1000, 'unixepoch') dia, COUNT(*) n FROM d30_fila WHERE recebido_ms >= ? AND recebido_ms < ? GROUP BY dia").bind(ini, fim).all().catch(() => null))?.results || [];
-  const enviadas = (await c.db.prepare("SELECT strftime('%Y-%m-%d', criado_ms/1000, 'unixepoch') dia, COUNT(*) n FROM d30_saidas WHERE criado_ms >= ? AND criado_ms < ? GROUP BY dia").bind(ini, fim).all().catch(() => null))?.results || [];
+  // Do histórico permanente (a fila e o registro de envios são apagados depois de alguns dias).
+  const porDirecao = (await c.db.prepare("SELECT substr(criado_em,1,10) dia, UPPER(direcao) direcao, UPPER(COALESCE(origem,'')) origem, COUNT(*) n FROM mensagens WHERE empresa_id=? AND criado_em >= ? AND criado_em < ? GROUP BY dia, UPPER(direcao), UPPER(COALESCE(origem,''))").bind(EMPRESA_ID, de, new Date(fim).toISOString().slice(0, 10)).all().catch(() => null))?.results || [];
+  const somaDia = filtro => { const m = new Map(); for (const x of porDirecao.filter(filtro)) m.set(x.dia, (m.get(x.dia) || 0) + Number(x.n || 0)); return [...m.entries()].sort().map(([dia, n]) => ({ dia, n })); };
+  const recebidas = somaDia(x => x.direcao === "ENTRADA");
+  const enviadas = somaDia(x => x.direcao === "SAIDA" && x.origem !== "LIGACAO");
+  const pela_ia = somaDia(x => x.direcao === "SAIDA" && x.origem === "IA");
+  const pela_equipe = somaDia(x => x.direcao === "SAIDA" && x.origem === "HUMANO");
   const entregas = (await c.db.prepare("SELECT strftime('%Y-%m-%d', COALESCE(enviado_ms, atualizado_ms)/1000, 'unixepoch') dia, status, COUNT(*) n FROM d30_entregas WHERE COALESCE(enviado_ms, atualizado_ms) >= ? AND COALESCE(enviado_ms, atualizado_ms) < ? GROUP BY dia, status").bind(ini, fim).all().catch(() => null))?.results || [];
-  const r = { de, ate, ia, mensagens: { recebidas, enviadas, entregas }, entregas: await resumoEntregas(c, ini), meta: null };
+  // Atendimentos: casos novos e concluídos por dia, e quantas pessoas diferentes falaram com a empresa.
+  const casosNovos = (await c.db.prepare("SELECT strftime('%Y-%m-%d', criado_ms/1000, 'unixepoch') dia, COUNT(*) n FROM d30_casos WHERE criado_ms >= ? AND criado_ms < ? GROUP BY dia").bind(ini, fim).all().catch(() => null))?.results || [];
+  const casosConcluidos = (await c.db.prepare("SELECT strftime('%Y-%m-%d', atualizado_ms/1000, 'unixepoch') dia, COUNT(*) n FROM d30_casos WHERE etapa='CONCLUIDO' AND atualizado_ms >= ? AND atualizado_ms < ? GROUP BY dia").bind(ini, fim).all().catch(() => null))?.results || [];
+  const contatos = Number((await c.db.prepare("SELECT COUNT(DISTINCT pessoa_id) n FROM mensagens WHERE empresa_id=? AND UPPER(direcao)='ENTRADA' AND criado_em >= ? AND criado_em < ?").bind(EMPRESA_ID, de, new Date(fim).toISOString().slice(0, 10)).first().catch(() => null))?.n || 0);
+  const r = { de, ate, ia, mensagens: { recebidas, enviadas, pela_ia, pela_equipe, entregas }, entregas: await resumoEntregas(c, ini), casos: { novos: casosNovos, concluidos: casosConcluidos }, contatos, meta: null };
   const waba = String(c.env.WHATSAPP_WABA_ID || "").trim();
   if (!waba) r.meta = { configurado: false, ajuda: "Para ver o custo cobrado pela Meta, crie no Worker do motor a variável WHATSAPP_WABA_ID com o ID da conta do WhatsApp Business (Gerenciador do WhatsApp → Configurações da conta)." };
   else if (c.env.WHATSAPP_TOKEN) {

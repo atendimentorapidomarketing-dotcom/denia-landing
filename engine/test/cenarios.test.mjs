@@ -829,3 +829,18 @@ test("Entrega — a Meta aceita mas não entrega: a DENIA registra o motivo, avi
   assert.ok(a.telegram.some(t => /NÃO entregue/.test(t)));
   assert.equal((await plat("/platform/status")).entrega_bloqueada, null);
 });
+
+test("Números do WhatsApp — mensagens por dia (IA e equipe), contatos, casos e entregas no período", async () => {
+  const TOKEN = "token-da-plataforma-123456";
+  const a = await criarAmbiente({ env: { DENIA_PLATFORM_SERVICE_TOKEN: TOKEN } });
+  a.llmCliente = () => decisao({ resposta: "Oi! Em que posso ajudar?" });
+  await a.cliente(CLI, "Oi");
+  await a.webhook({ statuses: [{ id: a.para(CLI).at(-1).id, status: "delivered", recipient_id: CLI }] });
+  // O histórico usa a data real do banco (CURRENT_TIMESTAMP), por isso o período largo.
+  const u = await (await a.http(`/platform/usage?de=2020-01-01&ate=2035-12-31`, { headers: { authorization: "Bearer " + TOKEN } })).json();
+  assert.equal(u.mensagens.recebidas.reduce((s, x) => s + x.n, 0), 1);
+  assert.equal(u.mensagens.pela_ia.reduce((s, x) => s + x.n, 0), 1);
+  assert.equal(u.contatos, 1);
+  assert.equal(u.entregas.entregues, 1);
+  assert.ok(Array.isArray(u.casos.novos));
+});

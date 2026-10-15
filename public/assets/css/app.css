@@ -534,3 +534,4 @@ html:has(body.app) { overflow-x: clip; }
 body.app { overflow-x: clip; max-width: 100vw; }
 .app img, .app video, .app pre { max-width: 100%; }
 .app pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 720px) { .metrica span { letter-spacing: 0.03em; font-size: 11.5px; overflow-wrap: break-word; hyphens: auto; } }
