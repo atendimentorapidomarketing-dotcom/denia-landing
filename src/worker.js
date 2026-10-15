@@ -25,13 +25,14 @@ import { retornoMeta, servirMidiaPublica, publicarPendentes } from "./meta.js";
 import { retornoGoogle, sincronizarGooglePendentes } from "./google.js";
 import { comOrgUso, comRecurso, descarregarUso } from "./uso.js";
 import { DDL_ZAP, webhookZap, rotasZap } from "./zap.js";
+import { lerPlanos, acessoDa, recursoDaRota, planoMinimo, rotasPlano, webhookAsaas, lembretesDePlano, TESTE_DIAS, STATUS as STATUS_PLANO, PLANOS_PADRAO, RECURSOS } from "./planos.js";
 
 const VERSAO = "3.1.0";
 // Versão dos Termos de uso e da Política de privacidade aceitas no cadastro.
 const VERSAO_TERMOS = "2026-10";
 // WhatsApp da Central de Atendimento (botão flutuante do site).
 const WHATSAPP_CENTRAL = "5521975469162";
-const SCHEMA = "2.5.0";
+const SCHEMA = "2.6.0";
 const COOKIE = "__Host-denia_sessao";
 const SESSAO_MS = 8 * 60 * 60 * 1000;
 const MAX_TENTATIVAS = 5;
@@ -140,7 +141,8 @@ const DDL = [
   `CREATE TABLE IF NOT EXISTS plt_tentativas (chave TEXT PRIMARY KEY, n INTEGER NOT NULL, ate INTEGER NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS plt_redefinicoes (token_hash TEXT PRIMARY KEY, usuario_id INTEGER NOT NULL, expira_ms INTEGER NOT NULL, usado INTEGER NOT NULL DEFAULT 0, criado_ms INTEGER NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS plt_contatos (id INTEGER PRIMARY KEY AUTOINCREMENT, nome TEXT, email TEXT, empresa TEXT, telefone TEXT, assunto TEXT, mensagem TEXT, ip TEXT, lido INTEGER NOT NULL DEFAULT 0, criado_ms INTEGER NOT NULL)`,
-  ...DDL_ZAP
+  ...DDL_ZAP,
+  `CREATE TABLE IF NOT EXISTS plt_pagamentos (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, gateway_id TEXT UNIQUE, valor REAL, status TEXT, vencimento TEXT, pago_ms INTEGER, link TEXT, forma TEXT, criado_ms INTEGER)`
 ];
 let schemaPronto = false;
 // Empresa principal do site antigo = Central de Atendimento (a primeira empresa da plataforma).
@@ -174,6 +176,8 @@ async function garantirSchema(env) {
     await env.DB.prepare("ALTER TABLE plt_organizacoes ADD COLUMN legado_id TEXT").run().catch(() => { }); // já existe
     await env.DB.prepare("ALTER TABLE plt_organizacoes ADD COLUMN plano TEXT").run().catch(() => { });
     await env.DB.prepare("ALTER TABLE plt_organizacoes ADD COLUMN plano_status TEXT").run().catch(() => { });
+    for (const col of ["teste_ate INTEGER", "pago_ate INTEGER", "ciclo TEXT", "cobranca_cliente TEXT", "assinatura_id TEXT", "assinatura_plano TEXT"])
+      await env.DB.prepare("ALTER TABLE plt_organizacoes ADD COLUMN " + col).run().catch(() => { });
     // A primeira empresa da plataforma.
     const n = await env.DB.prepare("SELECT COUNT(*) n FROM plt_organizacoes").first();
     if (!Number(n?.n)) {
@@ -181,6 +185,11 @@ async function garantirSchema(env) {
         .bind("Central de Atendimento", "central-de-atendimento", "Serviços residenciais e assistência técnica", "#4f8cff", agora(env)).run();
     }
     await reconciliarContasLegadas(env).catch(e => console.error("contas antigas", e?.message));
+    // Planos: a primeira empresa (Central) é cortesia; as que já existiam ganham 7 dias de teste a partir de agora.
+    const primeiraId = Number((await env.DB.prepare("SELECT MIN(id) id FROM plt_organizacoes").first())?.id || 0);
+    await env.DB.prepare("UPDATE plt_organizacoes SET plano_status='CORTESIA', plano=COALESCE(plano,'elite') WHERE id=? AND (plano_status IS NULL OR plano_status='ATIVO' AND pago_ate IS NULL)").bind(primeiraId).run();
+    await env.DB.prepare("UPDATE plt_organizacoes SET teste_ate=? WHERE teste_ate IS NULL").bind(agora(env) + TESTE_DIAS * 86400000).run();
+    await env.DB.prepare("UPDATE plt_organizacoes SET plano_status='TESTE' WHERE plano_status IS NULL").run();
     await env.DB.prepare("INSERT OR REPLACE INTO plt_meta(chave,valor) VALUES('schema',?)").bind(SCHEMA).run();
   }
   schemaPronto = true;
@@ -347,7 +356,7 @@ async function entrar(request, env) {
 async function criarEmpresa(env, nome, legadoId = null) {
   let sl = slug(nome), n = 1;
   while (await env.DB.prepare("SELECT 1 FROM plt_organizacoes WHERE slug=?").bind(sl).first()) sl = `${slug(nome)}-${++n}`;
-  return env.DB.prepare("INSERT INTO plt_organizacoes(nome,slug,cor,status,legado_id,criado_ms) VALUES(?,?,'#4f8cff','ATIVA',?,?) RETURNING id").bind(txt(nome, 120), sl, legadoId, agora(env)).first();
+  return env.DB.prepare("INSERT INTO plt_organizacoes(nome,slug,cor,status,legado_id,criado_ms,plano_status,teste_ate) VALUES(?,?,'#4f8cff','ATIVA',?,?,'TESTE',?) RETURNING id").bind(txt(nome, 120), sl, legadoId, agora(env), agora(env) + TESTE_DIAS * 86400000).first();
 }
 
 // Criar conta: cada pessoa nova ganha a sua própria empresa, ainda sem a IA configurada.
@@ -372,7 +381,7 @@ async function cadastrar(request, env) {
   const h = await hashSenha(senha, null, PBKDF2_ITER);
   const u = await env.DB.prepare("INSERT INTO plt_usuarios(email,nome,senha_hash,senha_salt,senha_iter,super_admin,ativo,origem,criado_ms) VALUES(?,?,?,?,?,0,1,'CADASTRO',?) RETURNING *").bind(email, nome, h.hash, h.salt, h.iter, agora(env)).first();
   const o = await criarEmpresa(env, empresa);
-  const plano = ["start", "pro", "growth", "elite"].includes(String(corpo.plano || "")) ? String(corpo.plano) : "start";
+  const plano = PLANOS_PADRAO[String(corpo.plano || "")] ? String(corpo.plano) : "start";
   await env.DB.prepare("UPDATE plt_organizacoes SET plano=?, plano_status='TESTE' WHERE id=?").bind(plano, o.id).run();
   await env.DB.prepare("INSERT INTO plt_membros(org_id,usuario_id,papel,criado_ms) VALUES(?,?,'OWNER',?)").bind(o.id, u.id, agora(env)).run();
   await auditar(env, request, { usuario: u }, o.id, "EMPRESA", `Conta criada: ${empresa}`);
@@ -496,7 +505,8 @@ async function organizacoesDo(env, usuario) {
   const st = env.DB.prepare(sql);
   const r = await (usuario.super_admin ? st : st.bind(usuario.id)).all();
   const primeira = conexaoCloudflare(env) || (env.ENGINE && typeof env.ENGINE.fetch === "function") ? await primeiraEmpresa(env) : 0;
-  return (r?.results || []).map(o => ({ id: o.id, nome: o.nome, slug: o.slug, segmento: o.segmento || "", cor: o.cor || "#4f8cff", status: o.status, papel: o.papel, conectada: Boolean(o.conectada) || o.id === primeira, chatbot: Boolean(o.chatbot), plano: o.plano || (o.id === primeira ? "elite" : "start"), plano_status: o.plano_status || (o.id === primeira ? "ATIVO" : "TESTE") }));
+  const { planos } = await lerPlanos(env);
+  return (r?.results || []).map(o => ({ acesso: acessoDa(o, agora(env), planos), id: o.id, nome: o.nome, slug: o.slug, segmento: o.segmento || "", cor: o.cor || "#4f8cff", status: o.status, papel: o.papel, conectada: Boolean(o.conectada) || o.id === primeira, chatbot: Boolean(o.chatbot), plano: o.plano || (o.id === primeira ? "elite" : "start"), plano_status: o.plano_status || "TESTE" }));
 }
 async function papelNa(env, usuario, orgId) {
   if (usuario.super_admin) {
@@ -761,9 +771,19 @@ async function apiOrg(request, env, sessao, orgId, resto) {
   // Revisor de aprendizados: só vê e decide o que a IA aprendeu; nada mais da empresa.
   if (papel === "REVISOR" && !/^engine\/learning(\/suggestions(\/\d{1,12})?)?$/.test(resto)) return json({ erro: "Seu perfil só tem acesso aos aprendizados da IA." }, 403);
   const metodo = request.method;
+  // Plano: cada área exige um recurso; fora do teste ou sem pagamento, só o plano e a equipe ficam abertos.
+  const recurso = recursoDaRota(resto, metodo);
+  const o = await env.DB.prepare("SELECT * FROM plt_organizacoes WHERE id=?").bind(orgId).first();
+  const { planos } = await lerPlanos(env);
+  const acesso = acessoDa(o, agora(env), planos);
+  if (recurso !== "LIVRE" && !sessao.usuario.super_admin) {
+    if (!acesso.liberado) return json({ erro: acesso.status === "TESTE_ACABOU" ? "O teste grátis terminou. Escolha um plano para continuar (Plano e pagamento)." : "O plano desta empresa está pendente. Regularize em Plano e pagamento.", codigo: "PLANO_VENCIDO" }, 402);
+    if (recurso && !acesso.recursos.includes(recurso)) { const min = planoMinimo(recurso, planos); return json({ erro: `Este recurso faz parte do plano ${min ? min.nome : "superior"}. Atualize o plano em Plano e pagamento.`, codigo: "PLANO_RECURSO", recurso, plano_minimo: min }, 402); }
+  }
+  if (resto === "plano" || resto.startsWith("plano/")) return rotasPlano(request, env, { ...kitBase(env), sessao }, orgId, papel, resto);
   if (resto.startsWith("engine/")) return proxyEngine(request, env, sessao, orgId, papel, resto.slice(7));
   const kit = { ...kitBase(env), sessao };
-  if (resto === "zap" || resto.startsWith("zap/")) return rotasZap(request, env, { ...(await kitZap(env, new URL(request.url).origin)), sessao }, orgId, papel, resto);
+  if (resto === "zap" || resto.startsWith("zap/")) return rotasZap(request, env, { ...(await kitZap(env, new URL(request.url).origin)), sessao, acesso: sessao.usuario.super_admin ? { ...acesso, recursos: Object.keys(RECURSOS) } : acesso }, orgId, papel, resto);
   if (resto === "ia/chave" && metodo === "GET") {
     const k = await chaveIA(env, orgId);
     return json({ configurada: Boolean(k.chave), origem: k.origem, final: k.chave && pode(papel, "ADMIN") ? k.chave.slice(-4) : "" });
@@ -840,6 +860,8 @@ async function apiOrg(request, env, sessao, orgId, resto) {
     }
     const ja = await env.DB.prepare("SELECT 1 FROM plt_membros WHERE org_id=? AND usuario_id=?").bind(orgId, u.id).first();
     if (ja) return json({ erro: "Esta pessoa já faz parte da equipe." }, 409);
+    const naEquipe = Number((await env.DB.prepare("SELECT COUNT(*) n FROM plt_membros WHERE org_id=?").bind(orgId).first())?.n || 0);
+    if (!sessao.usuario.super_admin && naEquipe >= Number(acesso.limites?.usuarios || 0)) return json({ erro: `O plano ${acesso.nome} permite até ${acesso.limites.usuarios} pessoas na equipe. Atualize o plano para adicionar mais.`, codigo: "PLANO_LIMITE" }, 402);
     await env.DB.prepare("INSERT INTO plt_membros(org_id,usuario_id,papel,criado_ms) VALUES(?,?,?,?)").bind(orgId, u.id, novoPapel, agora(env)).run();
     await auditar(env, request, sessao, orgId, "EQUIPE", `Adicionou ${email} como ${NOME_PAPEL[novoPapel]}`);
     return json({ ok: true, usuario_id: u.id, senha_temporaria: senha || null });
@@ -938,8 +960,10 @@ async function apiAdminOrgs(request, env, sessao, resto) {
     if (nome.length < 2) return json({ erro: "Informe o nome da empresa." }, 400);
     let s = slug(nome), n = 1;
     while (await env.DB.prepare("SELECT 1 FROM plt_organizacoes WHERE slug=?").bind(s).first()) s = `${slug(nome)}-${++n}`;
-    const o = await env.DB.prepare("INSERT INTO plt_organizacoes(nome,slug,segmento,cor,status,criado_ms) VALUES(?,?,?,?, 'ATIVA', ?) RETURNING id").bind(nome, s, segmento || null, cor, agora(env)).first();
-    await auditar(env, request, sessao, o.id, "EMPRESA", `Criou a empresa ${nome}`);
+    const plano = PLANOS_PADRAO[String(corpo.plano || "")] ? String(corpo.plano) : "start";
+    const st = STATUS_PLANO.includes(corpo.plano_status) ? corpo.plano_status : "TESTE";
+    const o = await env.DB.prepare("INSERT INTO plt_organizacoes(nome,slug,segmento,cor,status,criado_ms,plano,plano_status,teste_ate) VALUES(?,?,?,?, 'ATIVA', ?,?,?,?) RETURNING id").bind(nome, s, segmento || null, cor, agora(env), plano, st, agora(env) + TESTE_DIAS * 86400000).first();
+    await auditar(env, request, sessao, o.id, "EMPRESA", `Criou a empresa ${nome}${st === "CORTESIA" ? " (cortesia: acesso total sem custo)" : ""}`);
     return json({ ok: true, id: o.id });
   }
   const id = Number(resto);
@@ -947,6 +971,16 @@ async function apiAdminOrgs(request, env, sessao, resto) {
   if (!o) return json({ erro: "Empresa não encontrada." }, 404);
   const status = ["ATIVA", "SUSPENSA"].includes(corpo.status) ? corpo.status : o.status;
   await env.DB.prepare("UPDATE plt_organizacoes SET nome=?, segmento=?, cor=?, status=? WHERE id=?").bind(nome.length >= 2 ? nome : o.nome, corpo.segmento !== undefined ? segmento || null : o.segmento, corpo.cor ? cor : o.cor, status, id).run();
+  // Plano decidido pelo administrador geral: cortesia (acesso total sem custo), mais dias de teste, liberar até uma data.
+  if (corpo.plano !== undefined || corpo.plano_status !== undefined || corpo.mais_dias_teste || corpo.pago_ate) {
+    const plano = PLANOS_PADRAO[String(corpo.plano || "")] ? String(corpo.plano) : o.plano;
+    const pst = STATUS_PLANO.includes(corpo.plano_status) ? corpo.plano_status : o.plano_status;
+    const dias = Math.max(0, Math.min(365, Number(corpo.mais_dias_teste) || 0));
+    const teste = dias ? Math.max(agora(env), Number(o.teste_ate || 0)) + dias * 86400000 : o.teste_ate;
+    const pago = /^\d{4}-\d{2}-\d{2}$/.test(String(corpo.pago_ate || "")) ? Date.parse(corpo.pago_ate + "T23:59:59-03:00") : o.pago_ate;
+    await env.DB.prepare("UPDATE plt_organizacoes SET plano=?, plano_status=?, teste_ate=?, pago_ate=? WHERE id=?").bind(plano, pst, teste, pago, id).run();
+    await auditar(env, request, sessao, id, "PLANO", `Administrador: plano ${plano}, situação ${pst}${dias ? `, +${dias} dia(s) de teste` : ""}${corpo.pago_ate ? `, liberado até ${corpo.pago_ate}` : ""}`);
+  }
   await auditar(env, request, sessao, id, "EMPRESA", `Atualizou a empresa${status !== o.status ? ` (${status === "ATIVA" ? "reativada" : "suspensa"})` : ""}`);
   return json({ ok: true });
 }
@@ -1036,6 +1070,18 @@ async function api(request, env, caminho) {
     return json({ whatsapp: w, pelo_secret: Boolean(String(env.CONTATO_WHATSAPP || "").trim()) });
   }
   if ((m = caminho.match(/^\/api\/admin\/organizacoes(?:\/(\d{1,12}))?$/)) && metodo === "POST") return apiAdminOrgs(request, env, sessao, m[1] || "");
+  if (caminho === "/api/admin/planos") {
+    if (!u.super_admin) return json({ erro: "Sem permissão." }, 403);
+    if (metodo === "POST") {
+      const { corpo, erro } = await lerCorpo(request, 20000);
+      if (erro) return erro;
+      const cfg = { desconto_anual: Math.max(0, Math.min(0.5, Number(corpo.desconto_anual) || 0)), planos: {} };
+      for (const [id, p] of Object.entries(corpo.planos || {})) if (PLANOS_PADRAO[id]) cfg.planos[id] = { mensal: Math.max(0, Number(p.mensal) || 0), anual: Math.max(0, Number(p.anual) || 0) || undefined, visivel: p.visivel !== false, limites: { usuarios: Math.max(1, Number(p.limites?.usuarios) || PLANOS_PADRAO[id].limites.usuarios), ia_mes: Math.max(0, Number(p.limites?.ia_mes) || PLANOS_PADRAO[id].limites.ia_mes) } };
+      await env.DB.prepare("INSERT OR REPLACE INTO plt_meta(chave,valor) VALUES('planos_config',?)").bind(JSON.stringify(cfg)).run();
+      await auditar(env, request, sessao, null, "PLANO", "Valores e limites dos planos atualizados");
+    }
+    return json({ ...(await lerPlanos(env)), recursos: RECURSOS, cobranca: Boolean(String(env.ASAAS_API_KEY || "").trim()) });
+  }
   if ((m = caminho.match(/^\/api\/orgs\/(\d{1,12})\/(.+)$/))) return apiOrg(request, env, sessao, Number(m[1]), m[2]);
   return json({ erro: "Rota não encontrada." }, 404);
 }
@@ -1056,6 +1102,7 @@ async function rotear(request, env, ctx) {
   if (caminho.startsWith("/api/")) return api(request, env, caminho);
   // Um só webhook do WhatsApp para todas as empresas (cada mensagem diz de qual número ela é).
   if (caminho === "/webhook/whatsapp") { await garantirSchema(env); return webhookZap(request, env, await kitZap(env), ctx); }
+  if (caminho === "/webhook/asaas" && request.method === "POST") { await garantirSchema(env); return webhookAsaas(request, env, kitBase(env)); }
   if (!["GET", "HEAD"].includes(request.method)) return new Response("Método não permitido.", { status: 405 });
 
   // Imagens dos posts com link assinado: o Instagram e o Facebook baixam a arte por aqui.
@@ -1122,6 +1169,7 @@ export default {
       await cuidarDasAvaliacoes(env, k).catch(e => console.error("avaliações", e?.message));
       await tickMotores(env).catch(e => console.error("tick", e?.message));
       await vigiarWhatsapp(env).catch(e => console.error("whatsapp", e?.message));
+      await lembretesDePlano(env, { ...(await kitZap(env)), enviarEmail, responsaveis: o => responsaveisDa(env, o) }).catch(e => console.error("lembretes", e?.message));
     })().catch(e => console.error("cron", e?.message)).finally(() => descarregarUso(env));
     if (ctx && ctx.waitUntil) ctx.waitUntil(tarefa); else await tarefa;
   }

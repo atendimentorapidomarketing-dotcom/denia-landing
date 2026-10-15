@@ -34,6 +34,12 @@ async function criarPlataforma(extra = {}) {
       const r = p.google(String(url), op.method || "GET", corpo);
       return new Response(JSON.stringify(r), { status: r && r.error ? (r.error.code || 400) : 200, headers: { "content-type": "application/json" } });
     }
+    if (p && p.asaas && /^https:\/\/api(-sandbox)?\.asaas\.com\/v3\//.test(String(url))) {
+      const corpo = op.body ? JSON.parse(op.body) : null;
+      (p.asaasChamadas ||= []).push({ url: String(url), metodo: op.method || "GET", corpo, headers: op.headers });
+      const r = p.asaas(String(url).replace(/^https:\/\/api(-sandbox)?\.asaas\.com\/v3/, ""), op.method || "GET", corpo);
+      return new Response(JSON.stringify(r), { status: r && r.errors ? 400 : 200, headers: { "content-type": "application/json" } });
+    }
     if (String(url) === "https://api.resend.com/emails") { emails.push(JSON.parse(op.body)); return new Response(JSON.stringify({ id: "e1" }), { status: 200 }); }
     if (String(url).startsWith("https://engine.test/")) {
       chamadasEngine.push({ url: String(url), headers: op.headers, corpo: op.body ? JSON.parse(op.body) : null });
@@ -1486,4 +1492,81 @@ test("Chatbot — com a chave secreta do app, só aceita mensagem assinada pela 
   const r = await p.req("/webhook/whatsapp", { metodo: "POST", corpo: JSON.parse(corpo), cabecalhos: { "x-hub-signature-256": "sha256=" + createHmac("sha256", "a".repeat(32)).update(corpo).digest("hex") } });
   assert.equal(r.status, 200);
   assert.equal(enviadosPara(p, CLI).length, 1);
+});
+
+// ===== Planos: teste grátis de 7 dias, recursos por plano, cortesia e cobrança (Asaas)
+test("Planos — teste de 7 dias, recurso fora do plano, cortesia pelo administrador e limite da equipe", async () => {
+  const p = await criarPlataforma();
+  const r = await p.req("/api/cadastro", { metodo: "POST", quem: "ana", corpo: { nome: "Ana", empresa: "Loja da Ana", email: "ana@loja.test", senha: "SenhaMuitoForte#2026", aceite: true, plano: "essencial" } });
+  assert.equal(r.status, 200);
+  const eu = await p.req("/api/eu", { quem: "ana" });
+  const org = eu.dados.organizacoes[0];
+  assert.equal(org.acesso.status, "TESTE"); assert.equal(org.acesso.dias, 7); assert.equal(org.acesso.plano, "essencial");
+  assert.equal((await p.req(`/api/orgs/${org.id}/zap/itens`, { quem: "ana" })).status, 200, "chatbot faz parte do Essencial");
+  const mk = await p.req(`/api/orgs/${org.id}/mk/marcas`, { quem: "ana" });
+  assert.equal(mk.status, 402); assert.equal(mk.dados.codigo, "PLANO_RECURSO"); assert.equal(mk.dados.plano_minimo.id, "growth");
+  const plano = await p.req(`/api/orgs/${org.id}/plano`, { quem: "ana" });
+  assert.equal(plano.dados.planos.find(x => x.id === "start").anual, Math.round(690 * 12 * 0.8));
+  // Equipe: o Essencial permite 2 pessoas.
+  assert.equal((await p.req(`/api/orgs/${org.id}/membros`, { metodo: "POST", quem: "ana", corpo: { email: "b@loja.test", papel: "AGENTE" } })).status, 200);
+  const terceira = await p.req(`/api/orgs/${org.id}/membros`, { metodo: "POST", quem: "ana", corpo: { email: "c@loja.test", papel: "AGENTE" } });
+  assert.equal(terceira.status, 402); assert.equal(terceira.dados.codigo, "PLANO_LIMITE");
+  // Passaram 8 dias: só o plano fica aberto, e o robô do WhatsApp para.
+  p.env.DB.db.prepare("UPDATE plt_organizacoes SET teste_ate=? WHERE id=?").run(Date.now() - 86400000, org.id);
+  const fim = await p.req(`/api/orgs/${org.id}/zap/itens`, { quem: "ana" });
+  assert.equal(fim.status, 402); assert.equal(fim.dados.codigo, "PLANO_VENCIDO");
+  assert.equal((await p.req(`/api/orgs/${org.id}/plano`, { quem: "ana" })).dados.acesso.status, "TESTE_ACABOU");
+  // O administrador geral dá cortesia: acesso total sem custo.
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  assert.equal((await p.req(`/api/admin/organizacoes/${org.id}`, { metodo: "POST", quem: "admin", corpo: { plano_status: "CORTESIA" } })).status, 200);
+  assert.equal((await p.req(`/api/orgs/${org.id}/mk/marcas`, { quem: "ana" })).status, 200, "cortesia libera tudo");
+  assert.equal((await p.req("/api/eu", { quem: "admin" })).dados.organizacoes.find(o => o.id === 1).acesso.cortesia, true, "a Central é cortesia");
+});
+
+test("Planos — assinatura pelo Asaas (Pix, boleto ou cartão), pagamento confirmado libera, sem fidelidade", async () => {
+  const p = await criarPlataforma({ ASAAS_API_KEY: "aact_teste", ASAAS_SANDBOX: "1", ASAAS_WEBHOOK_TOKEN: "segredo-do-webhook-123" });
+  await p.req("/api/cadastro", { metodo: "POST", quem: "ana", corpo: { nome: "Ana", empresa: "Pousada Sol", email: "ana@sol.test", senha: "SenhaMuitoForte#2026", aceite: true, plano: "start" } });
+  const org = (await p.req("/api/eu", { quem: "ana" })).dados.organizacoes[0];
+  p.asaas = (caminho, metodo, corpo) => {
+    if (caminho === "/customers" && metodo === "POST") return { id: "cus_1" };
+    if (caminho === "/subscriptions" && metodo === "POST") return { id: "sub_1", ...corpo };
+    if (caminho === "/subscriptions/sub_1/payments") return { data: [{ id: "pay_1", value: 6624, status: "PENDING", dueDate: "2026-10-22", invoiceUrl: "https://sandbox.asaas.com/i/pay_1" }] };
+    return {};
+  };
+  const ruim = await p.req(`/api/orgs/${org.id}/plano/assinar`, { metodo: "POST", quem: "ana", corpo: { plano: "growth", ciclo: "ANUAL", nome: "Pousada Sol LTDA", documento: "11.111.111/1111-11", email: "fin@sol.test" } });
+  assert.equal(ruim.status, 400, "CNPJ inválido");
+  const ok = await p.req(`/api/orgs/${org.id}/plano/assinar`, { metodo: "POST", quem: "ana", corpo: { plano: "growth", ciclo: "ANUAL", nome: "Pousada Sol LTDA", documento: "11.222.333/0001-81", email: "fin@sol.test" } });
+  assert.equal(ok.status, 200, JSON.stringify(ok.dados));
+  assert.equal(ok.dados.link, "https://sandbox.asaas.com/i/pay_1");
+  const sub = p.asaasChamadas.find(c => c.url.endsWith("/subscriptions") && c.metodo === "POST").corpo;
+  assert.equal(sub.billingType, "UNDEFINED", "o cliente escolhe Pix, boleto ou cartão");
+  assert.equal(sub.cycle, "YEARLY"); assert.equal(sub.value, Math.round(1890 * 12 * 0.8));
+  assert.ok(p.asaasChamadas[0].url.startsWith("https://api-sandbox.asaas.com/"));
+  // Webhook sem o token: recusado.
+  assert.equal((await p.req("/webhook/asaas", { metodo: "POST", corpo: { event: "PAYMENT_RECEIVED", payment: { id: "pay_1", subscription: "sub_1" } } })).status, 401);
+  const pago = await p.req("/webhook/asaas", { metodo: "POST", cabecalhos: { "asaas-access-token": "segredo-do-webhook-123" }, corpo: { event: "PAYMENT_RECEIVED", payment: { id: "pay_1", subscription: "sub_1", value: 18144, status: "RECEIVED", billingType: "PIX", dueDate: "2026-10-22", paymentDate: "2026-10-22", externalReference: `org:${org.id}:growth:ANUAL` } } });
+  assert.equal(pago.status, 200);
+  const a = (await p.req(`/api/orgs/${org.id}/plano`, { quem: "ana" })).dados;
+  assert.equal(a.acesso.status, "ATIVO"); assert.equal(a.acesso.plano, "growth"); assert.equal(a.acesso.ciclo, "ANUAL");
+  assert.equal(a.pagamentos[0].status, "RECEIVED"); assert.equal(a.pagamentos[0].forma, "PIX");
+  assert.equal((await p.req(`/api/orgs/${org.id}/mk/marcas`, { quem: "ana" })).status, 200, "Growth libera o marketing");
+  // Cancelar: sem multa, continua até o fim do período pago.
+  assert.equal((await p.req(`/api/orgs/${org.id}/plano/cancelar`, { metodo: "POST", quem: "ana", corpo: {} })).status, 200);
+  const c = (await p.req(`/api/orgs/${org.id}/plano`, { quem: "ana" })).dados.acesso;
+  assert.equal(c.status, "CANCELADO"); assert.equal(c.liberado, true);
+});
+
+test("Planos — lembrete por e-mail quando o teste está acabando (uma vez só)", async () => {
+  const p = await criarPlataforma({ RESEND_API_KEY: "re_teste", EMAIL_REMETENTE: "DENIA <ola@denia.test>" });
+  await p.req("/api/cadastro", { metodo: "POST", quem: "ana", corpo: { nome: "Ana", empresa: "Loja da Ana", email: "ana@loja.test", senha: "SenhaMuitoForte#2026", aceite: true } });
+  const base = Date.parse("2026-10-21T13:00:00Z");
+  p.env.__agora = () => base;
+  p.env.DB.db.prepare("UPDATE plt_organizacoes SET teste_ate=? WHERE nome='Loja da Ana'").run(base + 1.5 * 86400000);
+  const mod = await import("../src/worker.js?lembrete");
+  await mod.default.scheduled({}, p.env, null);
+  const para = p.emails.filter(e => e.to[0] === "ana@loja.test");
+  assert.equal(para.length, 1); assert.match(para[0].subject, /termina em 2 dias/);
+  p.env.DB.db.prepare("DELETE FROM plt_meta WHERE chave='lembretes_plano_dia'").run();
+  await mod.default.scheduled({}, p.env, null);
+  assert.equal(p.emails.filter(e => e.to[0] === "ana@loja.test").length, 1, "não repete o mesmo aviso");
 });

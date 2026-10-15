@@ -6,6 +6,7 @@
 // algo que a busca por palavra não resolve, com o modelo mais barato).
 
 import { openaiResposta } from "./marketing.js";
+import { acessoDa, lerPlanos } from "./planos.js";
 
 const GRAPH = "https://graph.facebook.com/v21.0";
 export const DDL_ZAP = [
@@ -250,9 +251,12 @@ async function comIA(z, texto, m, cat, candidatos) {
   const chaveDia = `zap_ia_${z.org}_${hoje}`;
   const usadas = Number((await z.env.DB.prepare("SELECT valor FROM plt_meta WHERE chave=?").bind(chaveDia).first().catch(() => null))?.valor || 0);
   if (usadas >= Number(z.cfg.limite_ia_dia || 300)) return false;
+  const chaveMes = `zap_ia_mes_${z.org}_${hoje.slice(0, 7)}`;
+  const doMes = Number((await z.env.DB.prepare("SELECT valor FROM plt_meta WHERE chave=?").bind(chaveMes).first().catch(() => null))?.valor || 0);
+  if (z.limiteMes && doMes >= z.limiteMes) return false; // limite de IA do plano no mês
   const envIA = await z.k.comIA(z.env, z.org);
   if (!envIA.OPENAI_API_KEY) return false;
-  await z.env.DB.prepare("INSERT OR REPLACE INTO plt_meta(chave,valor) VALUES(?,?)").bind(chaveDia, String(usadas + 1)).run();
+  await z.env.DB.batch([z.env.DB.prepare("INSERT OR REPLACE INTO plt_meta(chave,valor) VALUES(?,?)").bind(chaveDia, String(usadas + 1)), z.env.DB.prepare("INSERT OR REPLACE INTO plt_meta(chave,valor) VALUES(?,?)").bind(chaveMes, String(doMes + 1))]);
   const opcoes = m.todos.filter(i => m.visivel(i)).map(i => `${i.id}|${caminhoDe(m, i)}${i.palavras ? " (" + cortar(i.palavras, 80) + ")" : ""}${i.tipo === "RESPOSTA" && i.texto ? " => " + cortar(i.texto, 160) : ""}`).join("\n");
   const contatos = cat.length && cat.length <= 200 ? `\n\nCONTATOS DO CATÁLOGO: ${cortar(cat.map(c => c.nome).join(", "), 2500)}` : "";
   let o;
@@ -301,7 +305,7 @@ async function processarWebhook(env, k, d, bruto, assinatura) {
     const pnid = String(v?.metadata?.phone_number_id || "");
     if (!pnid) continue;
     if (!contas.has(pnid)) {
-      const conta = await env.DB.prepare("SELECT c.*, o.nome org_nome, o.status org_status FROM plt_zap_contas c JOIN plt_organizacoes o ON o.id=c.org_id WHERE c.phone_number_id=?").bind(pnid).first();
+      const conta = await env.DB.prepare("SELECT c.*, o.nome org_nome, o.status org_status, o.plano, o.plano_status, o.teste_ate, o.pago_ate FROM plt_zap_contas c JOIN plt_organizacoes o ON o.id=c.org_id WHERE c.phone_number_id=?").bind(pnid).first();
       let valida = Boolean(conta);
       if (conta) {
         const segredos = [conta.segredo_cifrado ? await k.decifrar(env, conta.segredo_cifrado) : "", String(env.META_APP_SECRET || "")].filter(Boolean);
@@ -317,6 +321,8 @@ async function processarWebhook(env, k, d, bruto, assinatura) {
         .bind(String(s.status || "").toUpperCase().slice(0, 20), s.errors?.[0] ? cortar(`${s.errors[0].code}: ${s.errors[0].error_data?.details || s.errors[0].title || ""}`, 300) : null, String(s.id || ""), conta.org_id)));
     }
     if (!conta.ativo || conta.org_status !== "ATIVA") continue;
+    // Plano: sem teste ou pagamento em dia, as mensagens só ficam registradas (o robô não responde).
+    if (!conta.acesso) conta.acesso = acessoDa(conta, k.agora(env), (await lerPlanos(env)).planos);
     const nomes = new Map((v.contacts || []).map(c => [digitos(c.wa_id), String(c?.profile?.name || "").slice(0, 80)]));
     for (const msg of (v.messages || []).slice(0, 10)) await receberMensagem(env, k, conta, msg, nomes.get(digitos(msg.from)) || "");
   }
@@ -332,7 +338,8 @@ async function receberMensagem(env, k, conta, msg, nome) {
   const wamid = String(msg.id || "");
   if (!tel || !wamid) return;
   const agora = k.agora(env);
-  const z = { env, k, org: conta.org_id, conta, cfg: lerConfig(conta), modo: conta.modo, tel, nome, agora, nomeEmpresa: conta.org_nome, enviadas: 0 };
+  const rec = conta.acesso?.recursos || [];
+  const z = { env, k, org: conta.org_id, conta, cfg: lerConfig(conta), modo: conta.modo === "MISTO" && !rec.includes("chatbot_ia") ? "BOTOES" : conta.modo, tel, nome, agora, nomeEmpresa: conta.org_nome, enviadas: 0, limiteMes: Number(conta.acesso?.limites?.ia_mes || 0) };
   const e = lerEntrada(msg);
   const [ins, , ctt, recentes] = await env.DB.batch([
     env.DB.prepare("INSERT OR IGNORE INTO plt_zap_msgs(org_id,telefone,direcao,origem,texto,wamid,status,criado_ms) VALUES(?,?,?,?,?,?,'RECEBIDA',?)").bind(z.org, tel, "E", "CLIENTE", cortar(e.rotulo, 4000), wamid, agora),
@@ -346,6 +353,7 @@ async function receberMensagem(env, k, conta, msg, nome) {
   const c = ctt?.results?.[0] || {};
   if (Number(c.pausado_ate || 0) > agora) return; // a equipe está atendendo
   if (Number(recentes?.results?.[0]?.n || 0) >= 25) return; // trava contra robô conversando com robô
+  if (!rec.includes("chatbot")) return;
   z.nome = nome || c.nome || "";
   await responder(z, e.texto, e.acao);
 }
@@ -444,6 +452,7 @@ export async function rotasZap(request, env, k, orgId, papel, resto) {
     }
     if (!["gpt-5-nano", "gpt-5-mini", "gpt-4o-mini", "gpt-4.1-mini"].includes(cfg.modelo_ia)) cfg.modelo_ia = "gpt-5-nano";
     const modo = ["BOTOES", "MISTO"].includes(corpo.modo) ? corpo.modo : c?.modo || "BOTOES";
+    if (modo === "MISTO" && k.acesso && !k.acesso.recursos.includes("chatbot_ia")) return json({ erro: "A IA no chatbot faz parte de um plano superior. Atualize em Plano e pagamento.", codigo: "PLANO_RECURSO" }, 402);
     const ativo = typeof corpo.ativo === "boolean" ? (corpo.ativo ? 1 : 0) : c ? c.ativo : 1;
     await env.DB.prepare("INSERT INTO plt_zap_contas(org_id,config,modo,ativo,atualizado_ms) VALUES(?,?,?,?,?) ON CONFLICT(org_id) DO UPDATE SET config=excluded.config, modo=excluded.modo, ativo=excluded.ativo, atualizado_ms=excluded.atualizado_ms").bind(orgId, JSON.stringify(cfg), modo, ativo, agora).run();
     await auditar(env, request, sessao, orgId, "CHATBOT", `Mensagens e modo do chatbot (${modo === "MISTO" ? "botões + IA" : "só botões"}${ativo ? "" : ", desligado"})`);
@@ -637,7 +646,7 @@ export async function rotasZap(request, env, k, orgId, papel, resto) {
     const conta = (await contaDa(env, orgId)) || { org_id: orgId, modo: "BOTOES", config: "{}" };
     const org = await env.DB.prepare("SELECT nome FROM plt_organizacoes WHERE id=?").bind(orgId).first();
     const modo = ["BOTOES", "MISTO"].includes(corpo.modo) ? corpo.modo : conta.modo;
-    const z = { env, k, org: orgId, conta, cfg: lerConfig(conta), modo, tel: "0", nome: "Teste", agora, nomeEmpresa: org?.nome || "", sim: true, registro: [], enviadas: 0 };
+    const z = { env, k, org: orgId, conta, cfg: lerConfig(conta), modo: modo === "MISTO" && k.acesso && !k.acesso.recursos.includes("chatbot_ia") ? "BOTOES" : modo, tel: "0", nome: "Teste", agora, nomeEmpresa: org?.nome || "", sim: true, registro: [], enviadas: 0, limiteMes: Number(k.acesso?.limites?.ia_mes || 0) };
     await responder(z, k.txt(corpo.texto, 500), String(corpo.acao || "").slice(0, 40));
     return json({ respostas: z.registro });
   }

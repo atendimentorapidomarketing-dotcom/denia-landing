@@ -234,6 +234,7 @@
     conta: { titulo: "Conta e segurança", render: paginaConta },
     guia: { titulo: "Guia de lojas", render: paginaGuia },
     chatbot: { titulo: "Chatbot do WhatsApp", render: paginaChatbot },
+    plano: { titulo: "Plano e pagamento", render: paginaPlano },
     whatsapp: { titulo: "WhatsApp", render: paginaWhatsapp },
     instagram: { titulo: "Instagram", render: (el, aba, vivo) => paginaCanalSocial(el, "instagram", vivo, aba) },
     facebook: { titulo: "Facebook", render: (el, aba, vivo) => paginaCanalSocial(el, "facebook", vivo, aba) },
@@ -278,6 +279,7 @@
       el.appendChild(h("div", { class: "cartao vidro" }, vazio("Acesso restrito", "Seu perfil não tem acesso a esta área.")));
       return;
     }
+    if (estado.org && !ROTAS_LIVRES.includes(nome) && !temRecurso(RECURSO_DA_ROTA[nome] || null) || estado.org && !estado.eu.usuario.super_admin && !acessoAtual().liberado && !ROTAS_LIVRES.includes(nome)) { telaTravada(el, RECURSO_DA_ROTA[nome]); return; }
     el.style.animation = "none"; void el.offsetWidth; el.style.animation = "";
     // Aviso da chave: só no Painel, e some de vez depois de colar a chave uma vez (ou ao tocar em "Agora não").
     if (estado.iaLigada === false && nome === "painel" && !sessao.ler("denia_faixa_ia") && !(estado.org && estado.org.chatbot && !estado.org.conectada)) {
@@ -327,6 +329,7 @@
     document.querySelectorAll("#lateral-nav a[data-super]").forEach(a => a.classList.toggle("oculto", !estado.eu.usuario.super_admin));
     document.querySelectorAll("#lateral-nav a[data-rota]:not([data-minimo]):not([data-super])").forEach(a => a.classList.toggle("oculto", ehRevisor() && !ROTAS_REVISOR.includes(a.dataset.rota)));
     aplicarModo();
+    aplicarPlano();
     // Título de grupo do menu some quando todos os links do grupo estão ocultos.
     document.querySelectorAll("#lateral-nav .lateral-grupo").forEach(g => {
       let el = g.nextElementSibling, algum = false;
@@ -1213,11 +1216,17 @@
     const nome = h("input", { class: "entrada", maxlength: "120" });
     const segmento = h("input", { class: "entrada", maxlength: "160", placeholder: "Ex.: Assistência técnica" });
     const cor = h("input", { class: "entrada", type: "color", value: "#4f8cff", style: "padding:4px;height:46px" });
+    let cfgPlanos = null;
+    try { cfgPlanos = await api("/api/admin/planos"); } catch { cfgPlanos = null; }
+    const nomesPlanos = cfgPlanos ? Object.values(cfgPlanos.planos).map(p => [p.id, p.nome]) : [["start", "Start"]];
+    const planoNovo = h("select", { class: "entrada" }, nomesPlanos.map(([v, n]) => h("option", { value: v, selected: v === "start", text: n })));
+    const situacaoNova = h("select", { class: "entrada" }, [["TESTE", "Teste grátis de 7 dias"], ["CORTESIA", "Cortesia — acesso total sem custo"]].map(([v, n]) => h("option", { value: v, text: n })));
     el.appendChild(h("section", { class: "cartao vidro formulario" }, h("h3", { style: "margin:0", text: "Nova empresa" }),
       h("div", { class: "linha-form" }, campo("Nome", nome), campo("Segmento", segmento), campo("Cor", cor)),
+      h("div", { class: "linha-form" }, campo("Plano", planoNovo), campo("Situação", situacaoNova)),
       h("div", { class: "acoes" }, botao("Criar empresa", async () => {
         try {
-          const r = await api("/api/admin/organizacoes", { metodo: "POST", corpo: { nome: nome.value, segmento: segmento.value, cor: cor.value } });
+          const r = await api("/api/admin/organizacoes", { metodo: "POST", corpo: { nome: nome.value, segmento: segmento.value, cor: cor.value, plano: planoNovo.value, plano_status: situacaoNova.value } });
           aviso("Empresa criada.", "ok");
           await recarregarEu(r.id);
           location.hash = "#/integracoes";
@@ -1225,10 +1234,12 @@
       }, "btn-primario"))));
     const lista = estado.eu.organizacoes;
     el.appendChild(h("div", { class: "tabela-caixa" }, h("table", {},
-      h("thead", {}, h("tr", {}, h("th", { text: "Empresa" }), h("th", { text: "IA" }), h("th", { text: "Situação" }), h("th", { text: "" }))),
+      h("thead", {}, h("tr", {}, h("th", { text: "Empresa" }), h("th", { text: "IA" }), h("th", { text: "Plano" }), h("th", { text: "Situação" }), h("th", { text: "" }))),
       h("tbody", {}, lista.map(o => h("tr", {},
         h("td", {}, h("strong", { text: o.nome }), h("span", { class: "sub", text: o.segmento || "—" })),
-        h("td", {}, o.conectada ? selo("Conectada", "ok") : selo("Não conectada", "alerta")),
+        h("td", {}, o.conectada ? selo("Conectada", "ok") : o.chatbot ? selo("Chatbot", "ok") : selo("Não conectada", "alerta")),
+        h("td", {}, h("strong", { text: (o.acesso || {}).nome || o.plano }), h("span", { class: "sub", text: (NOME_STATUS_PLANO[(o.acesso || {}).status] || "") + ((o.acesso || {}).dias != null && !(o.acesso || {}).cortesia ? ` · ${(o.acesso || {}).dias} dia(s)` : "") }),
+          botao("Mudar", () => mudarPlanoEmpresa(o, nomesPlanos), "btn-secundario btn-pequeno")),
         h("td", {}, o.status === "ATIVA" ? selo("Ativa", "ok") : selo("Suspensa", "erro")),
         h("td", {}, h("div", { class: "acoes", style: "justify-content:flex-end" },
           botao("Abrir painel", () => { escolherEmpresa(o.id); location.hash = "#/painel"; }, "btn-secundario btn-pequeno"),
@@ -1238,6 +1249,34 @@
             try { await api("/api/admin/organizacoes/" + o.id, { metodo: "POST", corpo: { status: suspender ? "SUSPENSA" : "ATIVA" } }); await recarregarEu(); navegar(); }
             catch (e) { aviso(e.message, "erro"); }
           }, o.status === "ATIVA" ? "btn-perigo btn-pequeno" : "btn-secundario btn-pequeno")))))))));
+    if (cfgPlanos) el.appendChild(cartaoValoresPlanos(cfgPlanos));
+  }
+  function mudarPlanoEmpresa(o, nomesPlanos) {
+    const plano = h("select", { class: "entrada" }, nomesPlanos.map(([v, n]) => h("option", { value: v, selected: v === o.plano, text: n })));
+    const sit = h("select", { class: "entrada" }, [["TESTE", "Teste grátis"], ["ATIVO", "Ativo (pago)"], ["CORTESIA", "Cortesia — acesso total sem custo"], ["CANCELADO", "Cancelado"], ["BLOQUEADO", "Bloqueado"]].map(([v, n]) => h("option", { value: v, selected: v === o.plano_status, text: n })));
+    const dias = h("input", { class: "entrada", type: "number", min: "0", max: "365", value: "0" });
+    const ate = h("input", { class: "entrada", type: "date" });
+    const fechar = gaveta(`Plano de ${o.nome}`, [
+      campo("Plano", plano), campo("Situação", sit, "Cortesia libera todos os recursos sem cobrança — só para as empresas que você aprovar."),
+      campo("Mais dias de teste", dias), campo("Liberado (pago) até", ate, "Use para pagamentos recebidos fora da plataforma."),
+      h("div", { class: "acoes" }, botao("Salvar", async () => {
+        try { await api("/api/admin/organizacoes/" + o.id, { metodo: "POST", corpo: { plano: plano.value, plano_status: sit.value, mais_dias_teste: Number(dias.value) || 0, pago_ate: ate.value || undefined } }); aviso("Plano atualizado.", "ok"); fechar(); await recarregarEu(); navegar(); }
+        catch (e) { aviso(e.message, "erro"); }
+      }, "btn-primario"))]);
+  }
+  function cartaoValoresPlanos(cfg) {
+    const ent = {};
+    const desconto = h("input", { class: "entrada", type: "number", min: "0", max: "50", value: String(Math.round(cfg.desconto_anual * 100)) });
+    return h("section", { class: "cartao vidro formulario" }, h("h3", { style: "margin:0", text: "Valores dos planos" }),
+      h("p", { class: "sub", style: "margin:0", text: cfg.cobranca ? "Cobrança on-line ligada (Asaas)." : "Cobrança on-line desligada: crie no Worker da plataforma ASAAS_API_KEY e ASAAS_WEBHOOK_TOKEN para receber por Pix, boleto e cartão." }),
+      h("div", { class: "tabela-caixa" }, h("table", {}, h("thead", {}, h("tr", {}, ["Plano", "Mensal (R$)", "Anual (R$, vazio = automático)", "Pessoas", "IA do chatbot/mês", "Aparece"].map(t => h("th", { text: t })))),
+        h("tbody", {}, Object.values(cfg.planos).map(p => { ent[p.id] = { mensal: h("input", { class: "entrada entrada-preco", type: "number", min: "0", value: String(p.mensal) }), anual: h("input", { class: "entrada entrada-preco", type: "number", min: "0", placeholder: String(p.anual) }), usuarios: h("input", { class: "entrada entrada-preco", type: "number", min: "1", value: String(p.limites.usuarios) }), ia: h("input", { class: "entrada entrada-preco", type: "number", min: "0", value: String(p.limites.ia_mes) }), visivel: h("input", { type: "checkbox", checked: p.visivel }) };
+          return h("tr", {}, h("td", {}, h("strong", { text: p.nome })), h("td", {}, ent[p.id].mensal), h("td", {}, ent[p.id].anual), h("td", {}, ent[p.id].usuarios), h("td", {}, ent[p.id].ia), h("td", {}, ent[p.id].visivel)); })))),
+      campo("Desconto do plano anual (%)", desconto),
+      h("div", { class: "acoes" }, botao("Salvar valores", async () => {
+        try { await api("/api/admin/planos", { metodo: "POST", corpo: { desconto_anual: (Number(desconto.value) || 0) / 100, planos: Object.fromEntries(Object.entries(ent).map(([id, e]) => [id, { mensal: Number(e.mensal.value), anual: Number(e.anual.value) || 0, visivel: e.visivel.checked, limites: { usuarios: Number(e.usuarios.value), ia_mes: Number(e.ia.value) } }])) } }); aviso("Valores salvos.", "ok"); }
+        catch (e) { aviso(e.message, "erro"); }
+      }, "btn-primario")));
   }
 
   // ---------------------------------------------------------------------------
@@ -1951,6 +1990,104 @@
       h("p", { class: "sub", text: "Simula a conversa: nada é enviado pelo WhatsApp e nada entra nas métricas. No modo Botões + IA, o que você escrever pode usar a IA (centavos)." }),
       h("div", { class: "acoes", style: "margin:8px 0" }, botao("Começar (oi)", () => enviar("oi", "", "oi"), "btn-primario btn-pequeno"), botao("Limpar", () => tela.replaceChildren(), "btn-secundario btn-pequeno")),
       tela, h("div", { class: "compor" }, entrada, botao("Enviar", mandar, "btn-primario"))));
+  }
+
+  // ----- Plano e pagamento: teste grátis, planos (mensal/anual), assinatura (Pix, boleto, cartão) e histórico.
+  const RECURSO_DA_ROTA = {
+    conversas: "ia_completa", atendimentos: "ia_completa", profissionais: "ia_completa", treinamento: "ia_completa", aprendizados: "ia_completa", clientes: "ia_completa", whatsapp: "ia_completa", guia: "ia_completa",
+    chatbot: "chatbot", estudio: "marketing", calendario: "marketing", aprovacoes: "marketing", marcas: "marketing", instagram: "marketing", facebook: "marketing", google: "marketing", social: "marketing", denia: "voz"
+  };
+  window.DENIA_RECURSOS = window.DENIA_RECURSOS || { chatbot: "Chatbot do WhatsApp com botões e listas", chatbot_ia: "IA no chatbot", ia_completa: "IA completa de atendimento (atende como uma pessoa, com memória)", marketing: "Instagram, Facebook e Google: posts, artes, comentários e avaliações", voz: "DENIA por voz, ao vivo", multiempresa: "Várias empresas, marcas e unidades", temporada: "Locação por temporada" };
+  const ROTAS_LIVRES = ["plano", "conta", "equipe", "auditoria", "empresas", "contatos", "painel", "integracoes", "consumo"];
+  const acessoAtual = () => (estado.org && estado.org.acesso) || { liberado: true, recursos: [], status: "?" };
+  const temRecurso = r => !r || estado.eu.usuario.super_admin || (acessoAtual().liberado && (acessoAtual().recursos || []).includes(r));
+  const NOME_STATUS_PLANO = { TESTE: "Teste grátis", ATIVO: "Ativo", ATRASADO: "Pagamento pendente", CANCELADO: "Cancelado (usa até o fim do período)", CORTESIA: "Cortesia — acesso total", BLOQUEADO: "Bloqueado", TESTE_ACABOU: "Teste encerrado" };
+  function aplicarPlano() {
+    document.querySelectorAll("#lateral-nav a[data-rota]").forEach(a => {
+      const r = RECURSO_DA_ROTA[a.dataset.rota];
+      const travado = r && !temRecurso(r);
+      a.classList.toggle("travado", Boolean(travado));
+      a.title = travado ? "Disponível em um plano superior" : "";
+    });
+    const f = $("faixa-plano");
+    if (!f) return;
+    const a = acessoAtual();
+    const mostrar = estado.org && !estado.eu.usuario.super_admin && (a.status === "TESTE" || a.status === "TESTE_ACABOU" || a.status === "ATRASADO" || a.status === "BLOQUEADO");
+    if (!mostrar) { f.classList.add("oculto"); f.replaceChildren(); return; }
+    const txtF = a.status === "TESTE" ? `Teste grátis: ${a.dias <= 1 ? "último dia" : `faltam ${a.dias} dias`} do plano ${a.nome}.` : a.status === "TESTE_ACABOU" ? "Seu teste grátis terminou. O atendimento automático está pausado; seus dados continuam guardados." : a.status === "ATRASADO" ? "O pagamento do plano está pendente. O acesso continua por até 3 dias depois do vencimento." : "O plano desta empresa está bloqueado.";
+    f.className = "faixa-plano" + (a.status === "TESTE" ? "" : " faixa-plano-alerta");
+    f.replaceChildren(h("span", { text: txtF }), pode("ADMIN") ? h("a", { class: "btn btn-primario btn-pequeno", href: "#/plano" }, a.status === "TESTE" ? "Escolher plano" : "Regularizar") : null);
+  }
+  function telaTravada(el, recurso) {
+    const a = acessoAtual();
+    const bloqueado = !a.liberado;
+    el.appendChild(h("section", { class: "cartao vidro trava" }, h("div", { class: "trava-icone", text: "🔒" }),
+      h("h2", { text: bloqueado ? (a.status === "TESTE_ACABOU" ? "Seu teste grátis terminou" : "Plano pendente") : "Disponível em um plano superior" }),
+      h("p", { text: bloqueado ? "Escolha um plano para voltar a usar. Nada foi apagado: menu, treinamento, conversas e configurações continuam aqui." : `Seu plano ${a.nome} não inclui: ${(window.DENIA_RECURSOS || {})[recurso] || recurso}. Atualize o plano para liberar na hora.` }),
+      h("div", { class: "acoes", style: "justify-content:center" }, h("a", { class: "btn btn-primario", href: "#/plano" }, "Ver planos"))));
+  }
+  async function paginaPlano(el, _p, vivo) {
+    el.appendChild(cabeca("Plano e pagamento", "Sem fidelidade: mude de plano ou cancele quando quiser. No plano anual você economiza."));
+    const area = h("div", { class: "grade" }, carregando());
+    el.appendChild(area);
+    let d;
+    try { d = await org("plano"); } catch (e) { if (vivo()) falha(area, e); return; }
+    if (!vivo()) return;
+    window.DENIA_RECURSOS = d.recursos;
+    const a = d.acesso;
+    estado.org.acesso = a; aplicarPlano();
+    const f = estado.planoF = estado.planoF || { ciclo: "MENSAL" };
+    const real = v => dinheiro(v, "BRL");
+    const resumo = h("section", { class: "grade grade-4" },
+      metrica("Plano", a.nome, NOME_STATUS_PLANO[a.status] || a.status),
+      metrica(a.status === "TESTE" ? "Teste termina" : "Válido até", a.cortesia ? "Sem prazo" : a.ate ? new Date(a.ate).toLocaleDateString(LOCALE) : "—", a.dias != null && !a.cortesia ? `${a.dias} dia(s)` : a.cortesia ? "liberado pela equipe DENIA" : ""),
+      metrica("Pagamento", a.ciclo === "ANUAL" ? "Anual" : a.ciclo === "MENSAL" ? "Mensal" : "—", a.assinatura ? "assinatura ativa" : "sem assinatura"),
+      metrica("Equipe", `${numero(d.uso.usuarios)} / ${a.cortesia ? "∞" : numero(a.limites.usuarios)}`, "pessoas com acesso"));
+    const ciclo = h("div", { class: "abas abas-chips", role: "group", "aria-label": "Ciclo" }, [["MENSAL", "Mensal"], ["ANUAL", `Anual (−${Math.round(d.desconto_anual * 100)}%)`]].map(([v, n]) => h("button", { type: "button", class: "aba" + (f.ciclo === v ? " ativo" : ""), "aria-pressed": f.ciclo === v ? "true" : "false", onclick: () => { f.ciclo = v; navegar(); } }, n)));
+    const cartoes = h("section", { class: "grade-planos-app" }, d.planos.map(p => {
+      const atual = p.id === a.plano && ["ATIVO", "CORTESIA"].includes(a.status);
+      const preco = f.ciclo === "ANUAL" ? p.anual : p.mensal;
+      return h("article", { class: "cartao vidro plano-app" + (p.id === "growth" ? " plano-app-destaque" : "") },
+        h("h3", { style: "margin:0", text: p.nome }), h("p", { class: "sub", style: "margin:0", text: p.desc }),
+        h("p", { class: "plano-app-preco" }, h("strong", { text: real(preco) }), h("small", { text: f.ciclo === "ANUAL" ? "/ano" : "/mês" })),
+        f.ciclo === "ANUAL" ? h("p", { class: "sub", style: "margin:0", text: `equivale a ${real(p.anual / 12)}/mês` }) : null,
+        h("ul", { class: "lista-simples" }, p.recursos.map(r => h("li", { text: "✓ " + d.recursos[r] })), h("li", { text: `✓ Até ${numero(p.limites.usuarios)} pessoas na equipe` }), h("li", { text: `✓ ${numero(p.limites.ia_mes)} respostas de IA do chatbot por mês` })),
+        atual ? selo("Seu plano", "ok") : d.pode_assinar && !a.cortesia ? botao(a.status === "TESTE" && p.id === a.plano ? "Assinar este plano" : "Escolher", () => assinar(p, d), "btn-primario") : null);
+    }));
+    const pags = d.pagamentos || [];
+    const NOME_PAG = { PENDING: "Aguardando", RECEIVED: "Pago", CONFIRMED: "Pago", OVERDUE: "Vencido", REFUNDED: "Estornado", RECEIVED_IN_CASH: "Pago" };
+    trocar(area, resumo,
+      a.cortesia ? h("p", { class: "nota", text: "Esta empresa tem cortesia da equipe DENIA: acesso total, sem custo." }) : null,
+      h("section", { class: "cartao vidro filtros-desempenho" }, ciclo),
+      cartoes,
+      h("p", { class: "nota", text: "Pagamento por Pix, boleto ou cartão de crédito, com nota fiscal. A cobrança é feita pelo Asaas, instituição de pagamento autorizada pelo Banco Central. Mensagens do WhatsApp cobradas pela Meta não estão incluídas." }),
+      pags.length ? h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Pagamentos" }), h("div", { class: "tabela-caixa" }, h("table", {}, h("thead", {}, h("tr", {}, ["Vencimento", "Valor", "Forma", "Situação", ""].map(t => h("th", { text: t })))),
+        h("tbody", {}, pags.map(x => h("tr", {}, h("td", { text: dataCompleta(x.vencimento) }), h("td", { text: real(x.valor) }), h("td", { text: ({ PIX: "Pix", BOLETO: "Boleto", CREDIT_CARD: "Cartão", UNDEFINED: "A escolher" })[x.forma] || x.forma || "—" }), h("td", {}, selo(NOME_PAG[x.status] || x.status, ["RECEIVED", "CONFIRMED", "RECEIVED_IN_CASH"].includes(x.status) ? "ok" : x.status === "OVERDUE" ? "erro" : "alerta")),
+          h("td", {}, x.link ? h("a", { class: "btn btn-secundario btn-pequeno", href: x.link, target: "_blank", rel: "noopener" }, ["RECEIVED", "CONFIRMED"].includes(x.status) ? "Comprovante" : "Pagar") : null))))))) : null,
+      a.assinatura && d.pode_assinar && !a.cortesia ? h("div", { class: "acoes" }, botao("Cancelar assinatura", async () => {
+        if (!(await modal({ titulo: "Cancelar a assinatura?", conteudo: "Sem multa. Você continua usando até o fim do período já pago; depois o atendimento automático pausa (os dados ficam guardados).", confirmar: "Cancelar assinatura", perigo: true }))) return;
+        try { await org("plano/cancelar", { metodo: "POST", corpo: {} }); aviso("Assinatura cancelada.", "ok"); await recarregarEu(); navegar(); } catch (e) { aviso(e.message, "erro"); }
+      }, "btn-secundario")) : null);
+  }
+  function assinar(p, d) {
+    const f = estado.planoF;
+    const nome = h("input", { class: "entrada", maxlength: "120", placeholder: "Nome completo ou razão social" });
+    const doc = h("input", { class: "entrada", inputmode: "numeric", maxlength: "18", placeholder: "CPF ou CNPJ" });
+    const email = h("input", { class: "entrada", type: "email", value: estado.eu.usuario.email, maxlength: "200" });
+    const tel = h("input", { class: "entrada", inputmode: "tel", maxlength: "20", placeholder: "(21) 99999-9999 (opcional)" });
+    const preco = f.ciclo === "ANUAL" ? p.anual : p.mensal;
+    const fechar = gaveta(`Assinar o plano ${p.nome}`, [
+      h("p", {}, h("strong", { text: `${dinheiro(preco, "BRL")} ${f.ciclo === "ANUAL" ? "por ano" : "por mês"}` }), acessoAtual().status === "TESTE" ? " — a primeira cobrança vence no fim do teste grátis; você não perde nenhum dia." : ""),
+      campo("Nome ou razão social (vai na nota fiscal)", nome), campo("CPF ou CNPJ", doc), campo("E-mail para a cobrança e a nota", email), campo("Celular", tel),
+      h("p", { class: "sub", text: "Na próxima tela você escolhe Pix, boleto ou cartão de crédito. Sem fidelidade." }),
+      h("div", { class: "acoes" }, botao("Continuar para o pagamento", async () => {
+        try {
+          const r = await org("plano/assinar", { metodo: "POST", corpo: { plano: p.id, ciclo: f.ciclo, nome: nome.value, documento: doc.value, email: email.value, telefone: tel.value } });
+          fechar(); await recarregarEu();
+          if (r.link) { window.open(r.link, "_blank", "noopener"); aviso("Abrimos a página de pagamento. Quando o pagamento for confirmado, o plano é liberado sozinho.", "ok"); }
+          navegar();
+        } catch (e) { aviso(e.message, "erro"); }
+      }, "btn-primario"))]);
   }
 
   async function paginaWhatsapp(el, aba, vivo) {
