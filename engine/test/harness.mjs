@@ -42,7 +42,8 @@ export async function criarAmbiente({ inicio = "2026-10-07T14:00:00-03:00", env:
   amb.env = {
     DB: amb.DB, MEMORIA: amb.KV, OPENAI_API_KEY: "sk-test", WHATSAPP_TOKEN: "tok", WHATSAPP_VERIFY_TOKEN: "verify",
     PAINEL_SENHA: "senha-de-teste-123", TELEGRAM_BOT_TOKEN: "tg", TELEGRAM_CHAT_ID: "1", JANELA_AGRUPAMENTO_MS: "0",
-    __agora: () => amb.agora, ...extra
+    // Testes rodam como no plano pago (limite alto); o teste do limite usa LIMITE_CHAMADAS baixo.
+    LIMITE_CHAMADAS: "1000", __agora: () => amb.agora, ...extra
   };
   globalThis.fetch = async (url, op = {}) => {
     url = String(url);

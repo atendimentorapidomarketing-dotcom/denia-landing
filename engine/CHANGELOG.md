@@ -1,5 +1,24 @@
 # Changelog — DENIA Engine
 
+## 31.3.0 — 2026-10-15
+
+### Corrigido (respostas que não saíam: "Too many subrequests")
+- No plano gratuito da Cloudflare cada execução pode fazer só 50 chamadas externas, e cada consulta
+  ao banco conta. As versões novas faziam 35–90 por mensagem e o envio ao WhatsApp, no fim, era
+  recusado. Agora cada execução conta as próprias chamadas: perto do limite, a resposta vai para a
+  fila de envio (`d30_saida_fila`) e o cron envia no minuto seguinte — nada se perde. Se nem o
+  banco estiver disponível, a fila usa o KV.
+- Menos chamadas por mensagem: criação do esquema numa chamada só, travas de envio numa consulta
+  (eram 4), pessoa e pausa lidas uma vez por execução, registro do envio em lote, contabilidade
+  da IA e Telegram cedem a vez quando falta orçamento.
+- Mensagens que estouram o limite voltam para a fila do cron (antes viravam erro e tentavam de
+  novo na mesma execução, gastando o dobro).
+- O cron envia primeiro a fila e só faz as tarefas pesadas (aprendizado, relatório, revisão de
+  casos) se sobrar orçamento.
+- O esquema não era atualizado em bancos existentes (versão do esquema parada em 30.3): as tabelas
+  das versões 31.x agora são criadas.
+- No plano pago, defina `LIMITE_CHAMADAS=900`.
+
 ## 31.2.0 — 2026-10-15
 
 ### Corrigido (WhatsApp "respondendo" sem chegar)

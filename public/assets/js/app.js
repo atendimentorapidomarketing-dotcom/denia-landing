@@ -560,7 +560,7 @@
       const saida = String(m.direcao).toUpperCase() === "SAIDA", humano = String(m.origem).toUpperCase() === "HUMANO";
       if (String(m.origem).toUpperCase() === "LIGACAO") return h("div", { class: "msg msg-ligacao" }, "📞 " + (m.conteudo || ""), h("small", { text: "Resumo de ligação · " + quando(m.criado_em) }));
       // Entrega confirmada pela Meta (motor 31.2+): ✓ aceita, ✓✓ entregue, ✓✓ azul lida, ⚠ não chegou.
-      const ENTREGA = { ACEITA: ["✓", "Aceita pela Meta, ainda sem confirmação de entrega"], SENT: ["✓", "Enviada"], DELIVERED: ["✓✓", "Entregue"], READ: ["✓✓", "Lida"], REENVIADA: ["↻", "Reenviada depois de uma falha da Meta"] };
+      const ENTREGA = { ACEITA: ["✓", "Aceita pela Meta, ainda sem confirmação de entrega"], SENT: ["✓", "Enviada"], DELIVERED: ["✓✓", "Entregue"], READ: ["✓✓", "Lida"], REENVIADA: ["↻", "Reenviada depois de uma falha da Meta"], FILA: ["⏳", "Na fila de envio: sai em até 1 minuto"] };
       const falhou = saida && m.entrega === "FAILED";
       // Sem confirmação da Meta, a mensagem nunca aparece como "enviada": motor antigo (sem confirmações)
       // ou aceita há mais de 10 minutos sem nenhum aviso de entrega.
@@ -575,7 +575,7 @@
         falhou ? h("span", { class: "msg-falha", text: "⚠ NÃO CHEGOU: " + (m.entrega_erro || "a Meta não entregou esta mensagem.") }) : null,
         semConfirmar ? h("span", { class: "msg-aviso", text: "⚠ A Meta aceitou, mas não confirmou a entrega. Provavelmente NÃO chegou — veja WhatsApp → Verificar agora." }) : null,
         simulada ? h("span", { class: "msg-falha", text: "⚠ SIMULAÇÃO: esta resposta foi gerada no modo de teste e NÃO foi enviada ao WhatsApp." }) : null,
-        motorSemConfirmacao ? h("span", { class: "msg-aviso", text: /^(3[2-9]|31\.[2-9])/.test(versaoMotor) ? "⚠ A Meta não mandou nenhuma confirmação de entrega desta mensagem: provavelmente NÃO chegou. Veja WhatsApp → Verificar agora." : `⚠ Entrega não confirmada${versaoMotor ? ` (motor ${versaoMotor})` : ""}: não dá para saber se chegou. Cole o motor 31.2 no Worker denia.` }) : null,
+        motorSemConfirmacao ? h("span", { class: "msg-aviso", text: /^(3[2-9]|31\.[2-9])/.test(versaoMotor) ? "⚠ A Meta não mandou nenhuma confirmação de entrega desta mensagem: provavelmente NÃO chegou. Veja WhatsApp → Verificar agora." : `⚠ Entrega não confirmada${versaoMotor ? ` (motor ${versaoMotor})` : ""}: não dá para saber se chegou. Cole o motor 31.3 no Worker denia.` }) : null,
         h("small", {}, (saida ? (humano ? "Equipe · " : "DENIA · ") : "") + quando(m.criado_em), tique));
     }));
     if (!(d.mensagens || []).length) msgs.appendChild(vazio("Sem mensagens", ""));
@@ -1268,7 +1268,12 @@
       if (!st.teste_conta.pagamento) itens.push(["alerta", "A conta do WhatsApp Business não tem forma de pagamento cadastrada. Mensagens de modelo (para profissionais e fora das 24 h) não são entregues sem ela: business.facebook.com → Configurações → Pagamentos do WhatsApp."]);
       if (st.teste_conta.saude && String(st.teste_conta.saude).toUpperCase() !== "AVAILABLE") itens.push(["erro", `A Meta diz que a conta ${String(st.teste_conta.saude).toUpperCase() === "LIMITED" ? "está LIMITADA" : "NÃO PODE enviar mensagens"}: ${(st.teste_conta.problemas || []).join(" · ") || "veja o Gerenciador do WhatsApp."}`]);
     }
-    if (st.versao && !st.entregas_24h && !/^3[2-9]\./.test(st.versao)) itens.push(["alerta", `O motor ${st.versao} não sabe se as mensagens CHEGARAM (só se a Meta aceitou). Cole o motor 31.2 no Worker denia: ele confere cada entrega, avisa a equipe e mostra ✓✓ ou ⚠ em cada mensagem.`]);
+    // Limite de chamadas da Cloudflare (plano gratuito: 50 por execução).
+    const limiteCF = /subrequest/i.test(String((st.falhas_envio_24h && st.falhas_envio_24h.ultima) || "")) || (st.fila_envio && st.fila_envio.adiadas_24h > 0);
+    if (st.fila_envio && st.fila_envio.pendentes && st.fila_envio.mais_antiga_ms && Date.now() - st.fila_envio.mais_antiga_ms > 5 * 60000) itens.push(["erro", `${numero(st.fila_envio.pendentes)} resposta(s) estão presas na fila de envio desde ${quando(st.fila_envio.mais_antiga_ms)}. Confira em Settings → Triggers do Worker denia se o cron "* * * * *" (a cada minuto) existe.`]);
+    if (limiteCF) itens.push(["alerta", `O plano gratuito da Cloudflare deixa o motor fazer só 50 chamadas por execução, e cada resposta usa quase isso. ${st.fila_envio && st.fila_envio.adiadas_24h ? `${numero(st.fila_envio.adiadas_24h)} resposta(s) nas últimas 24 h passaram pela fila de envio e saíram até 1 minuto depois.` : "O motor 31.3 coloca a resposta numa fila e envia na execução seguinte, sem perder nada."} Para responder sempre na hora: assine o Workers Paid (US$ 5/mês em dash.cloudflare.com → Workers → Planos) e crie no Worker denia a variável LIMITE_CHAMADAS = 900.`]);
+    if (st.versao && /^31\.[0-2]\./.test(st.versao)) itens.push(["erro", `O motor ${st.versao} tem um erro: as tabelas novas não são criadas no banco, e no plano gratuito da Cloudflare as respostas podem não sair ("Too many subrequests"). Cole o motor 31.3 no Worker denia.`]);
+    if (st.versao && !st.entregas_24h && !/^3[2-9]\./.test(st.versao)) itens.push(["alerta", `O motor ${st.versao} não sabe se as mensagens CHEGARAM (só se a Meta aceitou). Cole o motor 31.3 no Worker denia: ele confere cada entrega, avisa a equipe e mostra ✓✓ ou ⚠ em cada mensagem.`]);
     if (st.versao && /^30\.[0-8]\./.test(st.versao)) itens.push(["info", `O motor está na versão ${st.versao}. Cole o motor mais novo no Worker denia para ter as correções e este diagnóstico completo.`]);
     if (!itens.some(i => i[0] === "erro")) itens.push(["ok", `Motor funcionando${st.enviadas_24h != null ? `: ${numero(st.enviadas_24h)} resposta(s) da IA nas últimas 24 h` : ""}${st.ultima_recebida_ms ? `, última mensagem recebida em ${quando(st.ultima_recebida_ms)}` : ""}.${st.teste_whatsapp && st.teste_whatsapp.ok ? ` Token do WhatsApp válido (${st.teste_whatsapp.numero || "número ok"}).` : ""}${st.teste_openai && st.teste_openai.ok ? " Chave da OpenAI válida." : ""}`]);
     return itens;
@@ -1289,7 +1294,7 @@
     trocar(caixa, carregando());
     let u;
     try { u = await eng(`usage?de=${de}&ate=${ate}`, { fresco: true }); }
-    catch (e) { trocar(caixa, h("section", { class: "cartao vidro" }, h("p", { class: "nota" + (e.status === 404 ? "" : " nota-alerta"), text: e.status === 404 ? "Cole o motor 31.2 no Worker denia para ver os números do WhatsApp em gráficos." : e.message }))); return; }
+    catch (e) { trocar(caixa, h("section", { class: "cartao vidro" }, h("p", { class: "nota" + (e.status === 404 ? "" : " nota-alerta"), text: e.status === 404 ? "Cole o motor 31.3 no Worker denia para ver os números do WhatsApp em gráficos." : e.message }))); return; }
     const dias = [];
     for (let t = Date.parse(u.de + "T00:00:00Z"); t <= Date.parse(u.ate + "T00:00:00Z"); t += 86400000) dias.push(new Date(t).toISOString().slice(0, 10));
     const mapa = lista => new Map((lista || []).map(x => [x.dia, Number(x.n || 0)]));

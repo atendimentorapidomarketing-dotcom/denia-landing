@@ -844,3 +844,20 @@ test("Números do WhatsApp — mensagens por dia (IA e equipe), contatos, casos 
   assert.equal(u.entregas.entregues, 1);
   assert.ok(Array.isArray(u.casos.novos));
 });
+
+test("Limite de chamadas da Cloudflare — perto do limite, a resposta vai para a fila e o cron envia (nunca se perde)", async () => {
+  const a = await criarAmbiente({ env: { LIMITE_CHAMADAS: "34" } });
+  a.llmCliente = () => decisao({ resposta: "Oi! Já vou te ajudar." });
+  await a.cliente(CLI, "Oi");
+  // Na execução do webhook não coube: nada saiu ainda, mas nada foi perdido.
+  const antes = a.para(CLI).length;
+  a.avancar(60000);
+  await a.cron();
+  await a.cron();
+  assert.ok(a.para(CLI).length > antes, "o cron respondeu o cliente");
+  assert.match(a.ultimoPara(CLI), /Já vou te ajudar/);
+  const fila = a.DB.q("SELECT status FROM d30_saida_fila");
+  assert.ok(fila.every(x => x.status === "ENVIADA"), "fila esvaziada: " + JSON.stringify(fila));
+  const msg = a.DB.q("SELECT whatsapp_message_id w FROM mensagens WHERE direcao='SAIDA' ORDER BY id DESC LIMIT 1")[0];
+  assert.match(msg.w, /^wamid\./, "a mensagem no painel ganhou o id real do WhatsApp");
+});
