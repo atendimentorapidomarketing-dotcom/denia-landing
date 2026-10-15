@@ -40,6 +40,13 @@ async function criarPlataforma(extra = {}) {
       const r = p.asaas(String(url).replace(/^https:\/\/api(-sandbox)?\.asaas\.com\/v3/, ""), op.method || "GET", corpo);
       return new Response(JSON.stringify(r), { status: r && r.errors ? 400 : 200, headers: { "content-type": "application/json" } });
     }
+    if (p && p.channex && /^https:\/\/(staging|app)\.channex\.io\/api\/v1\//.test(String(url))) {
+      const corpo = op.body ? JSON.parse(op.body) : null;
+      (p.channexChamadas ||= []).push({ caminho: String(url).replace(/^https:\/\/(staging|app)\.channex\.io\/api\/v1/, ""), metodo: op.method || "GET", corpo });
+      const r = p.channex(String(url).replace(/^https:\/\/(staging|app)\.channex\.io\/api\/v1/, ""), op.method || "GET", corpo);
+      return new Response(JSON.stringify(r), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (p && p.web && p.web[String(url)] !== undefined) return new Response(p.web[String(url)], { status: 200, headers: { "content-type": "text/calendar" } });
     if (String(url) === "https://api.resend.com/emails") { emails.push(JSON.parse(op.body)); return new Response(JSON.stringify({ id: "e1" }), { status: 200 }); }
     if (String(url).startsWith("https://engine.test/")) {
       chamadasEngine.push({ url: String(url), headers: op.headers, corpo: op.body ? JSON.parse(op.body) : null });
@@ -50,8 +57,9 @@ async function criarPlataforma(extra = {}) {
     }
     return fetchMock(url, op);
   };
+  const banco = new D1Fake(); banco.estrito = true; // como o D1 de verdade: "undefined" num parâmetro é erro
   const env = {
-    DB: new D1Fake(), PLATFORM_ADMIN_EMAIL: ADMIN, PLATFORM_ADMIN_PASSWORD: SENHA_ADMIN, SESSION_SECRET: "s".repeat(40),
+    DB: banco, PLATFORM_ADMIN_EMAIL: ADMIN, PLATFORM_ADMIN_PASSWORD: SENHA_ADMIN, SESSION_SECRET: "s".repeat(40),
     __semEspera: true, ASSETS: { fetch: async req => new Response("asset:" + new URL(req.url).pathname, { status: 200, headers: { "content-type": "text/html" } }) },
     ...extra
   };
@@ -1715,4 +1723,103 @@ test("Chatbot — a IA monta o chatbot a partir da descrição (pergunta o essen
   assert.equal((await p.req(`/api/orgs/${inf}/zap/assistente`, { metodo: "POST", quem: "admin", corpo: { acao: "aplicar", plano: r2.dados.plano } })).status, 409, "não apaga o menu sem confirmar");
   const t = await p.req(`/api/orgs/${inf}/zap/testar`, { metodo: "POST", quem: "admin", corpo: { texto: "oi" } });
   assert.match(t.dados.respostas[0].interativo.body.text, /Bem-vindo ao Infomix/);
+});
+
+// ===== Locação por temporada
+const ICAL_AIRBNB = ["BEGIN:VCALENDAR", "VERSION:2.0", "BEGIN:VEVENT", "DTSTART;VALUE=DATE:20261020", "DTEND;VALUE=DATE:20261025", "UID:abc123@airbnb.com", "SUMMARY:Reserved", "DESCRIPTION:Reservation URL: https://www.airbnb.com/hosting/reservations/details/HM123\\nPhone Number (Last 4 Digits): 1234", "END:VEVENT",
+  "BEGIN:VEVENT", "DTSTART;VALUE=DATE:20261101", "DTEND;VALUE=DATE:20261103", "UID:blk1@airbnb.com", "SUMMARY:Airbnb (Not available)", "END:VEVENT", "END:VCALENDAR"].join("\r\n");
+test("Temporada — imóvel, calendário do Airbnb importado, calendário único para o Booking e reserva dupla bloqueada", async () => {
+  const p = await criarPlataforma();
+  let relogio = Date.parse("2026-10-16T12:00:00Z");
+  p.env.__agora = () => relogio;
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  p.web = { "https://www.airbnb.com.br/calendar/ical/111.ics?s=abc": ICAL_AIRBNB };
+  const im = await p.req("/api/orgs/1/tp/imoveis", { metodo: "POST", quem: "admin", corpo: { nome: "Apto Copacabana 302", cidade: "Rio de Janeiro", capacidade: 4, preco_base: 400, preco_fds: 520, minimo_noites: 2, ajustes: { airbnb: 0, booking: 18, vrbo: 10 } } });
+  assert.equal(im.status, 200);
+  const id = im.dados.id;
+  const cal = await p.req(`/api/orgs/1/tp/imoveis/${id}/calendarios`, { metodo: "POST", quem: "admin", corpo: { url: "https://www.airbnb.com.br/calendar/ical/111.ics?s=abc" } });
+  assert.equal(cal.dados.ok, true); assert.equal(cal.dados.eventos, 2);
+  const res = (await p.req("/api/orgs/1/tp/reservas", { quem: "admin" })).dados.reservas;
+  assert.equal(res.length, 1); assert.equal(res[0].canal, "airbnb"); assert.equal(res[0].noites, 5);
+  const det = (await p.req(`/api/orgs/1/tp/imoveis/${id}`, { quem: "admin" })).dados.imovel;
+  const token = det.ical_url.match(/ical\/([a-f0-9]+)\.ics/)[1];
+  const paraBooking = await (await p.req(`/tp/ical/${token}/booking.ics`)).r.text();
+  assert.match(paraBooking, /DTSTART;VALUE=DATE:20261020/); assert.match(paraBooking, /DTEND;VALUE=DATE:20261025/);
+  assert.doesNotMatch(await (await p.req(`/tp/ical/${token}/airbnb.ics`)).r.text(), /20261020/, "o Airbnb não recebe de volta as reservas dele");
+  const dupla = await p.req("/api/orgs/1/tp/reservas", { metodo: "POST", quem: "admin", corpo: { imovel_id: id, inicio: "2026-10-22", fim: "2026-10-24", hospede: "Direto" } });
+  assert.equal(dupla.status, 409); assert.equal(dupla.dados.codigo, "CONFLITO");
+  // Limpeza agendada para o dia da saída.
+  const limp = (await p.req("/api/orgs/1/tp/limpezas", { quem: "admin" })).dados.limpezas;
+  assert.equal(limp[0].data, "2026-10-25");
+  // Preço: fim de semana e ajuste por plataforma no calendário.
+  const c = (await p.req("/api/orgs/1/tp/calendario?de=2026-10-23&ate=2026-10-24", { quem: "admin" })).dados;
+  assert.equal(c.imoveis[0].precos[0].preco, 520, "sexta à noite = fim de semana");
+  // Cancelaram no Airbnb: o evento some do calendário e a DENIA marca como cancelada.
+  p.web["https://www.airbnb.com.br/calendar/ical/111.ics?s=abc"] = ICAL_AIRBNB.replace(/BEGIN:VEVENT[\s\S]*?abc123[\s\S]*?END:VEVENT\r\n/, "");
+  relogio = Date.parse("2026-10-16T13:00:00Z");
+  await p.req(`/api/orgs/1/tp/calendarios/${cal.dados.id}/sincronizar`, { metodo: "POST", quem: "admin", corpo: {} });
+  assert.equal((await p.req("/api/orgs/1/tp/reservas", { quem: "admin" })).dados.reservas.find(r => r.inicio === "2026-10-20").status, "CANCELADA");
+});
+
+test("Temporada — conexão oficial (Channex): preço por plataforma, reserva e mensagem chegam, IA responde no idioma do hóspede", async () => {
+  const p = await criarPlataforma({ CHANNEX_API_KEY: "cx_teste", CHANNEX_STAGING: "1" });
+  p.env.__agora = () => Date.parse("2026-10-16T12:00:00Z");
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  await p.req("/api/orgs/1/ia/chave", { metodo: "POST", quem: "admin", corpo: { chave: "sk-proj-" + "f".repeat(40) } });
+  let n = 0;
+  p.channex = (caminho, metodo, corpo) => {
+    if (caminho === "/properties") return { data: { id: "prop-1" } };
+    if (caminho === "/room_types") return { data: { id: "room-1" } };
+    if (caminho === "/rate_plans") return { data: { id: "rate-" + (++n) } };
+    if (caminho === "/auth/one_time_token") return { data: { token: "tok123" } };
+    if (caminho === "/bookings/bk-9") return { data: { attributes: { ota_name: "Booking.com", status: "new", arrival_date: "2026-11-10", departure_date: "2026-11-13", amount: "1500.00", currency: "BRL", customer: { name: "Anna", surname: "Müller", mail: "anna@guest.booking.com" }, occupancy: { adults: 2, children: 0 } } } };
+    return { data: {} };
+  };
+  const id = (await p.req("/api/orgs/1/tp/imoveis", { metodo: "POST", quem: "admin", corpo: { nome: "Casa Búzios", capacidade: 6, preco_base: 800, ajustes: { airbnb: 0, booking: 20, vrbo: 10 }, ia_modo: "AUTO", treinamento: { checkin: "Check-in às 15h, chave no cofre (código enviado no dia).", wifi: "Rede CasaBuzios, senha mar2026" } } })).dados.id;
+  const con = await p.req(`/api/orgs/1/tp/imoveis/${id}/conectar`, { metodo: "POST", quem: "admin", corpo: {} });
+  assert.match(con.dados.url, /^https:\/\/staging\.channex\.io\/auth\/exchange\?oauth_session_key=tok123/);
+  const rest = p.channexChamadas.filter(c => c.caminho === "/restrictions").flatMap(c => c.corpo.values);
+  const doDia = rest.filter(v => v.date_from === "2026-10-20");
+  assert.deepEqual(doDia.map(v => v.rate).sort(), ["800.00", "880.00", "960.00"], "Airbnb 800, Vrbo +10%, Booking +20%");
+  // Mudar o preço de um período: vai para as três plataformas.
+  p.channexChamadas.length = 0;
+  await p.req("/api/orgs/1/tp/precos", { metodo: "POST", quem: "admin", corpo: { imovel_id: id, de: "2026-12-28", ate: "2027-01-02", preco: 1500, minimo: 4 } });
+  const vals = p.channexChamadas.filter(c => c.caminho === "/restrictions").flatMap(c => c.corpo.values);
+  assert.equal(vals.length, 18); assert.ok(vals.every(v => v.min_stay_arrival === 4));
+  assert.ok(vals.some(v => v.rate === "1800.00"));
+  // Webhook do Channex: sem o token, recusado; com ele, a reserva entra.
+  const cfg = (await p.req("/api/orgs/1/tp/config", { quem: "admin" })).dados;
+  const caminhoWebhook = cfg.webhook.replace(/^https?:\/\/[^/]+/, "");
+  assert.equal((await p.req("/webhook/channex?org=1&t=errado", { metodo: "POST", corpo: { event: "booking", payload: {} } })).status, 401);
+  await p.req(caminhoWebhook, { metodo: "POST", corpo: { event: "booking_new", payload: { property_id: "prop-1", booking_id: "bk-9", revision_id: "rev-1" } } });
+  const r = (await p.req("/api/orgs/1/tp/reservas", { quem: "admin" })).dados.reservas.find(x => x.canal === "booking");
+  assert.equal(r.hospede, "Anna Müller"); assert.equal(r.valor, 1500); assert.equal(r.hospedes, 2);
+  assert.ok(p.channexChamadas.some(c => c.caminho === "/booking_revisions/rev-1/ack"));
+  // Mensagem do hóspede em alemão: a IA responde em alemão (com tradução para o anfitrião) e envia (modo automático).
+  p.openai = (url, corpo) => {
+    const t = corpo.input[0].content[0].text;
+    assert.match(t, /Rede CasaBuzios/); assert.match(t, /Anna Müller/);
+    return { output: [{ content: [{ type: "output_text", text: JSON.stringify({ resposta: "Hallo Anna! Das WLAN heißt CasaBuzios, Passwort mar2026. 😊", traducao: "Olá Anna! O Wi-Fi é CasaBuzios, senha mar2026.", precisa_anfitriao: false, risco: "baixo" }) }] }] };
+  };
+  await p.req(caminhoWebhook, { metodo: "POST", corpo: { event: "message", payload: { property_id: "prop-1", booking_id: "bk-9", id: "msg-1", message: "Hallo! Wie ist das WLAN-Passwort?", sender: "guest" } } });
+  const enviada = p.channexChamadas.find(c => c.caminho === "/bookings/bk-9/messages");
+  assert.match(enviada.corpo.message.message, /Hallo Anna/);
+  const conv = (await p.req(`/api/orgs/1/tp/mensagens/${r.id}`, { quem: "admin" })).dados.mensagens;
+  assert.equal(conv.length, 2); assert.match(conv[1].traducao, /Olá Anna/);
+  // Visão geral: receita e reservas por plataforma.
+  const v = (await p.req("/api/orgs/1/tp/visao?de=2026-11-01&ate=2026-11-30", { quem: "admin" })).dados;
+  assert.equal(v.receita, 1500); assert.equal(v.por_canal[0].nome, "Booking.com"); assert.equal(v.noites_ocupadas, 3);
+  assert.equal(v.ocupacao, Math.round((3 / 30) * 1000) / 10);
+});
+
+test("Temporada — plano: o Essencial não inclui; o plano Temporada libera até 5 imóveis", async () => {
+  const p = await criarPlataforma();
+  await p.req("/api/cadastro", { metodo: "POST", quem: "ana", corpo: { nome: "Ana", empresa: "Ana Temporada", email: "ana@temp.test", senha: "SenhaMuitoForte#2026", aceite: true, plano: "essencial" } });
+  const org = (await p.req("/api/eu", { quem: "ana" })).dados.organizacoes[0];
+  const bloq = await p.req(`/api/orgs/${org.id}/tp/imoveis`, { quem: "ana" });
+  assert.equal(bloq.status, 402); assert.equal(bloq.dados.plano_minimo.id, "temporada");
+  p.env.DB.db.prepare("UPDATE plt_organizacoes SET plano='temporada' WHERE id=?").run(org.id);
+  for (let i = 0; i < 5; i++) assert.equal((await p.req(`/api/orgs/${org.id}/tp/imoveis`, { metodo: "POST", quem: "ana", corpo: { nome: "Imóvel " + i } })).status, 200);
+  const sexto = await p.req(`/api/orgs/${org.id}/tp/imoveis`, { metodo: "POST", quem: "ana", corpo: { nome: "Imóvel 6" } });
+  assert.equal(sexto.status, 402); assert.equal(sexto.dados.codigo, "PLANO_LIMITE");
 });

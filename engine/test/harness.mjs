@@ -7,7 +7,7 @@ let contadorModulo = 0;
 class Stmt {
   constructor(h, sql, args = []) { this.h = h; this.sql = sql; this.args = args; }
   bind(...a) { return new Stmt(this.h, this.sql, a); }
-  _a() { this.h.checar(); return this.args.map(v => v === undefined ? null : typeof v === "boolean" ? (v ? 1 : 0) : v); }
+  _a() { this.h.checar(); if (this.h.estrito) this.args.forEach((v, i) => { if (v === undefined) throw new Error(`D1_TYPE_ERROR: Type 'undefined' not supported for value 'undefined' (parâmetro ${i + 1} de: ${this.sql.slice(0, 120)})`); }); return this.args.map(v => v === undefined ? null : typeof v === "boolean" ? (v ? 1 : 0) : v); }
   async first() { const r = this.h.db.prepare(this.sql).get(...this._a()); return r ? { ...r } : null; }
   async all() { return { results: this.h.db.prepare(this.sql).all(...this._a()).map(r => ({ ...r })) }; }
   async run() {
@@ -35,7 +35,7 @@ export async function criarAmbiente({ inicio = "2026-10-07T14:00:00-03:00", env:
   const mod = await import(new URL("../worker.js?t=" + (++contadorModulo), import.meta.url).href);
   const worker = mod.default;
   const amb = {
-    agora: Date.parse(inicio), DB: new D1Fake(), KV: null,
+    agora: Date.parse(inicio), DB: Object.assign(new D1Fake(), { estrito: true }), KV: null,
     enviados: [], telegram: [], llm: [], plataforma: [], crmConsultas: [], crmResposta: null, llmCliente: null, llmPrestador: null, metaFalha: null, contador: 0, transcricoes: {}
   };
   amb.KV = new KVFake(() => amb.agora);

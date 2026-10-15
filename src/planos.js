@@ -17,7 +17,9 @@ export const PLANOS_PADRAO = {
   start: { nome: "Start", mensal: 690, desc: "Atendimento com IA completa no WhatsApp.", recursos: ["chatbot", "chatbot_ia", "ia_completa"], limites: { usuarios: 5, ia_mes: 3000 } },
   pro: { nome: "Pro", mensal: 1290, desc: "Para operar com uma rede de profissionais.", recursos: ["chatbot", "chatbot_ia", "ia_completa"], limites: { usuarios: 10, ia_mes: 6000 } },
   growth: { nome: "Growth", mensal: 1890, desc: "Atendimento, redes sociais e Google.", recursos: ["chatbot", "chatbot_ia", "ia_completa", "marketing", "voz"], limites: { usuarios: 20, ia_mes: 12000 } },
-  elite: { nome: "Elite", mensal: 2990, desc: "Para operações com várias frentes.", recursos: ["chatbot", "chatbot_ia", "ia_completa", "marketing", "voz", "multiempresa"], limites: { usuarios: 50, ia_mes: 30000 } }
+  elite: { nome: "Elite", mensal: 2990, desc: "Para operações com várias frentes.", recursos: ["chatbot", "chatbot_ia", "ia_completa", "marketing", "voz", "multiempresa", "temporada"], limites: { usuarios: 50, ia_mes: 30000, imoveis: 50 } },
+  temporada: { nome: "Temporada", mensal: 197, desc: "Airbnb, Booking e Vrbo num lugar só, com IA para os hóspedes.", recursos: ["temporada", "chatbot", "chatbot_ia"], limites: { usuarios: 5, ia_mes: 5000, imoveis: 5 } },
+  temporada_pro: { nome: "Temporada Pro", mensal: 497, desc: "Para gestores com vários imóveis.", recursos: ["temporada", "chatbot", "chatbot_ia", "ia_completa", "marketing"], limites: { usuarios: 15, ia_mes: 20000, imoveis: 25 } }
 };
 export const TESTE_DIAS = 7;
 const CARENCIA_MS = 3 * 86400000; // depois do vencimento, 3 dias para pagar sem perder o acesso
@@ -42,7 +44,7 @@ export function acessoDa(o, agora, planos) {
   const plano = planos[o?.plano] ? o.plano : "start";
   const p = planos[plano];
   const st = STATUS.includes(o?.plano_status) ? o.plano_status : "TESTE";
-  if (st === "CORTESIA") return { plano, nome: p.nome, status: st, liberado: true, cortesia: true, recursos: Object.keys(RECURSOS), limites: { usuarios: 9999, ia_mes: 1e9 }, ate: null, dias: null };
+  if (st === "CORTESIA") return { plano, nome: p.nome, status: st, liberado: true, cortesia: true, recursos: Object.keys(RECURSOS), limites: { usuarios: 9999, ia_mes: 1e9, imoveis: 9999 }, ate: null, dias: null };
   let ate = null, liberado = false;
   if (st === "TESTE") { ate = Number(o.teste_ate || 0); liberado = agora < ate; }
   else if (st === "BLOQUEADO") liberado = false;
@@ -62,12 +64,13 @@ export function recursoDaRota(resto, metodo) {
   if (resto.startsWith("engine/") || (resto === "integracao" && metodo === "POST")) return "ia_completa";
   if (resto === "zap" || resto.startsWith("zap/")) return "chatbot";
   if (resto.startsWith("mk/voz") || resto.startsWith("assistente/ao-vivo")) return "voz";
+  if (resto === "tp" || resto.startsWith("tp/")) return "temporada";
   if (resto.startsWith("mk/uso")) return null;
   if (resto.startsWith("mk/")) return "marketing";
   return null;
 }
 export function planoMinimo(recurso, planos) {
-  const p = Object.values(planos).filter(x => x.recursos.includes(recurso)).sort((a, b) => a.mensal - b.mensal)[0];
+  const p = Object.values(planos).filter(x => x.recursos.includes(recurso) && (recurso === "temporada" || !x.id.startsWith("temporada"))).sort((a, b) => a.mensal - b.mensal)[0];
   return p ? { id: p.id, nome: p.nome } : null;
 }
 

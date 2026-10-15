@@ -599,3 +599,40 @@ details > summary { cursor: pointer; font-weight: 700; }
 .destaque-ia { display: grid; gap: 10px; border-color: rgba(139, 92, 246, 0.5); background: linear-gradient(135deg, rgba(79, 140, 255, 0.12), rgba(139, 92, 246, 0.12)); }
 .destaque-ia .btn { justify-self: start; }
 @media (max-width: 720px) { .tabela-caixa table { min-width: 620px; } .tabela-caixa .selo { white-space: nowrap; } }
+
+/* Locação por temporada */
+:root { --c-airbnb: #ff5a5f; --c-booking: #3b82f6; --c-vrbo: #8b5cf6; --c-direto: #22c55e; --c-bloqueio: #64748b; }
+.canal { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; white-space: nowrap; }
+.canal b { display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 6px; color: #fff; font-size: 11.5px; background: var(--c-bloqueio); }
+.canal-airbnb b { background: var(--c-airbnb); } .canal-booking b { background: var(--c-booking); } .canal-vrbo b { background: var(--c-vrbo); } .canal-direto b { background: var(--c-direto); }
+.legenda-tp { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; margin-top: 12px; }
+.cal-tp-caixa { overflow-x: auto; border: 1px solid var(--borda); border-radius: 16px; margin-top: 10px; }
+.cal-tp { border-collapse: separate; border-spacing: 0; font-size: 12.5px; min-width: max-content; }
+.cal-tp th, .cal-tp td { border-bottom: 1px solid var(--borda); border-right: 1px solid rgba(255, 255, 255, 0.04); padding: 0; text-align: center; }
+.cal-tp thead th { padding: 6px 4px; min-width: 52px; font-weight: 600; color: var(--texto-2); }
+.cal-tp thead th small { display: block; font-size: 10.5px; color: var(--texto-3); text-transform: uppercase; }
+.cal-tp thead th.fds { background: rgba(79, 140, 255, 0.06); } .cal-tp thead th.hoje { color: var(--azul); }
+.cal-tp .cal-tp-nome { position: sticky; left: 0; z-index: 1; background: var(--painel); text-align: left; padding: 8px 12px; min-width: 150px; max-width: 200px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cal-dia { height: 46px; cursor: pointer; position: relative; }
+.cal-dia:hover { background: rgba(79, 140, 255, 0.1); }
+.cal-dia.sel { box-shadow: inset 0 0 0 2px var(--azul); }
+.cal-preco { color: var(--texto-2); }
+.cal-dia.especial .cal-preco { color: var(--texto); font-weight: 800; }
+.cal-dia.fechado { background: repeating-linear-gradient(135deg, rgba(100, 116, 139, 0.18) 0 4px, transparent 4px 8px); }
+.cal-dia.ocupado { cursor: pointer; }
+.canal-fundo-airbnb { background: color-mix(in srgb, var(--c-airbnb) 30%, transparent); } .canal-fundo-booking { background: color-mix(in srgb, var(--c-booking) 30%, transparent); }
+.canal-fundo-vrbo { background: color-mix(in srgb, var(--c-vrbo) 30%, transparent); } .canal-fundo-direto { background: color-mix(in srgb, var(--c-direto) 26%, transparent); } .canal-fundo-bloqueio { background: color-mix(in srgb, var(--c-bloqueio) 34%, transparent); } .canal-fundo-outro { background: rgba(255, 255, 255, 0.1); }
+.cal-reserva { position: absolute; left: 4px; top: 50%; transform: translateY(-50%); white-space: nowrap; font-weight: 700; font-size: 12px; color: var(--texto); pointer-events: none; z-index: 1; }
+.lista-tp { display: grid; gap: 8px; }
+.linha-tp { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 8px 0; border-bottom: 1px solid var(--borda); }
+.linha-tp:last-child { border-bottom: 0; }
+.imovel-tp { display: grid; gap: 8px; align-content: start; min-width: 0; }
+.imovel-tp-foto { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 14px; background: rgba(255, 255, 255, 0.04); }
+.imovel-tp-sem { display: grid; place-items: center; font-size: 40px; }
+.secao-tp { border: 1px solid var(--borda); border-radius: 14px; padding: 10px 14px; margin-bottom: 10px; }
+.secao-tp > summary { cursor: pointer; font-weight: 700; padding: 4px 0; }
+.secao-tp[open] > summary { margin-bottom: 10px; }
+.conexao-tp { display: grid; gap: 8px; align-content: start; }
+.conexao-tp .lista-simples { margin: 0; padding-left: 18px; display: grid; gap: 6px; font-size: 14px; color: var(--texto-2); }
+@media print { .lateral, .barra-topo, .abas, .filtros-desempenho .acoes .btn, #faixa-plano, #faixa-global { display: none !important; } }
+@media (max-width: 720px) { .cal-tp .cal-tp-nome { min-width: 96px; max-width: 110px; white-space: normal; font-size: 11.5px; padding: 6px 8px; } .cal-tp thead th { min-width: 46px; } .legenda-tp .sub { font-size: 12.5px; } }
