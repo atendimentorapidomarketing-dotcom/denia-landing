@@ -995,3 +995,79 @@ test("Métricas do atendimento — tempo de resposta, IA x equipe, horários, co
   assert.equal(m.atendimentos.funil.com_profissional, 1);
   assert.ok(m.profissionais.some(p => p.consultas === 1));
 });
+
+// ===== V31.8 — MODO GUIA (shopping): botões sem IA, IA só para pergunta escrita
+const VIS = "5521955556666";
+const clique = (a, de, id, titulo = "x", tipo = "list_reply") => a.webhook(a.msg(de, "", { type: "interactive", nome: "Marcos", raw: { text: undefined, interactive: { type: tipo, [tipo]: { id, title: titulo } } } }));
+async function guiaPronto() {
+  const a = await criarAmbiente({ env: { MODO: "guia", DENIA_PLATFORM_SERVICE_TOKEN: SERVICO } });
+  const imp = await (await api(a, "/platform/guide/import", { method: "POST", body: JSON.stringify({ linhas: [
+    { loja: "Cell Center", telefone: "(21) 3333-1111", whatsapp: "21988887777", local: "Loja 12, 1º piso", produtos: "Celulares, Capinhas", servicos: "Conserto de celular" },
+    { loja: "Tech Fix", whatsapp: "21977776666", local: "Loja 30", servicos: "Conserto de celular, Conserto de notebook" },
+    { loja: "Game Zone", whatsapp: "21966665555", produtos: "Videogames" }
+  ] }) })).json();
+  return { a, imp };
+}
+test("V31.8 — guia: importa planilha e o menu por botões funciona sem nenhuma chamada à IA", async () => {
+  const { a, imp } = await guiaPronto();
+  assert.equal(imp.lojas, 3); assert.equal(imp.categorias_novas, 5);
+  await a.cliente(VIS, "Oi", { nome: "Marcos" });
+  let e = a.para(VIS).at(-1);
+  assert.equal(e.type, "interactive"); assert.equal(e.corpo.interactive.type, "button");
+  assert.deepEqual(e.corpo.interactive.action.buttons.map(b => b.reply.id), ["g:prod", "g:serv", "g:humano"]);
+  await clique(a, VIS, "g:serv", "Serviços", "button_reply");
+  e = a.para(VIS).at(-1);
+  assert.equal(e.corpo.interactive.type, "list");
+  const rows = e.corpo.interactive.action.sections[0].rows;
+  assert.deepEqual(rows.map(r => r.title), ["Conserto de celular", "Conserto de notebook"]);
+  assert.equal(rows[0].description, "2 lojas");
+  for (const r of rows) assert.ok(r.title.length <= 24 && r.description.length <= 72);
+  await clique(a, VIS, rows[0].id, rows[0].title);
+  const lista = a.para(VIS).at(-2);
+  assert.match(lista.texto, /Cell Center/); assert.match(lista.texto, /Tech Fix/); assert.match(lista.texto, /wa\.me\/5521988887777/);
+  assert.doesNotMatch(lista.texto, /Game Zone/);
+  assert.deepEqual(a.para(VIS).at(-1).corpo.interactive.action.buttons.map(b => b.reply.id), ["g:inicio", "g:serv", "g:fim"]);
+  assert.equal(a.llm.length, 0, "botões não usam GPT");
+  assert.equal(a.telegram.length, 1);
+  assert.match(a.telegram[0], /Marcos \(5521955556666\)/); assert.match(a.telegram[0], /Serviços › Conserto de celular/);
+  await clique(a, VIS, "g:fim", "Finalizar", "button_reply");
+  assert.match(a.ultimoPara(VIS), /prazer ajudar/);
+  const st = await (await api(a, "/platform/guide/stats")).json();
+  assert.equal(st.total, 1); assert.equal(st.contatos, 1); assert.equal(st.por_via[0].via, "BOTAO"); assert.equal(st.por_categoria[0].categoria, "Conserto de celular");
+});
+test("V31.8 — guia: pergunta escrita acha a loja por palavra (sem IA) e só usa a IA na dúvida, com o modelo econômico", async () => {
+  const { a } = await guiaPronto();
+  await api(a, "/platform/guide/config", { method: "POST", body: JSON.stringify({ nome: "Shopping Infomix", modelo_ia: "gpt-5-nano" }) });
+  await a.cliente(VIS, "vocês têm videogames?", { nome: "Marcos" });
+  assert.match(a.para(VIS).at(-2).texto, /Game Zone/);
+  assert.equal(a.llm.length, 0);
+  a.llmGuia = (entrada) => { const id = Number(entrada.match(/(\d+)\|serviço\|Conserto de notebook/)[1]); return { categorias: [id], resposta: "" }; };
+  await a.cliente(VIS, "meu laptop não liga, quem arruma?");
+  assert.equal(a.llm.length, 1); assert.equal(a.llm[0].modelo, "gpt-5-nano");
+  assert.match(a.para(VIS).at(-2).texto, /Tech Fix/);
+  assert.match(a.telegram.at(-1), /Shopping Infomix/); assert.match(a.telegram.at(-1), /laptop/);
+});
+test("V31.8 — guia: pedir atendente pausa a DENIA e avisa a equipe; página de opções e teste do painel", async () => {
+  const { a } = await guiaPronto();
+  for (let i = 0; i < 12; i++) await api(a, "/platform/guide/categories", { method: "POST", body: JSON.stringify({ tipo: "PRODUTO", nome: "Categoria " + String(i).padStart(2, "0") }) });
+  const g = await (await api(a, "/platform/guide")).json();
+  const lojaId = g.lojas.find(l => l.nome === "Game Zone").id;
+  await api(a, "/platform/guide/stores", { method: "POST", body: JSON.stringify({ id: lojaId, nome: "Game Zone", whatsapp: "21966665555", categorias: g.categorias.filter(c => c.tipo === "PRODUTO").map(c => c.id) }) });
+  await clique(a, VIS, "g:prod", "Produtos", "button_reply");
+  let rows = a.para(VIS).at(-1).corpo.interactive.action.sections[0].rows;
+  assert.equal(rows.length, 10); assert.equal(rows.at(-1).id, "g:pg:PRODUTO:1");
+  await clique(a, VIS, "g:pg:PRODUTO:1");
+  rows = a.para(VIS).at(-1).corpo.interactive.action.sections[0].rows;
+  assert.equal(rows.at(-1).id, "g:inicio"); assert.equal(rows.length, 7);
+  const t = await (await api(a, "/platform/guide/test", { method: "POST", body: JSON.stringify({ acao: "g:prod" }) })).json();
+  assert.equal(t.respostas[0].interativo.type, "list");
+  const enviados = a.enviados.length;
+  await clique(a, VIS, "g:humano", "Falar com alguém", "button_reply");
+  assert.match(a.ultimoPara(VIS), /chamar alguém da equipe/);
+  assert.ok(a.telegram.some(m => /quer falar com alguém/.test(m)));
+  await a.cliente(VIS, "oi?");
+  assert.equal(a.enviados.length, enviados + 1, "em pausa: a equipe responde");
+  assert.equal(a.llm.length, 0);
+  const st = await (await a.http("/status")).json().catch(() => ({}));
+  if (st.modo) assert.equal(st.modo, "guia");
+});

@@ -67,7 +67,13 @@ const ROTAS_ENGINE = [
   ["POST", /^learning\/suggestions\/\d{1,12}$/, "ADMIN", "APRENDIZADO"],
   ["GET", /^import\/clients$/, "VISUALIZADOR"],
   ["POST", /^import\/clients$/, "ADMIN", "IMPORTACAO"],
-  ["POST", /^pause$/, "ADMIN", "PAUSA_GERAL"]
+  ["POST", /^pause$/, "ADMIN", "PAUSA_GERAL"],
+  // Guia de lojas (motor em MODO=guia, ex.: shopping)
+  ["GET", /^guide$/, "VISUALIZADOR"],
+  ["GET", /^guide\/stats$/, "VISUALIZADOR"],
+  ["POST", /^guide\/test$/, "AGENTE"],
+  ["POST", /^guide\/(config|categories|stores|import)$/, "AGENTE", "GUIA"],
+  ["POST", /^guide\/(categories|stores)\/\d{1,12}\/delete$/, "AGENTE", "GUIA"]
 ];
 const PARAMS_ENGINE = { limit: /^\d{1,3}$/, status: /^(PENDENTE|APROVADA|REJEITADA)$/, completo: /^1$/, de: /^\d{4}-\d{2}-\d{2}$/, ate: /^\d{4}-\d{2}-\d{2}$/ };
 
@@ -571,7 +577,7 @@ async function proxyEngine(request, env, sessao, orgId, papel, caminho) {
   if (!con) return json({ erro: "A IA desta empresa ainda não foi conectada. Vá em Integrações e informe o endereço e o token da IA.", codigo: "ENGINE_NAO_CONFIGURADO" }, 503);
   let corpo;
   if (request.method === "POST") {
-    const lido = await lerCorpo(request, caminho === "import/clients" ? 600000 : 200000);
+    const lido = await lerCorpo(request, caminho === "import/clients" || caminho === "guide/import" ? 600000 : 200000);
     if (lido.erro) return lido.erro;
     corpo = lido.corpo;
     const autor = sessao.usuario.nome ? `${sessao.usuario.nome} <${sessao.usuario.email}>` : sessao.usuario.email;
@@ -590,7 +596,9 @@ async function proxyEngine(request, env, sessao, orgId, papel, caminho) {
           caminho.startsWith("learning/suggestions/") ? `${corpo.acao === "aprovar" ? "Aprovou" : "Rejeitou"} a sugestão #${caminho.split("/").pop()}` :
             caminho === "training" ? `Versão ${r.dados.versao ?? ""}` :
               caminho.startsWith("cases/") ? `Caso #${caminho.split("/")[1]} → ${txt(corpo.etapa, 30)}` :
-                caminho.startsWith("conversations/") ? `Conversa #${caminho.split("/")[1]}: ${caminho.split("/")[2]}` : caminho;
+                caminho.startsWith("conversations/") ? `Conversa #${caminho.split("/")[1]}: ${caminho.split("/")[2]}` :
+                  caminho === "guide/import" ? `Guia: ${r.dados.lojas ?? 0} loja(s) importada(s)` :
+                    caminho.startsWith("guide/") ? `Guia: ${caminho.slice(6).replace(/\/\d+\/delete$/, " (excluiu)")}${corpo.nome ? " — " + txt(corpo.nome, 60) : ""}` : caminho;
       await auditar(env, request, sessao, orgId, rota[3], detalhe);
     }
     return json(r.dados, r.status);

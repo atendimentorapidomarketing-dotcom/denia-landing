@@ -1325,3 +1325,25 @@ test("Voz da DENIA — voz natural escolhida, voz clonada da pessoa (com autoriz
     assert.deepEqual(sessao.output_modalities, ["text"]);
   } finally { globalThis.fetch = anterior; }
 });
+
+test("Plataforma — guia de lojas (motor em MODO=guia): status, importação, auditoria e permissões", async () => {
+  const p = await criarPlataforma();
+  p.engine.env.MODO = "guia";
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  await p.req("/api/orgs/1/integracao", { metodo: "POST", quem: "admin", corpo: { engine_url: "https://engine.test/", token: TOKEN_ENGINE } });
+  const st = await p.req("/api/orgs/1/engine/status", { quem: "admin" });
+  assert.equal(st.dados.modo, "guia");
+  const imp = await p.req("/api/orgs/1/engine/guide/import", { metodo: "POST", quem: "admin", corpo: { linhas: [{ loja: "Cell Center", whatsapp: "21988887777", produtos: "Celulares" }] } });
+  assert.equal(imp.status, 200); assert.equal(imp.dados.lojas, 1);
+  const g = await p.req("/api/orgs/1/engine/guide", { quem: "admin" });
+  assert.equal(g.dados.lojas[0].nome, "Cell Center");
+  const loja = g.dados.lojas[0];
+  assert.equal((await p.req(`/api/orgs/1/engine/guide/stores/${loja.id}/delete`, { metodo: "POST", quem: "admin", corpo: {} })).status, 200);
+  const teste = await p.req("/api/orgs/1/engine/guide/test", { metodo: "POST", quem: "admin", corpo: { texto: "oi" } });
+  assert.equal(teste.dados.respostas[0].interativo.type, "button");
+  assert.equal((await p.req("/api/orgs/1/engine/guide/stats?de=2026-10-01&ate=2026-10-31", { quem: "admin" })).status, 200);
+  assert.ok(p.chamadasEngine.at(-1).url.includes("de=2026-10-01"));
+  const acoes = (await p.req("/api/orgs/1/auditoria", { quem: "admin" })).dados.eventos.filter(e => e.acao === "GUIA").map(e => e.detalhe);
+  assert.ok(acoes.some(d => /1 loja\(s\) importada/.test(d)), JSON.stringify(acoes));
+  assert.ok(acoes.some(d => /excluiu/.test(d)));
+});

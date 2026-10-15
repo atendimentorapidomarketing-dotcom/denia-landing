@@ -560,3 +560,12 @@ details > summary { cursor: pointer; font-weight: 700; }
 .mapa-cabeca span { font-size: 11px; color: var(--texto-3); text-align: left; }
 .mapa-dia { font-size: 12px; color: var(--texto-2); }
 .mapa-celula { height: 20px; border-radius: 4px; border: 1px solid rgba(148, 163, 214, 0.08); }
+
+/* Guia de lojas */
+.guia-cats { border: 1px solid var(--borda); border-radius: 14px; padding: 10px 14px 12px; margin: 4px 0 12px; display: flex; flex-wrap: wrap; gap: 8px 16px; max-height: 260px; overflow-y: auto; }
+.guia-cats legend { padding: 0 6px; font-weight: 700; font-size: 14px; }
+.guia-cat { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; min-height: 32px; cursor: pointer; margin-bottom: 6px; }
+.guia-cat input { width: 18px; height: 18px; }
+.guia-tela { min-height: 320px; max-height: 60vh; border: 1px solid var(--borda); border-radius: 18px; margin-top: 8px; }
+.guia-botoes { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; white-space: normal; }
+.guia-botoes .btn { min-height: 34px; }
