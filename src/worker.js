@@ -24,7 +24,7 @@ import { apiMarketing, apiAssistente, analisarAvaliacoesPendentes, relatoriosDaS
 import { retornoMeta, servirMidiaPublica, publicarPendentes } from "./meta.js";
 import { retornoGoogle, sincronizarGooglePendentes } from "./google.js";
 import { comOrgUso, comRecurso, descarregarUso } from "./uso.js";
-import { DDL_ZAP, webhookZap, rotasZap } from "./zap.js";
+import { DDL_ZAP, webhookZap, rotasZap, webhookTelegram, segredoTelegram, tokenTelegramPlataforma } from "./zap.js";
 import { lerPlanos, acessoDa, recursoDaRota, planoMinimo, rotasPlano, webhookAsaas, lembretesDePlano, TESTE_DIAS, STATUS as STATUS_PLANO, PLANOS_PADRAO, RECURSOS } from "./planos.js";
 
 const VERSAO = "3.1.0";
@@ -32,7 +32,7 @@ const VERSAO = "3.1.0";
 const VERSAO_TERMOS = "2026-10";
 // WhatsApp da Central de Atendimento (botão flutuante do site).
 const WHATSAPP_CENTRAL = "5521975469162";
-const SCHEMA = "2.6.1";
+const SCHEMA = "2.6.2";
 const COOKIE = "__Host-denia_sessao";
 const SESSAO_MS = 8 * 60 * 60 * 1000;
 const MAX_TENTATIVAS = 5;
@@ -177,6 +177,8 @@ async function garantirSchema(env) {
     await env.DB.prepare("ALTER TABLE plt_organizacoes ADD COLUMN plano TEXT").run().catch(() => { });
     await env.DB.prepare("ALTER TABLE plt_organizacoes ADD COLUMN plano_status TEXT").run().catch(() => { });
     await env.DB.prepare("ALTER TABLE plt_zap_itens ADD COLUMN exibicao TEXT").run().catch(() => { });
+    await env.DB.prepare("ALTER TABLE plt_zap_contas ADD COLUMN telegram_chat TEXT").run().catch(() => { });
+    await env.DB.prepare("ALTER TABLE plt_zap_contas ADD COLUMN telegram_nome TEXT").run().catch(() => { });
     await env.DB.prepare("ALTER TABLE plt_zap_contatos ADD COLUMN ultimo_menu INTEGER").run().catch(() => { });
     for (const col of ["teste_ate INTEGER", "pago_ate INTEGER", "ciclo TEXT", "cobranca_cliente TEXT", "assinatura_id TEXT", "assinatura_plano TEXT"])
       await env.DB.prepare("ALTER TABLE plt_organizacoes ADD COLUMN " + col).run().catch(() => { });
@@ -1072,6 +1074,20 @@ async function api(request, env, caminho) {
     return json({ whatsapp: w, pelo_secret: Boolean(String(env.CONTATO_WHATSAPP || "").trim()) });
   }
   if ((m = caminho.match(/^\/api\/admin\/organizacoes(?:\/(\d{1,12}))?$/)) && metodo === "POST") return apiAdminOrgs(request, env, sessao, m[1] || "");
+  // Liga o bot do Telegram da plataforma (um só bot para todas as empresas).
+  if (caminho === "/api/admin/telegram" && metodo === "POST") {
+    if (!u.super_admin) return json({ erro: "Sem permissão." }, 403);
+    const token = tokenTelegramPlataforma(env);
+    if (!token) return json({ erro: "Crie no Worker da plataforma o secret TELEGRAM_BOT_TOKEN_PLATAFORMA com o token do bot (do @BotFather)." }, 400);
+    const chamar = async (m, corpo) => (await fetch(`https://api.telegram.org/bot${token}/${m}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(corpo || {}), signal: AbortSignal.timeout(15000) })).json().catch(() => ({}));
+    const eu = await chamar("getMe");
+    if (!eu.ok) return json({ erro: "O Telegram recusou o token do bot." }, 400);
+    const w = await chamar("setWebhook", { url: new URL("/webhook/telegram", request.url).toString(), secret_token: await segredoTelegram(env, kitBase(env)), allowed_updates: ["message", "channel_post"] });
+    if (!w.ok) return json({ erro: "Não consegui ligar o webhook do Telegram: " + txt(w.description, 200) }, 400);
+    await env.DB.prepare("INSERT OR REPLACE INTO plt_meta(chave,valor) VALUES('tg_bot_usuario',?)").bind(eu.result.username).run();
+    await auditar(env, request, sessao, null, "INTEGRACAO", `Bot do Telegram da plataforma ligado (@${eu.result.username})`);
+    return json({ ok: true, bot: eu.result.username });
+  }
   if (caminho === "/api/admin/planos") {
     if (!u.super_admin) return json({ erro: "Sem permissão." }, 403);
     if (metodo === "POST") {
@@ -1104,6 +1120,7 @@ async function rotear(request, env, ctx) {
   if (caminho.startsWith("/api/")) return api(request, env, caminho);
   // Um só webhook do WhatsApp para todas as empresas (cada mensagem diz de qual número ela é).
   if (caminho === "/webhook/whatsapp") { await garantirSchema(env); return webhookZap(request, env, await kitZap(env), ctx); }
+  if (caminho === "/webhook/telegram" && request.method === "POST") { await garantirSchema(env); return webhookTelegram(request, env, await kitZap(env)); }
   if (caminho === "/webhook/asaas" && request.method === "POST") { await garantirSchema(env); return webhookAsaas(request, env, kitBase(env)); }
   if (!["GET", "HEAD"].includes(request.method)) return new Response("Método não permitido.", { status: 405 });
 

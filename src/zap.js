@@ -21,7 +21,8 @@ export const DDL_ZAP = [
   `CREATE INDEX IF NOT EXISTS idx_zap_msgs_conversa ON plt_zap_msgs(org_id, telefone, id)`,
   `CREATE INDEX IF NOT EXISTS idx_zap_msgs_tempo ON plt_zap_msgs(org_id, criado_ms)`,
   `CREATE TABLE IF NOT EXISTS plt_zap_buscas (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, telefone TEXT, nome TEXT, item_id INTEGER, tipo TEXT, titulo TEXT, caminho TEXT, texto TEXT, via TEXT, resultados INTEGER, criado_ms INTEGER NOT NULL)`,
-  `CREATE INDEX IF NOT EXISTS idx_zap_buscas_tempo ON plt_zap_buscas(org_id, criado_ms)`
+  `CREATE INDEX IF NOT EXISTS idx_zap_buscas_tempo ON plt_zap_buscas(org_id, criado_ms)`,
+  `CREATE TABLE IF NOT EXISTS plt_zap_tg (chat_id TEXT NOT NULL, message_id INTEGER NOT NULL, org_id INTEGER NOT NULL, telefone TEXT NOT NULL, criado_ms INTEGER NOT NULL, PRIMARY KEY (chat_id, message_id))`
 ];
 
 export const ZAP_PADRAO = {
@@ -94,19 +95,32 @@ function lista(z, corpo, secao, linhas, origem) {
     `${corpo} [lista: ${linhas.map(l => l.titulo).join(", ")}]`, origem);
 }
 
-async function telegram(z, texto) {
-  if (z.sim || !z.conta.telegram_cifrado) return false;
-  let t = {};
-  try { t = JSON.parse(await z.k.decifrar(z.env, z.conta.telegram_cifrado) || "{}"); } catch { t = {}; }
-  if (!t.token || !t.chat) return false;
+// Telegram: o bot da própria DENIA (conectado com um toque, pelo link) ou um bot próprio da empresa.
+export function tokenTelegramPlataforma(env) { return String(env.TELEGRAM_BOT_TOKEN_PLATAFORMA || env.TELEGRAM_BOT_TOKEN || "").trim(); }
+async function destinoTelegram(env, k, conta) {
+  if (conta?.telegram_chat && tokenTelegramPlataforma(env)) return { token: tokenTelegramPlataforma(env), chat: conta.telegram_chat };
+  if (!conta?.telegram_cifrado) return null;
+  try { const t = JSON.parse(await k.decifrar(env, conta.telegram_cifrado) || "{}"); return t.token && t.chat ? t : null; } catch { return null; }
+}
+async function tgApi(token, metodo, corpo) {
   try {
-    const r = await fetch(`https://api.telegram.org/bot${t.token}/sendMessage`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ chat_id: t.chat, text: cortar(texto, 3500), disable_web_page_preview: true }), signal: AbortSignal.timeout(10000) });
-    return r.ok;
-  } catch { return false; }
+    const r = await fetch(`https://api.telegram.org/bot${token}/${metodo}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(corpo), signal: AbortSignal.timeout(10000) });
+    return await r.json().catch(() => ({ ok: r.ok }));
+  } catch { return { ok: false }; }
+}
+async function telegram(z, texto, telCliente) {
+  if (z.sim) return false;
+  const d = await destinoTelegram(z.env, z.k, z.conta);
+  if (!d) return false;
+  const r = await tgApi(d.token, "sendMessage", { chat_id: d.chat, text: cortar(texto, 3500) + (telCliente ? "\n\n↩️ Responda esta mensagem aqui no Telegram e a resposta vai para o cliente no WhatsApp." : ""), disable_web_page_preview: true });
+  const id = r?.result?.message_id;
+  // Guarda de qual cliente é o aviso, para a equipe responder pelo próprio Telegram.
+  if (id && telCliente) await z.env.DB.prepare("INSERT OR REPLACE INTO plt_zap_tg(chat_id,message_id,org_id,telefone,criado_ms) VALUES(?,?,?,?,?)").bind(String(d.chat), id, z.org, telCliente, z.agora).run().catch(() => {});
+  return Boolean(r?.ok);
 }
 async function alertarEquipe(z, texto) {
   if (z.sim) return;
-  if (await telegram(z, texto)) return;
+  if (await telegram(z, texto, z.tel)) return;
   if (z.k.alertarEmail) await z.k.alertarEmail(z.org, "DENIA — cliente quer falar com a equipe no WhatsApp", texto).catch(() => {});
 }
 
@@ -183,7 +197,7 @@ async function registrarBusca(z, item, via, resultados, caminho) {
     z.env.DB.prepare("INSERT INTO plt_zap_buscas(org_id,telefone,nome,item_id,tipo,titulo,caminho,texto,via,resultados,criado_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?)").bind(z.org, z.tel, z.nome || "", item.id, item.tipo, item.titulo, caminho, cortar(z.texto, 300), via, resultados, z.agora)
   ]);
   if (z.cfg.avisar_buscas && !(repetida?.results || []).length)
-    await telegram(z, `🔎 ${z.nomeEmpresa} — nova busca no WhatsApp\nCliente: ${z.nome || "sem nome"} (${z.tel})\nBuscou: ${caminho}${via !== "BOTAO" && z.texto ? ` (escreveu: "${cortar(z.texto, 120)}")` : ""}${z.resultados ? `\nIndicados: ${z.resultados}` : ""}`);
+    await telegram(z, `🔎 ${z.nomeEmpresa} — nova busca no WhatsApp\nCliente: ${z.nome || "sem nome"} (${z.tel})\nBuscou: ${caminho}${via !== "BOTAO" && z.texto ? ` (escreveu: "${cortar(z.texto, 120)}")` : ""}${z.resultados ? `\nIndicados: ${z.resultados}` : ""}`, z.tel);
 }
 async function abrirItem(z, item, via) {
   const m = await carregarMenu(z);
@@ -389,7 +403,7 @@ async function conferirNumero(pnid, token) {
 function publicaConta(c, extra) {
   return {
     conectada: Boolean(c?.phone_number_id && c?.token_cifrado), phone_number_id: c?.phone_number_id || "", waba_id: c?.waba_id || "", numero: c?.numero || "", nome_verificado: c?.nome_verificado || "",
-    tem_token: Boolean(c?.token_cifrado), tem_segredo: Boolean(c?.segredo_cifrado), telegram: Boolean(c?.telegram_cifrado), ativo: c ? Boolean(c.ativo) : true, modo: c?.modo || "BOTOES", ...extra
+    tem_token: Boolean(c?.token_cifrado), tem_segredo: Boolean(c?.segredo_cifrado), telegram: Boolean(c?.telegram_cifrado || c?.telegram_chat), telegram_nome: c?.telegram_nome || "", ativo: c ? Boolean(c.ativo) : true, modo: c?.modo || "BOTOES", ...extra
   };
 }
 async function linhasDe(env, sql, ...args) { return (await env.DB.prepare(sql).bind(...args).all())?.results || []; }
@@ -452,6 +466,24 @@ export async function rotasZap(request, env, k, orgId, papel, resto) {
       const ok = await telegram(z, "✅ Avisos do chatbot da DENIA ligados neste grupo.");
       if (!ok) return json({ ok: true, aviso: "Salvei, mas o Telegram não aceitou a mensagem de teste. Confira se o bot está no grupo e o ID do grupo." });
     }
+    return json({ ok: true });
+  }
+  if (r === "telegram" && metodo === "GET") {
+    const c = await contaDa(env, orgId);
+    const bot = (await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave='tg_bot_usuario'").first().catch(() => null))?.valor || "";
+    return json({ disponivel: Boolean(tokenTelegramPlataforma(env) && bot), bot, conectado: Boolean(c?.telegram_chat || c?.telegram_cifrado), grupo: c?.telegram_nome || (c?.telegram_cifrado ? "bot próprio" : ""), proprio: Boolean(c?.telegram_cifrado) });
+  }
+  if (r === "telegram/link" && metodo === "POST") {
+    const negado = precisa("ADMIN"); if (negado) return negado;
+    const bot = (await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave='tg_bot_usuario'").first().catch(() => null))?.valor || "";
+    if (!bot || !tokenTelegramPlataforma(env)) return json({ erro: "O bot do Telegram da plataforma ainda não foi ligado pelo administrador geral." }, 503);
+    const codigo = [...crypto.getRandomValues(new Uint8Array(12))].map(b => b.toString(36).padStart(2, "0")).join("").slice(0, 20);
+    await env.DB.prepare("INSERT OR REPLACE INTO plt_meta(chave,valor) VALUES(?,?)").bind("tg_codigo:" + codigo, JSON.stringify({ org: orgId, ate: agora + 3600000 })).run();
+    return json({ grupo: `https://t.me/${bot}?startgroup=${codigo}`, privado: `https://t.me/${bot}?start=${codigo}`, codigo });
+  }
+  if (r === "telegram/desligar" && metodo === "POST") {
+    const negado = precisa("ADMIN"); if (negado) return negado;
+    await env.DB.prepare("UPDATE plt_zap_contas SET telegram_chat=NULL, telegram_nome=NULL, telegram_cifrado=NULL WHERE org_id=?").bind(orgId).run();
     return json({ ok: true });
   }
   if (r === "config" && metodo === "GET") {
@@ -645,16 +677,9 @@ export async function rotasZap(request, env, k, orgId, papel, resto) {
       await env.DB.prepare("UPDATE plt_zap_contatos SET pausado_ate=? WHERE org_id=? AND telefone=?").bind(corpo.ligar ? 0 : agora + PAUSA_HUMANO_MS, orgId, m[1]).run();
       return json({ ok: true });
     }
-    const texto = k.txt(corpo.texto, 4000);
-    if (!texto) return json({ erro: "Escreva a mensagem." }, 400);
-    if (agora - Number(c.ultima_entrada_ms || 0) >= JANELA_24H) return json({ erro: "Passaram 24 horas desde a última mensagem do cliente. Pela regra da Meta, só dá para responder depois que ele escrever de novo (ou com um modelo aprovado)." }, 409);
-    const conta = await contaDa(env, orgId);
-    if (!conta?.token_cifrado) return json({ erro: "Conecte o WhatsApp primeiro (Chatbot → Conexão)." }, 409);
-    const z = { env, k, org: orgId, conta, tel: m[1], agora, enviadas: 0 };
     const autor = sessao?.usuario?.nome || sessao?.usuario?.email || "Equipe";
-    const ok = await enviarTexto(z, texto, "EQUIPE");
-    await env.DB.prepare("UPDATE plt_zap_contatos SET pausado_ate=?, ultimo_ms=? WHERE org_id=? AND telefone=?").bind(agora + PAUSA_HUMANO_MS, agora, orgId, m[1]).run();
-    if (!ok) return json({ erro: "A Meta não aceitou a mensagem. Veja o motivo na conversa." }, 502);
+    const r2 = await enviarDaEquipe(env, k, orgId, m[1], k.txt(corpo.texto, 4000));
+    if (r2.erro) return json({ erro: r2.erro }, r2.status || 400);
     await auditar(env, request, sessao, orgId, "CONVERSA", `Respondeu ${m[1]} pelo chatbot (${autor})`);
     return json({ ok: true });
   }
@@ -669,6 +694,81 @@ export async function rotasZap(request, env, k, orgId, papel, resto) {
     return json({ respostas: z.registro });
   }
   return json({ erro: "Rota do chatbot não encontrada." }, 404);
+}
+
+// A equipe responde o cliente (pelo painel ou pelo Telegram): o robô fica em pausa nessa conversa.
+export async function enviarDaEquipe(env, k, orgId, tel, texto) {
+  const agora = k.agora(env);
+  if (!texto) return { erro: "Escreva a mensagem.", status: 400 };
+  const c = await env.DB.prepare("SELECT * FROM plt_zap_contatos WHERE org_id=? AND telefone=?").bind(orgId, tel).first();
+  if (!c) return { erro: "Conversa não encontrada.", status: 404 };
+  if (agora - Number(c.ultima_entrada_ms || 0) >= JANELA_24H) return { erro: "Passaram 24 horas desde a última mensagem do cliente. Pela regra da Meta, só dá para responder depois que ele escrever de novo (ou com um modelo aprovado).", status: 409 };
+  const conta = await contaDa(env, orgId);
+  if (!conta?.token_cifrado) return { erro: "Conecte o WhatsApp primeiro (Chatbot → Conexão).", status: 409 };
+  const z = { env, k, org: orgId, conta, tel, agora, enviadas: 0 };
+  const ok = await enviarTexto(z, texto, "EQUIPE");
+  await env.DB.prepare("UPDATE plt_zap_contatos SET pausado_ate=?, ultimo_ms=? WHERE org_id=? AND telefone=?").bind(agora + PAUSA_HUMANO_MS, agora, orgId, tel).run();
+  return ok ? { ok: true, nome: c.nome } : { erro: "A Meta não aceitou a mensagem. Veja o motivo na conversa.", status: 502 };
+}
+
+// ---------------------------------------------------------------------------
+// Bot do Telegram da plataforma: conecta o grupo com um toque e deixa a equipe responder por lá.
+// ---------------------------------------------------------------------------
+
+export async function segredoTelegram(env, k) { return (await k.hmac(await k.segredo(env), "telegram-webhook-v1")).replace(/[^A-Za-z0-9_-]/g, "").slice(0, 48); }
+export async function webhookTelegram(request, env, k) {
+  if (!iguais(String(request.headers.get("x-telegram-bot-api-secret-token") || ""), await segredoTelegram(env, k))) return new Response("Não autorizado.", { status: 401 });
+  const token = tokenTelegramPlataforma(env);
+  let u;
+  try { u = await request.json(); } catch { return new Response("ok"); }
+  const msg = u?.message || u?.channel_post;
+  const texto = String(msg?.text || "").trim();
+  const chat = msg?.chat;
+  if (!msg || !chat || !token) return new Response("ok");
+  const responder = t => tgApi(token, "sendMessage", { chat_id: chat.id, text: t, reply_to_message_id: msg.message_id, disable_web_page_preview: true });
+  const agora = k.agora(env);
+  // /start CODIGO (ou /start@bot CODIGO): liga este grupo/conversa à empresa.
+  const cod = texto.match(/^\/start(?:@\w+)?\s+([A-Za-z0-9_-]{8,40})$/);
+  if (cod) {
+    const reg = await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave=?").bind("tg_codigo:" + cod[1]).first();
+    let dado = null; try { dado = JSON.parse(reg?.valor || "null"); } catch { dado = null; }
+    if (!dado || dado.ate < agora) { await responder("Esse link de conexão venceu. Gere outro no painel da DENIA (Chatbot do WhatsApp → Conexão → Telegram)."); return new Response("ok"); }
+    const nomeChat = cortar(chat.title || [chat.first_name, chat.last_name].filter(Boolean).join(" ") || String(chat.id), 80);
+    await env.DB.batch([
+      env.DB.prepare("INSERT INTO plt_zap_contas(org_id,telegram_chat,telegram_nome,config,atualizado_ms) VALUES(?,?,?,'{}',?) ON CONFLICT(org_id) DO UPDATE SET telegram_chat=excluded.telegram_chat, telegram_nome=excluded.telegram_nome, atualizado_ms=excluded.atualizado_ms").bind(dado.org, String(chat.id), nomeChat, agora),
+      env.DB.prepare("DELETE FROM plt_meta WHERE chave=?").bind("tg_codigo:" + cod[1])
+    ]);
+    const org = await env.DB.prepare("SELECT nome FROM plt_organizacoes WHERE id=?").bind(dado.org).first();
+    await responder(`✅ Pronto! Este ${chat.type === "private" ? "chat" : "grupo"} está conectado à DENIA (${org?.nome || "empresa"}).\n\nAqui chegam: pedidos de atendimento humano e as buscas do WhatsApp.\nPara responder um cliente, responda a mensagem do aviso.\n\nComandos: /resumo (números de hoje), /ajuda.`);
+    return new Response("ok");
+  }
+  const conta = await env.DB.prepare("SELECT * FROM plt_zap_contas WHERE telegram_chat=?").bind(String(chat.id)).first();
+  if (!conta) { if (/^\/(start|ajuda|help)/.test(texto)) await responder("Olá! Eu sou o bot de avisos da DENIA. Para conectar este grupo, use o link do painel: Chatbot do WhatsApp → Conexão → Telegram."); return new Response("ok"); }
+  if (/^\/(ajuda|help)/.test(texto)) { await responder("• Responda um aviso para falar com o cliente no WhatsApp (o robô pausa nessa conversa).\n• Responda um aviso com /robo para devolver a conversa ao robô.\n• /resumo — números de hoje."); return new Response("ok"); }
+  if (/^\/resumo/.test(texto)) {
+    const ini = Date.parse(new Date(agora - 3 * 3600000).toISOString().slice(0, 10) + "T03:00:00Z");
+    const [m1, b1, p1] = await env.DB.batch([
+      env.DB.prepare("SELECT COUNT(*) n, COUNT(DISTINCT telefone) c FROM plt_zap_msgs WHERE org_id=? AND direcao='E' AND criado_ms>=?").bind(conta.org_id, ini),
+      env.DB.prepare("SELECT titulo, COUNT(*) n FROM plt_zap_buscas WHERE org_id=? AND criado_ms>=? GROUP BY titulo ORDER BY n DESC LIMIT 5").bind(conta.org_id, ini),
+      env.DB.prepare("SELECT COUNT(*) n FROM plt_zap_contatos WHERE org_id=? AND pausado_ate>?").bind(conta.org_id, agora)
+    ]);
+    const mm = m1?.results?.[0] || {};
+    await responder(`📊 Hoje no WhatsApp\nMensagens recebidas: ${mm.n || 0} (${mm.c || 0} clientes)\nCom a equipe agora: ${p1?.results?.[0]?.n || 0}\nMais procurados: ${(b1?.results || []).map(x => `${x.titulo} (${x.n})`).join(", ") || "—"}`);
+    return new Response("ok");
+  }
+  const resp = msg.reply_to_message?.message_id;
+  if (!resp || !texto) return new Response("ok");
+  const alvo = await env.DB.prepare("SELECT * FROM plt_zap_tg WHERE chat_id=? AND message_id=? AND org_id=?").bind(String(chat.id), resp, conta.org_id).first();
+  if (!alvo) return new Response("ok");
+  if (/^\/robo/.test(texto)) {
+    await env.DB.prepare("UPDATE plt_zap_contatos SET pausado_ate=0 WHERE org_id=? AND telefone=?").bind(conta.org_id, alvo.telefone).run();
+    await responder("🤖 O robô voltou a atender esse cliente."); return new Response("ok");
+  }
+  const autor = [msg.from?.first_name, msg.from?.last_name].filter(Boolean).join(" ");
+  const r = await enviarDaEquipe(env, k, conta.org_id, alvo.telefone, cortar(texto, 4000));
+  if (r.ok) await k.auditar(env, request, null, conta.org_id, "CONVERSA", `Respondeu ${alvo.telefone} pelo Telegram (${autor || "equipe"})`);
+  await responder(r.ok ? `✅ Enviado para ${r.nome || alvo.telefone} no WhatsApp. O robô ficou em pausa nessa conversa por 12 h (responda o aviso com /robo para devolver).` : `⚠️ Não foi: ${r.erro}`);
+  return new Response("ok");
 }
 
 // Para o painel: empresas que usam o chatbot da plataforma.

@@ -1591,3 +1591,49 @@ test("Chatbot — mais de 10 opções: lista com 'Mais opções' ou texto numera
   await webhookZap(p, "111111111111", { from: CLI, type: "text", text: { body: "0" } });
   assert.equal(enviadosPara(p, CLI).at(-1).corpo.interactive.type, "button", "0 volta ao menu inicial");
 });
+
+test("Telegram — bot da plataforma conecta o grupo com um toque e a equipe responde o cliente pelo Telegram", async () => {
+  const { p, inf } = await duasEmpresasComChatbot();
+  p.env.TELEGRAM_BOT_TOKEN_PLATAFORMA = "999:" + "T".repeat(30);
+  const anterior = globalThis.fetch, tg = [];
+  let segredo = "";
+  globalThis.fetch = async (url, op = {}) => {
+    if (String(url).startsWith("https://api.telegram.org/bot999:")) {
+      const metodo = String(url).split("/").pop(), corpo = op.body ? JSON.parse(op.body) : {};
+      tg.push({ metodo, corpo });
+      if (metodo === "getMe") return new Response(JSON.stringify({ ok: true, result: { username: "DeniaAvisosBot" } }));
+      if (metodo === "setWebhook") { segredo = corpo.secret_token; return new Response(JSON.stringify({ ok: true })); }
+      return new Response(JSON.stringify({ ok: true, result: { message_id: 500 + tg.length } }));
+    }
+    return anterior(url, op);
+  };
+  try {
+    const liga = await p.req("/api/admin/telegram", { metodo: "POST", quem: "admin", corpo: {} });
+    assert.equal(liga.dados.bot, "DeniaAvisosBot");
+    assert.ok(segredo.length >= 20);
+    const link = await p.req(`/api/orgs/${inf}/zap/telegram/link`, { metodo: "POST", quem: "admin", corpo: {} });
+    assert.match(link.dados.grupo, /^https:\/\/t\.me\/DeniaAvisosBot\?startgroup=/);
+    const upd = (texto, extra = {}) => p.req("/webhook/telegram", { metodo: "POST", cabecalhos: { "x-telegram-bot-api-secret-token": segredo }, corpo: { message: { message_id: 10 + tg.length, chat: { id: -100777, type: "supergroup", title: "Equipe Infomix" }, from: { first_name: "Ana" }, text: texto, ...extra } } });
+    assert.equal((await p.req("/webhook/telegram", { metodo: "POST", corpo: { message: { text: "/start x" } } })).status, 401, "sem o segredo, recusado");
+    await upd(`/start@DeniaAvisosBot ${link.dados.codigo}`);
+    assert.match(tg.at(-1).corpo.text, /conectado à DENIA \(Shopping Infomix\)/);
+    assert.equal((await p.req(`/api/orgs/${inf}/zap/telegram`, { quem: "admin" })).dados.grupo, "Equipe Infomix");
+    // Cliente pede atendente: o aviso vai para o grupo pelo bot da plataforma.
+    await p.req(`/api/orgs/${inf}/zap/modelo`, { metodo: "POST", quem: "admin", corpo: { tipo: "servicos" } });
+    const CLI = "5521933332222";
+    await webhookZap(p, "111111111111", { from: CLI, type: "text", text: { body: "quero falar com atendente" } });
+    const aviso = tg.filter(x => x.metodo === "sendMessage").at(-1);
+    assert.equal(aviso.corpo.chat_id, "-100777"); assert.match(aviso.corpo.text, /Responda esta mensagem/);
+    const idAviso = 500 + tg.indexOf(aviso) + 1;
+    // A equipe responde o aviso no Telegram e o cliente recebe no WhatsApp.
+    await upd("Oi Marcos! Aqui é a Ana, já te ajudo.", { reply_to_message: { message_id: idAviso } });
+    assert.equal(enviadosPara(p, CLI).at(-1).corpo.text.body, "Oi Marcos! Aqui é a Ana, já te ajudo.");
+    assert.match(tg.at(-1).corpo.text, /Enviado para/);
+    await upd("/resumo");
+    assert.match(tg.at(-1).corpo.text, /Mensagens recebidas: 1/);
+    // Outro grupo (de outra empresa ou desconhecido) não consegue responder clientes do Infomix.
+    const antes = p.engine.enviados.length;
+    await p.req("/webhook/telegram", { metodo: "POST", cabecalhos: { "x-telegram-bot-api-secret-token": segredo }, corpo: { message: { message_id: 99, chat: { id: -100888, type: "group" }, text: "oi", reply_to_message: { message_id: idAviso } } } });
+    assert.equal(p.engine.enviados.length, antes);
+  } finally { globalThis.fetch = anterior; }
+});

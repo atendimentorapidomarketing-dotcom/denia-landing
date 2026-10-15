@@ -1250,6 +1250,9 @@
             catch (e) { aviso(e.message, "erro"); }
           }, o.status === "ATIVA" ? "btn-perigo btn-pequeno" : "btn-secundario btn-pequeno")))))))));
     if (cfgPlanos) el.appendChild(cartaoValoresPlanos(cfgPlanos));
+    el.appendChild(h("section", { class: "cartao vidro formulario" }, h("h3", { style: "margin:0", text: "Bot do Telegram da plataforma" }),
+      h("p", { class: "sub", style: "margin:0", text: "Um bot só para todas as empresas: cada uma conecta o grupo com um toque. Crie o bot no @BotFather, salve o token no secret TELEGRAM_BOT_TOKEN_PLATAFORMA do Worker da plataforma e clique abaixo." }),
+      h("div", { class: "acoes" }, botao("Ligar o bot", async () => { try { const r = await api("/api/admin/telegram", { metodo: "POST", corpo: {} }); aviso(`Bot @${r.bot} ligado.`, "ok"); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario btn-pequeno"))));
   }
   function mudarPlanoEmpresa(o, nomesPlanos) {
     const plano = h("select", { class: "entrada" }, nomesPlanos.map(([v, n]) => h("option", { value: v, selected: v === o.plano, text: n })));
@@ -1942,7 +1945,7 @@
       }, "btn-primario"), h("a", { class: "btn btn-secundario", href: "#/chatbot/testar" }, "Testar como cliente")) : null);
   }
   async function abaZapConexao(area, vivo) {
-    const c = await zap("conta");
+    const [c, tg] = await Promise.all([zap("conta"), zap("telegram").catch(() => ({}))]);
     if (!vivo()) return;
     const pnid = h("input", { class: "entrada", value: c.phone_number_id || "", inputmode: "numeric", placeholder: "Ex.: 473474732510163" });
     const waba = h("input", { class: "entrada", value: c.waba_id || "", inputmode: "numeric", placeholder: "opcional" });
@@ -1964,12 +1967,15 @@
           h("p", { class: "sub", text: "No app da Meta → WhatsApp → Configuração → Webhook → Editar: cole o endereço e o token abaixo, clique em Verificar e salvar, e depois assine o campo \"messages\". É o mesmo endereço para todas as empresas." }),
           copia("URL de retorno", c.webhook_url), c.verify_token ? copia("Token de verificação", c.verify_token) : h("p", { class: "nota", text: "Peça a um administrador o token de verificação." }),
           h("p", { class: "nota", text: "Se esse número hoje usa outro robô (ex.: Botpress), é só trocar o endereço do webhook. Para voltar, cole o endereço antigo. O número não sai da conta de vocês." }))),
-      h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "3. Avisos no Telegram (opcional)" }),
-        h("p", { class: "sub", text: "Cada busca e cada pedido de \"falar com alguém\" chega no grupo. Sem Telegram, os pedidos de atendimento chegam por e-mail aos administradores." }),
-        c.telegram ? h("p", {}, selo("Ligado", "ok")) : null,
-        h("div", { class: "grade grade-2" }, campo("Token do bot", tgToken), campo("ID do grupo", tgChat, "Adicione o bot ao grupo. O ID aparece em api.telegram.org/bot<token>/getUpdates.")),
-        pode("ADMIN") ? h("div", { class: "acoes" }, botao("Salvar e mandar teste", async () => { try { const r = await zap("conta/telegram", { metodo: "POST", corpo: { telegram_token: tgToken.value.trim(), telegram_chat: tgChat.value.trim() } }); aviso(r.aviso || "Telegram ligado: confira a mensagem de teste no grupo.", r.aviso ? "erro" : "ok"); navegar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario btn-pequeno"),
-          c.telegram ? botao("Desligar", async () => { await zap("conta/telegram", { metodo: "POST", corpo: { remover: true } }); navegar(); }, "btn-secundario btn-pequeno") : null) : null));
+      h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "3. Telegram da equipe (opcional)" }),
+        h("p", { class: "sub", text: "No grupo chegam os pedidos de \"falar com alguém\" e as buscas. A equipe responde o cliente respondendo o próprio aviso no Telegram, e o comando /resumo mostra os números do dia. Sem Telegram, os pedidos de atendimento chegam por e-mail." }),
+        tg.conectado ? h("p", {}, selo("Conectado", "ok"), " ", h("strong", { text: tg.grupo || "" })) : null,
+        tg.disponivel && pode("ADMIN") ? h("div", { class: "acoes" },
+          botao(tg.conectado ? "Conectar outro grupo" : "Conectar o grupo do Telegram", async () => { try { const l = await zap("telegram/link", { metodo: "POST", corpo: {} }); window.open(l.grupo, "_blank", "noopener"); await modal({ titulo: "Escolha o grupo no Telegram", conteudo: ["O Telegram abriu: escolha o grupo da equipe e toque em Adicionar. O bot confirma no grupo e pronto.", "Prefere receber no seu chat pessoal? Use este link: " + l.privado, "O link vale por 1 hora."], soInformar: true }); navegar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario btn-pequeno"),
+          tg.conectado ? botao("Desconectar", async () => { await zap("telegram/desligar", { metodo: "POST", corpo: {} }); navegar(); }, "btn-secundario btn-pequeno") : null) : null,
+        !tg.disponivel ? h("details", { class: "detalhes" }, h("summary", { text: "Usar um bot próprio (avançado)" }),
+          h("div", { class: "grade grade-2" }, campo("Token do bot", tgToken), campo("ID do grupo", tgChat, "Adicione o bot ao grupo. O ID aparece em api.telegram.org/bot<token>/getUpdates.")),
+          pode("ADMIN") ? h("div", { class: "acoes" }, botao("Salvar e mandar teste", async () => { try { const r = await zap("conta/telegram", { metodo: "POST", corpo: { telegram_token: tgToken.value.trim(), telegram_chat: tgChat.value.trim() } }); aviso(r.aviso || "Telegram ligado: confira a mensagem de teste no grupo.", r.aviso ? "erro" : "ok"); navegar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario btn-pequeno")) : null) : null));
   }
   function abaZapTestar(area) {
     const tela = h("div", { class: "mensagens guia-tela", "aria-live": "polite" });
