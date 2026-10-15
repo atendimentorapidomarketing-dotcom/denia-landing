@@ -34,6 +34,7 @@ export const ZAP_PADRAO = {
   rede_nome: "", rede_url: "",
   sobre: "",
   modelo_ia: "gpt-5-nano",
+  exibicao_inicio: "AUTO",
   limite_ia_dia: 300,
   avisar_buscas: true
 };
@@ -143,11 +144,21 @@ function descricaoDe(i, cfg, m) {
   return "";
 }
 
+async function lembrarMenu(z, menuId) {
+  if (!z.sim) await z.env.DB.prepare("UPDATE plt_zap_contatos SET ultimo_menu=? WHERE org_id=? AND telefone=?").bind(menuId, z.org, z.tel).run().catch(() => {});
+}
 async function mostrarMenu(z, menuId = 0, pagina = 0, prefixo = "") {
   const m = await carregarMenu(z);
   const pai = menuId ? m.porId.get(menuId) : null;
   const itens = m.filhos(menuId);
   const corpo = (prefixo ? prefixo + "\n\n" : "") + (pai ? (pai.texto || `${pai.titulo}: escolha uma opção.`) : z.cfg.boas_vindas);
+  await lembrarMenu(z, menuId);
+  // Texto numerado: sem limite de opções (o WhatsApp só deixa 3 botões ou 10 itens por lista).
+  const exibicao = pai ? pai.exibicao : z.cfg.exibicao_inicio;
+  if (itens.length && exibicao === "NUMERADO") {
+    const linhas = itens.map((i, n) => `*${n + 1}* · ${i.titulo}${i.descricao ? ` — ${i.descricao}` : ""}`);
+    return enviarTexto(z, `${corpo}\n\n${linhas.join("\n")}\n\nResponda com o *número* ou escreva o que procura.${menuId ? "\n*0* · Voltar ao menu inicial" : ""}`);
+  }
   if (!itens.length) {
     if (!menuId) return enviarTexto(z, corpo + (z.cfg.sobre ? "" : "\n\n(Em breve teremos mais opções por aqui.)"));
     return mostrarMenu(z, 0, 0, "Essa opção ainda não tem nada cadastrado.");
@@ -157,7 +168,7 @@ async function mostrarMenu(z, menuId = 0, pagina = 0, prefixo = "") {
   const linhas = parte.map(i => ({ id: "z:i:" + i.id, titulo: i.titulo, descricao: descricaoDe(i, z.cfg, m) }));
   if (ini + porPagina < itens.length) linhas.push({ id: `z:pg:${menuId}:${pagina + 1}`, titulo: "➡️ Mais opções", descricao: "Ver as próximas" });
   else if (menuId || pagina) linhas.push({ id: "z:inicio", titulo: "🏠 Menu inicial", descricao: "Voltar ao começo" });
-  return lista(z, corpo + "\n\nToque em \"Ver opções\" e escolha.", pai ? pai.titulo : "Opções", linhas);
+  return lista(z, corpo + (itens.length > porPagina ? `\n\nSão ${itens.length} opções: toque em "Ver opções" (as próximas ficam em "Mais opções") ou escreva o que procura.` : "\n\nToque em \"Ver opções\" e escolha."), pai ? pai.titulo : "Opções", linhas);
 }
 async function rodape(z, item) {
   const lista = [{ id: "z:inicio", titulo: "🏠 Menu inicial" }];
@@ -228,8 +239,13 @@ async function responder(z, texto, acao) {
   if (!alvo) return mostrarMenu(z, 0, 0, z.cfg.nao_entendi);
   if (QUER_HUMANO.test(alvo)) { const h = m.todos.find(i => i.tipo === "HUMANO"); await transferir(z, h?.texto); return h ? registrarBusca(z, h, "PALAVRA", 0, caminhoDe(m, h)) : null; }
   if (SAUDACAO.test(alvo) && alvo.length < 30) return mostrarMenu(z);
-  // Número do menu ("1", "2"...): a ordem das opções do menu inicial.
-  if (/^\d{1,2}$/.test(alvo)) { const it = m.filhos(0)[Number(alvo) - 1]; if (it) return abrirItem(z, it, "PALAVRA"); }
+  // Número ("1", "12"...): a opção do último menu que a pessoa recebeu; "0" volta ao início.
+  if (/^\d{1,3}$/.test(alvo)) {
+    if (alvo === "0") return mostrarMenu(z);
+    const ultimo = Number(z.ultimoMenu || 0);
+    const it = m.filhos(m.porId.has(ultimo) ? ultimo : 0)[Number(alvo) - 1];
+    if (it) return abrirItem(z, it, "BOTAO");
+  }
   const candidatos = m.todos.filter(i => m.visivel(i) && i.tipo !== "HUMANO").map(i => ({ i, p: pontos(i, alvo) + (i.tipo === "MENU" ? -0.5 : 0) })).filter(x => x.p > 0).sort((x, y) => y.p - x.p);
   if (candidatos.length && (candidatos.length === 1 || candidatos[0].p >= candidatos[1].p + 1.5)) return abrirItem(z, candidatos[0].i, "PALAVRA");
   // Nome de uma loja/contato do catálogo escrito na mensagem.
@@ -344,7 +360,7 @@ async function receberMensagem(env, k, conta, msg, nome) {
   const [ins, , ctt, recentes] = await env.DB.batch([
     env.DB.prepare("INSERT OR IGNORE INTO plt_zap_msgs(org_id,telefone,direcao,origem,texto,wamid,status,criado_ms) VALUES(?,?,?,?,?,?,'RECEBIDA',?)").bind(z.org, tel, "E", "CLIENTE", cortar(e.rotulo, 4000), wamid, agora),
     env.DB.prepare("INSERT INTO plt_zap_contatos(org_id,telefone,nome,ultima_entrada_ms,ultimo_ms) VALUES(?,?,?,?,?) ON CONFLICT(org_id,telefone) DO UPDATE SET nome=COALESCE(NULLIF(excluded.nome,''),nome), ultima_entrada_ms=excluded.ultima_entrada_ms, ultimo_ms=excluded.ultimo_ms").bind(z.org, tel, nome, agora, agora),
-    env.DB.prepare("SELECT pausado_ate, nome FROM plt_zap_contatos WHERE org_id=? AND telefone=?").bind(z.org, tel),
+    env.DB.prepare("SELECT pausado_ate, nome, ultimo_menu FROM plt_zap_contatos WHERE org_id=? AND telefone=?").bind(z.org, tel),
     env.DB.prepare("SELECT COUNT(*) n FROM plt_zap_msgs WHERE org_id=? AND telefone=? AND direcao='S' AND criado_ms>?").bind(z.org, tel, agora - 600000)
   ]);
   if (!Number(ins?.meta?.changes)) return; // a Meta reenviou a mesma mensagem
@@ -355,6 +371,7 @@ async function receberMensagem(env, k, conta, msg, nome) {
   if (Number(recentes?.results?.[0]?.n || 0) >= 25) return; // trava contra robô conversando com robô
   if (!rec.includes("chatbot")) return;
   z.nome = nome || c.nome || "";
+  z.ultimoMenu = c.ultimo_menu;
   await responder(z, e.texto, e.acao);
 }
 
@@ -451,6 +468,7 @@ export async function rotasZap(request, env, k, orgId, papel, resto) {
       if (typeof v === "number" && corpo[ch] != null) cfg[ch] = Math.max(0, Math.min(5000, Number(corpo[ch]) || 0));
     }
     if (!["gpt-5-nano", "gpt-5-mini", "gpt-4o-mini", "gpt-4.1-mini"].includes(cfg.modelo_ia)) cfg.modelo_ia = "gpt-5-nano";
+    if (cfg.exibicao_inicio !== "NUMERADO") cfg.exibicao_inicio = "AUTO";
     const modo = ["BOTOES", "MISTO"].includes(corpo.modo) ? corpo.modo : c?.modo || "BOTOES";
     if (modo === "MISTO" && k.acesso && !k.acesso.recursos.includes("chatbot_ia")) return json({ erro: "A IA no chatbot faz parte de um plano superior. Atualize em Plano e pagamento.", codigo: "PLANO_RECURSO" }, 402);
     const ativo = typeof corpo.ativo === "boolean" ? (corpo.ativo ? 1 : 0) : c ? c.ativo : 1;
@@ -477,10 +495,10 @@ export async function rotasZap(request, env, k, orgId, papel, resto) {
     const pai = Number(corpo.pai_id) || 0;
     if (pai) { const p = await env.DB.prepare("SELECT tipo FROM plt_zap_itens WHERE id=? AND org_id=?").bind(pai, orgId).first(); if (!p || p.tipo !== "MENU") return json({ erro: "A opção só pode ficar dentro de um submenu." }, 400); }
     if (Number(corpo.id) && pai === Number(corpo.id)) return json({ erro: "Uma opção não pode ficar dentro dela mesma." }, 400);
-    const campos = [pai, tipo, titulo, k.txt(corpo.descricao, 72), k.txt(corpo.texto, 3000), k.txt(corpo.palavras, 500), Number(corpo.ordem) || 0, corpo.ativo === false ? 0 : 1];
+    const campos = [pai, tipo, titulo, k.txt(corpo.descricao, 72), k.txt(corpo.texto, 3000), k.txt(corpo.palavras, 500), Number(corpo.ordem) || 0, corpo.ativo === false ? 0 : 1, corpo.exibicao === "NUMERADO" ? "NUMERADO" : "AUTO"];
     let id = Number(corpo.id) || 0;
-    if (id) { const x = await env.DB.prepare("UPDATE plt_zap_itens SET pai_id=?, tipo=?, titulo=?, descricao=?, texto=?, palavras=?, ordem=?, ativo=? WHERE id=? AND org_id=?").bind(...campos, id, orgId).run(); if (!x.meta.changes) return json({ erro: "Opção não encontrada." }, 404); }
-    else id = (await env.DB.prepare("INSERT INTO plt_zap_itens(pai_id,tipo,titulo,descricao,texto,palavras,ordem,ativo,org_id) VALUES(?,?,?,?,?,?,?,?,?) RETURNING id").bind(...campos, orgId).first())?.id;
+    if (id) { const x = await env.DB.prepare("UPDATE plt_zap_itens SET pai_id=?, tipo=?, titulo=?, descricao=?, texto=?, palavras=?, ordem=?, ativo=?, exibicao=? WHERE id=? AND org_id=?").bind(...campos, id, orgId).run(); if (!x.meta.changes) return json({ erro: "Opção não encontrada." }, 404); }
+    else id = (await env.DB.prepare("INSERT INTO plt_zap_itens(pai_id,tipo,titulo,descricao,texto,palavras,ordem,ativo,exibicao,org_id) VALUES(?,?,?,?,?,?,?,?,?,?) RETURNING id").bind(...campos, orgId).first())?.id;
     return json({ ok: true, id });
   }
   if ((m = r.match(/^itens\/(\d{1,12})\/excluir$/)) && metodo === "POST") {

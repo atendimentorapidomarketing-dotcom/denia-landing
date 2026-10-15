@@ -1570,3 +1570,24 @@ test("Planos — lembrete por e-mail quando o teste está acabando (uma vez só)
   await mod.default.scheduled({}, p.env, null);
   assert.equal(p.emails.filter(e => e.to[0] === "ana@loja.test").length, 1, "não repete o mesmo aviso");
 });
+
+test("Chatbot — mais de 10 opções: lista com 'Mais opções' ou texto numerado sem limite, resposta pelo número", async () => {
+  const { p, inf } = await duasEmpresasComChatbot();
+  await p.req(`/api/orgs/${inf}/zap/modelo`, { metodo: "POST", quem: "admin", corpo: { tipo: "shopping" } });
+  const servicos = Array.from({ length: 22 }, (_, i) => "Serviço " + String(i + 1).padStart(2, "0")).join(", ");
+  await p.req(`/api/orgs/${inf}/zap/importar`, { metodo: "POST", quem: "admin", corpo: { linhas: [{ loja: "Faz Tudo", whatsapp: "21955554444", servicos }] } });
+  const serv = (await p.req(`/api/orgs/${inf}/zap/itens`, { quem: "admin" })).dados.itens.find(i => /Serviços/.test(i.titulo));
+  const CLI = "5521911110000";
+  await clicar(p, "111111111111", CLI, "z:i:" + serv.id);
+  const l = enviadosPara(p, CLI).at(-1).corpo.interactive;
+  assert.equal(l.type, "list"); assert.match(l.body.text, /São 22 opções/);
+  // Texto numerado: todas numa mensagem, e o cliente responde "17".
+  assert.equal((await p.req(`/api/orgs/${inf}/zap/itens`, { metodo: "POST", quem: "admin", corpo: { ...serv, exibicao: "NUMERADO" } })).status, 200);
+  await clicar(p, "111111111111", CLI, "z:i:" + serv.id);
+  const txt = enviadosPara(p, CLI).at(-1).corpo.text.body;
+  assert.match(txt, /\*22\* · Serviço 22/); assert.match(txt, /\*0\* · Voltar/);
+  await webhookZap(p, "111111111111", { from: CLI, type: "text", text: { body: "17" } });
+  assert.match(enviadosPara(p, CLI).at(-2).corpo.text.body, /\*Serviço 17\*[\s\S]*Faz Tudo/);
+  await webhookZap(p, "111111111111", { from: CLI, type: "text", text: { body: "0" } });
+  assert.equal(enviadosPara(p, CLI).at(-1).corpo.interactive.type, "button", "0 volta ao menu inicial");
+});

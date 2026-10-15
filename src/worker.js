@@ -32,7 +32,7 @@ const VERSAO = "3.1.0";
 const VERSAO_TERMOS = "2026-10";
 // WhatsApp da Central de Atendimento (botão flutuante do site).
 const WHATSAPP_CENTRAL = "5521975469162";
-const SCHEMA = "2.6.0";
+const SCHEMA = "2.6.1";
 const COOKIE = "__Host-denia_sessao";
 const SESSAO_MS = 8 * 60 * 60 * 1000;
 const MAX_TENTATIVAS = 5;
@@ -176,6 +176,8 @@ async function garantirSchema(env) {
     await env.DB.prepare("ALTER TABLE plt_organizacoes ADD COLUMN legado_id TEXT").run().catch(() => { }); // já existe
     await env.DB.prepare("ALTER TABLE plt_organizacoes ADD COLUMN plano TEXT").run().catch(() => { });
     await env.DB.prepare("ALTER TABLE plt_organizacoes ADD COLUMN plano_status TEXT").run().catch(() => { });
+    await env.DB.prepare("ALTER TABLE plt_zap_itens ADD COLUMN exibicao TEXT").run().catch(() => { });
+    await env.DB.prepare("ALTER TABLE plt_zap_contatos ADD COLUMN ultimo_menu INTEGER").run().catch(() => { });
     for (const col of ["teste_ate INTEGER", "pago_ate INTEGER", "ciclo TEXT", "cobranca_cliente TEXT", "assinatura_id TEXT", "assinatura_plano TEXT"])
       await env.DB.prepare("ALTER TABLE plt_organizacoes ADD COLUMN " + col).run().catch(() => { });
     // A primeira empresa da plataforma.

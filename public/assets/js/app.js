@@ -1775,9 +1775,12 @@
     const palavras = h("textarea", { class: "entrada", maxlength: "500", style: "min-height:70px", placeholder: "celular, smartphone, iphone" }); palavras.value = item.palavras || "";
     const ordem = h("input", { class: "entrada", type: "number", min: "0", max: "999", value: String(item.ordem || 0) });
     const ativo = h("input", { type: "checkbox", checked: item.ativo !== 0 });
+    const exibicao = h("select", { class: "entrada" }, [["AUTO", "Automático: até 3 = botões; até 10 = lista; mais = lista com \"Mais opções\""], ["NUMERADO", "Texto numerado: todas as opções numa mensagem só, sem limite (o cliente responde o número)"]].map(([v, n]) => h("option", { value: v, selected: (item.exibicao || "AUTO") === v, text: n })));
+    const campoExibicao = campo("Como mostrar as opções deste submenu", exibicao, "O WhatsApp permite no máximo 3 botões ou 10 itens por lista. Com mais opções, use a lista automática (com \"Mais opções\") ou o texto numerado, que não tem limite.");
     const rotTexto = h("label", {}), dicaTexto = h("p", { class: "dica", style: "margin:0;font-size:13px;color:var(--texto-3)" });
     const ajustar = () => {
       const t = tipo.value;
+      campoExibicao.classList.toggle("oculto", t !== "MENU");
       rotTexto.textContent = { MENU: "Mensagem ao abrir o submenu", RESPOSTA: "Resposta que o cliente recebe", LISTA: "Texto antes da lista (opcional)", HUMANO: "Mensagem ao chamar a equipe (opcional)" }[t];
       dicaTexto.textContent = { MENU: "Ex.: Qual produto você procura?", RESPOSTA: "Endereço, horário, link do cardápio, preços autorizados… O robô envia exatamente este texto.", LISTA: "Os contatos ligados a esta opção (em Contatos e lojas) aparecem com o link do WhatsApp de cada um.", HUMANO: "O robô fica em pausa nessa conversa por 12 h e a equipe é avisada (Telegram ou e-mail)." }[t];
     };
@@ -1786,10 +1789,10 @@
     const fechar = gaveta(item.id ? "Editar opção" : "Nova opção do menu", [
       campo("Tipo", tipo), campo("Nome no botão (até 24 letras)", titulo, "Pode usar emoji. Em botões, o WhatsApp mostra até 20 letras."), campo("Onde fica", pai),
       h("div", { class: "campo" }, rotTexto, texto, dicaTexto),
-      campo("Descrição na lista", descricao), campo("Palavras-chave", palavras, "Se o cliente escrever em vez de tocar, o robô procura por estas palavras primeiro — sem gastar IA."),
+      campoExibicao, campo("Descrição na lista", descricao), campo("Palavras-chave", palavras, "Se o cliente escrever em vez de tocar, o robô procura por estas palavras primeiro — sem gastar IA."),
       campo("Ordem (menor aparece primeiro)", ordem), h("label", { class: "guia-cat" }, ativo, "Aparece no menu"),
       h("div", { class: "acoes" }, botao("Salvar", async () => {
-        try { await zap("itens", { metodo: "POST", corpo: { id: item.id, tipo: tipo.value, titulo: titulo.value, pai_id: Number(pai.value), texto: texto.value, descricao: descricao.value, palavras: palavras.value, ordem: Number(ordem.value) || 0, ativo: ativo.checked } }); aviso("Opção salva.", "ok"); fechar(); recarregar(); }
+        try { await zap("itens", { metodo: "POST", corpo: { id: item.id, tipo: tipo.value, titulo: titulo.value, pai_id: Number(pai.value), texto: texto.value, descricao: descricao.value, palavras: palavras.value, ordem: Number(ordem.value) || 0, ativo: ativo.checked, exibicao: exibicao.value } }); aviso("Opção salva.", "ok"); fechar(); recarregar(); }
         catch (e) { aviso(e.message, "erro"); }
       }, "btn-primario"))]);
   }
@@ -1810,6 +1813,7 @@
     }
     const linha = (i, nivel) => h("div", { class: "zap-no", style: `margin-left:${nivel * 22}px` },
       h("span", { class: "zap-no-titulo" }, /^\p{Extended_Pictographic}/u.test(i.titulo) ? null : h("span", { text: ICONE_TIPO[i.tipo] + " " }), h("strong", { text: i.titulo }), !i.ativo ? h("small", { text: " (desligada)" }) : null,
+        i.tipo === "MENU" && i.exibicao === "NUMERADO" ? h("small", { class: "sub", text: " · texto numerado" }) : null,
         h("small", { class: "sub", text: " · " + (i.tipo === "LISTA" ? `${numero(porItem.get(i.id) || 0)} contato(s)${porItem.get(i.id) ? "" : " — não aparece até ter contato"}` : i.tipo === "MENU" ? `${numero(itens.filter(x => x.pai_id === i.id).length)} opção(ões)` : TIPOS_ITEM[i.tipo].split(" (")[0]) })),
       pode("AGENTE") ? h("span", { class: "acoes" },
         i.tipo === "MENU" ? botao("+ Opção aqui", () => editarItem({ tipo: "LISTA", titulo: "", pai_id: i.id, ativo: 1 }, itens, recarregar), "btn-secundario btn-pequeno") : null,
@@ -1920,18 +1924,20 @@
     const modelo = h("select", { class: "entrada" }, [["gpt-5-nano", "gpt-5-nano — o mais barato (recomendado)"], ["gpt-5-mini", "gpt-5-mini — econômico, mais esperto"], ["gpt-4o-mini", "gpt-4o-mini — econômico"]].map(([v, n]) => h("option", { value: v, selected: cfg.modelo_ia === v, text: n })));
     const limite = h("input", { class: "entrada", type: "number", min: "0", max: "5000", value: String(cfg.limite_ia_dia ?? 300) });
     const avisar = h("input", { type: "checkbox", checked: cfg.avisar_buscas !== false });
+    const exibIni = h("select", { class: "entrada" }, [["AUTO", "Automático (botões ou lista)"], ["NUMERADO", "Texto numerado, sem limite de opções"]].map(([v, n]) => h("option", { value: v, selected: (cfg.exibicao_inicio || "AUTO") === v, text: n })));
     trocar(area,
       h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Modo de atendimento" }),
         campo("Como o robô atende", modo, "Nos dois modos os botões nunca gastam IA. No modo com IA, ela só entra quando a pessoa escreve algo que a busca por palavra não achou."),
         h("label", { class: "guia-cat" }, ativo, "Robô ligado (desligado: as mensagens só ficam registradas para a equipe)"),
-        h("label", { class: "guia-cat" }, avisar, "Avisar no Telegram cada busca (nome, número e o que procurou)")),
+        h("label", { class: "guia-cat" }, avisar, "Avisar no Telegram cada busca (nome, número e o que procurou)"),
+        campo("Como mostrar o menu inicial", exibIni)),
       h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Mensagens" }),
         campos.map(([k, rot, dica, l]) => { ent[k] = l > 1 ? h("textarea", { class: "entrada", maxlength: "1000", style: `min-height:${l * 34}px` }) : h("input", { class: "entrada", maxlength: "300" }); ent[k].value = cfg[k] || ""; return campo(rot, ent[k], dica); })),
       h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "IA (só no modo Botões + IA)" }),
         campo("O que a IA pode responder sobre a empresa", sobre, "A IA só responde com o que estiver aqui ou no menu. Nunca inventa preço, telefone ou horário."),
         h("div", { class: "grade grade-2" }, campo("Modelo", modelo), campo("Limite de respostas da IA por dia", limite, "Proteção de custo: passou disso, o robô volta a mostrar o menu."))),
       pode("AGENTE") ? h("div", { class: "acoes" }, botao("Salvar", async () => {
-        try { await zap("config", { metodo: "POST", corpo: { ...Object.fromEntries(Object.entries(ent).map(([k, e]) => [k, e.value])), sobre: sobre.value, modelo_ia: modelo.value, limite_ia_dia: Number(limite.value), avisar_buscas: avisar.checked, modo: modo.value, ativo: ativo.checked } }); aviso("Salvo.", "ok"); }
+        try { await zap("config", { metodo: "POST", corpo: { ...Object.fromEntries(Object.entries(ent).map(([k, e]) => [k, e.value])), sobre: sobre.value, modelo_ia: modelo.value, limite_ia_dia: Number(limite.value), avisar_buscas: avisar.checked, exibicao_inicio: exibIni.value, modo: modo.value, ativo: ativo.checked } }); aviso("Salvo.", "ok"); }
         catch (e) { aviso(e.message, "erro"); }
       }, "btn-primario"), h("a", { class: "btn btn-secundario", href: "#/chatbot/testar" }, "Testar como cliente")) : null);
   }
