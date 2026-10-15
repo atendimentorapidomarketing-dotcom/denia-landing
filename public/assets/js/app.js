@@ -565,14 +565,17 @@
       // Sem confirmação da Meta, a mensagem nunca aparece como "enviada": motor antigo (sem confirmações)
       // ou aceita há mais de 10 minutos sem nenhum aviso de entrega.
       const versaoMotor = String((estado.status && estado.status.versao) || "");
-      const motorSemConfirmacao = saida && !m.entrega && m.whatsapp_message_id && versaoMotor && !/^(3[2-9]|31\.[2-9])/.test(versaoMotor);
+      const simulada = saida && /^sim\./.test(String(m.whatsapp_message_id || ""));
+      const recente = Date.now() - Date.parse(String(m.criado_em || "").replace(" ", "T") + (String(m.criado_em || "").includes("Z") ? "" : "Z")) < 60000;
+      const motorSemConfirmacao = saida && !simulada && !m.entrega && String(m.origem || "").toUpperCase() !== "LIGACAO" && !recente;
       const idadeMs = Date.now() - Date.parse(String(m.criado_em || "").replace(" ", "T") + (String(m.criado_em || "").includes("Z") ? "" : "Z"));
       const semConfirmar = saida && m.entrega === "ACEITA" && idadeMs > 10 * 60000;
       const tique = saida && m.entrega && ENTREGA[m.entrega] ? h("span", { class: "tique" + (m.entrega === "READ" ? " tique-lida" : ""), title: ENTREGA[m.entrega][1], "aria-label": ENTREGA[m.entrega][1], text: " " + ENTREGA[m.entrega][0] }) : null;
       return h("div", { class: "msg " + (saida ? "msg-saida" + (humano ? " msg-humano" : "") + (falhou ? " msg-falhou" : "") : "msg-entrada") }, m.conteudo || "[sem texto]",
         falhou ? h("span", { class: "msg-falha", text: "⚠ NÃO CHEGOU: " + (m.entrega_erro || "a Meta não entregou esta mensagem.") }) : null,
         semConfirmar ? h("span", { class: "msg-aviso", text: "⚠ A Meta aceitou, mas não confirmou a entrega. Provavelmente NÃO chegou — veja WhatsApp → Verificar agora." }) : null,
-        motorSemConfirmacao ? h("span", { class: "msg-aviso", text: `⚠ Entrega não confirmada: o motor ${versaoMotor} não sabe se chegou. Cole o motor 31.2.` }) : null,
+        simulada ? h("span", { class: "msg-falha", text: "⚠ SIMULAÇÃO: esta resposta foi gerada no modo de teste e NÃO foi enviada ao WhatsApp." }) : null,
+        motorSemConfirmacao ? h("span", { class: "msg-aviso", text: /^(3[2-9]|31\.[2-9])/.test(versaoMotor) ? "⚠ A Meta não mandou nenhuma confirmação de entrega desta mensagem: provavelmente NÃO chegou. Veja WhatsApp → Verificar agora." : `⚠ Entrega não confirmada${versaoMotor ? ` (motor ${versaoMotor})` : ""}: não dá para saber se chegou. Cole o motor 31.2 no Worker denia.` }) : null,
         h("small", {}, (saida ? (humano ? "Equipe · " : "DENIA · ") : "") + quando(m.criado_em), tique));
     }));
     if (!(d.mensagens || []).length) msgs.appendChild(vazio("Sem mensagens", ""));
