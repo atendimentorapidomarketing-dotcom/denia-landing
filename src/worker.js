@@ -31,7 +31,7 @@ import { lerPlanos, acessoDa, recursoDaRota, planoMinimo, rotasPlano, webhookAsa
 
 const VERSAO = "3.1.0";
 // Versão dos Termos de uso e da Política de privacidade aceitas no cadastro.
-const VERSAO_TERMOS = "2026-10";
+const VERSAO_TERMOS = "2026-10-16";
 // WhatsApp da Central de Atendimento (botão flutuante do site).
 const WHATSAPP_CENTRAL = "5521975469162";
 const SCHEMA = "2.7.0";
@@ -402,7 +402,7 @@ async function cadastrar(request, env) {
   await env.DB.prepare("INSERT INTO plt_membros(org_id,usuario_id,papel,criado_ms) VALUES(?,?,'OWNER',?)").bind(o.id, u.id, agora(env)).run();
   await auditar(env, request, { usuario: u }, o.id, "EMPRESA", `Conta criada: ${empresa}`);
   // Prova do aceite: versão dos documentos, data, IP (registrado pela auditoria) e idioma da página.
-  await auditar(env, request, { usuario: u }, o.id, "ACEITE", `Aceitou os Termos de uso ${VERSAO_TERMOS} e a Política de privacidade ${VERSAO_TERMOS} (idioma ${txt(corpo.idioma, 10) || "pt-BR"}; navegador ${txt(request.headers.get("user-agent"), 160)})`);
+  await auditar(env, request, { usuario: u }, o.id, "ACEITE", `Aceitou os Termos de uso ${VERSAO_TERMOS}, a Política de privacidade ${VERSAO_TERMOS} e o Contrato de tratamento de dados ${VERSAO_TERMOS} (idioma ${txt(corpo.idioma, 10) || "pt-BR"}; navegador ${txt(request.headers.get("user-agent"), 160)})`);
   return json({ ok: true }, 200, { "set-cookie": cookieSessao(await criarCookie(env, u), SESSAO_MS / 1000) });
 }
 
