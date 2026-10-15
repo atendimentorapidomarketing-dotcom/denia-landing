@@ -58,6 +58,7 @@ function textoDaResposta(d) {
 }
 // Tipo de uso de cada caminho da OpenAI (para a página Consumo).
 const OPERACAO_OPENAI = { responses: "texto", "images/edits": "imagem", "images/generations": "imagem", "audio/transcriptions": "transcricao", "audio/speech": "voz_falada", "realtime/client_secrets": "voz_sessao" };
+export { openai as openaiBruto };
 async function openai(env, caminho, corpo, extras = {}) {
   const inicio = Date.now();
   const modelo = String((corpo instanceof FormData ? corpo.get("model") : corpo?.model) || "");

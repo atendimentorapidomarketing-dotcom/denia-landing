@@ -235,6 +235,7 @@
     guia: { titulo: "Guia de lojas", render: paginaGuia },
     chatbot: { titulo: "Chatbot do WhatsApp", render: paginaChatbot },
     plano: { titulo: "Plano e pagamento", render: paginaPlano },
+    temporada: { titulo: "Locação por temporada", render: paginaTemporada },
     whatsapp: { titulo: "WhatsApp", render: paginaWhatsapp },
     instagram: { titulo: "Instagram", render: (el, aba, vivo) => paginaCanalSocial(el, "instagram", vivo, aba) },
     facebook: { titulo: "Facebook", render: (el, aba, vivo) => paginaCanalSocial(el, "facebook", vivo, aba) },
@@ -266,7 +267,7 @@
     }
     estado.paginaViva = null;
     const id = ++estado.render;
-    document.querySelectorAll("#lateral-nav a").forEach(a => a.classList.toggle("ativo", a.dataset.rota === nome));
+    document.querySelectorAll("#lateral-nav a").forEach(a => a.classList.toggle("ativo", a.dataset.rota === nome && (!a.dataset.aba || a.dataset.aba === (param || "visao"))));
     $("titulo-pagina").replaceChildren(estado.org ? h("span", { class: "migalha", text: estado.org.nome + " / " }) : "", rota.titulo);
     document.title = rota.titulo + " — DENIA";
     fecharMenu();
@@ -2055,7 +2056,7 @@
   // ----- Plano e pagamento: teste grátis, planos (mensal/anual), assinatura (Pix, boleto, cartão) e histórico.
   const RECURSO_DA_ROTA = {
     conversas: "ia_completa", atendimentos: "ia_completa", profissionais: "ia_completa", treinamento: "ia_completa", aprendizados: "ia_completa", clientes: "ia_completa", whatsapp: "ia_completa", guia: "ia_completa",
-    chatbot: "chatbot", estudio: "marketing", calendario: "marketing", aprovacoes: "marketing", marcas: "marketing", instagram: "marketing", facebook: "marketing", google: "marketing", social: "marketing", denia: "voz"
+    chatbot: "chatbot", temporada: "temporada", estudio: "marketing", calendario: "marketing", aprovacoes: "marketing", marcas: "marketing", instagram: "marketing", facebook: "marketing", google: "marketing", social: "marketing", denia: "voz"
   };
   window.DENIA_RECURSOS = window.DENIA_RECURSOS || { chatbot: "Chatbot do WhatsApp com botões e listas", chatbot_ia: "IA no chatbot", ia_completa: "IA completa de atendimento (atende como uma pessoa, com memória)", marketing: "Instagram, Facebook e Google: posts, artes, comentários e avaliações", voz: "DENIA por voz, ao vivo", multiempresa: "Várias empresas, marcas e unidades", temporada: "Locação por temporada" };
   const ROTAS_LIVRES = ["plano", "conta", "equipe", "auditoria", "empresas", "contatos", "painel", "integracoes", "consumo"];
@@ -2148,6 +2149,298 @@
           navegar();
         } catch (e) { aviso(e.message, "erro"); }
       }, "btn-primario"))]);
+  }
+
+  // ----- Locação por temporada: Airbnb, Booking.com e Vrbo num lugar só.
+  const tp = (caminho, op) => org("tp/" + caminho, op);
+  const CANAL_NOME = { airbnb: "Airbnb", booking: "Booking.com", vrbo: "Vrbo", direto: "Reserva direta", outro: "Outro" };
+  const CANAL_SIGLA = { airbnb: "A", booking: "B", vrbo: "V", direto: "D", outro: "O" };
+  const seloCanal = c => h("span", { class: "canal canal-" + (CANAL_NOME[c] ? c : "outro"), title: CANAL_NOME[c] || c }, h("b", { text: CANAL_SIGLA[c] || "O" }), CANAL_NOME[c] || c);
+  const ABAS_TP = [["visao", "Visão geral"], ["calendario", "Calendário e preços"], ["reservas", "Reservas"], ["mensagens", "Mensagens"], ["imoveis", "Imóveis"], ["conexoes", "Conexões"], ["limpezas", "Limpezas"], ["relatorios", "Relatórios"]];
+  const dmy = s => s ? s.slice(8, 10) + "/" + s.slice(5, 7) : "—";
+  const somaDiasISO = (s, n) => new Date(Date.parse(s + "T12:00:00Z") + n * 86400000).toISOString().slice(0, 10);
+  const SEMANA = ["dom", "seg", "ter", "qua", "qui", "sex", "sáb"];
+  async function paginaTemporada(el, aba, vivo) {
+    const atual = ABAS_TP.some(a => a[0] === aba) ? aba : "visao";
+    el.appendChild(cabeca("Locação por temporada", "Airbnb, Booking.com e Vrbo num lugar só: calendário único, preços e taxas por plataforma, reservas, mensagens respondidas pela IA, limpezas e relatórios."));
+    el.appendChild(h("div", { class: "abas", role: "tablist" }, ABAS_TP.map(([k, n]) => h("a", { class: "aba" + (k === atual ? " ativo" : ""), href: "#/temporada/" + k, role: "tab" }, n))));
+    const area = h("div", { class: "grade" }, carregando());
+    el.appendChild(area);
+    try {
+      const fn = { visao: tpVisao, calendario: tpCalendario, reservas: tpReservas, mensagens: tpMensagens, imoveis: tpImoveis, conexoes: tpConexoes, limpezas: tpLimpezas, relatorios: tpRelatorios }[atual];
+      await fn(area, vivo);
+    } catch (e) { if (vivo()) falha(area, e); }
+  }
+  async function tpVisao(area, vivo) {
+    const f = estado.tpF = estado.tpF || { dias: -30 };
+    // Negativo = próximos dias (o que importa para o anfitrião); positivo = últimos dias.
+    const de = f.dias < 0 ? isoLocal(new Date()) : isoLocal(new Date(Date.now() - (f.dias - 1) * 86400000)), ate = f.dias < 0 ? isoLocal(new Date(Date.now() + (-f.dias - 1) * 86400000)) : isoLocal(new Date());
+    const v = await tp(`visao?de=${de}&ate=${ate}`);
+    if (!vivo()) return;
+    if (!v.imoveis) {
+      trocar(area, h("section", { class: "grade grade-3" },
+        passoInicial("01", "Cadastre os imóveis", "Nome, capacidade, preço base, fim de semana e as taxas de cada plataforma.", "#/temporada/imoveis"),
+        passoInicial("02", "Conecte Airbnb, Booking e Vrbo", "Cole o link do calendário de cada anúncio (funciona na hora) ou ligue a conexão oficial.", "#/temporada/conexoes"),
+        passoInicial("03", "Ensine a IA", "Check-in, Wi-Fi, regras e o seu jeito de escrever. Ela responde os hóspedes no idioma deles.", "#/temporada/imoveis")));
+      return;
+    }
+    const pontos = (v.serie || []).map(x => ({ chave: x.dia, rotulo: dataCompleta(x.dia), curto: dataCurta(x.dia), valor: x.total ? Math.round((x.ocupados / x.total) * 100) : 0 }));
+    const alertas = [];
+    for (const c of v.calendarios || []) if (c.erro) alertas.push(`Calendário do ${CANAL_NOME[c.canal] || c.canal} (${c.imovel}) não sincronizou: ${c.erro}`);
+    if (v.rascunhos) alertas.push(`${numero(v.rascunhos)} resposta(s) da IA esperando a sua aprovação em Mensagens.`);
+    trocar(area,
+      h("section", { class: "cartao vidro filtros-desempenho" }, h("div", { class: "abas abas-chips", role: "group", "aria-label": "Período" },
+        [[-30, "Próximos 30 dias"], [-90, "Próximos 90 dias"], [30, "Últimos 30 dias"], [90, "Últimos 90 dias"], [365, "Últimos 12 meses"]].map(([d, n]) => h("button", { type: "button", class: "aba" + (f.dias === d ? " ativo" : ""), "aria-pressed": f.dias === d ? "true" : "false", onclick: () => { f.dias = d; navegar(); } }, n)))),
+      alertas.length ? h("section", { class: "grade" }, alertas.map(a => h("p", { class: "nota nota-alerta", text: "⚠️ " + a }))) : null,
+      h("section", { class: "grade grade-4" },
+        metrica("Ocupação", v.ocupacao != null ? String(v.ocupacao).replace(".", ",") + "%" : "—", `${numero(v.noites_ocupadas)} de ${numero(v.noites_disponiveis - v.noites_bloqueadas)} noites`),
+        metrica("Receita", dinheiro(v.receita, "BRL"), `${numero(v.reservas)} reserva(s)`),
+        metrica("Diária média", v.diaria_media != null ? dinheiro(v.diaria_media, "BRL") : "—", `RevPAR ${v.revpar != null ? dinheiro(v.revpar, "BRL") : "—"}`),
+        metrica("Estadia típica", v.estadia_mediana != null ? `${v.estadia_mediana} noites` : "—", v.antecedencia_mediana != null ? `reservam ${v.antecedencia_mediana} dias antes` : `${numero(v.imoveis)} imóvel(is)`)),
+      h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Ocupação por dia (%)" }), pontos.some(p => p.valor) ? graficoLinha(pontos, null, "Ocupação (%)", "") : vazio("Sem reservas no período", "")),
+      h("section", { class: "grade grade-2" },
+        h("div", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Receita por plataforma" }), (v.por_canal || []).length ? barras(v.por_canal.map(c => ({ rotulo: `${c.nome} (${c.reservas})`, valor: c.receita })), x => dinheiro(x, "BRL")) : vazio("Sem reservas", "")),
+        h("div", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Próximas chegadas" }), (v.proximas || []).length ? h("div", { class: "lista-tp" }, v.proximas.map(r => h("div", { class: "linha-tp" }, seloCanal(r.canal), h("span", {}, h("strong", { text: r.hospede || "Hóspede" }), h("small", { class: "sub", text: ` · ${r.imovel}` })), h("span", { class: "sub", text: `${dmy(r.inicio)} → ${dmy(r.fim)}` })))) : vazio("Nenhuma reserva futura", ""))),
+      (v.limpezas || []).length ? h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Limpezas dos próximos 7 dias" }), h("div", { class: "lista-tp" }, v.limpezas.map(l => h("div", { class: "linha-tp" }, h("strong", { text: dmy(l.data) }), h("span", { text: l.imovel }), h("span", { class: "sub", text: l.responsavel || "sem responsável" }))))) : null);
+  }
+  async function tpCalendario(area, vivo) {
+    const f = estado.tpCal = estado.tpCal || { de: isoLocal(new Date()) };
+    const c = await tp(`calendario?de=${f.de}&ate=${somaDiasISO(f.de, 27)}`);
+    if (!vivo()) return;
+    if (!c.imoveis.length) { trocar(area, h("section", { class: "cartao vidro" }, vazio("Nenhum imóvel ainda", "Cadastre em Imóveis."), h("div", { class: "acoes", style: "justify-content:center" }, h("a", { class: "btn btn-primario", href: "#/temporada/imoveis" }, "Cadastrar imóvel")))); return; }
+    const hoje = isoLocal(new Date());
+    const sel = { im: null, a: null, b: null };
+    const tabela = h("table", { class: "cal-tp" });
+    const cab = h("tr", {}, h("th", { class: "cal-tp-nome", text: "Imóvel" }), c.dias.map(d => { const w = new Date(d + "T12:00:00Z").getUTCDay(); return h("th", { class: (w === 5 || w === 6 ? "fds" : "") + (d === hoje ? " hoje" : "") }, h("small", { text: SEMANA[w] }), h("div", { text: d.slice(8) })); }));
+    const corpo = h("tbody", {});
+    for (const im of c.imoveis) {
+      const ocup = new Map();
+      for (const r of c.reservas.filter(x => x.imovel_id === im.id)) for (let d = r.inicio; d < r.fim; d = somaDiasISO(d, 1)) ocup.set(d, r);
+      corpo.appendChild(h("tr", {}, h("th", { class: "cal-tp-nome", text: im.nome }), im.precos.map(p => {
+        const r = ocup.get(p.data);
+        const inicio = r && (r.inicio === p.data || p.data === c.dias[0]);
+        return h("td", { class: "cal-dia" + (r ? " ocupado canal-fundo-" + (r.tipo === "BLOQUEIO" ? "bloqueio" : r.canal) : "") + (p.fechado ? " fechado" : "") + (p.especial ? " especial" : ""), "data-im": im.id, "data-d": p.data,
+          title: r ? `${r.tipo === "BLOQUEIO" ? "Bloqueado" : (r.hospede || "Reserva")} · ${CANAL_NOME[r.canal] || r.canal} · ${dmy(r.inicio)} → ${dmy(r.fim)}` : `${dataCompleta(p.data)} · ${dinheiro(p.preco, im.moeda || "BRL")} · mínimo ${p.minimo} noite(s)${p.fechado ? " · fechado" : ""}`,
+          onclick: () => clicar(im, p.data, r) },
+          r ? (inicio ? h("span", { class: "cal-reserva", text: (CANAL_SIGLA[r.canal] || "") + " " + (r.tipo === "BLOQUEIO" ? "Bloqueio" : (r.hospede || "")) }) : null) : h("span", { class: "cal-preco", text: p.fechado ? "✕" : numero(Math.round(p.preco)) }));
+      })));
+    }
+    tabela.append(h("thead", {}, cab), corpo);
+    function marcar() {
+      tabela.querySelectorAll("td.sel").forEach(x => x.classList.remove("sel"));
+      if (!sel.im) return;
+      const [a, b] = sel.a <= (sel.b || sel.a) ? [sel.a, sel.b || sel.a] : [sel.b, sel.a];
+      tabela.querySelectorAll(`td[data-im="${sel.im.id}"]`).forEach(x => { if (x.dataset.d >= a && x.dataset.d <= b) x.classList.add("sel"); });
+    }
+    function clicar(im, d, r) {
+      if (r) { abrirReservaTp(r, im); return; }
+      if (!sel.im || sel.im.id !== im.id || sel.b) { sel.im = im; sel.a = d; sel.b = null; marcar(); dica.textContent = `Início: ${dataCompleta(d)}. Toque no último dia do período (ou no mesmo dia).`; return; }
+      sel.b = d; marcar();
+      const [a, b] = sel.a <= sel.b ? [sel.a, sel.b] : [sel.b, sel.a];
+      editarPeriodo(im, a, b);
+    }
+    const dica = h("p", { class: "sub", text: "Toque no primeiro e no último dia de um período livre para mudar o preço, o mínimo de noites ou bloquear. As mudanças vão para todas as plataformas conectadas, com o ajuste de cada uma." });
+    trocar(area, h("section", { class: "cartao vidro" },
+      h("div", { class: "cabeca-grafico" }, h("h3", { style: "margin:0", text: `${dataCompleta(c.dias[0])} a ${dataCompleta(c.dias.at(-1))}` }),
+        h("div", { class: "acoes" }, botao("‹ Anterior", () => { f.de = somaDiasISO(f.de, -28); navegar(); }, "btn-secundario btn-pequeno"), botao("Hoje", () => { f.de = isoLocal(new Date()); navegar(); }, "btn-secundario btn-pequeno"), botao("Próximo ›", () => { f.de = somaDiasISO(f.de, 28); navegar(); }, "btn-secundario btn-pequeno"))),
+      dica, h("div", { class: "cal-tp-caixa" }, tabela),
+      h("div", { class: "legenda-tp" }, ["airbnb", "booking", "vrbo", "direto"].map(seloCanal), h("span", { class: "canal canal-bloqueio" }, h("b", { text: "✕" }), "Bloqueado/fechado"), h("span", { class: "sub", text: "Preço em destaque = preço especial do dia" }))));
+  }
+  function editarPeriodo(im, de, ate) {
+    const preco = h("input", { class: "entrada", type: "number", min: "0", step: "1", placeholder: "Deixe vazio para manter" });
+    const minimo = h("input", { class: "entrada", type: "number", min: "1", max: "60", placeholder: "Ex.: 2" });
+    const fechar = h("input", { type: "checkbox" });
+    const aj = im.ajustes || {};
+    const fim = gaveta(`${im.nome}: ${dataCompleta(de)} a ${dataCompleta(ate)}`, [
+      campo(`Preço por noite (${im.moeda || "BRL"})`, preco, `Nas plataformas: Airbnb ${aj.airbnb >= 0 ? "+" : ""}${aj.airbnb || 0}%, Booking ${aj.booking >= 0 ? "+" : ""}${aj.booking || 0}%, Vrbo ${aj.vrbo >= 0 ? "+" : ""}${aj.vrbo || 0}% (ajuste em Imóveis).`),
+      campo("Mínimo de noites", minimo), h("label", { class: "guia-cat" }, fechar, "Fechar estas datas (ninguém consegue reservar)"),
+      h("div", { class: "acoes" }, botao("Salvar e enviar às plataformas", async () => {
+        try { const r = await tp("precos", { metodo: "POST", corpo: { imovel_id: im.id, de, ate, preco: Number(preco.value) || undefined, minimo: Number(minimo.value) || undefined, fechado: fechar.checked } }); aviso(r.plataformas && r.plataformas.enviado ? "Salvo e enviado ao Airbnb, Booking e Vrbo." : "Salvo. (Com a conexão oficial, vai direto para as plataformas.)", "ok"); fim(); navegar(); }
+        catch (e) { aviso(e.message, "erro"); }
+      }, "btn-primario"), botao("Voltar ao preço normal", async () => { await tp("precos", { metodo: "POST", corpo: { imovel_id: im.id, de, ate, limpar: true } }); fim(); navegar(); }, "btn-secundario"),
+        botao("Bloquear (reserva própria)", async () => { try { await tp("reservas", { metodo: "POST", corpo: { imovel_id: im.id, inicio: de, fim: somaDiasISO(ate, 1), tipo: "BLOQUEIO" } }); aviso("Datas bloqueadas em todas as plataformas.", "ok"); fim(); navegar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario"))]);
+  }
+  function abrirReservaTp(r) {
+    const risco = typeof r.risco === "string" ? (() => { try { return JSON.parse(r.risco); } catch { return null; } })() : r.risco;
+    gaveta(r.tipo === "BLOQUEIO" ? "Bloqueio" : (r.hospede || "Reserva"), [
+      h("p", {}, seloCanal(r.canal), " ", h("strong", { text: `${dataCompleta(r.inicio)} → ${dataCompleta(r.fim)}` })),
+      r.valor ? h("p", { text: `Valor: ${dinheiro(r.valor, r.moeda || "BRL")}` }) : null, r.hospedes ? h("p", { text: `${r.hospedes} pessoa(s)` }) : null,
+      risco && risco.nivel !== "baixo" ? h("p", { class: "nota nota-alerta", text: `Atenção (${risco.nivel}): ${(risco.sinais || []).join("; ")}` }) : null,
+      r.tipo !== "BLOQUEIO" && r.id ? h("div", { class: "acoes" }, h("a", { class: "btn btn-primario btn-pequeno", href: "#/temporada/mensagens", onclick: () => { estado.tpConversa = r.id; } }, "Mensagens"), botao("Analisar risco com a IA", async () => { try { const x = await tp(`reservas/${r.id}/risco`, { metodo: "POST", corpo: {} }); aviso(`Risco ${x.risco.nivel}${x.risco.sinais.length ? ": " + x.risco.sinais.join("; ") : ""}`, x.risco.nivel === "baixo" ? "ok" : "erro"); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno")) : null,
+      r.origem === "MANUAL" ? botao("Cancelar / desbloquear", async () => { await tp(`reservas/${r.id}/cancelar`, { metodo: "POST", corpo: {} }); navegar(); }, "btn-secundario btn-pequeno") : h("p", { class: "sub", text: "Veio da plataforma: alterações e cancelamentos são feitos lá, e a DENIA atualiza sozinha." })]);
+  }
+  async function tpReservas(area, vivo) {
+    const d = await tp("reservas");
+    if (!vivo()) return;
+    const hoje = isoLocal(new Date());
+    const f = estado.tpRes = estado.tpRes || { filtro: "futuras" };
+    const lista = d.reservas.filter(r => f.filtro === "futuras" ? r.fim >= hoje && r.status === "CONFIRMADA" : f.filtro === "passadas" ? r.fim < hoje : r.status === "CANCELADA");
+    const ims = await tp("imoveis").catch(() => ({ imoveis: [] }));
+    const nova = () => {
+      const im = h("select", { class: "entrada" }, ims.imoveis.filter(x => x.ativo).map(x => h("option", { value: x.id, text: x.nome })));
+      const ini = h("input", { class: "entrada", type: "date" }), fim = h("input", { class: "entrada", type: "date" });
+      const nome = h("input", { class: "entrada", maxlength: "120" }), pessoas = h("input", { class: "entrada", type: "number", min: "1" }), valor = h("input", { class: "entrada", type: "number", min: "0" });
+      const contato = h("input", { class: "entrada", maxlength: "120", placeholder: "WhatsApp ou e-mail" });
+      const fecharG = gaveta("Nova reserva direta", [campo("Imóvel", im), h("div", { class: "grade grade-2" }, campo("Entrada", ini), campo("Saída", fim)), campo("Hóspede", nome), h("div", { class: "grade grade-2" }, campo("Pessoas", pessoas), campo("Valor total", valor)), campo("Contato", contato),
+        h("p", { class: "sub", text: "As datas ficam bloqueadas no Airbnb, Booking e Vrbo (pelo calendário único ou pela conexão oficial)." }),
+        h("div", { class: "acoes" }, botao("Salvar reserva", async () => { try { await tp("reservas", { metodo: "POST", corpo: { imovel_id: Number(im.value), inicio: ini.value, fim: fim.value, hospede: nome.value, hospedes: Number(pessoas.value), valor: Number(valor.value), contato: contato.value, canal: "direto" } }); aviso("Reserva salva.", "ok"); fecharG(); navegar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario"))]);
+    };
+    trocar(area, h("section", { class: "cartao vidro" },
+      h("div", { class: "cabeca-grafico" }, h("div", { class: "abas abas-chips" }, [["futuras", "Futuras e em andamento"], ["passadas", "Passadas"], ["canceladas", "Canceladas"]].map(([v, n]) => h("button", { type: "button", class: "aba" + (f.filtro === v ? " ativo" : ""), onclick: () => { f.filtro = v; navegar(); } }, n))),
+        h("div", { class: "acoes" }, pode("AGENTE") ? botao("Nova reserva direta", nova, "btn-primario btn-pequeno") : null, botao("Baixar planilha", () => baixarCsv("reservas.csv", [["Imóvel", "Plataforma", "Hóspede", "Entrada", "Saída", "Noites", "Pessoas", "Valor", "Situação"], ...lista.map(r => [r.imovel, CANAL_NOME[r.canal] || r.canal, r.hospede, r.inicio, r.fim, r.noites, r.hospedes || "", r.valor || "", r.status])]), "btn-secundario btn-pequeno"))),
+      lista.length ? h("div", { class: "tabela-caixa", style: "margin-top:12px" }, h("table", {}, h("thead", {}, h("tr", {}, ["Plataforma", "Hóspede", "Imóvel", "Entrada", "Saída", "Noites", "Valor", "", ""].map(t => h("th", { text: t })))),
+        h("tbody", {}, lista.map(r => h("tr", {}, h("td", {}, seloCanal(r.canal)), h("td", {}, h("strong", { text: r.hospede || "Hóspede" }), r.risco && r.risco.nivel !== "baixo" ? h("span", { class: "sub", text: " ⚠ risco " + r.risco.nivel }) : null), h("td", { text: r.imovel }), h("td", { text: dataCompleta(r.inicio) }), h("td", { text: dataCompleta(r.fim) }), h("td", { text: numero(r.noites) }), h("td", { text: r.valor ? dinheiro(r.valor, r.moeda || "BRL") : "—" }),
+          h("td", {}, r.rascunhos ? selo(`${r.rascunhos} resposta(s) para aprovar`, "alerta") : null), h("td", {}, botao("Abrir", () => abrirReservaTp(r), "btn-secundario btn-pequeno"))))))) : vazio("Nenhuma reserva aqui", "Conecte os calendários em Conexões para as reservas aparecerem sozinhas.")));
+  }
+  async function tpMensagens(area, vivo) {
+    const [d, ims] = await Promise.all([tp("mensagens"), tp("imoveis")]);
+    if (!vivo()) return;
+    const grade = h("div", { class: "conversas" + (estado.tpConversa ? " com-aberta" : ""), style: "height:calc(100vh - 230px)" });
+    const itens = h("div", { class: "conversas-itens" }, d.conversas.length ? d.conversas.map(c => h("button", { type: "button", class: "conversa-item" + (c.id === estado.tpConversa ? " ativo" : ""), onclick: () => abrir(c.id) },
+      h("strong", {}, c.hospede || "Hóspede", c.rascunhos ? selo("Aprovar", "alerta") : null), h("span", {}, seloCanal(c.canal), " ", c.imovel), h("span", { text: `${dmy(c.inicio)} → ${dmy(c.fim)}` }))) : [vazio("Sem conversas ainda", d.channex ? "As mensagens dos hóspedes aparecem aqui." : "Com a conexão oficial, as mensagens do Airbnb, Booking e Vrbo aparecem aqui. Enquanto isso, use o Assistente de respostas abaixo.")]);
+    const painel = h("section", { class: "conversa-painel vidro" }, vazio("Escolha uma conversa", ""));
+    async function abrir(id) {
+      estado.tpConversa = id; grade.classList.add("com-aberta");
+      trocar(painel, carregando());
+      const x = await tp("mensagens/" + id).catch(e => { falha(painel, e); return null; });
+      if (!x) return;
+      const r = x.reserva;
+      const rascunho = x.mensagens.filter(m => m.status === "RASCUNHO").at(-1);
+      const caixa = h("textarea", { class: "entrada", placeholder: "Escreva a resposta…" }); caixa.value = rascunho ? rascunho.texto : "";
+      const msgs = h("div", { class: "mensagens" }, x.mensagens.filter(m => m.status !== "RASCUNHO" && m.status !== "DESCARTADA" && m.status !== "SUBSTITUIDA").map(m => h("div", { class: "msg " + (m.direcao === "E" ? "msg-entrada" : "msg-saida") + (m.origem === "ANFITRIAO" ? " msg-humano" : "") }, m.texto, m.traducao ? h("small", { text: "Tradução: " + m.traducao }) : null, h("small", { text: `${m.direcao === "E" ? "Hóspede" : m.origem === "IA" ? "IA" : "Você"} · ${quando(m.criado_ms)}` }))));
+      trocar(painel,
+        h("div", { class: "conversa-cabeca" }, h("button", { type: "button", class: "btn btn-secundario btn-pequeno so-celular", onclick: () => { estado.tpConversa = null; grade.classList.remove("com-aberta"); } }, "‹ Voltar"), h("h3", { text: r.hospede || "Hóspede" }), seloCanal(r.canal), h("span", { class: "sub", text: `${r.imovel} · ${dmy(r.inicio)} → ${dmy(r.fim)}` })),
+        r.risco && r.risco.nivel !== "baixo" ? h("p", { class: "nota nota-alerta", style: "margin:10px 18px", text: `⚠ Risco ${r.risco.nivel}: ${(r.risco.sinais || []).join("; ")}` }) : null,
+        msgs,
+        rascunho ? h("p", { class: "nota", style: "margin:0 18px", text: "Resposta sugerida pela IA" + (rascunho.traducao ? ` — ${rascunho.traducao}` : "") + ". Revise e envie." }) : null,
+        h("div", { class: "compor" }, caixa, h("div", { style: "display:grid;gap:6px" }, botao("Enviar", async () => { try { await tp(`mensagens/${id}/enviar`, { metodo: "POST", corpo: { texto: caixa.value } }); aviso("Enviada.", "ok"); abrir(id); } catch (e) { if (e.dados && e.dados.codigo === "SEM_CONEXAO") { copiar(caixa.value); aviso(e.message + " (texto copiado)", "erro"); } else aviso(e.message, "erro"); } }, "btn-primario"),
+          rascunho ? botao("Descartar", async () => { await tp(`mensagens/${id}/descartar`, { metodo: "POST", corpo: {} }); abrir(id); }, "btn-secundario btn-pequeno") : null)));
+      msgs.scrollTop = msgs.scrollHeight;
+    }
+    // Assistente: cole a mensagem do hóspede e a IA responde com o treinamento do imóvel (funciona sem conexão).
+    const imSel = h("select", { class: "entrada" }, ims.imoveis.filter(x => x.ativo).map(x => h("option", { value: x.id, text: x.nome })));
+    const msgH = h("textarea", { class: "entrada", placeholder: "Cole aqui a mensagem do hóspede (em qualquer idioma)", style: "min-height:90px" });
+    const saida = h("div", {});
+    trocar(area, grade,
+      h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Assistente de respostas" }), h("p", { class: "sub", text: "Funciona com qualquer plataforma, mesmo sem conexão: a IA responde no idioma do hóspede, com as regras e o jeito de escrever do imóvel, e mostra a tradução para você." }),
+        ims.imoveis.length ? [campo("Imóvel", imSel), campo("Mensagem do hóspede", msgH), h("div", { class: "acoes" }, botao("Sugerir resposta", async (_e, b) => {
+          b.textContent = "Pensando…";
+          try { const o = await tp("mensagens/sugerir", { metodo: "POST", corpo: { imovel_id: Number(imSel.value), texto: msgH.value } });
+            trocar(saida, h("div", { class: "msg msg-saida", style: "max-width:100%" }, o.resposta || "—"), o.traducao ? h("p", { class: "sub", text: "Tradução: " + o.traducao }) : null,
+              o.precisa_anfitriao ? h("p", { class: "nota nota-alerta", text: "Precisa de você: " + (o.motivo || "") }) : null, o.risco && o.risco !== "baixo" ? h("p", { class: "nota nota-alerta", text: `Risco ${o.risco}: ${(o.sinais || []).join("; ")}` }) : null,
+              h("div", { class: "acoes" }, botao("Copiar resposta", () => copiar(o.resposta || ""), "btn-secundario btn-pequeno"))); }
+          catch (e) { aviso(e.message, "erro"); } finally { b.textContent = "Sugerir resposta"; }
+        }, "btn-primario")), saida] : h("p", { class: "nota", text: "Cadastre um imóvel primeiro." })));
+    grade.append(h("section", { class: "conversas-lista vidro" }, itens), painel);
+    if (estado.tpConversa && d.conversas.some(c => c.id === estado.tpConversa)) abrir(estado.tpConversa);
+  }
+  async function tpImoveis(area, vivo) {
+    const d = await tp("imoveis");
+    if (!vivo()) return;
+    trocar(area,
+      h("div", { class: "acoes" }, pode("AGENTE") ? botao("+ Novo imóvel", () => editarImovelTp(null, d), "btn-primario") : null),
+      d.imoveis.length ? h("section", { class: "grade grade-3" }, d.imoveis.filter(i => i.ativo).map(im => h("article", { class: "cartao vidro imovel-tp" },
+        (im.anuncio.fotos || [])[0] ? h("img", { class: "imovel-tp-foto", src: im.anuncio.fotos[0], alt: "", loading: "lazy" }) : h("div", { class: "imovel-tp-foto imovel-tp-sem", text: "🏠" }),
+        h("h3", { style: "margin:0", text: im.nome }), h("p", { class: "sub", style: "margin:0", text: [im.cidade, im.capacidade ? im.capacidade + " pessoas" : "", im.quartos ? im.quartos + " quartos" : ""].filter(Boolean).join(" · ") || "—" }),
+        h("p", { style: "margin:0" }, h("strong", { text: im.preco_base ? dinheiro(im.preco_base, im.moeda) : "sem preço" }), h("span", { class: "sub", text: im.preco_fds ? ` · fim de semana ${dinheiro(im.preco_fds, im.moeda)}` : "" })),
+        h("p", { style: "margin:0" }, im.conectado_channex ? selo("Conexão oficial", "ok") : im.calendarios ? selo(`${im.calendarios} calendário(s)`, "info") : selo("Sem plataforma", "alerta"), " ", selo(im.ia_modo === "AUTO" ? "IA responde sozinha" : "IA sugere, você aprova", "info")),
+        h("div", { class: "acoes" }, botao("Editar", () => editarImovelTp(im, d), "btn-secundario btn-pequeno"))))) : h("section", { class: "cartao vidro" }, vazio("Nenhum imóvel", "Cadastre o primeiro para conectar as plataformas.")));
+  }
+  async function editarImovelTp(im0, d) {
+    const im = im0 ? (await tp("imoveis/" + im0.id)).imovel : { nome: "", ajustes: { airbnb: 0, booking: 18, vrbo: 10 }, treinamento: {}, anuncio: {}, ia_modo: "SUGERIR", checkin: "15:00", checkout: "11:00", moeda: "BRL" };
+    const cals = im0 ? (await tp("imoveis/" + im0.id)).calendarios : [];
+    const E = (v, ex = {}) => { const e = h("input", { class: "entrada", ...ex }); e.value = v ?? ""; return e; };
+    const T = (v, alt = 90) => { const e = h("textarea", { class: "entrada", style: `min-height:${alt}px` }); e.value = v ?? ""; return e; };
+    const f = { nome: E(im.nome, { maxlength: "120" }), endereco: E(im.endereco), cidade: E(im.cidade), capacidade: E(im.capacidade, { type: "number", min: "1" }), quartos: E(im.quartos, { type: "number", min: "0" }), banheiros: E(im.banheiros, { type: "number", min: "0" }),
+      checkin: E(im.checkin, { type: "time" }), checkout: E(im.checkout, { type: "time" }), preco_base: E(im.preco_base, { type: "number", min: "0" }), preco_fds: E(im.preco_fds, { type: "number", min: "0" }), minimo_noites: E(im.minimo_noites, { type: "number", min: "1" }), taxa_limpeza: E(im.taxa_limpeza, { type: "number", min: "0" }) };
+    const aj = Object.fromEntries(["airbnb", "booking", "vrbo"].map(c => [c, E((im.ajustes || {})[c] ?? 0, { type: "number", min: "-50", max: "100" })]));
+    const tr = Object.fromEntries(d.campos_treino.map(([c]) => [c, T((im.treinamento || {})[c], 70)]));
+    const an = { titulo: E((im.anuncio || {}).titulo, { maxlength: "120" }), descricao: T((im.anuncio || {}).descricao, 160), fotos: T(((im.anuncio || {}).fotos || []).join("\n"), 80) };
+    const iaModo = h("select", { class: "entrada" }, [["SUGERIR", "A IA escreve e eu aprovo antes de enviar (recomendado no começo)"], ["AUTO", "A IA responde sozinha (só o que ela sabe; o resto ela me chama)"]].map(([v, n]) => h("option", { value: v, selected: im.ia_modo === v, text: n })));
+    const analise = h("div", {});
+    const corpo = () => ({ nome: f.nome.value, endereco: f.endereco.value, cidade: f.cidade.value, capacidade: f.capacidade.value, quartos: f.quartos.value, banheiros: f.banheiros.value, checkin: f.checkin.value, checkout: f.checkout.value,
+      preco_base: f.preco_base.value, preco_fds: f.preco_fds.value, minimo_noites: f.minimo_noites.value, taxa_limpeza: f.taxa_limpeza.value, ajustes: Object.fromEntries(Object.entries(aj).map(([c, e]) => [c, Number(e.value) || 0])),
+      treinamento: Object.fromEntries(Object.entries(tr).map(([c, e]) => [c, e.value])), anuncio: { titulo: an.titulo.value, descricao: an.descricao.value, fotos: an.fotos.value.split(/\s+/).filter(Boolean) }, ia_modo: iaModo.value });
+    const secao = (t, ...c) => h("details", { class: "secao-tp", open: t.startsWith("1") }, h("summary", { text: t }), h("div", { class: "grade" }, c));
+    const novoCal = { canal: h("select", { class: "entrada" }, ["airbnb", "booking", "vrbo", "outro"].map(c => h("option", { value: c, text: CANAL_NOME[c] }))), url: E("", { placeholder: "https://…ics" }) };
+    const fechar = gaveta(im.id ? im.nome : "Novo imóvel", [
+      secao("1. Dados do imóvel", campo("Nome", f.nome), campo("Endereço", f.endereco), h("div", { class: "grade grade-2" }, campo("Cidade", f.cidade), campo("Capacidade (pessoas)", f.capacidade)), h("div", { class: "grade grade-2" }, campo("Quartos", f.quartos), campo("Banheiros", f.banheiros)), h("div", { class: "grade grade-2" }, campo("Check-in", f.checkin), campo("Check-out", f.checkout))),
+      secao("2. Preços e taxas por plataforma", h("div", { class: "grade grade-2" }, campo("Preço por noite", f.preco_base), campo("Fim de semana (sex e sáb)", f.preco_fds)), h("div", { class: "grade grade-2" }, campo("Mínimo de noites", f.minimo_noites), campo("Taxa de limpeza", f.taxa_limpeza)),
+        h("p", { class: "sub", text: "Ajuste por plataforma (%): cobre a comissão de cada uma para você receber o mesmo. Ex.: Booking +18% e Vrbo +10%." }), h("div", { class: "grade grade-3" }, campo("Airbnb (%)", aj.airbnb), campo("Booking.com (%)", aj.booking), campo("Vrbo (%)", aj.vrbo))),
+      secao("3. Treinamento da IA para os hóspedes", campo("Como a IA responde", iaModo), d.campos_treino.map(([c, r]) => campo(r, tr[c])),
+        im.id ? botao("Aprender com conversas antigas", () => aprenderTp(im, tr), "btn-secundario btn-pequeno") : h("p", { class: "sub", text: "Salve o imóvel para poder colar conversas antigas e a IA aprender o seu jeito." })),
+      secao("4. Anúncio (título, descrição e fotos)", campo("Título", an.titulo), campo("Descrição", an.descricao), campo("Links das fotos (um por linha)", an.fotos, "Cole os links das fotos (ex.: abra a foto no Airbnb → copiar endereço da imagem)."),
+        im.id ? botao("Analisar anúncio com a IA", async (_e, b) => { b.textContent = "Analisando…"; try { await tp("imoveis/" + im.id, { metodo: "POST", corpo: corpo() }); const r = await tp(`imoveis/${im.id}/anuncio/analisar`, { metodo: "POST", corpo: {} }); const a = r.analise || {};
+          trocar(analise, h("p", {}, h("strong", { text: `Nota ${a.nota ?? "—"}/10. ` }), a.resumo || ""), a.titulo_sugerido ? campo("Título sugerido", E(a.titulo_sugerido)) : null, a.descricao_sugerida ? campo("Descrição sugerida", T(a.descricao_sugerida, 160)) : null,
+            (a.melhorias || []).length ? h("ul", { class: "lista-simples" }, a.melhorias.map(x => h("li", { text: "• " + x }))) : null, (a.fotos || []).length ? h("ul", { class: "lista-simples" }, a.fotos.map(x => h("li", { text: `Foto ${x.foto}: ${x.comentario}` }))) : null,
+            (a.faltando || []).length ? h("p", { class: "sub", text: "Falta no anúncio: " + a.faltando.join(", ") }) : null, a.preco ? h("p", { class: "sub", text: "Preço: " + a.preco }) : null); }
+          catch (e) { aviso(e.message, "erro"); } finally { b.textContent = "Analisar anúncio com a IA"; } }, "btn-secundario btn-pequeno") : null, analise),
+      im.id ? secao("5. Calendários e conexão", h("p", { class: "sub", text: "Cole o link de exportação do calendário de cada plataforma (veja como em Conexões). E cole o calendário da DENIA na importação de cada uma: assim um bloqueio ou reserva numa plataforma fecha as datas nas outras." }),
+        cals.map(c => h("div", { class: "linha-tp" }, seloCanal(c.canal), h("span", { class: "sub", text: c.erro ? "⚠ " + c.erro : c.ultimo_ms ? `sincronizado ${quandoFrase(c.ultimo_ms)} · ${c.eventos || 0} evento(s)` : "aguardando" }),
+          botao("Sincronizar", async () => { const r = await tp(`calendarios/${c.id}/sincronizar`, { metodo: "POST", corpo: {} }); aviso(r.ok ? `${r.eventos} evento(s) lidos.` : r.erro, r.ok ? "ok" : "erro"); }, "btn-secundario btn-pequeno"),
+          botao("Remover", async () => { await tp(`calendarios/${c.id}/excluir`, { metodo: "POST", corpo: {} }); fechar(); editarImovelTp(im0, d); }, "btn-secundario btn-pequeno"))),
+        h("div", { class: "grade grade-2" }, campo("Plataforma", novoCal.canal), campo("Link do calendário (iCal)", novoCal.url)),
+        botao("Adicionar calendário", async () => { try { const r = await tp(`imoveis/${im.id}/calendarios`, { metodo: "POST", corpo: { canal: novoCal.canal.value, url: novoCal.url.value } }); aviso(r.ok ? `Conectado: ${r.eventos} evento(s).` : "Salvo, mas não consegui ler agora: " + r.erro, r.ok ? "ok" : "erro"); fechar(); editarImovelTp(im0, d); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario btn-pequeno"),
+        h("p", { class: "sub", text: "Calendário da DENIA para colar em cada plataforma:" }),
+        ["airbnb", "booking", "vrbo"].map(c => h("div", { style: "display:flex;gap:8px;align-items:center;flex-wrap:wrap" }, seloCanal(c), h("input", { class: "entrada", readOnly: true, value: im.ical_url.replace(/\.ics$/, `/${c}.ics`), style: "flex:1;min-width:0" }), botao("Copiar", () => copiar(im.ical_url.replace(/\.ics$/, `/${c}.ics`)), "btn-secundario btn-pequeno"))),
+        d.channex ? botao(im.conectado_channex ? "Gerenciar conexão oficial (Airbnb, Booking, Vrbo)" : "Conectar oficialmente: Airbnb, Booking e Vrbo", async () => { try { const r = await tp(`imoveis/${im.id}/conectar`, { metodo: "POST", corpo: {} }); window.open(r.url, "_blank", "noopener"); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario") : h("p", { class: "nota", text: "Conexão oficial (preços, mensagens e reservas em tempo real): em ativação na DENIA. Veja Conexões." })) : null,
+      h("div", { class: "acoes" }, botao("Salvar", async () => { try { const r = await tp(im.id ? "imoveis/" + im.id : "imoveis", { metodo: "POST", corpo: corpo() }); aviso(r.plataformas && r.plataformas.enviado ? "Salvo e enviado às plataformas." : "Imóvel salvo.", "ok"); fechar(); if (!im.id) editarImovelTp({ id: r.id }, d); else navegar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario"),
+        im.id && pode("ADMIN") ? botao("Remover imóvel", async () => { if (!(await modal({ titulo: "Remover o imóvel?", conteudo: "Ele sai da DENIA (as plataformas não são afetadas).", confirmar: "Remover", perigo: true }))) return; await tp(`imoveis/${im.id}/excluir`, { metodo: "POST", corpo: {} }); fechar(); navegar(); }, "btn-secundario") : null)]);
+  }
+  function aprenderTp(im, tr) {
+    const txt = h("textarea", { class: "entrada", style: "min-height:240px", placeholder: "Cole aqui conversas antigas com hóspedes (do Airbnb, Booking, WhatsApp…). Quanto mais, melhor." });
+    const saida = h("div", {});
+    gaveta("Aprender com conversas antigas — " + im.nome, [h("p", { text: "A IA lê as conversas, aprende o seu jeito de escrever e as respostas que você mais dá, e preenche o treinamento. Nomes e contatos de hóspedes não são guardados." }), txt,
+      botao("Aprender", async (_e, b) => { b.textContent = "Lendo…"; try { const r = await tp(`imoveis/${im.id}/aprender`, { metodo: "POST", corpo: { conversas: txt.value } }); const n = Object.keys(r.sugestao).length;
+        for (const [c, v] of Object.entries(r.sugestao)) if (tr[c]) tr[c].value = tr[c].value ? tr[c].value + "\n\n" + v : v;
+        trocar(saida, h("p", { class: "nota", text: `Pronto: ${n} campo(s) do treinamento foram preenchidos. Volte para o imóvel, confira e clique em Salvar.` })); }
+        catch (e) { aviso(e.message, "erro"); } finally { b.textContent = "Aprender"; } }, "btn-primario"), saida]);
+  }
+  async function tpConexoes(area, vivo) {
+    const [d, cfg] = await Promise.all([tp("imoveis"), tp("config")]);
+    if (!vivo()) return;
+    const COMO = {
+      airbnb: ["No Airbnb: Anúncios → escolha o anúncio → Disponibilidade → Conectar calendários → Exportar calendário → copie o link.", "Para importar o da DENIA: no mesmo lugar, Importar calendário → cole o link da DENIA do Airbnb (em Imóveis → Calendários)."],
+      booking: ["No Booking (Extranet): Tarifas e disponibilidade → Sincronizar calendários → Exportar → copie o link.", "Para importar o da DENIA: Adicionar conexão de calendário → cole o link da DENIA do Booking."],
+      vrbo: ["No Vrbo: Calendário → Importar/Exportar → Exportar calendário → copie o link.", "Para importar o da DENIA: Importar calendário → cole o link da DENIA do Vrbo."]
+    };
+    const idioma = h("select", { class: "entrada" }, ["português do Brasil", "English", "español", "italiano", "français", "Deutsch"].map(x => h("option", { value: x, selected: cfg.config.idioma === x, text: x })));
+    trocar(area,
+      h("section", { class: "grade grade-3" }, ["airbnb", "booking", "vrbo"].map(c => h("article", { class: "cartao vidro conexao-tp" }, h("h3", { style: "margin:0" }, seloCanal(c)),
+        h("p", {}, cfg.channex ? selo("Conexão oficial disponível", "ok") : selo("Calendário (iCal) disponível", "info")),
+        h("ol", { class: "lista-simples" }, COMO[c].map(x => h("li", { text: x }))),
+        h("p", { class: "sub", text: cfg.channex ? "Com a conexão oficial: preços, taxas, mínimo de noites, reservas e mensagens em tempo real. Ligue em Imóveis → (imóvel) → Calendários e conexão." : "O calendário evita reserva dupla e mostra as reservas aqui. Preços, mensagens e fotos em tempo real chegam com a conexão oficial, em ativação." })))),
+      h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Seus imóveis" }),
+        d.imoveis.length ? h("div", { class: "tabela-caixa" }, h("table", {}, h("thead", {}, h("tr", {}, ["Imóvel", "Calendários", "Conexão oficial", ""].map(t => h("th", { text: t })))),
+          h("tbody", {}, d.imoveis.filter(i => i.ativo).map(im => h("tr", {}, h("td", { text: im.nome }), h("td", { text: numero(im.calendarios) }), h("td", {}, im.conectado_channex ? selo("Ligada", "ok") : selo("Não", "alerta")), h("td", {}, botao("Configurar", () => editarImovelTp(im, d), "btn-secundario btn-pequeno"))))))) : vazio("Nenhum imóvel", "")),
+      h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Idioma do anfitrião" }), h("p", { class: "sub", text: "A IA responde cada hóspede no idioma dele e mostra para você a tradução neste idioma." }), campo("Idioma", idioma),
+        pode("ADMIN") ? botao("Salvar", async () => { await tp("config", { metodo: "POST", corpo: { idioma: idioma.value } }); aviso("Salvo.", "ok"); }, "btn-primario btn-pequeno") : null));
+  }
+  async function tpLimpezas(area, vivo) {
+    const d = await tp("limpezas");
+    if (!vivo()) return;
+    trocar(area, h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Limpezas (criadas sozinhas no dia de cada saída)" }),
+      d.limpezas.length ? h("div", { class: "tabela-caixa" }, h("table", {}, h("thead", {}, h("tr", {}, ["Data", "Imóvel", "Saída de", "Responsável", "Situação"].map(t => h("th", { text: t })))),
+        h("tbody", {}, d.limpezas.map(l => { const resp = h("input", { class: "entrada entrada-pequena", value: l.responsavel || "", placeholder: "Quem limpa", onchange: e => tp("limpezas/" + l.id, { metodo: "POST", corpo: { responsavel: e.target.value } }) });
+          return h("tr", {}, h("td", {}, h("strong", { text: dataCompleta(l.data) })), h("td", { text: l.imovel }), h("td", {}, l.canal ? seloCanal(l.canal) : null, " ", l.hospede || ""), h("td", {}, resp),
+            h("td", {}, botao(l.status === "FEITA" ? "✓ Feita" : "Marcar como feita", async () => { await tp("limpezas/" + l.id, { metodo: "POST", corpo: { status: l.status === "FEITA" ? "PENDENTE" : "FEITA" } }); navegar(); }, l.status === "FEITA" ? "btn-secundario btn-pequeno" : "btn-primario btn-pequeno"))); })))) : vazio("Nenhuma limpeza nos próximos dias", "")));
+  }
+  async function tpRelatorios(area, vivo) {
+    const f = estado.tpRel = estado.tpRel || { mes: isoLocal(new Date()).slice(0, 7) };
+    const d = await tp("relatorio?mes=" + f.mes);
+    if (!vivo()) return;
+    const mesSel = h("input", { class: "entrada entrada-pequena", type: "month", value: f.mes, onchange: e => { f.mes = e.target.value; navegar(); } });
+    const g = d.geral, a = d.anterior;
+    const var_ = (x, y) => x != null && y ? h("span", { class: x >= y ? "sobe" : "desce", text: ` ${x >= y ? "▲" : "▼"} ${Math.abs(Math.round(((x - y) / y) * 100))}%` }) : null;
+    trocar(area, h("section", { class: "cartao vidro filtros-desempenho" }, h("div", { class: "acoes" }, campo("Mês", mesSel), botao("Baixar planilha", () => baixarCsv(`relatorio-${d.mes}.csv`, [["Imóvel", "Ocupação %", "Noites", "Reservas", "Receita", "Diária média"], ...d.imoveis.map(i => [i.nome, i.ocupacao ?? "", i.noites, i.reservas, i.receita, i.diaria_media ?? ""])]), "btn-secundario btn-pequeno"), botao("Imprimir / PDF", () => window.print(), "btn-secundario btn-pequeno"))),
+      h("section", { class: "grade grade-4" },
+        h("div", { class: "metrica vidro" }, h("span", { text: "Ocupação" }), h("strong", {}, g.ocupacao != null ? String(g.ocupacao).replace(".", ",") + "%" : "—", var_(g.ocupacao, a.ocupacao)), h("small", { text: "vs. mês anterior" })),
+        h("div", { class: "metrica vidro" }, h("span", { text: "Receita" }), h("strong", {}, dinheiro(g.receita, "BRL"), var_(g.receita, a.receita)), h("small", { text: `${numero(g.reservas)} reserva(s)` })),
+        metrica("Diária média", g.diaria_media != null ? dinheiro(g.diaria_media, "BRL") : "—", `RevPAR ${g.revpar != null ? dinheiro(g.revpar, "BRL") : "—"}`),
+        metrica("Noites vendidas", numero(g.noites_ocupadas), `${numero(g.noites_bloqueadas)} bloqueadas`)),
+      h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Por plataforma" }), (g.por_canal || []).length ? barras(g.por_canal.map(c => ({ rotulo: `${c.nome} · ${c.noites} noites`, valor: c.receita })), x => dinheiro(x, "BRL")) : vazio("Sem reservas no mês", "")),
+      h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Por imóvel" }), h("div", { class: "tabela-caixa" }, h("table", {}, h("thead", {}, h("tr", {}, ["Imóvel", "Ocupação", "Noites", "Reservas", "Receita", "Diária média"].map(t => h("th", { text: t })))),
+        h("tbody", {}, d.imoveis.map(i => h("tr", {}, h("td", {}, h("strong", { text: i.nome })), h("td", { text: i.ocupacao != null ? String(i.ocupacao).replace(".", ",") + "%" : "—" }), h("td", { text: numero(i.noites) }), h("td", { text: numero(i.reservas) }), h("td", { text: dinheiro(i.receita, "BRL") }), h("td", { text: i.diaria_media != null ? dinheiro(i.diaria_media, "BRL") : "—" }))))))));
   }
 
   async function paginaWhatsapp(el, aba, vivo) {

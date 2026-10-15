@@ -24,6 +24,8 @@ import { apiMarketing, apiAssistente, analisarAvaliacoesPendentes, relatoriosDaS
 import { retornoMeta, servirMidiaPublica, publicarPendentes } from "./meta.js";
 import { retornoGoogle, sincronizarGooglePendentes } from "./google.js";
 import { comOrgUso, comRecurso, descarregarUso } from "./uso.js";
+import { DDL_TEMPORADA, rotasTemporada, icalPublico, webhookChannex, sincronizarTemporada } from "./temporada.js";
+import { openaiBruto } from "./marketing.js";
 import { DDL_ZAP, webhookZap, rotasZap, webhookTelegram, segredoTelegram, tokenTelegramPlataforma } from "./zap.js";
 import { lerPlanos, acessoDa, recursoDaRota, planoMinimo, rotasPlano, webhookAsaas, lembretesDePlano, TESTE_DIAS, STATUS as STATUS_PLANO, PLANOS_PADRAO, RECURSOS } from "./planos.js";
 
@@ -32,7 +34,7 @@ const VERSAO = "3.1.0";
 const VERSAO_TERMOS = "2026-10";
 // WhatsApp da Central de Atendimento (botão flutuante do site).
 const WHATSAPP_CENTRAL = "5521975469162";
-const SCHEMA = "2.6.3";
+const SCHEMA = "2.7.0";
 const COOKIE = "__Host-denia_sessao";
 const SESSAO_MS = 8 * 60 * 60 * 1000;
 const MAX_TENTATIVAS = 5;
@@ -142,6 +144,7 @@ const DDL = [
   `CREATE TABLE IF NOT EXISTS plt_redefinicoes (token_hash TEXT PRIMARY KEY, usuario_id INTEGER NOT NULL, expira_ms INTEGER NOT NULL, usado INTEGER NOT NULL DEFAULT 0, criado_ms INTEGER NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS plt_contatos (id INTEGER PRIMARY KEY AUTOINCREMENT, nome TEXT, email TEXT, empresa TEXT, telefone TEXT, assunto TEXT, mensagem TEXT, ip TEXT, lido INTEGER NOT NULL DEFAULT 0, criado_ms INTEGER NOT NULL)`,
   ...DDL_ZAP,
+  ...DDL_TEMPORADA,
   `CREATE TABLE IF NOT EXISTS plt_pagamentos (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, gateway_id TEXT UNIQUE, valor REAL, status TEXT, vencimento TEXT, pago_ms INTEGER, link TEXT, forma TEXT, criado_ms INTEGER)`
 ];
 let schemaPronto = false;
@@ -828,6 +831,7 @@ async function apiOrg(request, env, sessao, orgId, resto) {
   if (resto === "plano" || resto.startsWith("plano/")) return rotasPlano(request, env, { ...kitBase(env), sessao }, orgId, papel, resto);
   if (resto.startsWith("engine/")) return proxyEngine(request, env, sessao, orgId, papel, resto.slice(7));
   const kit = { ...kitBase(env), sessao };
+  if (resto === "tp" || resto.startsWith("tp/")) return rotasTemporada(request, env, { ...(await kitZap(env, new URL(request.url).origin)), sessao, openai: openaiBruto, acesso: sessao.usuario.super_admin ? { ...acesso, limites: { ...acesso.limites, imoveis: 0 } } : acesso, avisar: async (o, texto) => { for (const para of await responsaveisDa(env, o)) await enviarEmail(env, para, "DENIA — hóspede precisa de você", texto); } }, orgId, papel, resto);
   if (resto === "zap" || resto.startsWith("zap/")) return rotasZap(request, env, { ...(await kitZap(env, new URL(request.url).origin)), sessao, acesso: sessao.usuario.super_admin ? { ...acesso, recursos: Object.keys(RECURSOS) } : acesso }, orgId, papel, resto);
   if (resto === "ia/chave" && metodo === "GET") {
     const k = await chaveIA(env, orgId);
@@ -1163,6 +1167,8 @@ async function rotear(request, env, ctx) {
   // Um só webhook do WhatsApp para todas as empresas (cada mensagem diz de qual número ela é).
   if (caminho === "/webhook/whatsapp") { await garantirSchema(env); return webhookZap(request, env, await kitZap(env), ctx); }
   if (caminho === "/webhook/telegram" && request.method === "POST") { await garantirSchema(env); return webhookTelegram(request, env, await kitZap(env)); }
+  if (caminho === "/webhook/channex" && request.method === "POST") { await garantirSchema(env); return webhookChannex(request, env, await kitZap(env)); }
+  if (caminho.startsWith("/tp/ical/") && request.method === "GET") { await garantirSchema(env); return (await icalPublico(env, caminho)) || new Response("Não encontrado.", { status: 404 }); }
   if (caminho === "/webhook/asaas" && request.method === "POST") { await garantirSchema(env); return webhookAsaas(request, env, kitBase(env)); }
   if (!["GET", "HEAD"].includes(request.method)) return new Response("Método não permitido.", { status: 405 });
 
@@ -1241,6 +1247,7 @@ export default {
       await tickMotores(env).catch(e => console.error("tick", e?.message));
       await vigiarWhatsapp(env).catch(e => console.error("whatsapp", e?.message));
       await limparBanco(env).catch(e => console.error("limpeza", e?.message));
+      await sincronizarTemporada(env, await kitZap(env)).catch(e => console.error("temporada", e?.message));
       await lembretesDePlano(env, { ...(await kitZap(env)), enviarEmail, responsaveis: o => responsaveisDa(env, o) }).catch(e => console.error("lembretes", e?.message));
     })().catch(e => console.error("cron", e?.message)).finally(() => descarregarUso(env));
     if (ctx && ctx.waitUntil) ctx.waitUntil(tarefa); else await tarefa;
