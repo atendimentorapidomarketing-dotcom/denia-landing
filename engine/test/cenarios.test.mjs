@@ -770,3 +770,77 @@ test("V31 — a IA lê o caso (cliente, profissional, equipe, ligação) e move 
   // Em andamento é uma etapa que a equipe também pode escolher.
   assert.equal((await (await api(a, `/platform/cases/${caso}/status`, { method: "POST", body: JSON.stringify({ etapa: "EM_ANDAMENTO" }) })).json()).sucesso, true);
 });
+
+test("Entrega — a Meta aceita mas não entrega: a DENIA registra o motivo, avisa a equipe, mostra no painel e reenvia falhas passageiras", async () => {
+  const TOKEN = "token-da-plataforma-123456";
+  const a = await criarAmbiente({ env: { DENIA_PLATFORM_SERVICE_TOKEN: TOKEN } });
+  const plat = (caminho) => a.http(caminho, { headers: { authorization: "Bearer " + TOKEN } }).then(r => r.json());
+  a.llmCliente = () => decisao({ resposta: "Oi! Como posso ajudar?" });
+  await a.cliente(CLI, "Oi");
+  const enviada = a.para(CLI).at(-1);
+  assert.ok(enviada, "a resposta foi aceita pela Meta");
+  // 1) Entregue e lida: aparece no painel.
+  await a.webhook({ statuses: [{ id: enviada.id, status: "delivered", recipient_id: CLI, timestamp: String(Math.floor(a.agora / 1000)) }] });
+  await a.webhook({ statuses: [{ id: enviada.id, status: "read", recipient_id: CLI, timestamp: String(Math.floor(a.agora / 1000)) }] });
+  const conversas = (await plat("/platform/conversations")).conversas;
+  const pessoa = conversas.find(x => x.telefone.endsWith(CLI.slice(-8)));
+  let detalhe = await plat(`/platform/conversations/${pessoa.pessoa_id}`);
+  assert.equal(detalhe.mensagens.find(m => m.whatsapp_message_id === enviada.id).entrega, "READ");
+  // "delivered" atrasado não volta a lida para entregue.
+  await a.webhook({ statuses: [{ id: enviada.id, status: "delivered", recipient_id: CLI }] });
+  detalhe = await plat(`/platform/conversations/${pessoa.pessoa_id}`);
+  assert.equal(detalhe.mensagens.find(m => m.whatsapp_message_id === enviada.id).entrega, "READ");
+
+  // 2) Falha passageira da Meta: reenvia uma vez sozinha.
+  a.llmCliente = () => decisao({ resposta: "Pode me contar o que aconteceu?" });
+  await a.cliente(CLI, "Preciso de ajuda");
+  const segunda = a.para(CLI).at(-1);
+  const antes = a.para(CLI).length;
+  await a.webhook({ statuses: [{ id: segunda.id, status: "failed", recipient_id: CLI, errors: [{ code: 131000, title: "Something went wrong" }] }] });
+  assert.equal(a.para(CLI).length, antes + 1, "reenviou");
+  assert.equal(a.para(CLI).at(-1).texto, segunda.texto);
+
+  // 3) Falha da conta (pagamento): alerta crítico, diagnóstico em vermelho, e some quando volta a entregar.
+  a.llmCliente = () => decisao({ resposta: "Já te respondo." });
+  await a.cliente(CLI, "Alô?");
+  const terceira = a.para(CLI).at(-1);
+  a.telegram.length = 0;
+  await a.webhook({ statuses: [{ id: terceira.id, status: "failed", recipient_id: CLI, errors: [{ code: 131042, title: "Business eligibility payment issue", error_data: { details: "Payment method missing" } }] }] });
+  assert.ok(a.telegram.some(t => /NÃO está entregando/.test(t) && /pagamento/i.test(t)), "a equipe é avisada com o motivo em português");
+  let st = await plat("/platform/status");
+  assert.equal(st.entrega_bloqueada.codigo, 131042);
+  assert.equal(st.entregas_24h.falhas, 1);
+  assert.match(st.entregas_24h.motivos[0].motivo, /pagamento/i);
+  detalhe = await plat(`/platform/conversations/${pessoa.pessoa_id}`);
+  assert.match(detalhe.mensagens.find(m => m.whatsapp_message_id === terceira.id).entrega_erro, /pagamento/i, "o painel mostra que não chegou e por quê");
+  a.llmCliente = () => decisao({ resposta: "Voltamos!" });
+  await a.cliente(CLI, "Oi de novo");
+  await a.webhook({ statuses: [{ id: a.para(CLI).at(-1).id, status: "delivered", recipient_id: CLI }] });
+  st = await plat("/platform/status");
+  assert.equal(st.entrega_bloqueada, null, "uma entrega confirmada limpa o alerta");
+
+  // 4) Falha de um número só (sem WhatsApp): aviso ao time, sem alerta crítico.
+  a.llmCliente = () => decisao({ resposta: "Certo, anotei o endereço." });
+  const n4 = a.para(CLI).length;
+  await a.cliente(CLI, "Meu endereço é Rua A, 10");
+  assert.equal(a.para(CLI).length, n4 + 1);
+  a.telegram.length = 0;
+  await a.webhook({ statuses: [{ id: a.para(CLI).at(-1).id, status: "failed", recipient_id: CLI, errors: [{ code: 131026, title: "Message undeliverable" }] }] });
+  assert.ok(a.telegram.some(t => /NÃO entregue/.test(t)));
+  assert.equal((await plat("/platform/status")).entrega_bloqueada, null);
+});
+
+test("Números do WhatsApp — mensagens por dia (IA e equipe), contatos, casos e entregas no período", async () => {
+  const TOKEN = "token-da-plataforma-123456";
+  const a = await criarAmbiente({ env: { DENIA_PLATFORM_SERVICE_TOKEN: TOKEN } });
+  a.llmCliente = () => decisao({ resposta: "Oi! Em que posso ajudar?" });
+  await a.cliente(CLI, "Oi");
+  await a.webhook({ statuses: [{ id: a.para(CLI).at(-1).id, status: "delivered", recipient_id: CLI }] });
+  // O histórico usa a data real do banco (CURRENT_TIMESTAMP), por isso o período largo.
+  const u = await (await a.http(`/platform/usage?de=2020-01-01&ate=2035-12-31`, { headers: { authorization: "Bearer " + TOKEN } })).json();
+  assert.equal(u.mensagens.recebidas.reduce((s, x) => s + x.n, 0), 1);
+  assert.equal(u.mensagens.pela_ia.reduce((s, x) => s + x.n, 0), 1);
+  assert.equal(u.contatos, 1);
+  assert.equal(u.entregas.entregues, 1);
+  assert.ok(Array.isArray(u.casos.novos));
+});

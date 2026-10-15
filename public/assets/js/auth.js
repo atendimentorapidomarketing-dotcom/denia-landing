@@ -88,6 +88,9 @@
     faixa.textContent = "Plano " + NOMES_PLANO[plano] + " · teste grátis. Você pode mudar de plano quando quiser.";
     form.parentNode.insertBefore(faixa, form);
   }
+  // No aplicativo da tela inicial, a pessoa sempre fica conectada (não precisa entrar toda vez).
+  var comoApp = (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) || window.navigator.standalone === true;
+  if (comoApp && form.lembrar) { form.lembrar.checked = true; var rot = form.lembrar.closest("label"); if (rot) rot.style.display = "none"; }
   var lembrado = null;
   try { lembrado = localStorage.getItem("denia_email"); } catch (e) { lembrado = null; }
   if (acao === "entrar" && lembrado && form.email && !form.email.value) { form.email.value = lembrado; if (form.lembrar) form.lembrar.checked = true; }
@@ -112,7 +115,7 @@
     if (acao === "entrar") {
       if (!email || !form.senha.value) { mostrar(erro, "Informe o e-mail e a senha."); return; }
       try { if (form.lembrar.checked) localStorage.setItem("denia_email", email); else localStorage.removeItem("denia_email"); } catch (x) { /* navegação privada */ }
-      enviar("/api/entrar", { email: email, senha: form.senha.value, lembrar: form.lembrar.checked }, function () { location.replace("/app"); });
+      enviar("/api/entrar", { email: email, senha: form.senha.value, lembrar: comoApp || form.lembrar.checked }, function () { location.replace("/app"); });
     } else if (acao === "cadastro") {
       if (!form.nome.value.trim() || !form.empresa.value.trim() || !email || !form.senha.value) { mostrar(erro, "Preencha todos os campos."); return; }
       if (!form.aceite.checked) { mostrar(erro, "Para criar a conta, aceite os Termos de uso e a Política de privacidade."); return; }

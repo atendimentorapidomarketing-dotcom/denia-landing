@@ -1,5 +1,24 @@
 # Changelog — DENIA Engine
 
+## 31.2.0 — 2026-10-15
+
+### Corrigido (WhatsApp "respondendo" sem chegar)
+- A Meta aceitar a mensagem não quer dizer que ela foi entregue. O motor agora lê as confirmações
+  de entrega do webhook (enviada → entregue → lida, ou falhou com o motivo) e guarda cada uma
+  (tabela `d30_entregas`).
+- Falha de entrega: o motivo em português (pagamento, número sem WhatsApp, 24 h, token, número
+  bloqueado…), aviso à equipe no Telegram e evento no caso. Falhas passageiras da Meta são
+  reenviadas uma vez sozinhas.
+- Bloqueio da conta (pagamento, token, número): alerta crítico e `entrega_bloqueada` no
+  `/platform/status`; some sozinho na próxima entrega confirmada.
+- Vigia: mensagens aceitas sem nenhuma confirmação por horas geram aviso (webhook sem o campo
+  "messages").
+- Diagnóstico completo do número (status, plataforma, modo de teste, qualidade, nome) e, com
+  `WHATSAPP_WABA_ID`, da conta (pagamento, saúde de envio).
+- `/platform/conversations/:id` devolve a entrega de cada mensagem; `/platform/usage` traz
+  mensagens por dia (IA e equipe, do histórico permanente), contatos, atendimentos abertos e
+  concluídos e entregas.
+
 ## 31.1.0 — 2026-10-14
 
 ### Novo

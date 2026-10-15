@@ -221,9 +221,9 @@ function configAdmin(env) {
   const senha = String(env.PLATFORM_ADMIN_PASSWORD || "");
   return emailValido(email) && senha.length >= 12 ? { email, senha } : null;
 }
-const SESSAO_LONGA_MS = 30 * 24 * 60 * 60 * 1000;
+const SESSAO_LONGA_MS = 90 * 24 * 60 * 60 * 1000; // "manter conectado" e o aplicativo na tela inicial
 async function criarCookie(env, usuario, duracao = SESSAO_MS) {
-  const dados = b64url(enc.encode(JSON.stringify({ u: usuario.id, sv: usuario.sessao_versao, exp: agora(env) + duracao, v: 2 })));
+  const dados = b64url(enc.encode(JSON.stringify({ u: usuario.id, sv: usuario.sessao_versao, exp: agora(env) + duracao, v: 2, ...(duracao >= SESSAO_LONGA_MS ? { l: 1 } : {}) })));
   return `${dados}.${await hmac(await segredo(env), dados)}`;
 }
 function cookieSessao(valor, maxAge) { return `${COOKIE}=${valor}; Path=/; HttpOnly; Secure; SameSite=Strict${maxAge === null ? "" : `; Max-Age=${maxAge}`}`; }
@@ -238,7 +238,7 @@ async function lerSessao(request, env) {
   const u = await env.DB.prepare("SELECT id,email,nome,super_admin,ativo,trocar_senha,sessao_versao,origem,(senha_hash IS NOT NULL) tem_senha FROM plt_usuarios WHERE id=?").bind(Number(s.u)).first();
   if (!u || !u.ativo || u.sessao_versao !== s.sv) return null;
   if (u.super_admin && u.origem === "ENV" && configAdmin(env)?.email !== u.email) return null; // admin geral trocado ou removido da configuração
-  return { usuario: { ...u, super_admin: Boolean(u.super_admin), trocar_senha: Boolean(u.trocar_senha), tem_senha: Boolean(u.tem_senha) }, exp: s.exp };
+  return { usuario: { ...u, super_admin: Boolean(u.super_admin), trocar_senha: Boolean(u.trocar_senha), tem_senha: Boolean(u.tem_senha) }, exp: s.exp, longa: s.l === 1 };
 }
 
 async function chaveCifra(env) {
@@ -652,6 +652,37 @@ async function cuidarDasAvaliacoes(env, k) {
   }
 }
 
+// Cron: o WhatsApp de cada empresa está ENTREGANDO? (motor 31.2+). Se a Meta parou de entregar
+// (pagamento, token, número bloqueado) ou muitas mensagens falharam, avisa os responsáveis por
+// e-mail — no máximo uma vez a cada 6 horas para o mesmo problema.
+async function vigiarWhatsapp(env) {
+  const orgs = new Set(((await env.DB.prepare("SELECT org_id FROM plt_integracoes LIMIT 50").all().catch(() => null))?.results || []).map(x => x.org_id));
+  const central = await primeiraEmpresa(env).catch(() => null);
+  if (central) orgs.add(central);
+  const base = String((await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave='base_url'").first().catch(() => null))?.valor || "").replace(/\/+$/, "");
+  for (const org of orgs) {
+    try {
+      const con = await conexaoDa(env, org);
+      if (!con?.token) continue;
+      const st = (await chamarEngine(con, "GET", "status")).dados || {};
+      const en = st.entregas_24h;
+      const muitas = en && en.falhas >= Math.max(3, (en.total || 0) * 0.2);
+      if (!st.entrega_bloqueada && !muitas) continue;
+      const motivo = st.entrega_bloqueada ? `${st.entrega_bloqueada.erro} (código ${st.entrega_bloqueada.codigo})` : (en.motivos || []).map(m => `${m.motivo} (${m.n}×)`).join(" · ");
+      const chave = "alerta_entrega_" + org;
+      const ultimo = await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave=?").bind(chave).first().catch(() => null);
+      let antes = {};
+      try { antes = JSON.parse(ultimo?.valor || "{}"); } catch { antes = {}; }
+      const assinatura = st.entrega_bloqueada ? "b" + st.entrega_bloqueada.codigo : "f" + ((en.motivos || [])[0]?.codigo || "");
+      if (antes.assinatura === assinatura && Date.now() - Number(antes.em || 0) < 6 * 3600000) continue;
+      await env.DB.prepare("INSERT OR REPLACE INTO plt_meta(chave,valor) VALUES(?,?)").bind(chave, JSON.stringify({ assinatura, em: Date.now() })).run();
+      if (!emailConfigurado(env)) continue;
+      const texto = `O WhatsApp da DENIA NÃO está entregando as mensagens aos clientes e profissionais.\n\nMotivo informado pela Meta: ${motivo}\n${en ? `Nas últimas 24 h: ${en.falhas} de ${en.total} mensagens não chegaram.\n` : ""}\nAté resolver, responda os clientes pelo celular. O diagnóstico completo e o passo a passo estão no painel${base ? ": " + base + "/app#/whatsapp" : " (WhatsApp → Verificar agora)"}.`;
+      for (const para of await responsaveisDa(env, org)) await enviarEmail(env, para, "URGENTE — o WhatsApp não está entregando as mensagens", texto);
+    } catch (e) { console.error("vigiar whatsapp", org, e?.message); }
+  }
+}
+
 // O que a DENIA sabe da empresa quando conversa com a equipe no painel.
 async function contextoAssistente(env, orgId) {
   const o = await env.DB.prepare("SELECT nome FROM plt_organizacoes WHERE id=?").bind(orgId).first();
@@ -997,9 +1028,19 @@ async function rotear(request, env) {
   const sessao = ehPainel || caminho === "/entrar" || caminho === "/entrar.html" || caminho === "/cadastro" ? await lerSessao(request, env).catch(() => null) : null;
   if (ehPainel) {
     if (!sessao) return redirecionar("/entrar");
-    return env.ASSETS.fetch(new Request(new URL("/app", url).toString(), { headers: request.headers }));
+    const pagina = await env.ASSETS.fetch(new Request(new URL("/app", url).toString(), { headers: request.headers }));
+    // Quem marcou "manter conectado" (e o aplicativo na tela inicial) nunca precisa entrar de novo:
+    // a cada abertura, se já passou um mês, a sessão é renovada por mais 90 dias.
+    if (sessao.longa && sessao.exp - agora(env) < SESSAO_LONGA_MS - 30 * 24 * 3600000) {
+      const renovada = new Response(pagina.body, pagina);
+      renovada.headers.append("set-cookie", cookieSessao(await criarCookie(env, sessao.usuario, SESSAO_LONGA_MS), SESSAO_LONGA_MS / 1000));
+      return renovada;
+    }
+    return pagina;
   }
   if (caminho === "/cadastro" && sessao) return redirecionar("/app");
+  // Já conectado: entrar vai direto para o painel (?trocar=1 deixa entrar com outra conta).
+  if ((caminho === "/entrar" || caminho === "/entrar.html") && sessao && url.searchParams.get("trocar") !== "1") return redirecionar("/app");
   return env.ASSETS.fetch(request);
 }
 
@@ -1041,6 +1082,7 @@ export default {
       await publicarPendentes(env, k).catch(e => console.error("publicação agendada", e?.message));
       await sincronizarGooglePendentes(env, k).catch(e => console.error("google", e?.message));
       await cuidarDasAvaliacoes(env, k).catch(e => console.error("avaliações", e?.message));
+      await vigiarWhatsapp(env).catch(e => console.error("whatsapp", e?.message));
     })().catch(e => console.error("cron", e?.message)).finally(() => descarregarUso(env));
     if (ctx && ctx.waitUntil) ctx.waitUntil(tarefa); else await tarefa;
   }
