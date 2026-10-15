@@ -937,3 +937,44 @@ test("Memória completa — cliente antigo com meses de conversa: a DENIA lê o 
   await a.cliente(CLI, "É a mesma geladeira");
   assert.equal(pedidoMemoria, "", "dossiê reaproveitado");
 });
+
+test("Equipe agendou pelo celular — a DENIA lê, atualiza o caso e responde o profissional sem pedir valor de novo nem chamar a equipe", async () => {
+  const TOKEN = "token-da-plataforma-123456";
+  const a = await criarAmbiente({ env: { DENIA_PLATFORM_SERVICE_TOKEN: TOKEN } });
+  await iniciarConsultaChaveiro(a);
+  const caso = a.DB.q("SELECT caso_id FROM d30_casos LIMIT 1")[0].caso_id;
+  a.llmRevisao = () => ({ etapa: "AGENDADO", confianca: "ALTA", data_servico: "amanhã às 10h", motivo: "A equipe enviou 'Serviço agendado' com data e valor.", proximo_passo: "Aguardar o serviço." });
+  await a.eco(CHAVEIRO, "Serviço agendado\nCliente em Botafogo\nServiço: troca de fechadura\nData: amanhã 10h\nValor: R$ 150");
+  assert.equal(a.DB.q("SELECT etapa FROM d30_casos WHERE caso_id=?", caso)[0].etapa, "AGENDADO", "a mensagem da equipe atualizou o caso");
+  assert.equal(a.DB.q("SELECT status FROM d30_consultas WHERE caso_id=?", caso)[0].status, "CONFIRMADA");
+  a.avancar(11 * 60000);
+  a.llmPrestador = () => prest({ tipo: "COMENTARIO" });
+  a.llmProfAgendado = () => ({ resposta: "Li sim! Está tudo certo para amanhã às 10h em Botafogo. Obrigada!", precisa_equipe: false });
+  a.telegram.length = 0;
+  await a.cliente(CHAVEIRO, "Você conseguiu ler que o serviço já foi agendado?");
+  assert.match(a.ultimoPara(CHAVEIRO), /Li sim/);
+  assert.doesNotMatch(a.ultimoPara(CHAVEIRO), /consegue pegar|me passa o valor/i);
+  assert.ok(!a.telegram.some(t => /escreveu sobre/.test(t)), "não pede ajuda à equipe à toa");
+});
+
+test("Estudo diário — a DENIA relê o dia, aprende com os erros (lições valem na hora) e manda conhecimento para aprovação", async () => {
+  const TOKEN = "token-da-plataforma-123456";
+  const a = await criarAmbiente({ env: { DENIA_PLATFORM_SERVICE_TOKEN: TOKEN } });
+  a.llmCliente = () => decisao({ resposta: "Qual é o seu endereço?" });
+  await a.cliente(CLI, "Oi, preciso de um eletricista");
+  let viu = "";
+  a.llmEstudo = (e) => { viu = e; return { nota: 7, resumo: "Bom dia, mas pedi endereço já informado.", erros: [{ erro: "Pediu o endereço de novo", correcao: "Confirmar o endereço que já estava no histórico" }], licoes: ["Antes de pedir o endereço, confira se o cliente já informou e apenas confirme."], conhecimento: [{ tipo: "PRECO_PRATICADO", titulo: "Visita de eletricista", conteudo: "A visita costuma ser R$ 80." }] }; };
+  const r = await (await a.http("/platform/study/run", { method: "POST", headers: { authorization: "Bearer " + TOKEN }, body: "{}" })).json();
+  assert.match(viu, /preciso de um eletricista/, "leu as conversas do dia");
+  assert.equal(r.resultado.licoes_novas, 1);
+  const st = await (await a.http("/platform/study", { headers: { authorization: "Bearer " + TOKEN } })).json();
+  assert.match(st.licoes, /confira se o cliente já informou/);
+  assert.equal(st.relatorios[0].nota, 7);
+  assert.equal(a.DB.q("SELECT COUNT(*) n FROM d30_sugestoes WHERE status='PENDENTE'")[0].n, 1, "preço vai para aprovação, não direto");
+  // A lição já entra no próximo atendimento.
+  let entrada = "";
+  a.llmCliente = (e) => { entrada = e; return decisao({ resposta: "Certo!" }); };
+  await a.cliente(CLI, "Ok");
+  await a.cliente(CLI, "Moro em Botafogo, quando podem vir?");
+  assert.match(entrada, /LIÇÕES DO ESTUDO DIÁRIO[\s\S]*confira se o cliente já informou/);
+});

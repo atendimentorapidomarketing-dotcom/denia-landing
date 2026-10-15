@@ -538,3 +538,11 @@ body.app { overflow-x: clip; max-width: 100vw; }
 .msg-aviso { display: block; margin-top: 6px; font-size: 12.5px; font-weight: 700; color: var(--ambar); }
 .texto-gravacao { margin: 0; padding: 12px 14px; border-left: 3px solid var(--azul); background: var(--painel); border-radius: 10px; color: var(--texto); font-size: 15px; line-height: 1.6; }
 details > summary { cursor: pointer; font-weight: 700; }
+
+/* Telas largas (notebook e monitor): conteúdo centralizado e proporcional, sem "zoom" */
+@media (min-width: 1100px) {
+  .conteudo { width: 100%; max-width: 1480px; margin: 0 auto; }
+  .metrica strong { font-size: 26px; }
+  .metrica { padding: 16px 18px; }
+}
+.grafico-svg { max-height: 300px; }
