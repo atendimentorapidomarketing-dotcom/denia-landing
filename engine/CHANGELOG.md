@@ -1,5 +1,13 @@
 # Changelog — DENIA Engine
 
+## 31.9.0 — 2026-10-16
+
+### Corrigido — o banco (D1) estourava o limite diário de leitura do plano gratuito
+- A preparação das memórias varria a tabela inteira de mensagens (6 meses) a cada 5 minutos.
+  Agora roda no máximo a cada 30 min e acha os clientes pelo índice da fila (últimas 24 h).
+- Novo índice `mensagens(empresa_id, criado_em)`.
+- Saúde e métricas sem varrer o histórico (envios 24 h por `d30_saidas`; clientes novos por `pessoas`).
+
 ## 31.8.0 — 2026-10-15
 
 ### Novo — modo guia de lojas (`MODO=guia`), para shoppings e centros comerciais

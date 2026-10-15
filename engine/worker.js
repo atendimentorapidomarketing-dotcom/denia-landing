@@ -36,8 +36,8 @@
 //       relatório diário. Nunca inicia conversa nova por conta própria.
 // ============================================================================
 
-const VERSAO = "31.8.0";
-const SCHEMA_VERSAO = "31.8.0"; // mude sempre que acrescentar tabela ou índice (senão o banco de produção não recebe)
+const VERSAO = "31.9.0";
+const SCHEMA_VERSAO = "31.9.0"; // mude sempre que acrescentar tabela ou índice (senão o banco de produção não recebe)
 const EMPRESA_ID = 1;
 const PHONE_ID_PADRAO = "473474732510163";
 const GRAPH = "v25.0";
@@ -371,6 +371,7 @@ const SQL_SCHEMA = [
 ];
 const SQL_INDICES_LEGADO = [
   `CREATE INDEX IF NOT EXISTS d30_idx_msg_pessoa ON mensagens(empresa_id, pessoa_id, id)`,
+  `CREATE INDEX IF NOT EXISTS d30_idx_msg_criado ON mensagens(empresa_id, criado_em)`,
   `CREATE INDEX IF NOT EXISTS d30_idx_msg_wamid ON mensagens(whatsapp_message_id)`,
   `CREATE INDEX IF NOT EXISTS d30_idx_pessoas_tel ON pessoas(empresa_id, telefone)`,
   `CREATE INDEX IF NOT EXISTS d30_idx_casos_cliente ON casos(empresa_id, cliente_id, id)`,
@@ -601,15 +602,20 @@ async function memoriaDoCliente(c, pessoa, { gerar = true, fundo = false } = {})
 }
 // Tick/cron: prepara a memória de quem falou nas últimas horas (a próxima resposta já sai sabendo de tudo).
 async function prepararMemorias(c, maximo = 1) {
-  const r = (await c.db.prepare(`SELECT m.pessoa_id, COUNT(*) n, MAX(m.id) ultimo FROM mensagens m WHERE m.empresa_id=? AND m.pessoa_id IN (SELECT DISTINCT pessoa_id FROM mensagens WHERE empresa_id=? AND criado_em > datetime('now','-1 day'))
-    GROUP BY m.pessoa_id HAVING n > ? ORDER BY ultimo DESC LIMIT 20`).bind(EMPRESA_ID, EMPRESA_ID, HISTORICO_LIMITE).all().catch(() => null))?.results || [];
+  // V31.9: no máximo a cada 30 min e só com quem falou nas últimas 24 h, achado pelo índice da fila.
+  // (Antes varria a tabela inteira de mensagens a cada 5 min e estourava o limite diário de leitura do D1.)
+  if (!(await reservarChave(c, "memorias:" + Math.floor(c.agora() / 1800000)))) return 0;
+  const tels = (await c.db.prepare("SELECT telefone, MAX(recebido_ms) u FROM d30_fila WHERE recebido_ms > ? GROUP BY telefone ORDER BY u DESC LIMIT 15").bind(c.agora() - 86400000).all().catch(() => null))?.results || [];
   let feitas = 0;
-  for (const x of r) {
+  for (const t of tels) {
     if (feitas >= maximo || sobram(c) < 30) break;
-    const d = await c.db.prepare("SELECT ate_id FROM d30_dossie WHERE pessoa_id=?").bind(x.pessoa_id).first().catch(() => null);
+    const p = await buscarPessoa(c, t.telefone);
+    if (!p) continue;
+    const x = await c.db.prepare("SELECT COUNT(*) n, MAX(id) ultimo FROM mensagens WHERE empresa_id=? AND pessoa_id=?").bind(EMPRESA_ID, p.id).first().catch(() => null);
+    if (!x || Number(x.n) <= HISTORICO_LIMITE) continue;
+    const d = await c.db.prepare("SELECT ate_id FROM d30_dossie WHERE pessoa_id=?").bind(p.id).first().catch(() => null);
     if (d && Number(x.ultimo) - Number(d.ate_id) <= 80) continue;
-    const p = await c.db.prepare("SELECT id,nome,telefone,tipo FROM pessoas WHERE id=?").bind(x.pessoa_id).first();
-    if (p) { await memoriaDoCliente(c, p, { fundo: true }); feitas++; }
+    await memoriaDoCliente(c, p, { fundo: true }); feitas++;
   }
   return feitas;
 }
@@ -1473,7 +1479,8 @@ async function metricasAtendimento(c, de, ate) {
   const mediana = a => { if (!a.length) return null; const o = [...a].sort((x, y) => x - y); return Math.round(o[Math.floor(o.length / 2)]); };
   const p90 = a => { if (!a.length) return null; const o = [...a].sort((x, y) => x - y); return Math.round(o[Math.min(o.length - 1, Math.floor(o.length * 0.9))]); };
   // 2) Contatos novos (primeira mensagem dentro do período).
-  const novos = Number((await c.db.prepare("SELECT COUNT(*) n FROM (SELECT pessoa_id, MIN(criado_em) primeira FROM mensagens WHERE empresa_id=? GROUP BY pessoa_id) WHERE primeira >= ? AND primeira < ?").bind(EMPRESA_ID, de, fimTxt).first().catch(() => null))?.n || 0);
+  // Novos = pessoas cadastradas no período (sem varrer o histórico inteiro de mensagens).
+  const novos = Number((await c.db.prepare("SELECT COUNT(*) n FROM pessoas WHERE empresa_id=? AND criado_em >= ? AND criado_em < ? AND UPPER(COALESCE(tipo,'CLIENTE'))<>'TECNICO'").bind(EMPRESA_ID, de, fimTxt).first().catch(() => null))?.n || 0);
   // 3) Atendimentos criados no período: etapa, serviço e funil.
   const casos = (await c.db.prepare("SELECT caso_id, etapa, fatos_json FROM d30_casos WHERE criado_ms >= ? AND criado_ms < ? LIMIT 5000").bind(ini, fim).all().catch(() => null))?.results || [];
   const porEtapa = {}, porServico = {};
@@ -3444,14 +3451,14 @@ async function saude(c, { completo = false } = {}) {
     r.erros_24h = (await qa("SELECT erro, atualizado_ms FROM d30_fila WHERE status='ERRO' AND recebido_ms > ? ORDER BY atualizado_ms DESC LIMIT 3", dia)).map(x => ({ erro: txt(x.erro, 300), em: x.atualizado_ms }));
     const falhas = await qa("SELECT descricao, criado_ms FROM d30_eventos WHERE tipo='FALHA_ENVIO_CLIENTE' AND criado_ms > ? ORDER BY id DESC LIMIT 50", dia);
     r.falhas_envio_24h = { n: falhas.length, ultima: falhas[0] ? txt(falhas[0].descricao, 300) : null, em: falhas[0]?.criado_ms || null };
-    r.enviadas_24h = Number((await q("SELECT COUNT(*) n FROM mensagens WHERE direcao='SAIDA' AND origem='IA' AND criado_em > datetime('now','-1 day')"))?.n || 0);
+    r.enviadas_24h = Number((await q("SELECT COUNT(*) n FROM d30_saidas WHERE criado_ms > ?", dia))?.n || 0);
     r.assinatura_invalida_ms = Number((await q("SELECT valor FROM d30_meta WHERE chave='assinatura_invalida'"))?.valor || 0) || null;
     r.entregas_24h = await resumoEntregas(c, dia);
     const fl = await q("SELECT COUNT(*) n, MIN(criado_ms) m FROM d30_saida_fila WHERE status='PENDENTE'");
     r.fila_envio = { pendentes: Number(fl?.n || 0), mais_antiga_ms: Number(fl?.m || 0) || null, adiadas_24h: Number((await q("SELECT COUNT(*) n FROM d30_saida_fila WHERE criado_ms > ?", dia))?.n || 0) };
     r.limite_chamadas = limiteChamadas(c);
     try { r.entrega_bloqueada = JSON.parse((await q("SELECT valor FROM d30_meta WHERE chave='entrega_bloqueada'"))?.valor || "null"); } catch { r.entrega_bloqueada = null; }
-    r.ultima_confirmacao_ms = Number((await q("SELECT MAX(atualizado_ms) m FROM d30_entregas WHERE status<>'ACEITA'"))?.m || 0) || null;
+    r.ultima_confirmacao_ms = Number((await q("SELECT MAX(atualizado_ms) m FROM d30_entregas WHERE status IN ('SENT','DELIVERED','READ','FAILED') AND atualizado_ms > ?", dia - 6 * 86400000))?.m || 0) || null;
   }
   // Teste real das chaves (só quando pedido): o token do WhatsApp e a chave da OpenAI ainda valem?
   if (completo) {
