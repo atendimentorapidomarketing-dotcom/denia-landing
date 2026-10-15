@@ -1,5 +1,24 @@
 # Changelog — DENIA Engine
 
+## 31.5.0 — 2026-10-15
+
+### Novo — memória completa do cliente
+- Antes de responder, a DENIA lê o DOSSIÊ do contato: um resumo de TODA a relação desde o primeiro
+  contato (meses atrás) — nome, endereços, serviços anteriores, profissional, valores, pendências,
+  reclamações, comportamento — além das últimas 60 mensagens. Cliente antigo nunca é tratado como novo.
+- O dossiê é gerado quando a pessoa tem mais mensagens do que cabem no histórico e é atualizado a
+  cada ~80 mensagens novas (tabela `d30_dossie`). No plano gratuito ele é preparado em segundo plano
+  (tick a cada 5 min / cron); enquanto não existe, a IA recebe as primeiras mensagens da relação.
+
+### Corrigido — profissional com mais de um atendimento
+- Quando o profissional responde a uma mensagem (inclusive as que a equipe manda pelo celular, como
+  "Serviço agendado: nome, endereço, bairro…"), a DENIA descobre o atendimento pelo contexto: a
+  mensagem citada, o nome do cliente, o bairro, o endereço e o serviço. Confirmações simples
+  ("ok", "combinado") não geram pergunta. Se ainda houver dúvida, pergunta como gente: "é sobre o
+  atendimento de Maria em Botafogo ou de João na Tijuca?" — nunca pede número de caso.
+- Número de caso é interno: não aparece mais em nenhuma mensagem para profissionais ou clientes
+  (vira "o atendimento de Maria (Botafogo)").
+
 ## 31.4.0 — 2026-10-15
 
 ### Corrigido (mensagens em massa quando o cron era ligado)

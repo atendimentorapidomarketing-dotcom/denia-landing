@@ -35,8 +35,8 @@
 //       relatório diário. Nunca inicia conversa nova por conta própria.
 // ============================================================================
 
-const VERSAO = "31.4.0";
-const SCHEMA_VERSAO = "31.3.0"; // mude sempre que acrescentar tabela ou índice (senão o banco de produção não recebe)
+const VERSAO = "31.5.0";
+const SCHEMA_VERSAO = "31.5.0"; // mude sempre que acrescentar tabela ou índice (senão o banco de produção não recebe)
 const EMPRESA_ID = 1;
 const PHONE_ID_PADRAO = "473474732510163";
 const GRAPH = "v25.0";
@@ -354,6 +354,7 @@ const SQL_SCHEMA = [
   `CREATE INDEX IF NOT EXISTS d30_sugestoes_status ON d30_sugestoes(status, ocorrencias)`,
   `CREATE TABLE IF NOT EXISTS d30_ficha (id INTEGER PRIMARY KEY AUTOINCREMENT, telefone TEXT NOT NULL, dados_json TEXT NOT NULL, origem TEXT, importado_ms INTEGER NOT NULL)`,
   `CREATE INDEX IF NOT EXISTS d30_ficha_tel ON d30_ficha(telefone)`,
+  `CREATE TABLE IF NOT EXISTS d30_dossie (pessoa_id INTEGER PRIMARY KEY, resumo TEXT NOT NULL, ate_id INTEGER NOT NULL DEFAULT 0, total INTEGER NOT NULL DEFAULT 0, atualizado_ms INTEGER NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS d30_saida_fila (id INTEGER PRIMARY KEY AUTOINCREMENT, para TEXT NOT NULL, corpo TEXT NOT NULL, motivo TEXT, status TEXT NOT NULL DEFAULT 'PENDENTE', tentativas INTEGER NOT NULL DEFAULT 0, erro TEXT, wamid TEXT, criado_ms INTEGER NOT NULL, atualizado_ms INTEGER NOT NULL)`,
   `CREATE INDEX IF NOT EXISTS d30_saida_fila_status ON d30_saida_fila(status, id)`,
   `CREATE TABLE IF NOT EXISTS d30_entregas (wamid TEXT PRIMARY KEY, telefone TEXT, status TEXT NOT NULL, codigo INTEGER, erro TEXT, detalhe TEXT, tentativas INTEGER NOT NULL DEFAULT 0, enviado_ms INTEGER, entregue_ms INTEGER, lido_ms INTEGER, falhou_ms INTEGER, atualizado_ms INTEGER NOT NULL)`,
@@ -454,6 +455,73 @@ async function perfilCliente(c, pessoa) {
     for (const k of casos) linhas.push(`- #${k.id} ${String(k.criado_em || "").slice(0, 10)}: ${txt(k.titulo || k.problema, 80)}${k.bairro ? ", " + k.bairro : ""} — ${k.status || "-"}${valores.has(k.id) ? " — " + moeda(valores.get(k.id)) : ""}`);
     return linhas.join("\n");
   } catch (e) { console.warn("perfil", e?.message); return ""; }
+}
+
+// ============================================================================
+// MEMÓRIA COMPLETA DO CLIENTE
+// O histórico enviado à IA traz as últimas mensagens; esta memória resume TODA a relação com a pessoa,
+// desde o primeiro contato (meses atrás): quem é, onde mora, o que já fez, com quem, quanto pagou,
+// se houve problema, como prefere ser tratada. É atualizada quando surgem muitas mensagens novas.
+// ============================================================================
+const INSTRUCOES_MEMORIA = `Você é a memória da Central de Atendimento. Leia TODA a conversa de um contato (desde o primeiro dia) e o resumo anterior, e escreva o DOSSIÊ desse contato para a assistente consultar antes de responder.
+Inclua só o que está nas mensagens (nunca invente):
+- Quem é: nome e como gosta de ser chamado; se é cliente, profissional ou parceiro.
+- Desde quando fala com a empresa, se é recorrente e com que frequência.
+- Endereços e bairros já informados (o mais recente primeiro), pontos de referência, horários preferidos.
+- Serviços anteriores: quando, o quê, qual profissional, valor, como terminou (concluído, cancelado, reclamação, garantia).
+- Pendências em aberto (orçamento esperando resposta, pagamento, retorno prometido).
+- Comportamento: educado, exigente, pechincha, atrasa pagamento, já reclamou, já elogiou; cuidados para o atendimento.
+- Equipamentos/itens dele já citados (marca, modelo).
+Escreva em tópicos curtos, em português, no máximo 1.800 caracteres. Responda em JSON {"dossie":"..."}`;
+async function memoriaDoCliente(c, pessoa, { gerar = true, fundo = false } = {}) {
+  if (!pessoa?.id) return "";
+  try {
+    const st = await c.db.prepare("SELECT MIN(criado_em) primeira, COUNT(*) total, MAX(id) ultimo FROM mensagens WHERE empresa_id=? AND pessoa_id=?").bind(EMPRESA_ID, pessoa.id).first();
+    const total = Number(st?.total || 0);
+    if (!total) return "";
+    const dos = await c.db.prepare("SELECT resumo, ate_id, total FROM d30_dossie WHERE pessoa_id=?").bind(pessoa.id).first().catch(() => null);
+    const primeira = String(st.primeira || "").slice(0, 10);
+    const meses = primeira ? Math.max(0, Math.round((c.agora() - Date.parse(primeira + "T12:00:00Z")) / (30 * 86400000))) : 0;
+    const cabeca = `Primeiro contato: ${primeira ? primeira.split("-").reverse().join("/") : "?"}${meses ? ` (há cerca de ${meses} ${meses === 1 ? "mês" : "meses"})` : " (este mês)"}. ${total} mensagem(ns) trocadas no total${total > HISTORICO_LIMITE ? `; o HISTÓRICO abaixo mostra só as ${HISTORICO_LIMITE} últimas — o resto está resumido aqui` : ""}.`;
+    let resumo = dos?.resumo || "";
+    // Gera (ou atualiza) o dossiê quando há mais mensagens do que cabem no histórico e ele está velho.
+    const precisa = total > HISTORICO_LIMITE && (!dos || Number(st.ultimo || 0) - Number(dos.ate_id || 0) > 80);
+    // Na resposta ao cliente só gera se sobrar folga (plano pago); senão o tick/cron prepara em segundo plano.
+    if (precisa && gerar && !c.sim && sobram(c) > 30 && (fundo || limiteChamadas(c) >= 200)) {
+      const antigas = ((await c.db.prepare("SELECT direcao, origem, conteudo, criado_em, caso_id FROM mensagens WHERE empresa_id=? AND pessoa_id=? AND id > ? ORDER BY id DESC LIMIT 900").bind(EMPRESA_ID, pessoa.id, Number(dos?.ate_id || 0)).all())?.results || []).reverse();
+      let texto = antigas.map(m => `[${String(m.criado_em || "").slice(0, 10)}] ${String(m.direcao).toUpperCase() === "ENTRADA" ? "CONTATO" : String(m.origem).toUpperCase() === "HUMANO" ? "EQUIPE" : String(m.origem).toUpperCase() === "LIGACAO" ? "LIGAÇÃO (resumo)" : "DENIA"}: ${txt(m.conteudo, 280)}`).join("\n");
+      if (texto.length > 45000) texto = texto.slice(0, 12000) + "\n[…]\n" + texto.slice(-33000); // começo da relação + o mais recente
+      try {
+        const o = await openaiJSON(c, INSTRUCOES_MEMORIA, `NOME NO CADASTRO: ${pessoa.nome || "-"}\nTIPO: ${pessoa.tipo || "CLIENTE"}\nDOSSIÊ ANTERIOR:\n${resumo || "(nenhum)"}\n\nMENSAGENS (mais antigas primeiro):\n${texto}\n\nResponda em JSON.`, [], 1100);
+        const novo = txt(o?.dossie, 2200);
+        if (novo) {
+          resumo = novo;
+          await c.db.prepare("INSERT OR REPLACE INTO d30_dossie(pessoa_id,resumo,ate_id,total,atualizado_ms) VALUES(?,?,?,?,?)").bind(pessoa.id, novo, Number(st.ultimo || 0), total, c.agora()).run();
+        }
+      } catch (e) { console.warn("memória", e?.message); }
+    }
+    // Sem dossiê ainda: mostra pelo menos como a relação começou (as primeiras mensagens).
+    let inicio = "";
+    if (!resumo && total > HISTORICO_LIMITE) {
+      const primeiras = (await c.db.prepare("SELECT direcao, origem, conteudo, criado_em FROM mensagens WHERE empresa_id=? AND pessoa_id=? ORDER BY id LIMIT 8").bind(EMPRESA_ID, pessoa.id).all().catch(() => null))?.results || [];
+      if (primeiras.length) inicio = "Como a conversa começou:\n" + primeiras.map(m => `[${String(m.criado_em || "").slice(0, 10)}] ${String(m.direcao).toUpperCase() === "ENTRADA" ? "CLIENTE" : String(m.origem).toUpperCase() === "HUMANO" ? "EQUIPE" : "DENIA"}: ${txt(m.conteudo, 220)}`).join("\n");
+    }
+    return [cabeca, resumo, inicio].filter(Boolean).join("\n");
+  } catch (e) { console.warn("memória", e?.message); return ""; }
+}
+// Tick/cron: prepara a memória de quem falou nas últimas horas (a próxima resposta já sai sabendo de tudo).
+async function prepararMemorias(c, maximo = 1) {
+  const r = (await c.db.prepare(`SELECT m.pessoa_id, COUNT(*) n, MAX(m.id) ultimo FROM mensagens m WHERE m.empresa_id=? AND m.pessoa_id IN (SELECT DISTINCT pessoa_id FROM mensagens WHERE empresa_id=? AND criado_em > datetime('now','-1 day'))
+    GROUP BY m.pessoa_id HAVING n > ? ORDER BY ultimo DESC LIMIT 20`).bind(EMPRESA_ID, EMPRESA_ID, HISTORICO_LIMITE).all().catch(() => null))?.results || [];
+  let feitas = 0;
+  for (const x of r) {
+    if (feitas >= maximo || sobram(c) < 30) break;
+    const d = await c.db.prepare("SELECT ate_id FROM d30_dossie WHERE pessoa_id=?").bind(x.pessoa_id).first().catch(() => null);
+    if (d && Number(x.ultimo) - Number(d.ate_id) <= 80) continue;
+    const p = await c.db.prepare("SELECT id,nome,telefone,tipo FROM pessoas WHERE id=?").bind(x.pessoa_id).first();
+    if (p) { await memoriaDoCliente(c, p, { fundo: true }); feitas++; }
+  }
+  return feitas;
 }
 
 // Exemplos reais de como as atendentes escrevem (para a DENIA falar igual).
@@ -1192,7 +1260,7 @@ async function alertarEquipe(c, texto, chave, casoId = null) {
 
 // Envio ao cliente: respeita pausa humana, idempotência e grava no histórico.
 async function enviarAoCliente(c, { tel, pessoaId, casoId, texto, chave, origem = "IA" }) {
-  const t = String(texto || "").trim();
+  const t = (await humanizarCasos(c, String(texto || ""))).trim();
   if (!t) return { ok: false, vazio: true };
   if (await estaPausado(c, tel)) return { ok: false, pausado: true };
   if (chave && !(await reservarChave(c, "cli:" + chave))) return { ok: true, duplicado: true };
@@ -1218,6 +1286,7 @@ async function enviarAoPrestador(c, { consulta, caso, texto, chave, inicial = fa
 }
 async function enviarAgoraAoPrestador(c, { consulta, caso, texto, chave, inicial }) {
   const to = consulta.prestador_tel;
+  texto = await humanizarCasos(c, texto);
   if (chave && !(await reservarChave(c, "pre:" + chave))) return { ok: true, duplicado: true };
   let r = await c.saida.texto(to, texto, { papel: "prestador", prestador: consulta.prestador_nome });
   const template = String(c.env.WHATSAPP_TEMPLATE_CONSULTA_TECNICO || "").trim();
@@ -1241,7 +1310,7 @@ async function encaminharMidiasAoPrestador(c, consulta) {
   const r = await c.db.prepare("SELECT * FROM d30_midias WHERE caso_id=? AND comprovante=0 AND (enviado_para IS NULL OR enviado_para<>?) ORDER BY id LIMIT 5")
     .bind(consulta.caso_id, consulta.prestador_tel).all();
   for (const m of r?.results || []) {
-    const e = await c.saida.midia(consulta.prestador_tel, { tipo: m.tipo, mediaId: m.media_id, legenda: `Foto que o cliente mandou (caso ${consulta.caso_id})` }, { papel: "prestador" });
+    const e = await c.saida.midia(consulta.prestador_tel, { tipo: m.tipo, mediaId: m.media_id, legenda: "Foto que o cliente mandou" }, { papel: "prestador" });
     if (e.ok) await c.db.prepare("UPDATE d30_midias SET enviado_para=? WHERE id=?").bind(consulta.prestador_tel, m.id).run();
     else await evento(c, consulta.caso_id, "FALHA_MIDIA_PRESTADOR", e.erro);
   }
@@ -1537,6 +1606,9 @@ function formatarFatos(f) {
 
 const INSTRUCOES_CLIENTE = `Você é a DENIA, assistente virtual responsável pelo atendimento digital da Central de Atendimento. Você conversa com CLIENTES pelo WhatsApp.
 
+ANTES DE RESPONDER, LEIA TUDO: a MEMÓRIA COMPLETA DO CLIENTE, o PERFIL, a FICHA, os OUTROS CASOS e o HISTÓRICO inteiro. Cliente que já falou com a empresa NUNCA é tratado como novo: chame pelo nome, lembre do que já foi feito ("da última vez trocamos o disjuntor, certo?"), use o endereço que ele já passou (confirme em vez de perguntar de novo) e continue de onde a conversa parou. Se houve problema ou reclamação antes, tenha ainda mais cuidado.
+NÚMEROS DE CASO são internos: nunca escreva "caso 210", "#210" ou qualquer número de caso para o cliente; fale do serviço ("a instalação do chuveiro", "o conserto da geladeira").
+
 SEU PAPEL: você interpreta as mensagens e redige a resposta. Você NÃO executa ações. O sistema decide e executa (consultar profissional, enviar orçamento, agendar) com base nos fatos que você extrai. Portanto:
 - Nunca diga que enviou, consultou, falou, avisou, repassou, agendou, confirmou ou cancelou algo, a menos que o ESTADO DO CASO diga que isso já aconteceu.
 - Nunca invente preço, prazo, disponibilidade, diagnóstico, cobertura de região ou que um profissional faz certo serviço. Valores: somente os listados em VALORES AUTORIZADOS.
@@ -1581,12 +1653,15 @@ intencao: CONVERSA | NOVO_PEDIDO | ACEITA_PROPOSTA | RECUSA_PROPOSTA | PEDE_OUTR
 - descricao_anexos: descrição objetiva das imagens/documentos anexados (leia textos visíveis). Se for comprovante de pagamento, comprovante_pagamento=true (isso não confirma o pagamento).
 - resumo_caso: 1 ou 2 frases atualizadas sobre o caso ativo.`;
 
-function montarEntradaCliente({ agora = Date.now(), treinamento, caso, consulta, autorizados, recentes, hist, novas, temAnexos, pessoa, perfil = "", estilo = "", ficha = "" }) {
+function montarEntradaCliente({ agora = Date.now(), treinamento, caso, consulta, autorizados, recentes, hist, novas, temAnexos, pessoa, perfil = "", estilo = "", ficha = "", memoria = "" }) {
   return `TREINAMENTO DA EMPRESA (siga sempre):
 ${formatarTreinamento(treinamento.dados)}
 
 COMO A EQUIPE FALA (mensagens reais das atendentes; imite o tom e o tamanho, não o conteúdo):
 ${estilo || "(sem exemplos ainda)"}
+
+MEMÓRIA COMPLETA DO CLIENTE (toda a relação desde o primeiro contato — LEIA ANTES DE RESPONDER):
+${memoria || "(primeiro contato: não há conversas anteriores)"}
 
 PERFIL DO CLIENTE:
 ${perfil || "(cliente sem atendimentos anteriores registrados)"}
@@ -1623,7 +1698,7 @@ ${temAnexos ? "\n(Há anexos de imagem/documento nesta mensagem; descreva-os em 
 Responda em JSON.`;
 }
 
-const INSTRUCOES_PRESTADOR = `Você trabalha na Central de Atendimento e está lendo a mensagem de um PROFISSIONAL PRESTADOR (não é cliente) sobre um caso específico. Sua tarefa é CLASSIFICAR a mensagem e extrair fatos. Não invente nada.
+const INSTRUCOES_PRESTADOR = `Você trabalha na Central de Atendimento e está lendo a mensagem de um PROFISSIONAL PRESTADOR (não é cliente) sobre um caso específico. Sua tarefa é CLASSIFICAR a mensagem e extrair fatos. Não invente nada. Números de caso são internos: nunca escreva número de caso em texto para o profissional ou para o cliente; refira-se ao atendimento pelo nome do cliente, bairro e serviço.
 
 Responda SOMENTE com um objeto JSON:
 {"tipo":"COMENTARIO","valor_centavos":0,"valor_e_final":"NAO_INFORMADO","disponibilidade":"","atende_regiao":"NAO_INFORMADO","pergunta_para_cliente":"","resposta_conhecida":"","mensagem_para_cliente":"","resumo":""}
@@ -1691,7 +1766,8 @@ async function processarCliente(c, tel, id, msgs, { apenasRegistrar, chaveLote, 
   for (const m of msgs) if (!jaRegistradas.has(m.wamid)) await registrarMensagem(c, { pessoaId: pessoa.id, casoId: caso?.casoId, wamid: m.wamid, direcao: "ENTRADA", origem: "WHATSAPP", tipo: String(m.tipo || "text").toUpperCase(), conteudo: m.conteudo });
 
   if (apenasRegistrar) {
-    await alertarEquipe(c, `Mensagens de ${pessoa.nome || tel} chegaram com mais de 12 h de atraso e NÃO foram respondidas automaticamente. Verifique a conversa.`, "atraso:" + chaveLote, caso?.casoId);
+    // Uma conversa só: avisa com o nome. Várias de uma vez: o cron manda um aviso só (sem enxurrada).
+    if ((c.atrasadasSemResposta || 0) <= 1) await alertarEquipe(c, `Mensagens de ${pessoa.nome || tel} ficaram sem resposta por mais tempo e NÃO foram respondidas automaticamente (para não chegar fora de hora). Verifique a conversa.`, "atraso:" + chaveLote, caso?.casoId);
     return;
   }
   if (await estaPausado(c, tel)) return; // atendente humano na conversa
@@ -1717,11 +1793,11 @@ async function processarCliente(c, tel, id, msgs, { apenasRegistrar, chaveLote, 
   let autorizados = await autorizadosParaCaso(c, consulta);
   const treinamento = await carregarTreinamento(c);
   const novas = (atrasoMs ? `(ATENÇÃO: estas mensagens chegaram há cerca de ${Math.max(1, Math.round(atrasoMs / 60000))} min e ainda não tinham sido respondidas. Comece com um pedido de desculpas breve e natural pela demora.)\n` : "") + msgs.map(m => `- ${m.conteudo || "(vazio)"}`).join("\n");
-  const [perfil, estilo, ficha] = await Promise.all([perfilCliente(c, pessoa), estiloDaEquipe(c), fichaCRM(c, tel)]);
+  const [perfil, estilo, ficha, memoria] = await Promise.all([perfilCliente(c, pessoa), estiloDaEquipe(c), fichaCRM(c, tel), memoriaDoCliente(c, pessoa)]);
 
   let d;
   try {
-    const bruto = await openaiJSON(c, INSTRUCOES_CLIENTE, montarEntradaCliente({ agora: c.agora(), treinamento, caso, consulta, autorizados, recentes, hist: formatarHistorico(hist, "CLIENTE", novasIds), novas, temAnexos: anexos.length > 0, pessoa, perfil, estilo, ficha }), anexos);
+    const bruto = await openaiJSON(c, INSTRUCOES_CLIENTE, montarEntradaCliente({ agora: c.agora(), treinamento, caso, consulta, autorizados, recentes, hist: formatarHistorico(hist, "CLIENTE", novasIds), novas, temAnexos: anexos.length > 0, pessoa, perfil, estilo, ficha, memoria }), anexos);
     d = normalizarDecisaoCliente(bruto);
     capturarRespostaCurta(d, msgs, hist);
   } catch (e) {
@@ -1885,8 +1961,7 @@ async function consultarPrestador(c, caso, pessoa, chaveLote) {
     `${saudacaoSP(c.agora())}, ${primeiroNome(p.nome)}! Tudo bem?`,
     `Tenho um cliente${local ? ` em ${local}` : ""} precisando de ${String(f.problema || f.servico || "").replace(/[.\s]+$/, "")}${f.marca || f.modelo ? ` (${[f.marca, f.modelo].filter(Boolean).join(" ")})` : ""}.`,
     falas.length ? `O cliente me contou assim: "${falas.join(" / ")}"` : "",
-    `Você consegue pegar${f.bairro ? " e atende aí" : ""}? Se sim, me passa o valor (e se já é o valor final pro cliente ou só a sua parte) e quando você pode.`,
-    `Caso ${caso.casoId}`
+    `Você consegue pegar${f.bairro ? " e atende aí" : ""}? Se sim, me passa o valor (e se já é o valor final pro cliente ou só a sua parte) e quando você pode.`
   ].filter(Boolean);
   const r = await enviarAoPrestador(c, { consulta: ins, caso, texto: linhas.join("\n"), chave: `consulta:${ins.id}`, inicial: true });
   if (r.ok) {
@@ -1931,10 +2006,77 @@ async function clienteAceitou(c, caso, consulta, chaveLote) {
 // FLUXO DO PRESTADOR
 // ============================================================================
 
+// ----- Número de caso é só para a DENIA se organizar: no texto para profissionais e clientes vira
+// uma referência humana ("Maria (Botafogo)", "o atendimento de Maria (Botafogo)").
+const cacheRefCaso = new Map();
+async function refCaso(c, casoId) {
+  const k = Number(casoId);
+  if (cacheRefCaso.has(k)) return cacheRefCaso.get(k);
+  let ref = { nome: "", bairro: "" };
+  try {
+    const caso = await carregarCasoPorId(c, k);
+    const cli = caso?.clienteId ? await c.db.prepare("SELECT nome FROM pessoas WHERE id=?").bind(caso.clienteId).first().catch(() => null) : null;
+    ref = { nome: primeiroNome(cli?.nome || caso?.fatos?.nome || ""), bairro: String(caso?.fatos?.bairro || "") };
+  } catch { /* sem referência */ }
+  if (cacheRefCaso.size > 300) cacheRefCaso.clear();
+  cacheRefCaso.set(k, ref);
+  return ref;
+}
+const pessoaRef = r => r.nome ? `${r.nome}${r.bairro ? ` (${r.bairro})` : ""}` : r.bairro ? `o cliente de ${r.bairro}` : "o cliente";
+const atendimentoRef = r => r.nome ? `o atendimento de ${r.nome}${r.bairro ? ` (${r.bairro})` : ""}` : r.bairro ? `o atendimento em ${r.bairro}` : "o atendimento";
+async function humanizarCasos(c, texto) {
+  let t = String(texto || "");
+  if (!/caso\s*#?\s*\d|#\d{2,}/i.test(t)) return t;
+  const ids = [...new Set([...t.matchAll(/(?:caso\s*#?\s*|#)(\d{1,9})/gi)].map(m => m[1]))];
+  for (const id of ids) {
+    const r = await refCaso(c, id);
+    const at = atendimentoRef(r);
+    t = t.replace(new RegExp(`\\s*\\((?:do\\s+)?caso\\s*#?\\s*${id}\\)`, "gi"), "")
+      .replace(new RegExp(`\\bo cliente do caso\\s*#?\\s*${id}\\b`, "gi"), pessoaRef(r))
+      .replace(new RegExp(`\\bsobre o caso\\s*#?\\s*${id}\\b`, "gi"), "sobre " + at)
+      .replace(new RegExp(`\\bdo caso\\s*#?\\s*${id}\\b`, "gi"), "d" + at)
+      .replace(new RegExp(`\\bno caso\\s*#?\\s*${id}\\b`, "gi"), "n" + at)
+      .replace(new RegExp(`\\b[ée] o caso\\s*#?\\s*${id}\\b`, "gi"), "É " + at)
+      .replace(new RegExp(`\\bo caso\\s*#?\\s*${id}\\b`, "gi"), at)
+      .replace(new RegExp(`\\bcaso\\s*#?\\s*${id}\\b`, "gi"), at.replace(/^o /, ""))
+      .replace(new RegExp(`#${id}\\b`, "g"), "");
+  }
+  return t.split("\n").map(l => l.replace(/[ \t]{2,}/g, " ").replace(/\s+([,.!?:])/g, "$1").trim()).filter((l, i, arr) => l || (i > 0 && arr[i - 1])).join("\n").trim();
+}
+
 function resumoParaPrestador(caso, consulta) {
   const f = caso.fatos || {};
   return [`É o caso ${caso.casoId}: cliente${f.bairro ? ` em ${f.bairro}` : ""} precisando de ${String(f.problema || f.servico || "-").replace(/[.\s]+$/, "")}${f.marca || f.modelo ? ` (${[f.marca, f.modelo].filter(Boolean).join(" ")})` : ""}.`,
     consulta.status === "ENVIADA" ? "Você consegue pegar? Se sim, me passa o valor e quando pode." : ""].filter(Boolean).join("\n");
+}
+
+async function consultaPeloContexto(c, abertas, msgs, textoTodo, pessoaPrest) {
+  try {
+    // Texto da mensagem que ele respondeu (citação), mesmo que tenha sido escrita pela equipe.
+    const citados = [];
+    for (const m of msgs) {
+      if (!m.contextId) continue;
+      const ref = await c.db.prepare("SELECT conteudo FROM mensagens WHERE whatsapp_message_id=? LIMIT 1").bind(m.contextId).first().catch(() => null);
+      if (ref?.conteudo) citados.push(ref.conteudo);
+    }
+    // Sem citação: a última mensagem que a equipe ou a DENIA mandou para ele.
+    if (!citados.length && pessoaPrest?.id) {
+      const ult = await c.db.prepare("SELECT conteudo FROM mensagens WHERE empresa_id=? AND pessoa_id=? AND UPPER(direcao)='SAIDA' ORDER BY id DESC LIMIT 2").bind(EMPRESA_ID, pessoaPrest.id).all().catch(() => null);
+      for (const x of ult?.results || []) citados.push(x.conteudo || "");
+    }
+    const alvo = norm([textoTodo, ...citados].join(" "));
+    const pontuar = (v, peso) => { let p = 0; for (const w of new Set(norm(v).split(/[^a-z0-9]+/).filter(x => x.length >= 4))) if (alvo.includes(w)) p += peso; return p; };
+    let melhor = null, pontos = 0, segundo = 0;
+    for (const k of abertas.slice(0, 6)) {
+      const caso = await carregarCasoPorId(c, k.caso_id);
+      if (!caso) continue;
+      const cli = caso.clienteId ? await c.db.prepare("SELECT nome FROM pessoas WHERE id=?").bind(caso.clienteId).first().catch(() => null) : null;
+      const f = caso.fatos || {};
+      const p = pontuar(cli?.nome, 3) + pontuar(f.bairro, 2) + pontuar(f.endereco, 2) + pontuar(f.servico, 1) + pontuar(f.problema, 1) + pontuar([f.marca, f.modelo].join(" "), 1);
+      if (p > pontos) { segundo = pontos; pontos = p; melhor = k; } else if (p > segundo) segundo = p;
+    }
+    return pontos >= 3 && pontos >= segundo + 2 ? melhor : null;
+  } catch (e) { console.warn("contexto do profissional", e?.message); return null; }
 }
 
 async function processarPrestador(c, tel, id, msgs, { apenasRegistrar, chaveLote }) {
@@ -1954,15 +2096,22 @@ async function processarPrestador(c, tel, id, msgs, { apenasRegistrar, chaveLote
   const num = textoTodo.match(/(?:caso|#)\s*#?\s*(\d{1,9})\b/i);
   if (!consulta && num) consulta = abertas.find(x => String(x.caso_id) === num[1]) || null;
   if (!consulta && abertas.length === 1) consulta = abertas[0];
+  // Várias abertas: descobre pelo contexto — a mensagem que ele respondeu (inclusive as da equipe,
+  // como "Serviço agendado: nome, endereço…"), o nome do cliente, o bairro, o endereço e o serviço.
+  if (!consulta && abertas.length > 1) consulta = await consultaPeloContexto(c, abertas, msgs, textoTodo, pessoa);
 
   for (const m of msgs) await registrarMensagem(c, { pessoaId: pessoa?.id, casoId: consulta?.caso_id, wamid: m.wamid, direcao: "ENTRADA", origem: "WHATSAPP", tipo: String(m.tipo || "text").toUpperCase(), conteudo: m.conteudo });
   if (apenasRegistrar || await estaPausado(c, tel)) return;
   if (!prest && !abertas.length) return;
 
   if (!consulta && abertas.length > 1) {
-    const casos = await Promise.all(abertas.slice(0, 5).map(x => carregarCasoPorId(c, x.caso_id)));
-    const lista = casos.filter(Boolean).map(k => `#${k.casoId} (${k.fatos.servico || k.fatos.problema || "-"}${k.fatos.bairro ? ", " + k.fatos.bairro : ""})`).join("; ");
-    await enviarAgoraAoPrestador(c, { consulta: { ...abertas[0], caso_id: null }, texto: `Obrigado! Temos mais de um atendimento com você: ${lista}. Pode me dizer o número do caso a que se refere?`, chave: "qual:" + chaveLote });
+    // Confirmação simples ("ok", "fechado", "obrigado") não precisa de pergunta: fica registrada para a equipe.
+    if (msgs.every(m => !m.mediaId && ehMensagemSocial(m.conteudo))) return;
+    const casos = (await Promise.all(abertas.slice(0, 4).map(x => carregarCasoPorId(c, x.caso_id)))).filter(Boolean);
+    const opcoes = [];
+    for (const k of casos) { const r = await refCaso(c, k.casoId); opcoes.push(`${r.nome ? `de ${r.nome}` : "do cliente"}${r.bairro ? ` em ${r.bairro}` : ""}${k.fatos.problema || k.fatos.servico ? ` (${txt(k.fatos.problema || k.fatos.servico, 50)})` : ""}`); }
+    const lista = opcoes.length > 1 ? opcoes.slice(0, -1).join(", ") + " ou " + opcoes.at(-1) : opcoes[0] || "";
+    await enviarAgoraAoPrestador(c, { consulta: { ...abertas[0], caso_id: null }, texto: `${primeiroNome(prest?.nome || pessoa?.nome) || "Oi"}, só pra eu não confundir: você está falando do atendimento ${lista}?`, chave: "qual:" + chaveLote });
     return;
   }
   if (!consulta) return; // mensagem solta de prestador: só registra (a equipe vê no app)
@@ -2459,6 +2608,7 @@ async function cron(c) {
   if (sobram(c) > 25) await relatorioDiario(c).catch(e => console.error("relatório", e));
   if (sobram(c) > 25) await revisarCasosParados(c).catch(e => console.error("revisão de casos", e));
   if (sobram(c) > 10) await vigiarEntregas(c).catch(e => console.error("entregas", e));
+  if (sobram(c) > 30) await prepararMemorias(c, 1).catch(e => console.error("memórias", e));
   const dia = dataSP(agora);
   if (await reservarChave(c, "limpeza:" + dia)) {
     await c.db.prepare("DELETE FROM d30_fila WHERE recebido_ms < ?").bind(agora - 7 * 86400000).run();
@@ -2629,7 +2779,8 @@ async function platformApi(request, env, caminho, metodo) {
     const enviadas = await enviarFila(c, 10).catch(() => 0);
     const tels = (await c.db.prepare("SELECT DISTINCT telefone FROM d30_fila WHERE status='PENDENTE' AND recebido_ms BETWEEN ? AND ? LIMIT 3").bind(c.agora() - atrasoMaximo(env), c.agora() - 40000).all().catch(() => null))?.results || [];
     for (const t of tels) { if (sobram(c) < 25) break; await processarPendentes(c, t.telefone); }
-    return json({ sucesso: true, enviadas, conversas: tels.length });
+    const memorias = sobram(c) > 30 ? await prepararMemorias(c, 1).catch(() => 0) : 0;
+    return json({ sucesso: true, enviadas, conversas: tels.length, memorias });
   }
   if (caminho === "/platform/usage" && metodo === "GET") { const q = new URL(request.url).searchParams; return json({ sucesso: true, versao: VERSAO, ...(await consumoDoPeriodo(c, q.get("de"), q.get("ate"))) }); }
   if (caminho === "/platform/status") return json({ sucesso: true, versao: VERSAO, ...(await saude(c, { completo: new URL(request.url).searchParams.get("completo") === "1" })) });
