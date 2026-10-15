@@ -652,6 +652,37 @@ async function cuidarDasAvaliacoes(env, k) {
   }
 }
 
+// Cron: o WhatsApp de cada empresa está ENTREGANDO? (motor 31.2+). Se a Meta parou de entregar
+// (pagamento, token, número bloqueado) ou muitas mensagens falharam, avisa os responsáveis por
+// e-mail — no máximo uma vez a cada 6 horas para o mesmo problema.
+async function vigiarWhatsapp(env) {
+  const orgs = new Set(((await env.DB.prepare("SELECT org_id FROM plt_integracoes LIMIT 50").all().catch(() => null))?.results || []).map(x => x.org_id));
+  const central = await primeiraEmpresa(env).catch(() => null);
+  if (central) orgs.add(central);
+  const base = String((await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave='base_url'").first().catch(() => null))?.valor || "").replace(/\/+$/, "");
+  for (const org of orgs) {
+    try {
+      const con = await conexaoDa(env, org);
+      if (!con?.token) continue;
+      const st = (await chamarEngine(con, "GET", "status")).dados || {};
+      const en = st.entregas_24h;
+      const muitas = en && en.falhas >= Math.max(3, (en.total || 0) * 0.2);
+      if (!st.entrega_bloqueada && !muitas) continue;
+      const motivo = st.entrega_bloqueada ? `${st.entrega_bloqueada.erro} (código ${st.entrega_bloqueada.codigo})` : (en.motivos || []).map(m => `${m.motivo} (${m.n}×)`).join(" · ");
+      const chave = "alerta_entrega_" + org;
+      const ultimo = await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave=?").bind(chave).first().catch(() => null);
+      let antes = {};
+      try { antes = JSON.parse(ultimo?.valor || "{}"); } catch { antes = {}; }
+      const assinatura = st.entrega_bloqueada ? "b" + st.entrega_bloqueada.codigo : "f" + ((en.motivos || [])[0]?.codigo || "");
+      if (antes.assinatura === assinatura && Date.now() - Number(antes.em || 0) < 6 * 3600000) continue;
+      await env.DB.prepare("INSERT OR REPLACE INTO plt_meta(chave,valor) VALUES(?,?)").bind(chave, JSON.stringify({ assinatura, em: Date.now() })).run();
+      if (!emailConfigurado(env)) continue;
+      const texto = `O WhatsApp da DENIA NÃO está entregando as mensagens aos clientes e profissionais.\n\nMotivo informado pela Meta: ${motivo}\n${en ? `Nas últimas 24 h: ${en.falhas} de ${en.total} mensagens não chegaram.\n` : ""}\nAté resolver, responda os clientes pelo celular. O diagnóstico completo e o passo a passo estão no painel${base ? ": " + base + "/app#/whatsapp" : " (WhatsApp → Verificar agora)"}.`;
+      for (const para of await responsaveisDa(env, org)) await enviarEmail(env, para, "URGENTE — o WhatsApp não está entregando as mensagens", texto);
+    } catch (e) { console.error("vigiar whatsapp", org, e?.message); }
+  }
+}
+
 // O que a DENIA sabe da empresa quando conversa com a equipe no painel.
 async function contextoAssistente(env, orgId) {
   const o = await env.DB.prepare("SELECT nome FROM plt_organizacoes WHERE id=?").bind(orgId).first();
@@ -1041,6 +1072,7 @@ export default {
       await publicarPendentes(env, k).catch(e => console.error("publicação agendada", e?.message));
       await sincronizarGooglePendentes(env, k).catch(e => console.error("google", e?.message));
       await cuidarDasAvaliacoes(env, k).catch(e => console.error("avaliações", e?.message));
+      await vigiarWhatsapp(env).catch(e => console.error("whatsapp", e?.message));
     })().catch(e => console.error("cron", e?.message)).finally(() => descarregarUso(env));
     if (ctx && ctx.waitUntil) ctx.waitUntil(tarefa); else await tarefa;
   }

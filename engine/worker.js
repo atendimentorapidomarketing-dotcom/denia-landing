@@ -35,7 +35,7 @@
 //       relatório diário. Nunca inicia conversa nova por conta própria.
 // ============================================================================
 
-const VERSAO = "31.1.0";
+const VERSAO = "31.2.0";
 const SCHEMA_VERSAO = "30.3.0-a";
 const EMPRESA_ID = 1;
 const PHONE_ID_PADRAO = "473474732510163";
@@ -325,6 +325,9 @@ const SQL_SCHEMA = [
   `CREATE INDEX IF NOT EXISTS d30_sugestoes_status ON d30_sugestoes(status, ocorrencias)`,
   `CREATE TABLE IF NOT EXISTS d30_ficha (id INTEGER PRIMARY KEY AUTOINCREMENT, telefone TEXT NOT NULL, dados_json TEXT NOT NULL, origem TEXT, importado_ms INTEGER NOT NULL)`,
   `CREATE INDEX IF NOT EXISTS d30_ficha_tel ON d30_ficha(telefone)`,
+  `CREATE TABLE IF NOT EXISTS d30_entregas (wamid TEXT PRIMARY KEY, telefone TEXT, status TEXT NOT NULL, codigo INTEGER, erro TEXT, detalhe TEXT, tentativas INTEGER NOT NULL DEFAULT 0, enviado_ms INTEGER, entregue_ms INTEGER, lido_ms INTEGER, falhou_ms INTEGER, atualizado_ms INTEGER NOT NULL)`,
+  `CREATE INDEX IF NOT EXISTS d30_entregas_status ON d30_entregas(status, atualizado_ms)`,
+  `CREATE INDEX IF NOT EXISTS d30_entregas_enviado ON d30_entregas(enviado_ms)`,
   `CREATE TABLE IF NOT EXISTS d30_uso (dia TEXT NOT NULL, operacao TEXT NOT NULL, modelo TEXT NOT NULL DEFAULT '', chamadas INTEGER NOT NULL DEFAULT 0, erros INTEGER NOT NULL DEFAULT 0, tokens_entrada INTEGER NOT NULL DEFAULT 0, tokens_saida INTEGER NOT NULL DEFAULT 0, tokens_cache INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (dia, operacao, modelo))`
 ];
 const SQL_INDICES_LEGADO = [
@@ -868,6 +871,125 @@ async function telegramEnviar(env, texto) {
   } catch (e) { return { ok: false, erro: String(e?.message || e) }; }
 }
 
+// ============================================================================
+// CONFIRMAÇÃO DE ENTREGA (statuses do webhook)
+// A Meta aceitar a mensagem (devolver o id) NÃO quer dizer que ela chegou. A entrega de verdade
+// chega depois pelo webhook: sent → delivered → read, ou failed com o motivo. Tudo é guardado aqui,
+// a equipe é avisada quando falha e o painel mostra ✓, ✓✓, lida ou ⚠ em cada mensagem.
+// ============================================================================
+
+const ERROS_ENTREGA = {
+  131026: "O número não pode receber: não tem WhatsApp, usa uma versão antiga ou ainda não aceitou os novos Termos do WhatsApp.",
+  131047: "Passaram mais de 24 horas desde a última mensagem da pessoa: só dá para mandar um modelo (template) aprovado.",
+  131049: "A Meta segurou a mensagem para não cansar a pessoa (limite de mensagens de marketing).",
+  131050: "A pessoa pediu para não receber mensagens de marketing desta empresa.",
+  131042: "Problema de pagamento na conta do WhatsApp Business: cadastre ou regularize o cartão em business.facebook.com → Configurações → Pagamentos do WhatsApp.",
+  131031: "A conta do WhatsApp Business foi bloqueada ou restringida pela Meta. Veja o aviso em business.facebook.com → Gerenciador do WhatsApp.",
+  131045: "O número de envio não está registrado corretamente na API do WhatsApp (certificado). Registre o número de novo no Gerenciador do WhatsApp.",
+  133010: "O número de envio não está registrado na API do WhatsApp. No Gerenciador do WhatsApp, conclua o registro do número.",
+  131048: "A Meta limitou os envios por denúncias ou bloqueios de spam. Reduza mensagens não pedidas e aguarde.",
+  131056: "Muitas mensagens para o mesmo número em pouco tempo. Aguarde alguns minutos.",
+  130429: "Limite de velocidade de envio da Meta atingido. A DENIA tenta de novo.",
+  131000: "Erro interno da Meta. A DENIA tenta de novo.",
+  131016: "O serviço do WhatsApp está instável agora. A DENIA tenta de novo.",
+  131053: "A Meta não conseguiu enviar a mídia (formato ou tamanho).",
+  131051: "Tipo de mensagem não suportado.",
+  131052: "A Meta não conseguiu baixar a mídia enviada pela pessoa.",
+  130472: "O número da pessoa faz parte de um teste da Meta e não recebe esta mensagem agora.",
+  131021: "A mensagem foi enviada para o próprio número da empresa.",
+  368: "O número da empresa foi bloqueado temporariamente por violar as políticas do WhatsApp.",
+  190: "O token do WhatsApp (WHATSAPP_TOKEN) expirou ou foi removido. Gere um token permanente (usuário do sistema) e cole no Worker do motor.",
+  10: "O token do WhatsApp não tem permissão para enviar por este número (whatsapp_business_messaging).",
+  100: "Pedido recusado pela Meta (parâmetro inválido).",
+  132000: "O modelo (template) foi enviado com parâmetros faltando.",
+  132001: "O modelo (template) não existe ou não está aprovado neste idioma.",
+  132015: "O modelo (template) foi pausado pela Meta por baixa qualidade."
+};
+// Erros que valem para a conta inteira (ninguém recebe): disparam o alerta crítico.
+const ERROS_DA_CONTA = new Set([131042, 131031, 131045, 133010, 131048, 368, 190, 10]);
+const ERROS_PASSAGEIROS = new Set([131000, 131016, 130429, 131056]);
+const ORDEM_ENTREGA = { ACEITA: 1, SENT: 2, DELIVERED: 3, READ: 4 };
+function explicarEntrega(codigo, padrao) { return ERROS_ENTREGA[Number(codigo)] || txt(padrao || "A Meta não entregou a mensagem.", 300); }
+
+async function registrarEnvio(c, wamid, to) {
+  if (!wamid || c.sim) return;
+  try { await c.db.prepare("INSERT OR IGNORE INTO d30_entregas(wamid,telefone,status,enviado_ms,atualizado_ms) VALUES(?,?,'ACEITA',?,?)").bind(String(wamid), digitos(to), c.agora(), c.agora()).run(); }
+  catch (e) { console.warn("entrega", e?.message); }
+}
+// Bloqueio da conta (pagamento, token, número): fica guardado para o painel mostrar em vermelho.
+async function anotarBloqueio(c, codigo, erro) {
+  if (!ERROS_DA_CONTA.has(codigo)) return;
+  try {
+    await c.db.prepare("INSERT OR REPLACE INTO d30_meta(chave,valor) VALUES('entrega_bloqueada',?)").bind(JSON.stringify({ codigo, erro: explicarEntrega(codigo, erro), original: txt(erro, 300), em: c.agora() })).run();
+    await alertarEquipe(c, `🚨 WhatsApp NÃO está entregando mensagens: ${explicarEntrega(codigo, erro)} (código ${codigo}). Até resolver, clientes e profissionais não recebem nada — a equipe precisa responder pelo celular.`, "bloqueio:" + codigo + ":" + Math.floor(c.agora() / 3600000));
+  } catch (e) { console.warn("bloqueio", e?.message); }
+}
+
+function extrairStatuses(payload, env) {
+  const lista = [];
+  for (const entry of payload?.entry || []) for (const ch of entry?.changes || []) {
+    const v = ch?.value || {};
+    const pid = v?.metadata?.phone_number_id;
+    if (pid && String(pid) !== phoneId(env)) continue;
+    for (const st of v.statuses || []) {
+      const erro = (st.errors || [])[0] || null;
+      lista.push({ wamid: String(st.id || ""), status: String(st.status || "").toUpperCase(), para: digitos(st.recipient_id || ""), ts: Number(st.timestamp || 0) * 1000 || null,
+        codigo: erro ? Number(erro.code) || null : null, erro: erro ? txt(erro.title || erro.message, 300) : null, detalhe: erro ? txt(erro.error_data?.details || erro.message, 500) : null });
+    }
+  }
+  return lista.filter(x => x.wamid && x.status);
+}
+
+async function processarStatus(c, st) {
+  const atual = await c.db.prepare("SELECT * FROM d30_entregas WHERE wamid=?").bind(st.wamid).first().catch(() => null);
+  const agora = c.agora();
+  if (st.status === "FAILED") {
+    if (atual && ["DELIVERED", "READ"].includes(atual.status)) return; // chegou atrasado: vale a entrega
+    await c.db.prepare(`INSERT INTO d30_entregas(wamid,telefone,status,codigo,erro,detalhe,falhou_ms,atualizado_ms) VALUES(?,?,'FAILED',?,?,?,?,?)
+      ON CONFLICT(wamid) DO UPDATE SET status='FAILED', codigo=excluded.codigo, erro=excluded.erro, detalhe=excluded.detalhe, falhou_ms=excluded.falhou_ms, atualizado_ms=excluded.atualizado_ms`)
+      .bind(st.wamid, st.para, st.codigo, st.erro, st.detalhe, agora, agora).run();
+    const msg = await c.db.prepare("SELECT m.id, m.caso_id, m.conteudo, m.tipo_conteudo, m.origem, p.nome, p.tipo FROM mensagens m LEFT JOIN pessoas p ON p.id=m.pessoa_id WHERE m.whatsapp_message_id=? LIMIT 1").bind(st.wamid).first().catch(() => null);
+    const motivo = explicarEntrega(st.codigo, st.detalhe || st.erro);
+    await evento(c, msg?.caso_id, "FALHA_ENTREGA", motivo, { wamid: st.wamid, para: st.para, codigo: st.codigo, erro: st.erro, detalhe: st.detalhe });
+    // Falha passageira: tenta de novo uma vez com o mesmo texto.
+    if (ERROS_PASSAGEIROS.has(Number(st.codigo)) && msg && String(msg.tipo_conteudo || "TEXTO").toUpperCase() === "TEXTO" && msg.conteudo && Number(atual?.tentativas || 0) < 1) {
+      await c.db.prepare("UPDATE d30_entregas SET tentativas=tentativas+1 WHERE wamid=?").bind(st.wamid).run();
+      const r = await c.saida.texto(st.para, msg.conteudo);
+      if (r.ok) { await c.db.prepare("UPDATE mensagens SET whatsapp_message_id=? WHERE id=?").bind(r.id, msg.id).run(); await c.db.prepare("UPDATE d30_entregas SET status='REENVIADA' WHERE wamid=?").bind(st.wamid).run(); await evento(c, msg.caso_id, "REENVIO_ENTREGA", "Reenviada depois de falha passageira da Meta.", { antes: st.wamid, depois: r.id }); return; }
+    }
+    if (ERROS_DA_CONTA.has(Number(st.codigo))) await anotarBloqueio(c, Number(st.codigo), st.detalhe || st.erro);
+    else await alertarEquipe(c, `⚠️ Mensagem NÃO entregue para ${msg?.nome || st.para} (${String(msg?.tipo || "contato").toLowerCase()}): ${motivo}${msg?.caso_id ? ` — caso #${msg.caso_id}` : ""}. Texto: "${txt(msg?.conteudo, 200)}"`, "falha:" + st.wamid, msg?.caso_id);
+    return;
+  }
+  if (!ORDEM_ENTREGA[st.status]) return;
+  if (atual && atual.status !== "FAILED" && (ORDEM_ENTREGA[atual.status] || 0) >= ORDEM_ENTREGA[st.status]) return;
+  const campo = st.status === "DELIVERED" ? "entregue_ms" : st.status === "READ" ? "lido_ms" : null;
+  await c.db.prepare(`INSERT INTO d30_entregas(wamid,telefone,status,${campo ? campo + "," : ""}atualizado_ms) VALUES(?,?,?,${campo ? "?," : ""}?)
+    ON CONFLICT(wamid) DO UPDATE SET status=excluded.status, ${campo ? `${campo}=COALESCE(${campo}, excluded.${campo}),` : ""} codigo=NULL, erro=NULL, atualizado_ms=excluded.atualizado_ms`)
+    .bind(st.wamid, st.para, st.status, ...(campo ? [st.ts || agora] : []), agora).run();
+  // Uma entrega confirmada prova que a conta voltou a funcionar.
+  if (st.status === "DELIVERED" || st.status === "READ") await c.db.prepare("DELETE FROM d30_meta WHERE chave='entrega_bloqueada'").run().catch(() => {});
+}
+
+// Cron: mensagens aceitas há mais de 20 min sem nenhuma confirmação da Meta.
+async function vigiarEntregas(c) {
+  const agora = c.agora();
+  const presas = Number((await c.db.prepare("SELECT COUNT(*) n FROM d30_entregas WHERE status='ACEITA' AND enviado_ms BETWEEN ? AND ?").bind(agora - 6 * 3600000, agora - 20 * 60000).first().catch(() => null))?.n || 0);
+  const confirmadas = Number((await c.db.prepare("SELECT COUNT(*) n FROM d30_entregas WHERE status IN ('SENT','DELIVERED','READ','FAILED') AND atualizado_ms > ?").bind(agora - 6 * 3600000).first().catch(() => null))?.n || 0);
+  if (presas >= 5 && confirmadas === 0) await alertarEquipe(c, `⚠️ ${presas} mensagens foram aceitas pela Meta nas últimas horas, mas nenhuma confirmação de entrega chegou. Confira no app da Meta → WhatsApp → Configuração → Webhooks se o campo "messages" está assinado, e o diagnóstico no painel.`, "sem-confirmacao:" + Math.floor(agora / (6 * 3600000)));
+  await c.db.prepare("DELETE FROM d30_entregas WHERE atualizado_ms < ?").bind(agora - 60 * 86400000).run().catch(() => {});
+}
+async function resumoEntregas(c, desdeMs) {
+  const linhas = (await c.db.prepare("SELECT status, COUNT(*) n FROM d30_entregas WHERE COALESCE(enviado_ms, atualizado_ms) > ? GROUP BY status").bind(desdeMs).all().catch(() => null))?.results || [];
+  const r = { aceitas: 0, enviadas: 0, entregues: 0, lidas: 0, falhas: 0, reenviadas: 0 };
+  for (const l of linhas) { const k = { ACEITA: "aceitas", SENT: "enviadas", DELIVERED: "entregues", READ: "lidas", FAILED: "falhas", REENVIADA: "reenviadas" }[l.status]; if (k) r[k] += Number(l.n || 0); }
+  r.total = r.aceitas + r.enviadas + r.entregues + r.lidas + r.falhas;
+  r.taxa_entrega = r.total ? Math.round(((r.entregues + r.lidas) / r.total) * 1000) / 10 : null;
+  r.motivos = ((await c.db.prepare("SELECT codigo, MAX(erro) erro, MAX(detalhe) detalhe, COUNT(*) n, MAX(falhou_ms) em FROM d30_entregas WHERE status='FAILED' AND falhou_ms > ? GROUP BY codigo ORDER BY n DESC LIMIT 5").bind(desdeMs).all().catch(() => null))?.results || [])
+    .map(x => ({ codigo: x.codigo, n: x.n, em: x.em, motivo: explicarEntrega(x.codigo, x.detalhe || x.erro), original: txt(x.detalhe || x.erro, 200) }));
+  return r;
+}
+
 // Toda saída passa por aqui. No painel de teste (simulação) nada sai de verdade.
 function criarSaida(c) {
   const env = c.env;
@@ -876,7 +998,8 @@ function criarSaida(c) {
     const bloqueio = await verificarLimites(c, to);
     if (bloqueio) { console.warn("Envio bloqueado:", bloqueio); return { ok: false, bloqueado: true, erro: bloqueio }; }
     const r = await envio();
-    if (r.ok) await registrarSaidaTaxa(c, to);
+    if (r.ok) { await registrarSaidaTaxa(c, to); await registrarEnvio(c, r.id, to); }
+    else if (r.codigo) await anotarBloqueio(c, Number(r.codigo), r.erro);
     return r;
   };
   return {
@@ -1016,7 +1139,8 @@ async function consumoDoPeriodo(c, de, ate) {
   const ia = (await c.db.prepare("SELECT dia,operacao,modelo,chamadas,erros,tokens_entrada,tokens_saida,tokens_cache FROM d30_uso WHERE dia BETWEEN ? AND ? ORDER BY dia").bind(de, ate).all().catch(() => null))?.results || [];
   const recebidas = (await c.db.prepare("SELECT strftime('%Y-%m-%d', recebido_ms/1000, 'unixepoch') dia, COUNT(*) n FROM d30_fila WHERE recebido_ms >= ? AND recebido_ms < ? GROUP BY dia").bind(ini, fim).all().catch(() => null))?.results || [];
   const enviadas = (await c.db.prepare("SELECT strftime('%Y-%m-%d', criado_ms/1000, 'unixepoch') dia, COUNT(*) n FROM d30_saidas WHERE criado_ms >= ? AND criado_ms < ? GROUP BY dia").bind(ini, fim).all().catch(() => null))?.results || [];
-  const r = { de, ate, ia, mensagens: { recebidas, enviadas }, meta: null };
+  const entregas = (await c.db.prepare("SELECT strftime('%Y-%m-%d', COALESCE(enviado_ms, atualizado_ms)/1000, 'unixepoch') dia, status, COUNT(*) n FROM d30_entregas WHERE COALESCE(enviado_ms, atualizado_ms) >= ? AND COALESCE(enviado_ms, atualizado_ms) < ? GROUP BY dia, status").bind(ini, fim).all().catch(() => null))?.results || [];
+  const r = { de, ate, ia, mensagens: { recebidas, enviadas, entregas }, entregas: await resumoEntregas(c, ini), meta: null };
   const waba = String(c.env.WHATSAPP_WABA_ID || "").trim();
   if (!waba) r.meta = { configurado: false, ajuda: "Para ver o custo cobrado pela Meta, crie no Worker do motor a variável WHATSAPP_WABA_ID com o ID da conta do WhatsApp Business (Gerenciador do WhatsApp → Configurações da conta)." };
   else if (c.env.WHATSAPP_TOKEN) {
@@ -2040,7 +2164,8 @@ async function webhookPost(request, env, ctx) {
   try { payload = JSON.parse(new TextDecoder().decode(bytes)); } catch { return new Response("EVENT_RECEIVED", { status: 200 }); }
   const c = criarContexto(env);
   const { mensagens, ecos } = extrairEventos(payload, env);
-  if (!mensagens.length && !ecos.length) return new Response("EVENT_RECEIVED", { status: 200 });
+  const statuses = extrairStatuses(payload, env);
+  if (!mensagens.length && !ecos.length && !statuses.length) return new Response("EVENT_RECEIVED", { status: 200 });
   try { await garantirSchema(c); }
   catch (e) {
     console.error("D1 indisponível:", e?.message);
@@ -2048,6 +2173,7 @@ async function webhookPost(request, env, ctx) {
     for (const e2 of ecos) ctx.waitUntil(pausaKV(env, e2.para));
     return new Response("EVENT_RECEIVED", { status: 200 });
   }
+  for (const st of statuses) ctx.waitUntil(processarStatus(c, st).catch(x => console.error("status", x)));
   for (const eco of ecos) {
     try { await pausar(c, eco.para, PAUSA_HUMANA_MS, "HUMANO"); } catch { await pausaKV(env, eco.para); }
     ctx.waitUntil(processarEco(c, eco).catch(x => console.error("eco", x)));
@@ -2162,6 +2288,7 @@ async function cron(c) {
   await processarAprendizado(c).catch(e => console.error("aprendizado", e));
   await relatorioDiario(c).catch(e => console.error("relatório", e));
   await revisarCasosParados(c).catch(e => console.error("revisão de casos", e));
+  await vigiarEntregas(c).catch(e => console.error("entregas", e));
   const dia = dataSP(agora);
   if (await reservarChave(c, "limpeza:" + dia)) {
     await c.db.prepare("DELETE FROM d30_fila WHERE recebido_ms < ?").bind(agora - 7 * 86400000).run();
@@ -2340,7 +2467,16 @@ async function platformApi(request, env, caminho, metodo) {
     const casos = await carregarCasos(c, p);
     await carregarTelsExtras(c);
     const daLista = prestadorPorTelefone(p.telefone);
-    return json({ sucesso: true, pessoa: { ...p, profissional: daLista ? daLista.nome : null, oficial: Boolean(daLista && !TELS_EXTRAS.mapa.has(digitos(p.telefone))) }, ia_pausada: await estaPausado(c, p.telefone), caso_ativo: casos.ativo, casos_recentes: casos.recentes, mensagens: await historico(c, p.id, 500) });
+    const msgs = await historico(c, p.id, 500);
+    // Situação de entrega de cada mensagem enviada (✓ aceita, ✓✓ entregue, lida, ⚠ falhou e o motivo).
+    const ids = msgs.filter(x => x.whatsapp_message_id && String(x.direcao).toUpperCase() === "SAIDA").map(x => x.whatsapp_message_id);
+    const entregas = new Map();
+    for (let i = 0; i < ids.length; i += 90) {
+      const parte = ids.slice(i, i + 90);
+      for (const e of (await c.db.prepare(`SELECT wamid,status,codigo,erro,detalhe FROM d30_entregas WHERE wamid IN (${parte.map(() => "?").join(",")})`).bind(...parte).all().catch(() => null))?.results || []) entregas.set(e.wamid, e);
+    }
+    const mensagens = msgs.map(x => { const e = entregas.get(x.whatsapp_message_id); return e ? { ...x, entrega: e.status, entrega_erro: e.status === "FAILED" ? explicarEntrega(e.codigo, e.detalhe || e.erro) : null } : x; });
+    return json({ sucesso: true, pessoa: { ...p, profissional: daLista ? daLista.nome : null, oficial: Boolean(daLista && !TELS_EXTRAS.mapa.has(digitos(p.telefone))) }, ia_pausada: await estaPausado(c, p.telefone), caso_ativo: casos.ativo, casos_recentes: casos.recentes, mensagens });
   }
   // A equipe diz quem é a pessoa: profissional (opcionalmente ligado a um profissional da lista) ou cliente.
   if ((m = caminho.match(/^\/platform\/conversations\/(\d+)\/type$/)) && metodo === "POST") {
@@ -2516,13 +2652,32 @@ async function saude(c, { completo = false } = {}) {
     r.falhas_envio_24h = { n: falhas.length, ultima: falhas[0] ? txt(falhas[0].descricao, 300) : null, em: falhas[0]?.criado_ms || null };
     r.enviadas_24h = Number((await q("SELECT COUNT(*) n FROM mensagens WHERE direcao='SAIDA' AND origem='IA' AND criado_em > datetime('now','-1 day')"))?.n || 0);
     r.assinatura_invalida_ms = Number((await q("SELECT valor FROM d30_meta WHERE chave='assinatura_invalida'"))?.valor || 0) || null;
+    r.entregas_24h = await resumoEntregas(c, dia);
+    try { r.entrega_bloqueada = JSON.parse((await q("SELECT valor FROM d30_meta WHERE chave='entrega_bloqueada'"))?.valor || "null"); } catch { r.entrega_bloqueada = null; }
+    r.ultima_confirmacao_ms = Number((await q("SELECT MAX(atualizado_ms) m FROM d30_entregas WHERE status<>'ACEITA'"))?.m || 0) || null;
   }
   // Teste real das chaves (só quando pedido): o token do WhatsApp e a chave da OpenAI ainda valem?
   if (completo) {
     try {
-      const w = await fetch(`https://graph.facebook.com/${GRAPH}/${phoneId(env)}?fields=display_phone_number,quality_rating`, { headers: { authorization: `Bearer ${String(env.WHATSAPP_TOKEN || "").trim()}` }, signal: AbortSignal.timeout(15000) });
+      const w = await fetch(`https://graph.facebook.com/${GRAPH}/${phoneId(env)}?fields=display_phone_number,verified_name,quality_rating,status,name_status,code_verification_status,platform_type,account_mode,messaging_limit_tier,throughput`, { headers: { authorization: `Bearer ${String(env.WHATSAPP_TOKEN || "").trim()}` }, signal: AbortSignal.timeout(15000) });
       const d = await w.json().catch(() => ({}));
-      r.teste_whatsapp = w.ok ? { ok: true, numero: d.display_phone_number || null, qualidade: d.quality_rating || null } : { ok: false, codigo: d?.error?.code || w.status, erro: txt(d?.error?.message || `HTTP ${w.status}`, 300) };
+      r.teste_whatsapp = w.ok ? { ok: true, numero: d.display_phone_number || null, nome: d.verified_name || null, qualidade: d.quality_rating || null, status: d.status || null, nome_status: d.name_status || null, plataforma: d.platform_type || null, modo: d.account_mode || null, limite: d.messaging_limit_tier || null, verificacao: d.code_verification_status || null } : { ok: false, codigo: d?.error?.code || w.status, erro: txt(d?.error?.message || `HTTP ${w.status}`, 300) };
+      // Problemas no número que fazem a Meta aceitar e não entregar.
+      const alertas = [];
+      if (w.ok) {
+        if (d.status && !["CONNECTED"].includes(String(d.status).toUpperCase())) alertas.push(`O número está com status ${d.status} na Meta (o normal é CONNECTED). Veja o Gerenciador do WhatsApp.`);
+        if (d.platform_type && String(d.platform_type).toUpperCase() !== "CLOUD_API") alertas.push(`O número não está na API de nuvem (plataforma: ${d.platform_type}). Ele precisa estar registrado na Cloud API.`);
+        if (d.account_mode && String(d.account_mode).toUpperCase() === "SANDBOX") alertas.push("A conta está em modo de teste (SANDBOX): só números cadastrados como teste recebem.");
+        if (d.quality_rating && String(d.quality_rating).toUpperCase() === "RED") alertas.push("A qualidade do número está VERMELHA: a Meta pode limitar ou bloquear os envios.");
+        if (d.name_status && !["APPROVED", "AVAILABLE_WITHOUT_REVIEW"].includes(String(d.name_status).toUpperCase())) alertas.push(`O nome de exibição está ${d.name_status}: enquanto não for aprovado, a Meta pode não entregar.`);
+      }
+      r.teste_whatsapp.alertas = alertas;
+      const waba = String(env.WHATSAPP_WABA_ID || "").trim();
+      if (waba) {
+        const a = await fetch(`https://graph.facebook.com/${GRAPH}/${encodeURIComponent(waba)}?fields=name,account_review_status,business_verification_status,primary_funding_id,health_status`, { headers: { authorization: `Bearer ${String(env.WHATSAPP_TOKEN || "").trim()}` }, signal: AbortSignal.timeout(15000) });
+        const da = await a.json().catch(() => ({}));
+        r.teste_conta = a.ok ? { ok: true, nome: da.name || null, revisao: da.account_review_status || null, verificacao: da.business_verification_status || null, pagamento: Boolean(da.primary_funding_id), saude: da.health_status?.can_send_message || null, problemas: (da.health_status?.entities || []).flatMap(x => (x.errors || []).map(e => txt(`${x.entity_type}: ${e.error_description || e.possible_solution || e.error_code}`, 300))) } : { ok: false, erro: txt(da?.error?.message || `HTTP ${a.status}`, 300) };
+      }
     } catch (e) { r.teste_whatsapp = { ok: false, erro: txt(e?.message, 200) }; }
     try {
       const o = await fetch("https://api.openai.com/v1/models", { headers: { authorization: `Bearer ${String(env.OPENAI_API_KEY || "").trim()}` }, signal: AbortSignal.timeout(15000) });

@@ -331,10 +331,27 @@
       g.classList.toggle("oculto", !algum);
     });
     if (ehRevisor()) $("status-engine").replaceChildren(h("span", { class: "ponto" }), "Revisor de aprendizados");
-    else if (!estado.eu.usuario.trocar_senha) { atualizarStatus(); atualizarAprovacoes(); }
+    else if (!estado.eu.usuario.trocar_senha) {
+      atualizarStatus(); atualizarAprovacoes();
+      // Confere de novo a cada 3 minutos (entregas do WhatsApp, aprovações e alertas).
+      clearInterval(estado.relogioStatus);
+      estado.relogioStatus = setInterval(() => { if (document.visibilityState === "visible" && estado.org && estado.org.conectada) { cacheEng.delete(`/api/orgs/${estado.org.id}/engine/status`); atualizarStatus(); } }, 180000);
+    }
     else $("status-engine").replaceChildren(h("span", { class: "ponto" }), "Primeiro acesso");
   }
 
+  // Faixa vermelha no topo de todas as páginas quando o WhatsApp não está entregando (motor 31.2+).
+  function faixaEntrega(s) {
+    const f = $("faixa-global");
+    if (!f) return;
+    const en = s && s.entregas_24h;
+    const muitas = en && en.falhas >= Math.max(3, (en.total || 0) * 0.2);
+    if (!s || (!s.entrega_bloqueada && !muitas)) { f.classList.add("oculto"); f.replaceChildren(); return; }
+    const motivo = s.entrega_bloqueada ? s.entrega_bloqueada.erro : ((en.motivos || [])[0] || {}).motivo || "a Meta não confirmou a entrega.";
+    f.replaceChildren(h("strong", { text: "⚠ O WhatsApp não está entregando as mensagens." }), h("span", { text: `${motivo}${en ? ` (${numero(en.falhas)} de ${numero(en.total)} nas últimas 24 h)` : ""}. Até resolver, responda pelo celular.` }),
+      h("a", { class: "btn btn-secundario btn-pequeno", href: "#/whatsapp" }, "Ver diagnóstico"));
+    f.classList.remove("oculto");
+  }
   async function atualizarStatus() {
     const chip = $("status-engine");
     const marcar = (texto, tipo) => { chip.className = "selo" + (tipo ? " selo-" + tipo : ""); chip.replaceChildren(h("span", { class: "ponto" }), texto); };
@@ -348,7 +365,9 @@
       const s = await eng("status");
       if (!estado.org || estado.org.id !== alvo) return;
       estado.status = s;
-      if (s.pausa_geral) marcar("IA pausada", "alerta");
+      faixaEntrega(s);
+      if (s.entrega_bloqueada) marcar("WhatsApp sem entregar", "erro");
+      else if (s.pausa_geral) marcar("IA pausada", "alerta");
       else if (s.ok) marcar("IA ativa", "ok");
       else marcar("IA com alertas", "erro");
       const l = await eng("learning").catch(() => null);
@@ -540,7 +559,13 @@
     const msgs = h("div", { class: "mensagens", "aria-live": "polite" }, (d.mensagens || []).map(m => {
       const saida = String(m.direcao).toUpperCase() === "SAIDA", humano = String(m.origem).toUpperCase() === "HUMANO";
       if (String(m.origem).toUpperCase() === "LIGACAO") return h("div", { class: "msg msg-ligacao" }, "📞 " + (m.conteudo || ""), h("small", { text: "Resumo de ligação · " + quando(m.criado_em) }));
-      return h("div", { class: "msg " + (saida ? "msg-saida" + (humano ? " msg-humano" : "") : "msg-entrada") }, m.conteudo || "[sem texto]", h("small", { text: (saida ? (humano ? "Equipe · " : "DENIA · ") : "") + quando(m.criado_em) }));
+      // Entrega confirmada pela Meta (motor 31.2+): ✓ aceita, ✓✓ entregue, ✓✓ azul lida, ⚠ não chegou.
+      const ENTREGA = { ACEITA: ["✓", "Aceita pela Meta, ainda sem confirmação de entrega"], SENT: ["✓", "Enviada"], DELIVERED: ["✓✓", "Entregue"], READ: ["✓✓", "Lida"], REENVIADA: ["↻", "Reenviada depois de uma falha da Meta"] };
+      const falhou = saida && m.entrega === "FAILED";
+      const tique = saida && m.entrega && ENTREGA[m.entrega] ? h("span", { class: "tique" + (m.entrega === "READ" ? " tique-lida" : ""), title: ENTREGA[m.entrega][1], "aria-label": ENTREGA[m.entrega][1], text: " " + ENTREGA[m.entrega][0] }) : null;
+      return h("div", { class: "msg " + (saida ? "msg-saida" + (humano ? " msg-humano" : "") + (falhou ? " msg-falhou" : "") : "msg-entrada") }, m.conteudo || "[sem texto]",
+        falhou ? h("span", { class: "msg-falha", text: "⚠ NÃO CHEGOU: " + (m.entrega_erro || "a Meta não entregou esta mensagem.") }) : null,
+        h("small", {}, (saida ? (humano ? "Equipe · " : "DENIA · ") : "") + quando(m.criado_em), tique));
     }));
     if (!(d.mensagens || []).length) msgs.appendChild(vazio("Sem mensagens", ""));
     const caso = d.caso_ativo;
@@ -1219,6 +1244,20 @@
     if ((fila.PENDENTE || 0) + (fila.PROCESSANDO || 0) > 5) itens.push(["alerta", `${numero((fila.PENDENTE || 0) + (fila.PROCESSANDO || 0))} mensagem(ns) estão na fila esperando a IA. Se esse número só cresce, a IA travou: confira a chave da OpenAI e o token do WhatsApp.`]);
     (st.erros_24h || []).slice(0, 2).forEach(x => itens.push(["alerta", `Erro ao processar mensagens (${quando(x.em)}): ${x.erro}`]));
     if (st.falhas_envio_24h && st.falhas_envio_24h.n) itens.push(["alerta", `${st.falhas_envio_24h.n} resposta(s) não foram entregues nas últimas 24 h. Último motivo: ${st.falhas_envio_24h.ultima || "—"}`]);
+    // Confirmação de entrega (motor 31.2+): a Meta aceitar não quer dizer que chegou.
+    if (st.entrega_bloqueada) itens.push(["erro", `O WHATSAPP NÃO ESTÁ ENTREGANDO as mensagens (desde ${quando(st.entrega_bloqueada.em)}): ${st.entrega_bloqueada.erro} (código ${st.entrega_bloqueada.codigo}). Clientes e profissionais não recebem nada até resolver.`]);
+    const en = st.entregas_24h;
+    if (en && en.total) {
+      if (en.falhas) itens.push([en.falhas >= Math.max(3, en.total * 0.2) ? "erro" : "alerta", `${numero(en.falhas)} de ${numero(en.total)} mensagem(ns) NÃO chegaram nas últimas 24 h.` + (en.motivos || []).map(m => ` ${m.motivo} (${numero(m.n)}×, código ${m.codigo || "?"})`).join("")]);
+      else itens.push(["ok", `Entregas confirmadas pela Meta nas últimas 24 h: ${numero(en.entregues + en.lidas)} de ${numero(en.total)} (${en.taxa_entrega != null ? String(en.taxa_entrega).replace(".", ",") + "%" : "—"}), ${numero(en.lidas)} lidas.`]);
+      if (en.aceitas >= 5 && !st.ultima_confirmacao_ms) itens.push(["alerta", `${numero(en.aceitas)} mensagem(ns) foram aceitas pela Meta, mas nenhuma confirmação de entrega chegou. No app da Meta → WhatsApp → Configuração → Webhooks, o campo "messages" precisa estar assinado.`]);
+    }
+    for (const a of (st.teste_whatsapp && st.teste_whatsapp.alertas) || []) itens.push(["erro", a]);
+    if (st.teste_conta && st.teste_conta.ok) {
+      if (!st.teste_conta.pagamento) itens.push(["alerta", "A conta do WhatsApp Business não tem forma de pagamento cadastrada. Mensagens de modelo (para profissionais e fora das 24 h) não são entregues sem ela: business.facebook.com → Configurações → Pagamentos do WhatsApp."]);
+      if (st.teste_conta.saude && String(st.teste_conta.saude).toUpperCase() !== "AVAILABLE") itens.push(["erro", `A Meta diz que a conta ${String(st.teste_conta.saude).toUpperCase() === "LIMITED" ? "está LIMITADA" : "NÃO PODE enviar mensagens"}: ${(st.teste_conta.problemas || []).join(" · ") || "veja o Gerenciador do WhatsApp."}`]);
+    }
+    if (st.versao && !st.entregas_24h && !/^3[2-9]\./.test(st.versao)) itens.push(["alerta", `O motor ${st.versao} não sabe se as mensagens CHEGARAM (só se a Meta aceitou). Cole o motor 31.2 no Worker denia: ele confere cada entrega, avisa a equipe e mostra ✓✓ ou ⚠ em cada mensagem.`]);
     if (st.versao && /^30\.[0-8]\./.test(st.versao)) itens.push(["info", `O motor está na versão ${st.versao}. Cole o motor mais novo no Worker denia para ter as correções e este diagnóstico completo.`]);
     if (!itens.some(i => i[0] === "erro")) itens.push(["ok", `Motor funcionando${st.enviadas_24h != null ? `: ${numero(st.enviadas_24h)} resposta(s) da IA nas últimas 24 h` : ""}${st.ultima_recebida_ms ? `, última mensagem recebida em ${quando(st.ultima_recebida_ms)}` : ""}.${st.teste_whatsapp && st.teste_whatsapp.ok ? ` Token do WhatsApp válido (${st.teste_whatsapp.numero || "número ok"}).` : ""}${st.teste_openai && st.teste_openai.ok ? " Chave da OpenAI válida." : ""}`]);
     return itens;

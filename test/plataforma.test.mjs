@@ -1244,3 +1244,24 @@ test("Instagram e Facebook por dentro — perfil, números, publicações, comen
   const uso = (await p.req("/api/orgs/1/mk/uso?dias=7", { quem: "admin" })).dados;
   assert.ok(uso.linhas.filter(l => l.servico === "meta").reduce((s, l) => s + l.chamadas, 0) >= 10);
 });
+
+test("WhatsApp sem entregar — o cron avisa os responsáveis por e-mail (uma vez a cada 6 h) e o status mostra o bloqueio", async () => {
+  const p = await criarPlataforma({ RESEND_API_KEY: "re_teste", EMAIL_REMETENTE: "DENIA <nao-responda@denia.test>" });
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  await p.req("/api/orgs/1/integracao", { metodo: "POST", quem: "admin", corpo: { engine_url: "https://engine.test/", token: TOKEN_ENGINE } });
+  const mod = await import(new URL("../src/worker.js?t=" + (++n), import.meta.url).href);
+  // Sem problema: nenhum e-mail.
+  await mod.default.scheduled({}, p.env, { waitUntil: (pr) => pr });
+  assert.equal(p.emails.filter(e => /não está entregando/.test(e.subject)).length, 0);
+  // A Meta avisou falha de pagamento: o motor marca o bloqueio.
+  await p.engine.env.DB.prepare("CREATE TABLE IF NOT EXISTS d30_meta (chave TEXT PRIMARY KEY, valor TEXT)").run();
+  await p.engine.env.DB.prepare("INSERT OR REPLACE INTO d30_meta(chave,valor) VALUES('entrega_bloqueada',?)").bind(JSON.stringify({ codigo: 131042, erro: "Problema de pagamento na conta do WhatsApp Business", em: Date.now() })).run();
+  const st = (await p.req("/api/orgs/1/engine/status", { quem: "admin" })).dados;
+  assert.equal(st.entrega_bloqueada.codigo, 131042);
+  await mod.default.scheduled({}, p.env, { waitUntil: (pr) => pr });
+  const avisos = p.emails.filter(e => /não está entregando/.test(e.subject));
+  assert.equal(avisos.length, 1);
+  assert.match(avisos[0].text, /pagamento/);
+  await mod.default.scheduled({}, p.env, { waitUntil: (pr) => pr });
+  assert.equal(p.emails.filter(e => /não está entregando/.test(e.subject)).length, 1, "não repete o mesmo aviso em menos de 6 h");
+});
