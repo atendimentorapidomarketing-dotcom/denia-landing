@@ -1262,17 +1262,66 @@ test("WhatsApp sem entregar — o cron avisa os responsáveis por e-mail (uma ve
   await p.req("/api/orgs/1/integracao", { metodo: "POST", quem: "admin", corpo: { engine_url: "https://engine.test/", token: TOKEN_ENGINE } });
   const mod = await import(new URL("../src/worker.js?t=" + (++n), import.meta.url).href);
   // Sem problema: nenhum e-mail.
-  await mod.default.scheduled({}, p.env, { waitUntil: (pr) => pr });
+  { let tarefa; await mod.default.scheduled({}, p.env, { waitUntil: (pr) => { tarefa = pr; } }); await tarefa; }
   assert.equal(p.emails.filter(e => /não está entregando/.test(e.subject)).length, 0);
   // A Meta avisou falha de pagamento: o motor marca o bloqueio.
   await p.engine.env.DB.prepare("CREATE TABLE IF NOT EXISTS d30_meta (chave TEXT PRIMARY KEY, valor TEXT)").run();
   await p.engine.env.DB.prepare("INSERT OR REPLACE INTO d30_meta(chave,valor) VALUES('entrega_bloqueada',?)").bind(JSON.stringify({ codigo: 131042, erro: "Problema de pagamento na conta do WhatsApp Business", em: Date.now() })).run();
   const st = (await p.req("/api/orgs/1/engine/status", { quem: "admin" })).dados;
   assert.equal(st.entrega_bloqueada.codigo, 131042);
-  await mod.default.scheduled({}, p.env, { waitUntil: (pr) => pr });
+  { let tarefa; await mod.default.scheduled({}, p.env, { waitUntil: (pr) => { tarefa = pr; } }); await tarefa; }
   const avisos = p.emails.filter(e => /não está entregando/.test(e.subject));
   assert.equal(avisos.length, 1);
   assert.match(avisos[0].text, /pagamento/);
-  await mod.default.scheduled({}, p.env, { waitUntil: (pr) => pr });
+  { let tarefa; await mod.default.scheduled({}, p.env, { waitUntil: (pr) => { tarefa = pr; } }); await tarefa; }
   assert.equal(p.emails.filter(e => /não está entregando/.test(e.subject)).length, 1, "não repete o mesmo aviso em menos de 6 h");
+});
+
+test("Voz da DENIA — voz natural escolhida, voz clonada da pessoa (com autorização) e fala com a voz clonada", async () => {
+  const p = await criarPlataforma({ OPENAI_API_KEY: "sk-teste" });
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  const pedidos = [];
+  const anterior = globalThis.fetch;
+  globalThis.fetch = async (url, op = {}) => {
+    if (String(url).startsWith("https://api.elevenlabs.io/")) {
+      pedidos.push({ url: String(url), op });
+      if (op.headers?.["xi-api-key"] !== "sk_" + "a".repeat(40)) return new Response(JSON.stringify({ detail: { message: "invalid" } }), { status: 401 });
+      if (String(url).endsWith("/v1/user")) return new Response(JSON.stringify({ subscription: { tier: "starter" } }), { status: 200 });
+      if (String(url).endsWith("/v1/voices/add")) return new Response(JSON.stringify({ voice_id: "VozClonada123456", requires_verification: false }), { status: 200 });
+      if (String(url).includes("/v1/text-to-speech/VozClonada123456")) return new Response(new Uint8Array([7, 7, 7]), { status: 200, headers: { "content-type": "audio/mpeg" } });
+    }
+    return anterior(url, op);
+  };
+  try {
+    let cfg = (await p.req("/api/orgs/1/mk/voz/config", { quem: "admin" })).dados;
+    assert.equal(cfg.provedor, "openai");
+    assert.equal(cfg.voz_openai, "marin", "voz natural por padrão");
+    cfg = (await p.req("/api/orgs/1/mk/voz/config", { metodo: "POST", quem: "admin", corpo: { voz_openai: "cedar", estilo: "Carioca, animado." } })).dados;
+    assert.equal(cfg.voz_openai, "cedar");
+    let falado = null;
+    p.openai = (url, corpo) => { if (url.endsWith("audio/speech")) { falado = corpo; return new Response(new Uint8Array([1]), { status: 200 }); } return {}; };
+    await p.req("/api/orgs/1/assistente/falar", { metodo: "POST", quem: "admin", corpo: { texto: "Oi!" } });
+    assert.equal(falado.voice, "cedar"); assert.match(falado.instructions, /Carioca/);
+    // Minha voz: chave da ElevenLabs, gravação e consentimento.
+    assert.equal((await p.req("/api/orgs/1/mk/voz/eleven-chave", { metodo: "POST", quem: "admin", corpo: { chave: "sk_" + "b".repeat(40) } })).status, 400, "chave recusada");
+    assert.equal((await p.req("/api/orgs/1/mk/voz/eleven-chave", { metodo: "POST", quem: "admin", corpo: { chave: "sk_" + "a".repeat(40) } })).dados.ok, true);
+    assert.ok(!JSON.stringify(p.env.DB.q("SELECT valor FROM plt_meta WHERE chave='voz_org_1'")).includes("a".repeat(40)), "chave guardada cifrada");
+    const form = (consent) => { const f = new FormData(); f.append("audio", new Blob([new Uint8Array(80000)], { type: "audio/webm" }), "voz.webm"); f.append("nome", "Voz do Dono"); if (consent) f.append("consentimento", "sim"); return f; };
+    const mod = await import(new URL("../src/worker.js?t=" + (++n), import.meta.url).href);
+    const pedir = async (f) => { const r = await mod.default.fetch(new Request("https://plataforma.test/api/orgs/1/mk/voz/clonar", { method: "POST", headers: { "x-denia": "1", origin: "https://plataforma.test", cookie: p.cookies.admin }, body: f }), p.env); return { status: r.status, dados: await r.json() }; };
+    assert.equal((await pedir(form(false))).status, 400, "sem consentimento não clona");
+    const clone = await pedir(form(true));
+    assert.equal(clone.dados.ok, true);
+    cfg = (await p.req("/api/orgs/1/mk/voz/config", { quem: "admin" })).dados;
+    assert.equal(cfg.provedor, "elevenlabs"); assert.equal(cfg.eleven_nome, "Voz do Dono");
+    const fala = await p.req("/api/orgs/1/assistente/falar", { metodo: "POST", quem: "admin", corpo: { texto: "Olá, cliente!" } });
+    assert.equal(fala.status, 200);
+    assert.ok(pedidos.some(x => x.url.includes("/text-to-speech/VozClonada123456")), "falou com a voz clonada");
+    // Conversa ao vivo com a voz da pessoa: a sessão devolve texto.
+    let sessao = null;
+    p.openai = (url, corpo) => { if (url.endsWith("realtime/client_secrets")) { sessao = corpo.session; return { value: "ek_1" }; } return {}; };
+    const vivo = (await p.req("/api/orgs/1/assistente/ao-vivo", { metodo: "POST", quem: "admin", corpo: {} })).dados;
+    assert.equal(vivo.minha_voz, true);
+    assert.deepEqual(sessao.output_modalities, ["text"]);
+  } finally { globalThis.fetch = anterior; }
 });

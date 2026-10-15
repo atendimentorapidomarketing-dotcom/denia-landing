@@ -1,5 +1,19 @@
 # Changelog — DENIA Engine
 
+## 31.4.0 — 2026-10-15
+
+### Corrigido (mensagens em massa quando o cron era ligado)
+- A DENIA respondia sozinha mensagens de até 12 h atrás (com pedido de desculpas). Com o cron
+  desligado por horas, ligar o cron fazia ela escrever para dezenas de clientes de uma vez —
+  inclusive quem a equipe já tinha atendido. Agora:
+  - só responde sozinha o que tem até 30 min (`ATRASO_MAXIMO_MIN` muda isso);
+  - nunca responde se alguém da equipe já escreveu para a pessoa depois da mensagem;
+  - no máximo 3 respostas atrasadas por execução; o resto só é registrado e a equipe recebe UM aviso;
+  - a fila de envio descarta respostas com mais de 15 min (aparecem como não enviadas no painel);
+  - mensagens programadas para profissionais não saem se a equipe já cuidou do caso.
+- Novo `/platform/tick`: a plataforma chama a cada 5 min para enviar a fila e responder o que é
+  recente, então o cron do motor pode ficar desligado.
+
 ## 31.3.0 — 2026-10-15
 
 ### Corrigido (respostas que não saíam: "Too many subrequests")

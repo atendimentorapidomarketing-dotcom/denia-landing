@@ -1,5 +1,6 @@
 import { rotasMeta, aoAprovar } from "./meta.js";
 import { rotasSocial } from "./social.js";
+import { rotasVoz, falarComVoz, configVoz } from "./voz.js";
 import { rotasUso, registrarUso, custoOpenAI, tokensDe, precosDaOrg, orgDoUso, recursoDo, comRecurso } from "./uso.js";
 import { rotasGoogle, responderAvaliacaoGoogle, apagarRespostaGoogle, contaGoogleDe, desempenhoAoVivo, sincronizarConta, linkDoPerfil } from "./google.js";
 // ============================================================================
@@ -423,6 +424,8 @@ export async function apiMarketing(request, env, k, orgId, papel, resto) {
   if (doUso) return doUso;
   const doSocial = await rotasSocial(request, env, k, orgId, papel, resto, { sugerir: (marcaId, canal, c) => sugerirRespostaComentario(env, orgId, marcaId, canal, c) });
   if (doSocial) return doSocial;
+  const daVoz = await rotasVoz(request, env, k, orgId, papel, resto);
+  if (daVoz) return daVoz;
   const daMeta = await rotasMeta(request, env, k, orgId, papel, resto);
   if (daMeta) return daMeta;
   // "Buscar avaliações agora": traz do Google, lê e (no automático) responde na hora — sem esperar a rodada de 10 minutos.
@@ -1177,8 +1180,8 @@ export async function apiAssistente(request, env, k, orgId, papel, resto, contex
       if (l.erro) return l.erro;
       const texto = txt(l.corpo.texto, 1500);
       if (!texto) return json({ erro: "Nada para falar." }, 400);
-      const r = await openai(env, "audio/speech", { model: String(env.OPENAI_TTS_MODEL || "gpt-4o-mini-tts"), voice: String(env.OPENAI_TTS_VOZ || "coral"), input: texto, response_format: "mp3",
-        instructions: `Fale em ${IDIOMAS[idioma]}, com voz feminina calorosa, segura e profissional, ritmo natural.` }, { binario: true, timeout: 45000 });
+      // Voz escolhida pela empresa: a voz clonada da pessoa (ElevenLabs) ou uma voz natural da OpenAI.
+      const r = await falarComVoz(env, k, orgId, texto, { idiomaNome: IDIOMAS[idioma], aoVivo: l.corpo.ao_vivo === true, openai });
       return new Response(r.body, { headers: { "content-type": "audio/mpeg", "cache-control": "no-store" } });
     }
     if (resto === "assistente/conversa" && request.method === "POST") {
@@ -1259,13 +1262,16 @@ ${contexto.dados}`;
         { type: "function", name: "pesquisar_web", description: "Pesquisa na internet, ao vivo, e devolve um resumo com as fontes.", parameters: { type: "object", properties: { pergunta: { type: "string" } }, required: ["pergunta"] } },
         { type: "function", name: "dados_do_painel", description: "Busca os dados mais recentes do painel (conversas, atendimentos, posts, treinamento).", parameters: { type: "object", properties: {} } }
       ];
-      const voz = String(env.OPENAI_REALTIME_VOZ || "marin");
-      const sessao = { type: "realtime", model: modelo, instructions, tools, tool_choice: "auto",
-        audio: { input: { transcription: { model: String(env.OPENAI_TRANSCRIPTION_MODEL || "gpt-4o-mini-transcribe"), language: idioma.slice(0, 2) }, turn_detection: { type: "semantic_vad", eagerness: "high" }, noise_reduction: { type: "near_field" } }, output: { voice: voz } } };
+      // Com a voz da pessoa (ElevenLabs), a conversa ao vivo devolve texto e o painel fala com a voz clonada.
+      const cfgVoz = await configVoz(env, k, orgId);
+      const minhaVoz = cfgVoz.provedor === "elevenlabs" && cfgVoz.ao_vivo_com_minha_voz;
+      const sessao = { type: "realtime", model: modelo, instructions: instructions + (minhaVoz ? "\nSuas respostas serão lidas em voz alta: escreva como quem fala, frases curtas, sem listas nem símbolos." : ""), tools, tool_choice: "auto",
+        ...(minhaVoz ? { output_modalities: ["text"] } : {}),
+        audio: { input: { transcription: { model: String(env.OPENAI_TRANSCRIPTION_MODEL || "gpt-4o-mini-transcribe"), language: idioma.slice(0, 2) }, turn_detection: { type: "semantic_vad", eagerness: "high" }, noise_reduction: { type: "near_field" } }, ...(minhaVoz ? {} : { output: { voice: cfgVoz.voz_openai } }) } };
       const d = await openai(env, "realtime/client_secrets", { expires_after: { anchor: "created_at", seconds: 120 }, session: sessao }, { timeout: 20000 });
       const chaveTemp = d?.value || d?.client_secret?.value;
       if (!chaveTemp) return json({ erro: "A voz ao vivo não respondeu. Tente de novo." }, 502);
-      return json({ chave: chaveTemp, url: "https://api.openai.com/v1/realtime/calls", modelo });
+      return json({ chave: chaveTemp, url: "https://api.openai.com/v1/realtime/calls", modelo, minha_voz: minhaVoz });
     }
     if (resto === "assistente/preparar" && request.method === "POST") {
       const l = await lerCorpo(request, 20000);

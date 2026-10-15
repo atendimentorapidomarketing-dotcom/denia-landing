@@ -861,3 +861,33 @@ test("Limite de chamadas da Cloudflare — perto do limite, a resposta vai para 
   const msg = a.DB.q("SELECT whatsapp_message_id w FROM mensagens WHERE direcao='SAIDA' ORDER BY id DESC LIMIT 1")[0];
   assert.match(msg.w, /^wamid\./, "a mensagem no painel ganhou o id real do WhatsApp");
 });
+
+test("Cron depois de horas parado — NUNCA manda mensagens em massa nem responde clientes antigos", async () => {
+  const a = await criarAmbiente();
+  a.llmCliente = () => decisao({ resposta: "Desculpe a demora! Como posso ajudar?" });
+  const fila = (tel, minutosAtras, i) => {
+    const ts = a.agora - minutosAtras * 60000;
+    a.DB.prepare("INSERT INTO d30_fila(wamid,telefone,payload,recebido_ms,status,atualizado_ms) VALUES(?,?,?,?,'PENDENTE',?)")
+      .bind("wamid.antigo." + i, tel, JSON.stringify({ wamid: "wamid.antigo." + i, de: tel, nome: "", ts: String(Math.floor(ts / 1000)), tipo: "text", texto: "Oi, tudo bem?", recebidoMs: ts }), ts, ts).run();
+  };
+  await a.cron(); // cria o esquema
+  // 8 clientes que escreveram há 2 a 9 horas (o cron estava desligado).
+  const antigos = Array.from({ length: 8 }, (_, i) => "55219888800" + i);
+  antigos.forEach((t, i) => fila(t, 120 + i * 60, i));
+  a.telegram.length = 0;
+  await a.cron(); await a.cron(); await a.cron();
+  for (const t of antigos) assert.equal(a.para(t).length, 0, "não responde mensagem de horas atrás: " + t);
+  assert.ok(a.telegram.some(t => /NÃO respondeu sozinha/.test(t)), "a equipe é avisada, sem mandar nada aos clientes");
+  // Mensagem de 10 min atrás, sem ninguém ter respondido: responde (uma vez).
+  fila("5521977770001", 10, 100);
+  await a.cron();
+  assert.equal(a.para("5521977770001").length, 1);
+  // Mensagem de 10 min atrás que a equipe já respondeu pelo celular: a DENIA não se mete.
+  await a.cliente("5521977770002", "Bom dia"); // cria a pessoa
+  const n0 = a.para("5521977770002").length;
+  await a.eco("5521977770002", "Oi! Já estou vendo para você.");
+  fila("5521977770002", 10, 101);
+  a.avancar(11 * 60000);
+  await a.cron();
+  assert.equal(a.para("5521977770002").length, n0, "a equipe já respondeu: nada sai");
+});

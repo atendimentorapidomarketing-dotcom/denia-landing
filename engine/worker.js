@@ -35,7 +35,7 @@
 //       relatório diário. Nunca inicia conversa nova por conta própria.
 // ============================================================================
 
-const VERSAO = "31.3.0";
+const VERSAO = "31.4.0";
 const SCHEMA_VERSAO = "31.3.0"; // mude sempre que acrescentar tabela ou índice (senão o banco de produção não recebe)
 const EMPRESA_ID = 1;
 const PHONE_ID_PADRAO = "473474732510163";
@@ -47,7 +47,12 @@ const PAUSA_HUMANA_MS = 10 * 60 * 1000;
 const PAUSA_TAKEOVER_MS = 12 * 60 * 60 * 1000;
 const FILA_EXPIRA_MS = 15 * 60 * 1000;
 // Mensagem atrasada (WhatsApp reenviando, instabilidade): até 12 h a DENIA ainda responde, pedindo desculpas pela demora.
-const LIMITE_ATRASO_MS = 12 * 60 * 60 * 1000;
+const LIMITE_ATRASO_MS = 12 * 60 * 60 * 1000; // teto absoluto; o padrão real é atrasoMaximo() (30 min)
+// Até quanto tempo depois a DENIA ainda responde sozinha uma mensagem que ficou sem resposta.
+// Padrão 30 min (variável ATRASO_MAXIMO_MIN). Mais velha que isso: só registra e avisa a equipe —
+// nunca sai mandando mensagem para clientes antigos quando o cron volta a funcionar.
+function atrasoMaximo(env) { const m = Number(env?.ATRASO_MAXIMO_MIN); return (Number.isFinite(m) && m >= 1 ? Math.min(m, 720) : 30) * 60000; }
+const MAX_ATRASADAS_POR_EXECUCAO = 3;
 const AGENDADO_EXPIRA_MS = 16 * 60 * 60 * 1000;
 const HISTORICO_LIMITE = 60;
 const HORA_INICIO_PRESTADOR = 8;
@@ -1054,6 +1059,14 @@ async function enviarFila(c, maximo = 12) {
   const itens = (await c.db.prepare("SELECT * FROM d30_saida_fila WHERE status='PENDENTE' ORDER BY id LIMIT ?").bind(maximo).all().catch(() => null))?.results || [];
   for (const it of itens) {
     if (sobram(c) < 8) break;
+    // Resposta que não saiu em 15 min não sai mais (a conversa já seguiu): fica marcada como não enviada no painel.
+    if (c.agora() - Number(it.criado_ms || 0) > FILA_EXPIRA_MS) {
+      await c.db.batch([
+        c.db.prepare("UPDATE d30_saida_fila SET status='EXPIRADA', atualizado_ms=? WHERE id=?").bind(c.agora(), it.id),
+        c.db.prepare("INSERT OR REPLACE INTO d30_entregas(wamid,telefone,status,erro,falhou_ms,atualizado_ms) VALUES(?,?,'FAILED',?,?,?)").bind("fila:" + it.id, it.para, "Não saiu a tempo (ficou na fila mais de 15 minutos) e não foi enviada para não chegar fora de hora.", c.agora(), c.agora())
+      ]);
+      continue;
+    }
     let corpo; try { corpo = JSON.parse(it.corpo); } catch { corpo = null; }
     if (!corpo) { await c.db.prepare("UPDATE d30_saida_fila SET status='ERRO', erro='corpo inválido', atualizado_ms=? WHERE id=?").bind(c.agora(), it.id).run(); continue; }
     gastar(c);
@@ -2207,8 +2220,21 @@ async function processarLote(c, tel, itens) {
   const agora = c.agora();
   const idade = m => agora - (Number(m.ts) * 1000 || m.recebidoMs || agora);
   const frescas = msgs.filter(m => idade(m) <= FILA_EXPIRA_MS);
-  const ate12h = msgs.filter(m => idade(m) <= LIMITE_ATRASO_MS);
+  const ate12h = msgs.filter(m => idade(m) <= atrasoMaximo(c.env));
   const opts = { apenasRegistrar: ate12h.length === 0, atrasoMs: frescas.length ? 0 : Math.min(...ate12h.map(idade)), chaveLote: msgs[msgs.length - 1].wamid };
+  if (opts.apenasRegistrar) c.atrasadasSemResposta = (c.atrasadasSemResposta || 0) + 1; // velha demais: só registra
+  // Resposta atrasada só se ninguém da equipe já respondeu depois da mensagem, e no máximo 3 por execução
+  // (se há muitas atrasadas é porque algo ficou parado: a equipe é avisada, nada sai em massa).
+  if (!opts.apenasRegistrar && opts.atrasoMs > 0) {
+    const desde = new Date(agora - Math.max(...msgs.map(idade))).toISOString().slice(0, 19).replace("T", " ");
+    const pessoa = await buscarPessoa(c, tel);
+    const respondida = pessoa ? await c.db.prepare("SELECT 1 ok FROM mensagens WHERE empresa_id=? AND pessoa_id=? AND UPPER(direcao)='SAIDA' AND criado_em >= ? LIMIT 1").bind(EMPRESA_ID, pessoa.id, desde).first().catch(() => null) : null;
+    c.atrasadas = (c.atrasadas || 0) + 1;
+    if (respondida || c.atrasadas > MAX_ATRASADAS_POR_EXECUCAO) {
+      opts.apenasRegistrar = true;
+      if (!respondida) c.atrasadasSemResposta = (c.atrasadasSemResposta || 0) + 1;
+    }
+  }
   const id = await identificar(c, tel);
   if (id.papel === "PRESTADOR") return processarPrestador(c, tel, id, msgs, opts);
   if (id.papel === "ATENDENTE") {
@@ -2422,10 +2448,11 @@ async function cron(c) {
   await enviarFila(c).catch(e => console.error("fila de envio", e));
   const agora = c.agora();
   await c.db.prepare("UPDATE d30_fila SET status='PENDENTE', atualizado_ms=? WHERE status='PROCESSANDO' AND atualizado_ms < ? AND recebido_ms > ?")
-    .bind(agora, agora - 180000, agora - LIMITE_ATRASO_MS).run();
+    .bind(agora, agora - 180000, agora - atrasoMaximo(c.env)).run();
   const tels = (await c.db.prepare("SELECT DISTINCT telefone FROM d30_fila WHERE status='PENDENTE' AND recebido_ms < ? LIMIT 10").bind(agora - 40000).all())?.results || [];
   // Cada etapa só começa se ainda houver chamadas sobrando nesta execução; o resto fica para o próximo minuto.
   for (const t of tels) { if (sobram(c) < 25) break; await processarPendentes(c, t.telefone); }
+  if (c.atrasadasSemResposta) await alertarEquipe(c, `${c.atrasadasSemResposta} conversa(s) ficaram sem resposta por mais tempo e a DENIA NÃO respondeu sozinha para não mandar mensagens em massa. Veja em Conversas e responda quem ainda precisa.`, "atrasadas:" + Math.floor(agora / 3600000));
   if (sobram(c) > 20) await processarAgendados(c);
   if (sobram(c) > 20) await processarSync(c).catch(e => console.error("sync", e));
   if (sobram(c) > 25) await processarAprendizado(c).catch(e => console.error("aprendizado", e));
@@ -2519,6 +2546,10 @@ async function processarAgendados(c) {
     if (!consulta || ["RECUSADA", "ENCERRADA", "FALHA", "EXPIRADA"].includes(consulta.status)) { await c.db.prepare("UPDATE d30_agendados SET status='CANCELADO' WHERE id=?").bind(a.id).run(); continue; }
     const caso = await carregarCasoPorId(c, a.caso_id);
     if (!caso || ETAPAS_ENCERRADAS.has(caso.etapa)) { await c.db.prepare("UPDATE d30_agendados SET status='CANCELADO' WHERE id=?").bind(a.id).run(); continue; }
+    // A equipe já cuidou do caso depois que a mensagem foi programada: não manda.
+    const desde = new Date(Number(a.criado_ms)).toISOString().slice(0, 19).replace("T", " ");
+    const equipe = await c.db.prepare("SELECT 1 ok FROM mensagens WHERE empresa_id=? AND caso_id=? AND UPPER(origem)='HUMANO' AND criado_em >= ? LIMIT 1").bind(EMPRESA_ID, a.caso_id, desde).first().catch(() => null);
+    if (equipe) { await c.db.prepare("UPDATE d30_agendados SET status='CANCELADO' WHERE id=?").bind(a.id).run(); continue; }
     const r = await enviarAgoraAoPrestador(c, { consulta, caso, texto: a.texto, chave: "agendado:" + a.id, inicial: a.inicial === 1 });
     await c.db.prepare("UPDATE d30_agendados SET status=? WHERE id=?").bind(r.ok ? "ENVIADO" : "FALHA", a.id).run();
     if (r.ok && a.inicial === 1) {
@@ -2592,6 +2623,14 @@ async function platformApi(request, env, caminho, metodo) {
   await garantirSchema(c);
   const corpo = metodo === "POST" ? await request.json().catch(() => ({})) : {};
   let m;
+  // A plataforma chama a cada 5 min: envia a fila e responde mensagens recentes que ficaram para trás.
+  // Funciona mesmo sem o cron do motor (com as mesmas travas: nada velho, nada em massa).
+  if (caminho === "/platform/tick" && metodo === "POST") {
+    const enviadas = await enviarFila(c, 10).catch(() => 0);
+    const tels = (await c.db.prepare("SELECT DISTINCT telefone FROM d30_fila WHERE status='PENDENTE' AND recebido_ms BETWEEN ? AND ? LIMIT 3").bind(c.agora() - atrasoMaximo(env), c.agora() - 40000).all().catch(() => null))?.results || [];
+    for (const t of tels) { if (sobram(c) < 25) break; await processarPendentes(c, t.telefone); }
+    return json({ sucesso: true, enviadas, conversas: tels.length });
+  }
   if (caminho === "/platform/usage" && metodo === "GET") { const q = new URL(request.url).searchParams; return json({ sucesso: true, versao: VERSAO, ...(await consumoDoPeriodo(c, q.get("de"), q.get("ate"))) }); }
   if (caminho === "/platform/status") return json({ sucesso: true, versao: VERSAO, ...(await saude(c, { completo: new URL(request.url).searchParams.get("completo") === "1" })) });
   if (caminho === "/platform/conversations" && metodo === "GET") {
