@@ -35,7 +35,7 @@
 //       relatório diário. Nunca inicia conversa nova por conta própria.
 // ============================================================================
 
-const VERSAO = "31.6.0";
+const VERSAO = "31.7.0";
 const SCHEMA_VERSAO = "31.5.0"; // mude sempre que acrescentar tabela ou índice (senão o banco de produção não recebe)
 const EMPRESA_ID = 1;
 const PHONE_ID_PADRAO = "473474732510163";
@@ -1185,6 +1185,13 @@ async function resumoEntregas(c, desdeMs) {
   r.taxa_entrega = r.total ? Math.round(((r.entregues + r.lidas) / r.total) * 1000) / 10 : null;
   r.motivos = ((await c.db.prepare("SELECT codigo, MAX(erro) erro, MAX(detalhe) detalhe, COUNT(*) n, MAX(falhou_ms) em FROM d30_entregas WHERE status='FAILED' AND falhou_ms > ? GROUP BY codigo ORDER BY n DESC LIMIT 5").bind(desdeMs).all().catch(() => null))?.results || [])
     .map(x => ({ codigo: x.codigo, n: x.n, em: x.em, motivo: explicarEntrega(x.codigo, x.detalhe || x.erro), original: txt(x.detalhe || x.erro, 200) }));
+  // Resolvido? Falhas antigas não contam se depois delas as mensagens voltaram a ser entregues.
+  const t = await c.db.prepare("SELECT MAX(CASE WHEN status IN ('DELIVERED','READ') THEN COALESCE(entregue_ms, lido_ms, atualizado_ms) END) ok, MAX(CASE WHEN status='FAILED' THEN falhou_ms END) falha FROM d30_entregas WHERE atualizado_ms > ?").bind(desdeMs).first().catch(() => null);
+  r.ultima_entrega_ms = Number(t?.ok || 0) || null;
+  r.ultima_falha_ms = Number(t?.falha || 0) || null;
+  r.falhas_pendentes = r.ultima_falha_ms && (!r.ultima_entrega_ms || r.ultima_falha_ms > r.ultima_entrega_ms)
+    ? Number((await c.db.prepare("SELECT COUNT(*) n FROM d30_entregas WHERE status='FAILED' AND falhou_ms > ?").bind(Math.max(desdeMs, r.ultima_entrega_ms || 0)).first().catch(() => null))?.n || 0) : 0;
+  r.resolvido = Boolean(r.falhas && !r.falhas_pendentes);
   return r;
 }
 
@@ -1415,6 +1422,86 @@ async function registrarUsoIA(c, operacao, modeloUsado, usage, erro) {
       .bind(new Date(c.agora()).toISOString().slice(0, 10), operacao, String(modeloUsado || ""), erro ? 1 : 0, Number(usage?.input_tokens || 0) || 0, Number(usage?.output_tokens || 0) || 0, Number(det.cached_tokens || 0) || 0).run();
   } catch { /* tabela ainda não criada ou banco ocupado */ }
 }
+// ============================================================================
+// MÉTRICAS DO ATENDIMENTO (WhatsApp) — tempo de resposta, quem respondeu (IA ou equipe), horários de pico,
+// contatos novos e recorrentes, atendimentos por etapa e serviço, funil, profissionais e entregas.
+// Poucas consultas ao banco (o plano gratuito conta cada uma).
+// ============================================================================
+async function metricasAtendimento(c, de, ate) {
+  const valida = s => /^\d{4}-\d{2}-\d{2}$/.test(String(s || ""));
+  if (!valida(de) || !valida(ate)) { ate = new Date(c.agora()).toISOString().slice(0, 10); de = new Date(c.agora() - 29 * 86400000).toISOString().slice(0, 10); }
+  const ini = Date.parse(de + "T00:00:00Z"), fim = Date.parse(ate + "T00:00:00Z") + 86400000;
+  const fimTxt = new Date(fim).toISOString().slice(0, 10);
+  // 1) Mensagens do período, em ordem por pessoa (até 25 mil).
+  const msgs = (await c.db.prepare(`SELECT m.pessoa_id, UPPER(m.direcao) d, UPPER(COALESCE(m.origem,'')) o, m.criado_em t, UPPER(COALESCE(p.tipo,'')) tipo FROM mensagens m LEFT JOIN pessoas p ON p.id=m.pessoa_id
+    WHERE m.empresa_id=? AND m.criado_em >= ? AND m.criado_em < ? ORDER BY m.pessoa_id, m.id LIMIT 25000`).bind(EMPRESA_ID, de, fimTxt).all().catch(() => null))?.results || [];
+  const ms = t => Date.parse(String(t || "").replace(" ", "T") + "Z");
+  const tempos = { IA: [], EQUIPE: [] }, porHora = Array.from({ length: 7 }, () => Array(24).fill(0));
+  const saidas = { IA: 0, EQUIPE: 0, SISTEMA: 0 }, contatos = new Set(), clientes = new Set(), profissionais = new Set();
+  let semResposta = 0, entradas = 0;
+  const diaSemana = x => { const d = new Date(x - 3 * 3600000); return [d.getUTCDay(), d.getUTCHours()]; }; // horário de Brasília
+  let i = 0;
+  while (i < msgs.length) {
+    const pid = msgs[i].pessoa_id; let j = i;
+    while (j < msgs.length && msgs[j].pessoa_id === pid) j++;
+    let espera = null;
+    for (let k = i; k < j; k++) {
+      const m = msgs[k], t = ms(m.t);
+      if (m.d === "ENTRADA") {
+        entradas++; contatos.add(pid);
+        if (m.tipo === "TECNICO") profissionais.add(pid); else clientes.add(pid);
+        const [w, h] = diaSemana(t); if (Number.isFinite(w)) porHora[w][h]++;
+        if (espera === null) espera = t; // começo de uma vez em que a pessoa ficou esperando resposta
+      } else if (m.o !== "LIGACAO") {
+        const quem = m.o === "HUMANO" ? "EQUIPE" : m.o === "IA" ? "IA" : "SISTEMA";
+        saidas[quem]++;
+        if (espera !== null && quem !== "SISTEMA" && t >= espera) { tempos[quem].push((t - espera) / 1000); }
+        if (espera !== null && quem === "SISTEMA" && t >= espera) tempos.IA.push((t - espera) / 1000);
+        espera = null;
+      }
+    }
+    if (espera !== null && c.agora() - espera > 30 * 60000) semResposta++;
+    i = j;
+  }
+  const mediana = a => { if (!a.length) return null; const o = [...a].sort((x, y) => x - y); return Math.round(o[Math.floor(o.length / 2)]); };
+  const p90 = a => { if (!a.length) return null; const o = [...a].sort((x, y) => x - y); return Math.round(o[Math.min(o.length - 1, Math.floor(o.length * 0.9))]); };
+  // 2) Contatos novos (primeira mensagem dentro do período).
+  const novos = Number((await c.db.prepare("SELECT COUNT(*) n FROM (SELECT pessoa_id, MIN(criado_em) primeira FROM mensagens WHERE empresa_id=? GROUP BY pessoa_id) WHERE primeira >= ? AND primeira < ?").bind(EMPRESA_ID, de, fimTxt).first().catch(() => null))?.n || 0);
+  // 3) Atendimentos criados no período: etapa, serviço e funil.
+  const casos = (await c.db.prepare("SELECT caso_id, etapa, fatos_json FROM d30_casos WHERE criado_ms >= ? AND criado_ms < ? LIMIT 5000").bind(ini, fim).all().catch(() => null))?.results || [];
+  const porEtapa = {}, porServico = {};
+  for (const k of casos) {
+    porEtapa[k.etapa] = (porEtapa[k.etapa] || 0) + 1;
+    let f = {}; try { f = JSON.parse(k.fatos_json || "{}"); } catch { f = {}; }
+    const sv = txt(CATEGORIAS[f.categoria]?.rotulo || f.servico || "Não identificado", 40);
+    porServico[sv] = (porServico[sv] || 0) + 1;
+  }
+  // 4) Profissionais: consultas do período.
+  const cons = (await c.db.prepare("SELECT prestador_nome, status, valor_cliente, criado_ms, atualizado_ms FROM d30_consultas WHERE criado_ms >= ? AND criado_ms < ? LIMIT 5000").bind(ini, fim).all().catch(() => null))?.results || [];
+  const porProf = new Map();
+  for (const k of cons) {
+    const nome = k.prestador_nome || "Profissional";
+    const g = porProf.get(nome) || { nome, consultas: 0, responderam: 0, confirmadas: 0, recusadas: 0, tempos: [], valor: 0 };
+    g.consultas++;
+    if (!["ENVIADA", "AGENDADA_ENVIO", "PENDENTE"].includes(k.status)) { g.responderam++; g.tempos.push((Number(k.atualizado_ms) - Number(k.criado_ms)) / 60000); }
+    if (k.status === "CONFIRMADA") { g.confirmadas++; g.valor += Number(k.valor_cliente || 0); }
+    if (k.status === "RECUSADA") g.recusadas++;
+    porProf.set(nome, g);
+  }
+  const casosComProf = new Set((await c.db.prepare("SELECT DISTINCT caso_id FROM d30_consultas WHERE criado_ms >= ? AND criado_ms < ?").bind(ini, fim).all().catch(() => null))?.results?.map(x => x.caso_id) || []);
+  const funil = { abertos: casos.length, com_profissional: casos.filter(k => casosComProf.has(k.caso_id)).length, agendados: (porEtapa.AGENDADO || 0) + (porEtapa.EM_ANDAMENTO || 0) + (porEtapa.CONCLUIDO || 0), concluidos: porEtapa.CONCLUIDO || 0, cancelados: porEtapa.CANCELADO || 0 };
+  return {
+    de, ate,
+    conversas: { contatos: contatos.size, clientes: clientes.size, profissionais: profissionais.size, novos, recorrentes: Math.max(0, clientes.size - novos), mensagens_recebidas: entradas, sem_resposta: semResposta },
+    respostas: { ia: saidas.IA + saidas.SISTEMA, equipe: saidas.EQUIPE, parte_ia: (saidas.IA + saidas.SISTEMA + saidas.EQUIPE) ? Math.round(((saidas.IA + saidas.SISTEMA) / (saidas.IA + saidas.SISTEMA + saidas.EQUIPE)) * 1000) / 10 : null,
+      tempo_ia_s: mediana(tempos.IA), tempo_ia_p90_s: p90(tempos.IA), tempo_equipe_s: mediana(tempos.EQUIPE), tempo_equipe_p90_s: p90(tempos.EQUIPE) },
+    horarios: porHora,
+    atendimentos: { por_etapa: porEtapa, por_servico: Object.entries(porServico).sort((a, b) => b[1] - a[1]).slice(0, 12).map(([servico, n]) => ({ servico, n })), funil },
+    profissionais: [...porProf.values()].map(g => ({ nome: g.nome, consultas: g.consultas, responderam: g.responderam, confirmadas: g.confirmadas, recusadas: g.recusadas, tempo_resposta_min: mediana(g.tempos), valor_confirmado: g.valor })).sort((a, b) => b.consultas - a.consultas).slice(0, 30),
+    entregas: await resumoEntregas(c, ini)
+  };
+}
+
 // Consumo do período: IA, mensagens recebidas/enviadas por dia e, com WHATSAPP_WABA_ID, o custo cobrado pela Meta.
 async function consumoDoPeriodo(c, de, ate) {
   const valida = s => /^\d{4}-\d{2}-\d{2}$/.test(String(s || ""));
@@ -2923,6 +3010,7 @@ async function platformApi(request, env, caminho, metodo) {
     const r = String(corpo?.tipo || "") === "pesquisa" ? await pesquisaSemanal(c, { forcar: true }) : await estudoDiario(c, { forcar: true });
     return json({ sucesso: true, resultado: r });
   }
+  if (caminho === "/platform/metrics" && metodo === "GET") { const q = new URL(request.url).searchParams; return json({ sucesso: true, versao: VERSAO, ...(await metricasAtendimento(c, q.get("de"), q.get("ate"))) }); }
   if (caminho === "/platform/usage" && metodo === "GET") { const q = new URL(request.url).searchParams; return json({ sucesso: true, versao: VERSAO, ...(await consumoDoPeriodo(c, q.get("de"), q.get("ate"))) }); }
   if (caminho === "/platform/status") return json({ sucesso: true, versao: VERSAO, ...(await saude(c, { completo: new URL(request.url).searchParams.get("completo") === "1" })) });
   if (caminho === "/platform/conversations" && metodo === "GET") {

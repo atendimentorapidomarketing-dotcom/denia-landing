@@ -546,3 +546,17 @@ details > summary { cursor: pointer; font-weight: 700; }
   .metrica { padding: 16px 18px; }
 }
 .grafico-svg { max-height: 300px; }
+
+/* Barras horizontais e mapa de calor (WhatsApp) */
+.barras { display: grid; gap: 8px; }
+.barra-linha { display: grid; grid-template-columns: minmax(110px, 220px) minmax(0, 1fr) auto; gap: 12px; align-items: center; font-size: 14px; }
+.barra-rotulo { color: var(--texto-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.barra-trilho { height: 10px; border-radius: 999px; background: var(--painel-forte); overflow: hidden; }
+.barra-trilho i { display: block; height: 100%; border-radius: 999px; background: var(--azul); }
+.barra-linha strong { min-width: 44px; text-align: right; font-variant-numeric: tabular-nums; }
+@media (max-width: 720px) { .barra-linha { grid-template-columns: minmax(0, 1fr) auto; } .barra-trilho { grid-column: 1 / -1; grid-row: 2; } }
+.mapa-calor { display: grid; gap: 3px; overflow-x: auto; padding-bottom: 4px; }
+.mapa-linha { display: grid; grid-template-columns: 38px repeat(24, minmax(14px, 1fr)); gap: 3px; align-items: center; min-width: 460px; }
+.mapa-cabeca span { font-size: 11px; color: var(--texto-3); text-align: left; }
+.mapa-dia { font-size: 12px; color: var(--texto-2); }
+.mapa-celula { height: 20px; border-radius: 4px; border: 1px solid rgba(148, 163, 214, 0.08); }

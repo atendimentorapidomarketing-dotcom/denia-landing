@@ -345,11 +345,13 @@
     const f = $("faixa-global");
     if (!f) return;
     const en = s && s.entregas_24h;
-    const muitas = en && en.falhas >= Math.max(3, (en.total || 0) * 0.2);
+    // Só avisa quando há erro AGORA: falhas antigas, seguidas de entregas confirmadas, já foram resolvidas.
+    const pendentes = en ? (en.falhas_pendentes != null ? en.falhas_pendentes : en.falhas) : 0;
+    const muitas = en && pendentes >= Math.max(3, (en.total || 0) * 0.2);
     if (!s || (!s.entrega_bloqueada && !muitas)) { f.classList.add("oculto"); f.replaceChildren(); return; }
     const motivo = s.entrega_bloqueada ? s.entrega_bloqueada.erro : ((en.motivos || [])[0] || {}).motivo || "a Meta não confirmou a entrega.";
-    f.replaceChildren(h("strong", { text: "⚠ O WhatsApp não está entregando as mensagens." }), h("span", { text: `${motivo}${en ? ` (${numero(en.falhas)} de ${numero(en.total)} nas últimas 24 h)` : ""}. Até resolver, responda pelo celular.` }),
-      h("a", { class: "btn btn-secundario btn-pequeno", href: "#/whatsapp" }, "Ver diagnóstico"));
+    f.replaceChildren(h("strong", { text: "⚠ O WhatsApp não está entregando as mensagens." }), h("span", { text: `${motivo}${en ? ` (${numero(pendentes)} mensagem(ns) sem entrega desde a última que chegou)` : ""}. Até resolver, responda pelo celular.` }),
+      h("a", { class: "btn btn-secundario btn-pequeno", href: "#/whatsapp/diagnostico" }, "Ver diagnóstico"));
     f.classList.remove("oculto");
   }
   async function atualizarStatus() {
@@ -1279,12 +1281,15 @@
     if (fila.ERRO) itens.push(["erro", `${numero(fila.ERRO)} mensagem(ns) de clientes deram ERRO nas últimas 24 h e não foram respondidas. Clique em "Verificar agora" (com o motor 30.9 ou mais novo aparece o motivo exato).`]);
     if ((fila.PENDENTE || 0) + (fila.PROCESSANDO || 0) > 5) itens.push(["alerta", `${numero((fila.PENDENTE || 0) + (fila.PROCESSANDO || 0))} mensagem(ns) estão na fila esperando a IA. Se esse número só cresce, a IA travou: confira a chave da OpenAI e o token do WhatsApp.`]);
     (st.erros_24h || []).slice(0, 2).forEach(x => itens.push(["alerta", `Erro ao processar mensagens (${quando(x.em)}): ${x.erro}`]));
-    if (st.falhas_envio_24h && st.falhas_envio_24h.n) itens.push(["alerta", `${st.falhas_envio_24h.n} resposta(s) não foram entregues nas últimas 24 h. Último motivo: ${st.falhas_envio_24h.ultima || "—"}`]);
+    const ultimaOk = st.entregas_24h && st.entregas_24h.ultima_entrega_ms;
+    if (st.falhas_envio_24h && st.falhas_envio_24h.n && !(ultimaOk && st.falhas_envio_24h.em && st.falhas_envio_24h.em < ultimaOk)) itens.push(["alerta", `${st.falhas_envio_24h.n} resposta(s) não foram entregues nas últimas 24 h. Último motivo: ${st.falhas_envio_24h.ultima || "—"}`]);
     // Confirmação de entrega (motor 31.2+): a Meta aceitar não quer dizer que chegou.
     if (st.entrega_bloqueada) itens.push(["erro", `O WHATSAPP NÃO ESTÁ ENTREGANDO as mensagens (desde ${quando(st.entrega_bloqueada.em)}): ${st.entrega_bloqueada.erro} (código ${st.entrega_bloqueada.codigo}). Clientes e profissionais não recebem nada até resolver.`]);
     const en = st.entregas_24h;
     if (en && en.total) {
-      if (en.falhas) itens.push([en.falhas >= Math.max(3, en.total * 0.2) ? "erro" : "alerta", `${numero(en.falhas)} de ${numero(en.total)} mensagem(ns) NÃO chegaram nas últimas 24 h.` + (en.motivos || []).map(m => ` ${m.motivo} (${numero(m.n)}×, código ${m.codigo || "?"})`).join("")]);
+      const pend = en.falhas_pendentes != null ? en.falhas_pendentes : en.falhas;
+      if (pend) itens.push([pend >= Math.max(3, en.total * 0.2) ? "erro" : "alerta", `${numero(pend)} mensagem(ns) NÃO chegaram desde a última entrega confirmada.` + (en.motivos || []).map(m => ` ${m.motivo} (${numero(m.n)}×, código ${m.codigo || "?"})`).join("")]);
+      else if (en.falhas) itens.push(["ok", `Entregas normalizadas: ${numero(en.falhas)} mensagem(ns) falharam antes, mas desde ${en.ultima_entrega_ms ? quando(en.ultima_entrega_ms) : "então"} tudo está chegando.`]);
       else itens.push(["ok", `Entregas confirmadas pela Meta nas últimas 24 h: ${numero(en.entregues + en.lidas)} de ${numero(en.total)} (${en.taxa_entrega != null ? String(en.taxa_entrega).replace(".", ",") + "%" : "—"}), ${numero(en.lidas)} lidas.`]);
       if (en.aceitas >= 5 && !st.ultima_confirmacao_ms) itens.push(["alerta", `${numero(en.aceitas)} mensagem(ns) foram aceitas pela Meta, mas nenhuma confirmação de entrega chegou. No app da Meta → WhatsApp → Configuração → Webhooks, o campo "messages" precisa estar assinado.`]);
     }
@@ -1294,7 +1299,7 @@
       if (st.teste_conta.saude && String(st.teste_conta.saude).toUpperCase() !== "AVAILABLE") itens.push(["erro", `A Meta diz que a conta ${String(st.teste_conta.saude).toUpperCase() === "LIMITED" ? "está LIMITADA" : "NÃO PODE enviar mensagens"}: ${(st.teste_conta.problemas || []).join(" · ") || "veja o Gerenciador do WhatsApp."}`]);
     }
     // Limite de chamadas da Cloudflare (plano gratuito: 50 por execução).
-    const limiteCF = /subrequest/i.test(String((st.falhas_envio_24h && st.falhas_envio_24h.ultima) || "")) || (st.fila_envio && st.fila_envio.adiadas_24h > 0);
+    const limiteCF = (/subrequest/i.test(String((st.falhas_envio_24h && st.falhas_envio_24h.ultima) || "")) && !(ultimaOk && st.falhas_envio_24h.em < ultimaOk)) || (st.fila_envio && st.fila_envio.adiadas_24h > 0 && !(st.fila_envio.pendentes === 0 && ultimaOk));
     if (st.fila_envio && st.fila_envio.pendentes && st.fila_envio.mais_antiga_ms && Date.now() - st.fila_envio.mais_antiga_ms > 5 * 60000) itens.push(["erro", `${numero(st.fila_envio.pendentes)} resposta(s) estão presas na fila de envio desde ${quando(st.fila_envio.mais_antiga_ms)}. A plataforma tenta enviar a fila a cada 5 minutos; confira se o motor 31.4 está colado e se a plataforma consegue falar com ele (Integrações → Testar).`]);
     if (limiteCF) itens.push(["alerta", `O plano gratuito da Cloudflare deixa o motor fazer só 50 chamadas por execução, e cada resposta usa quase isso. ${st.fila_envio && st.fila_envio.adiadas_24h ? `${numero(st.fila_envio.adiadas_24h)} resposta(s) nas últimas 24 h passaram pela fila de envio e saíram até 1 minuto depois.` : "O motor 31.3 coloca a resposta numa fila e envia na execução seguinte, sem perder nada."} Para responder sempre na hora: assine o Workers Paid (US$ 5/mês em dash.cloudflare.com → Workers → Planos) e crie no Worker denia a variável LIMITE_CHAMADAS = 900.`]);
     if (st.versao && /^31\.[0-2]\./.test(st.versao)) itens.push(["erro", `O motor ${st.versao} tem um erro: as tabelas novas não são criadas no banco, e no plano gratuito da Cloudflare as respostas podem não sair ("Too many subrequests"). Cole o motor 31.3 no Worker denia.`]);
@@ -1312,7 +1317,7 @@
       h("p", { class: "nota", text: "\"Verificar agora\" testa de verdade o token do WhatsApp e a chave da OpenAI do motor, além de pausas, erros e entregas das últimas 24 horas." }), lista);
   }
   // Números do WhatsApp (motor 31.2+): mensagens, contatos, atendimentos e entregas por dia, com gráfico.
-  async function blocoNumerosWhatsapp(caixa) {
+  async function blocoNumerosWhatsapp(caixa, opcoes = {}) {
     const f = estado.numerosZap = estado.numerosZap || { dias: 30, metrica: "recebidas" };
     const fim = new Date(), ini = new Date(Date.now() - (f.dias - 1) * 86400000);
     const de = isoLocal(ini), ate = isoLocal(fim);
@@ -1331,48 +1336,150 @@
     const soma = k => diario.reduce((t, d) => t + d[k], 0);
     const en = u.entregas || {};
     const METRICAS = [["recebidas", "Mensagens recebidas", ""], ["pela_ia", "Respondidas pela DENIA", ""], ["pela_equipe", "Enviadas pela equipe", ""], ["novos", "Atendimentos abertos", ""], ["concluidos", "Atendimentos concluídos", ""], ["entregues", "Entregues", ""], ["falhas", "Não entregues", ""]];
-    const recarregar = () => blocoNumerosWhatsapp(caixa);
+    const recarregar = () => blocoNumerosWhatsapp(caixa, opcoes);
     const pontos = agruparSerie(diario, dias.length <= 92 ? "dia" : dias.length <= 370 ? "semana" : "mes", f.metrica);
     const nomeM = (METRICAS.find(x => x[0] === f.metrica) || ["", ""])[1];
     const csv = () => baixarCsv(`whatsapp-${u.de}-a-${u.ate}.csv`, [["Dia", ...METRICAS.map(x => x[1])], ...diario.map(d => [dataCompleta(d.data), ...METRICAS.map(x => d[x[0]])])]);
     trocar(caixa, h("section", { class: "cartao vidro" },
       h("div", { class: "cabeca-grafico" }, h("h3", { style: "margin:0", text: "Números do WhatsApp" }), botao("Baixar planilha", csv, "btn-secundario btn-pequeno")),
-      h("div", { class: "abas abas-chips", style: "margin:10px 0" }, [[7, "7 dias"], [30, "30 dias"], [60, "60 dias"], [90, "90 dias"], [180, "6 meses"], [365, "12 meses"]].map(([v, n]) => h("button", { type: "button", class: "aba" + (f.dias === v ? " ativo" : ""), onclick: () => { f.dias = v; recarregar(); } }, n))),
+      opcoes.semPeriodo ? null : h("div", { class: "abas abas-chips", style: "margin:10px 0" }, [[7, "7 dias"], [30, "30 dias"], [60, "60 dias"], [90, "90 dias"], [180, "6 meses"], [365, "12 meses"]].map(([v, n]) => h("button", { type: "button", class: "aba" + (f.dias === v ? " ativo" : ""), onclick: () => { f.dias = v; recarregar(); } }, n))),
       h("section", { class: "grade grade-4" }, METRICAS.map(([k, n]) => h("button", { type: "button", class: "metrica vidro metrica-botao" + (f.metrica === k ? " ativo" : ""), "aria-pressed": f.metrica === k ? "true" : "false", onclick: () => { f.metrica = k; recarregar(); } }, h("span", { text: n }), h("strong", { text: numero(soma(k)) }), h("small", { text: `${numero(Math.round((soma(k) / (dias.length || 1)) * 10) / 10)} por dia` }))),
         h("div", { class: "metrica vidro" }, h("span", { text: "Taxa de entrega" }), h("strong", { text: en.taxa_entrega != null ? String(en.taxa_entrega).replace(".", ",") + "%" : "—" }), h("small", { text: `${numero(u.contatos || 0)} contatos diferentes no período` }))),
       h("h4", { style: "margin:16px 0 4px", text: nomeM }),
       pontos.some(p => p.valor) ? graficoLinha(pontos, null, nomeM, "") : vazio("Nada neste período", "")));
   }
-  async function paginaWhatsapp(el, _p, vivo) {
-    el.appendChild(cabeca("WhatsApp", "O canal principal da IA: atendimento aos clientes e conversa com os profissionais, pela API oficial do WhatsApp Business."));
+  // ----- WhatsApp: visão geral, atendimento, atendimentos, profissionais, entregas, diagnóstico e conexão
+  const fmtTempo = s => s == null ? "—" : s < 60 ? `${Math.round(s)} s` : s < 3600 ? `${Math.round(s / 60)} min` : `${Math.floor(s / 3600)} h ${Math.round((s % 3600) / 60)} min`;
+  const NOME_ETAPA_CURTO = { COLETANDO: "Entendendo o pedido", AGUARDANDO_PRESTADOR: "Esperando profissional", AGUARDANDO_CONFIRMACAO_PRESTADOR: "Confirmando com profissional", AGUARDANDO_CLIENTE: "Esperando cliente", AGUARDANDO_ENDERECO: "Esperando endereço", EQUIPE: "Com a equipe", AGENDADO: "Agendado", EM_ANDAMENTO: "Em andamento", CONCLUIDO: "Concluído", CANCELADO: "Cancelado" };
+  // Barras horizontais simples (uma cor, valor escrito ao lado — a cor não é a única informação).
+  function barras(lista, formato = numero) {
+    const max = Math.max(1, ...lista.map(x => x.valor));
+    return h("div", { class: "barras" }, lista.map(x => h("div", { class: "barra-linha" }, h("span", { class: "barra-rotulo", text: x.rotulo }),
+      h("div", { class: "barra-trilho" }, h("i", { style: `width:${Math.max(2, Math.round((x.valor / max) * 100))}%` })), h("strong", { text: formato(x.valor) }))));
+  }
+  // Mapa de calor dia da semana × hora (um tom só: mais forte = mais mensagens).
+  function mapaHorarios(matriz) {
+    const dias = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
+    const max = Math.max(1, ...matriz.flat());
+    const total = matriz.flat().reduce((s, x) => s + x, 0);
+    let pico = [0, 0, 0];
+    matriz.forEach((l, d) => l.forEach((v, hr) => { if (v > pico[2]) pico = [d, hr, v]; }));
+    return h("div", {}, h("div", { class: "mapa-calor", role: "table", "aria-label": "Mensagens recebidas por dia da semana e hora" },
+      h("div", { class: "mapa-linha mapa-cabeca", role: "row" }, h("span", { role: "columnheader" }), Array.from({ length: 24 }, (_, hr) => h("span", { role: "columnheader", text: hr % 3 === 0 ? String(hr) : "" }))),
+      matriz.map((l, d) => h("div", { class: "mapa-linha", role: "row" }, h("span", { class: "mapa-dia", role: "rowheader", text: dias[d] }),
+        l.map((v, hr) => h("span", { class: "mapa-celula", role: "cell", title: `${dias[d]} ${hr}h: ${numero(v)} mensagem(ns)`, "aria-label": `${dias[d]} ${hr}h: ${v}`, style: `background:rgba(79,140,255,${v ? (0.12 + 0.88 * v / max).toFixed(2) : 0.04})` }))))),
+      h("p", { class: "sub", style: "margin:8px 0 0", text: total ? `Pico: ${dias[pico[0]]} às ${pico[1]}h (${numero(pico[2])} mensagens). Horário de Brasília. Quanto mais forte o azul, mais mensagens.` : "Sem mensagens no período." }));
+  }
+
+  async function paginaWhatsapp(el, aba, vivo) {
+    el.appendChild(cabeca("WhatsApp", "Atendimento aos clientes e conversa com os profissionais pela API oficial: números, qualidade, entregas e diagnóstico."));
     if (!estado.org.conectada) { falha(el, new ErroApi("A IA desta empresa ainda não foi conectada.", 503, { codigo: "ENGINE_NAO_CONFIGURADO" })); return; }
-    const diag = h("div", {}, carregando());
-    el.appendChild(diag);
-    eng("status", { fresco: true }).then(st => { if (vivo()) diag.replaceChildren(cartaoDiagnostico(st)); }).catch(() => { if (vivo()) diag.replaceChildren(cartaoDiagnostico(null)); });
-    const area = h("div", { class: "grade grade-2" }, h("div", { class: "esqueleto" }), h("div", { class: "esqueleto" }));
+    const abas = [["visao", "Visão geral"], ["atendimento", "Atendimento"], ["atendimentos", "Atendimentos"], ["profissionais", "Profissionais"], ["entregas", "Entregas"], ["diagnostico", "Diagnóstico"], ["conexao", "Conexão"]];
+    const atual = abas.some(a => a[0] === aba) ? aba : "visao";
+    el.appendChild(h("div", { class: "abas", role: "tablist" }, abas.map(([k, n]) => h("a", { class: "aba" + (k === atual ? " ativo" : ""), href: "#/whatsapp/" + k, role: "tab" }, n))));
+    const f = estado.numerosZap = estado.numerosZap || { dias: 30, metrica: "recebidas" };
+    const comPeriodo = ["visao", "atendimento", "atendimentos", "profissionais", "entregas"].includes(atual);
+    if (comPeriodo) el.appendChild(h("section", { class: "cartao vidro filtros-desempenho" }, h("div", { class: "abas abas-chips", role: "group", "aria-label": "Período" },
+      [[1, "Hoje"], [7, "7 dias"], [30, "30 dias"], [60, "60 dias"], [90, "90 dias"], [180, "6 meses"], [365, "12 meses"]].map(([v, n]) => h("button", { type: "button", class: "aba" + (f.dias === v ? " ativo" : ""), "aria-pressed": f.dias === v ? "true" : "false", onclick: () => { f.dias = v; navegar(); } }, n)))));
+    const area = h("div", { class: "grade" }, carregando());
     el.appendChild(area);
+    const de = isoLocal(new Date(Date.now() - (f.dias - 1) * 86400000)), ate = isoLocal(new Date());
+    try {
+      if (atual === "diagnostico") { const st = await eng("status", { fresco: true }).catch(() => null); if (vivo()) trocar(area, cartaoDiagnostico(st)); return; }
+      if (atual === "conexao") return await abaConexaoZap(area, vivo);
+      let m;
+      try { m = await eng(`metrics?de=${de}&ate=${ate}`, { fresco: true }); }
+      catch (e) { if (e.status === 404) { trocar(area, h("section", { class: "cartao vidro" }, h("p", { class: "nota", text: "Cole o motor 31.7 no Worker denia para ver as métricas completas do atendimento." }))); return; } throw e; }
+      if (!vivo()) return;
+      const cv = m.conversas || {}, rp = m.respostas || {}, en = m.entregas || {}, at = m.atendimentos || {}, fu = at.funil || {};
+      if (atual === "visao") {
+        const numeros = h("div", {});
+        trocar(area, h("section", { class: "grade grade-4" },
+          metrica("Contatos", numero(cv.contatos || 0), `${numero(cv.novos || 0)} novos · ${numero(cv.recorrentes || 0)} já eram clientes`),
+          metrica("Respondidas pela DENIA", rp.parte_ia != null ? `${String(rp.parte_ia).replace(".", ",")}%` : "—", `${numero(rp.ia || 0)} da DENIA · ${numero(rp.equipe || 0)} da equipe`),
+          metrica("Tempo de resposta", fmtTempo(rp.tempo_ia_s), `DENIA (mediana) · equipe: ${fmtTempo(rp.tempo_equipe_s)}`),
+          metrica("Taxa de entrega", en.taxa_entrega != null ? `${String(en.taxa_entrega).replace(".", ",")}%` : "—", `${numero((en.entregues || 0) + (en.lidas || 0))} entregues · ${numero(en.lidas || 0)} lidas`),
+          metrica("Atendimentos abertos", numero(fu.abertos || 0), `${numero(fu.agendados || 0)} agendados · ${numero(fu.concluidos || 0)} concluídos`),
+          metrica("Conversão", fu.abertos ? `${Math.round(((fu.agendados || 0) / fu.abertos) * 100)}%` : "—", "Atendimentos que viraram serviço agendado"),
+          metrica("Sem resposta", numero(cv.sem_resposta || 0), "Conversas esperando há mais de 30 min"),
+          metrica("Mensagens recebidas", numero(cv.mensagens_recebidas || 0), `${numero(cv.clientes || 0)} clientes · ${numero(cv.profissionais || 0)} profissionais`)),
+          numeros);
+        if (pode("ADMIN")) blocoNumerosWhatsapp(numeros, { semPeriodo: true }); else numeros.remove();
+        return;
+      }
+      if (atual === "atendimento") {
+        trocar(area,
+          h("section", { class: "grade grade-4" },
+            metrica("DENIA responde em", fmtTempo(rp.tempo_ia_s), `9 em cada 10 em até ${fmtTempo(rp.tempo_ia_p90_s)}`),
+            metrica("Equipe responde em", fmtTempo(rp.tempo_equipe_s), `9 em cada 10 em até ${fmtTempo(rp.tempo_equipe_p90_s)}`),
+            metrica("Parte da DENIA", rp.parte_ia != null ? `${String(rp.parte_ia).replace(".", ",")}%` : "—", "das mensagens enviadas"),
+            metrica("Conversas sem resposta", numero(cv.sem_resposta || 0), "esperando há mais de 30 min")),
+          h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Quem respondeu" }), barras([{ rotulo: "DENIA", valor: rp.ia || 0 }, { rotulo: "Equipe", valor: rp.equipe || 0 }])),
+          h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Horários com mais mensagens" }), mapaHorarios(m.horarios || Array.from({ length: 7 }, () => Array(24).fill(0)))),
+          h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Contatos" }), barras([{ rotulo: "Novos", valor: cv.novos || 0 }, { rotulo: "Já eram clientes", valor: cv.recorrentes || 0 }, { rotulo: "Profissionais", valor: cv.profissionais || 0 }])));
+        return;
+      }
+      if (atual === "atendimentos") {
+        const etapas = Object.entries(at.por_etapa || {}).map(([k, v]) => ({ rotulo: NOME_ETAPA_CURTO[k] || k, valor: v })).sort((a, b) => b.valor - a.valor);
+        trocar(area,
+          h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Funil do período" }),
+            barras([{ rotulo: "Abertos", valor: fu.abertos || 0 }, { rotulo: "Profissional consultado", valor: fu.com_profissional || 0 }, { rotulo: "Agendados", valor: fu.agendados || 0 }, { rotulo: "Concluídos", valor: fu.concluidos || 0 }, { rotulo: "Cancelados", valor: fu.cancelados || 0 }]),
+            h("p", { class: "sub", style: "margin:8px 0 0", text: fu.abertos ? `${Math.round(((fu.agendados || 0) / fu.abertos) * 100)}% dos atendimentos abertos viraram serviço agendado.` : "Nenhum atendimento aberto no período." })),
+          h("section", { class: "grade grade-2" },
+            h("div", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Por etapa" }), etapas.length ? barras(etapas) : vazio("Nenhum atendimento", "")),
+            h("div", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Por serviço" }), (at.por_servico || []).length ? barras(at.por_servico.map(x => ({ rotulo: x.servico, valor: x.n }))) : vazio("Nenhum atendimento", ""))),
+          h("div", { class: "acoes" }, h("a", { class: "btn btn-secundario btn-pequeno", href: "#/atendimentos" }, "Abrir a lista de atendimentos")));
+        return;
+      }
+      if (atual === "profissionais") {
+        const lista = m.profissionais || [];
+        trocar(area, h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Profissionais no período" }),
+          lista.length ? h("div", { class: "tabela-caixa" }, h("table", {}, h("thead", {}, h("tr", {}, ["Profissional", "Consultas", "Responderam", "Confirmados", "Recusados", "Tempo de resposta", "Valor confirmado"].map(t => h("th", { text: t })))),
+            h("tbody", {}, lista.map(p => h("tr", {}, h("td", {}, h("strong", { text: p.nome })), h("td", { text: numero(p.consultas) }), h("td", { text: `${numero(p.responderam)} (${p.consultas ? Math.round((p.responderam / p.consultas) * 100) : 0}%)` }),
+              h("td", { text: numero(p.confirmadas) }), h("td", { text: numero(p.recusadas) }), h("td", { text: p.tempo_resposta_min != null ? fmtTempo(p.tempo_resposta_min * 60) : "—" }), h("td", { text: p.valor_confirmado ? dinheiro(p.valor_confirmado / 100, "BRL") : "—" }))))))
+            : vazio("Nenhuma consulta a profissionais no período", "")),
+          h("div", { class: "acoes" }, h("a", { class: "btn btn-secundario btn-pequeno", href: "#/profissionais" }, "Cadastro de profissionais")));
+        return;
+      }
+      if (atual === "entregas") {
+        const numeros = h("div", {});
+        trocar(area, h("section", { class: "grade grade-4" },
+          metrica("Enviadas", numero(en.total || 0), "aceitas pela Meta"),
+          metrica("Entregues", numero((en.entregues || 0) + (en.lidas || 0)), en.taxa_entrega != null ? `${String(en.taxa_entrega).replace(".", ",")}% do total` : ""),
+          metrica("Lidas", numero(en.lidas || 0), en.total ? `${Math.round(((en.lidas || 0) / en.total) * 100)}% do total` : ""),
+          metrica("Não chegaram", numero(en.falhas || 0), en.resolvido ? "já normalizado" : en.falhas_pendentes ? `${numero(en.falhas_pendentes)} desde a última entrega` : "")),
+          (en.motivos || []).length ? h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Por que não chegaram" }), barras(en.motivos.map(x => ({ rotulo: x.motivo, valor: x.n })))) : null,
+          numeros);
+        if (pode("ADMIN")) { estado.numerosZap.metrica = ["entregues", "falhas"].includes(estado.numerosZap.metrica) ? estado.numerosZap.metrica : "entregues"; blocoNumerosWhatsapp(numeros, { semPeriodo: true }); }
+        return;
+      }
+    } catch (e) { falha(area, e); }
+  }
+  async function abaConexaoZap(area, vivo) {
     let s;
-    try { s = estado.status || await eng("status"); }
-    catch (e) { if (vivo()) falha(area, e); return; }
+    try { s = await eng("status", { fresco: true }); } catch (e) { if (vivo()) falha(area, e); return; }
     if (!vivo()) return;
     const ok = v => v ? selo("Ativo", "ok") : selo("Pendente", "alerta");
-    const recebidas = (s.fila_24h || []).reduce((t, x) => t + Number(x.n || 0), 0);
-    const lim = s.limites_envio || {};
-    area.replaceChildren(
+    const lim = s.limites_envio || {}, tw = s.teste_whatsapp || {};
+    trocar(area, h("section", { class: "grade grade-2" },
       h("section", { class: "cartao vidro" }, h("h3", { text: "Conexão" }), h("p", { text: "Situação do número da empresa na API oficial." }),
         h("ul", { class: "lista-saude" },
           h("li", {}, "Número conectado (token da Meta)", ok(s.whatsapp_configurado)),
+          tw.numero ? h("li", {}, "Número", h("strong", { text: tw.numero })) : null,
+          tw.qualidade ? h("li", {}, "Qualidade do número na Meta", selo(({ GREEN: "Verde (boa)", YELLOW: "Amarela (atenção)", RED: "Vermelha (risco)" })[String(tw.qualidade).toUpperCase()] || tw.qualidade, String(tw.qualidade).toUpperCase() === "GREEN" ? "ok" : "alerta")) : null,
+          tw.limite ? h("li", {}, "Limite de conversas iniciadas por dia", h("strong", { text: String(tw.limite).replace("TIER_", "").replace("K", " mil").replace("UNLIMITED", "ilimitado") })) : null,
           h("li", {}, "Assinatura das mensagens verificada", ok(s.assinatura_meta_verificada)),
           h("li", {}, "Modelo aprovado para falar com profissionais", ok(s.template_prestador_configurado)),
-          h("li", {}, "Atendimento automático", s.pausa_geral ? selo("Pausado", "alerta") : selo("Ligado", "ok")))),
-      h("section", { class: "cartao vidro" }, h("h3", { text: "Movimento e proteções" }), h("p", { text: "Travas que impedem envios em excesso e custos inesperados com a Meta." }),
+          h("li", {}, "Atendimento automático", s.pausa_geral ? selo("Pausado", "alerta") : selo("Ligado", "ok")),
+          h("li", {}, "Versão do motor", h("strong", { text: s.versao || "—" }))),
+        h("p", { class: "sub", text: "Qualidade e limite aparecem depois de \"Verificar agora\" no Diagnóstico." })),
+      h("section", { class: "cartao vidro" }, h("h3", { text: "Proteções" }), h("p", { text: "Travas que impedem envios em excesso e custos inesperados com a Meta." }),
         h("ul", { class: "lista-saude" },
-          h("li", {}, "Mensagens recebidas (24 horas)", h("strong", { text: numero(recebidas) })),
           h("li", {}, "Mensagens seguidas do cliente", h("strong", { text: "uma resposta só" })),
           lim.porTelefone2min ? h("li", {}, "Limite por contato", h("strong", { text: `${lim.porTelefone2min} a cada 2 min · ${lim.porTelefoneHora} por hora` })) : null,
+          h("li", {}, "Mensagens atrasadas", h("strong", { text: "só responde até 30 min; nunca em massa" })),
           h("li", {}, "Fora da janela de 24 horas", h("strong", { text: "só com modelo aprovado" }))),
-        h("div", { class: "acoes", style: "margin-top:16px" }, h("a", { class: "btn btn-primario btn-pequeno", href: "#/conversas" }, "Abrir conversas"), h("a", { class: "btn btn-secundario btn-pequeno", href: "#/painel" }, "Controle da IA"))));
-    if (pode("ADMIN")) { const numeros = h("div", {}); el.appendChild(numeros); blocoNumerosWhatsapp(numeros); }
+        h("div", { class: "acoes", style: "margin-top:16px" }, h("a", { class: "btn btn-primario btn-pequeno", href: "#/conversas" }, "Abrir conversas"), h("a", { class: "btn btn-secundario btn-pequeno", href: "#/painel" }, "Controle da IA")))));
   }
 
   async function paginaContatos(el, _p, vivo) {

@@ -978,3 +978,20 @@ test("Estudo diário — a DENIA relê o dia, aprende com os erros (lições val
   await a.cliente(CLI, "Moro em Botafogo, quando podem vir?");
   assert.match(entrada, /LIÇÕES DO ESTUDO DIÁRIO[\s\S]*confira se o cliente já informou/);
 });
+
+test("Métricas do atendimento — tempo de resposta, IA x equipe, horários, contatos, atendimentos e profissionais", async () => {
+  const TOKEN = "token-da-plataforma-123456";
+  const a = await criarAmbiente({ env: { DENIA_PLATFORM_SERVICE_TOKEN: TOKEN } });
+  await iniciarConsultaChaveiro(a);
+  a.llmCliente = () => decisao({ resposta: "Oi!" });
+  await a.cliente(CLI2, "Bom dia");
+  const m = await (await a.http(`/platform/metrics?de=2020-01-01&ate=2035-12-31`, { headers: { authorization: "Bearer " + TOKEN } })).json();
+  assert.equal(m.sucesso, true);
+  assert.ok(m.conversas.contatos >= 2);
+  assert.ok(m.respostas.ia >= 2);
+  assert.equal(m.horarios.length, 7); assert.equal(m.horarios[0].length, 24);
+  assert.ok(m.horarios.flat().reduce((s, x) => s + x, 0) >= 2);
+  assert.ok(m.atendimentos.funil.abertos >= 1);
+  assert.equal(m.atendimentos.funil.com_profissional, 1);
+  assert.ok(m.profissionais.some(p => p.consultas === 1));
+});

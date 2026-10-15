@@ -46,6 +46,7 @@ const NOME_PAPEL = { OWNER: "Proprietário", ADMIN: "Administrador", AGENTE: "At
 const ROTAS_ENGINE = [
   ["GET", /^status$/, "VISUALIZADOR"],
   ["GET", /^usage$/, "ADMIN"],
+  ["GET", /^metrics$/, "VISUALIZADOR"],
   ["GET", /^conversations$/, "VISUALIZADOR"],
   ["GET", /^conversations\/\d{1,12}$/, "VISUALIZADOR"],
   ["POST", /^conversations\/\d{1,12}\/(send|takeover|release)$/, "AGENTE", "CONVERSA"],
@@ -668,7 +669,8 @@ async function vigiarWhatsapp(env) {
       if (!con?.token) continue;
       const st = (await chamarEngine(con, "GET", "status")).dados || {};
       const en = st.entregas_24h;
-      const muitas = en && en.falhas >= Math.max(3, (en.total || 0) * 0.2);
+      const pendentes = en ? (en.falhas_pendentes != null ? en.falhas_pendentes : en.falhas) : 0;
+      const muitas = en && pendentes >= Math.max(3, (en.total || 0) * 0.2);
       if (!st.entrega_bloqueada && !muitas) continue;
       const motivo = st.entrega_bloqueada ? `${st.entrega_bloqueada.erro} (código ${st.entrega_bloqueada.codigo})` : (en.motivos || []).map(m => `${m.motivo} (${m.n}×)`).join(" · ");
       const chave = "alerta_entrega_" + org;

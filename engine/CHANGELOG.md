@@ -1,5 +1,16 @@
 # Changelog — DENIA Engine
 
+## 31.7.0 — 2026-10-15
+
+### Novo
+- `/platform/metrics?de&ate`: métricas do atendimento — contatos (novos e recorrentes), mensagens,
+  tempo de resposta (mediana e 90%) da DENIA e da equipe, parte respondida pela DENIA, conversas sem
+  resposta, mapa de horários (dia × hora, Brasília), atendimentos por etapa e serviço, funil
+  (aberto → profissional → agendado → concluído), profissionais (consultas, respostas, confirmações,
+  tempo de resposta, valor) e entregas.
+- Resumo de entregas sabe quando o problema já foi resolvido (`falhas_pendentes`, `ultima_entrega_ms`):
+  falhas antigas seguidas de entregas confirmadas não geram mais aviso.
+
 ## 31.6.0 — 2026-10-15
 
 ### Corrigido — a DENIA não sabia o que a equipe combinou por fora
