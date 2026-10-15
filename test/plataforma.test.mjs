@@ -1690,3 +1690,27 @@ test("IA completa — qualquer empresa: conversa como gente, lembra do cliente, 
   assert.equal(r.status, 402); assert.match(r.dados.erro, /Start/);
   assert.equal(anaOrg.status, 200);
 });
+
+test("Chatbot — a IA monta o chatbot a partir da descrição (pergunta o essencial e aplica)", async () => {
+  const { p, inf } = await duasEmpresasComChatbot();
+  await p.req("/api/orgs/1/ia/chave", { metodo: "POST", quem: "admin", corpo: { chave: "sk-proj-" + "e".repeat(40) } });
+  let vez = 0;
+  p.openai = () => {
+    vez++;
+    const o = vez === 1 ? { perguntas: ["Qual o horário de funcionamento?"] } : { plano: { modo: "BOTOES", boas_vindas: "Olá! Bem-vindo ao Infomix 👋", humano: "Já chamo alguém!", rotulo_catalogo: "lojas", sobre: "Seg a sáb, 10h às 22h.",
+      menu: [{ tipo: "MENU", titulo: "🛍️ Produtos com um título comprido demais", texto: "O que procura?", filhos: [{ tipo: "LISTA", titulo: "Celulares", palavras: "celular, smartphone" }] }, { tipo: "RESPOSTA", titulo: "🕒 Horário", texto: "Seg a sáb, 10h às 22h." }, { tipo: "HUMANO", titulo: "💬 Falar com alguém" }] } };
+    return { output: [{ content: [{ type: "output_text", text: JSON.stringify(o) }] }] };
+  };
+  const desc = "Shopping com lojas de celular e informática; quero que o cliente ache a loja pelo WhatsApp.";
+  const r1 = await p.req(`/api/orgs/${inf}/zap/assistente`, { metodo: "POST", quem: "admin", corpo: { descricao: desc } });
+  assert.deepEqual(r1.dados.perguntas, ["Qual o horário de funcionamento?"]);
+  const r2 = await p.req(`/api/orgs/${inf}/zap/assistente`, { metodo: "POST", quem: "admin", corpo: { descricao: desc, respostas: [{ pergunta: "Qual o horário?", resposta: "10h às 22h" }] } });
+  assert.equal(r2.dados.plano.menu[0].titulo.length <= 24, true);
+  const ap = await p.req(`/api/orgs/${inf}/zap/assistente`, { metodo: "POST", quem: "admin", corpo: { acao: "aplicar", plano: r2.dados.plano } });
+  assert.equal(ap.dados.opcoes, 4);
+  const cfg = (await p.req(`/api/orgs/${inf}/zap/config`, { quem: "admin" })).dados.config;
+  assert.equal(cfg.boas_vindas, "Olá! Bem-vindo ao Infomix 👋"); assert.equal(cfg.rotulo_catalogo, "lojas");
+  assert.equal((await p.req(`/api/orgs/${inf}/zap/assistente`, { metodo: "POST", quem: "admin", corpo: { acao: "aplicar", plano: r2.dados.plano } })).status, 409, "não apaga o menu sem confirmar");
+  const t = await p.req(`/api/orgs/${inf}/zap/testar`, { metodo: "POST", quem: "admin", corpo: { texto: "oi" } });
+  assert.match(t.dados.respostas[0].interativo.body.text, /Bem-vindo ao Infomix/);
+});

@@ -766,6 +766,24 @@ export async function rotasZap(request, env, k, orgId, papel, resto) {
     await auditar(env, request, sessao, orgId, "CONVERSA", `Respondeu ${m[1]} pelo chatbot (${autor})`);
     return json({ ok: true });
   }
+  // Assistente: a pessoa descreve o negócio e a IA monta menu, mensagens e treinamento (pergunta só o essencial).
+  if (r === "assistente" && metodo === "POST") {
+    const negado = precisa("AGENTE"); if (negado) return negado;
+    const { corpo, erro } = await ler(30000); if (erro) return erro;
+    if (corpo.acao === "aplicar") return aplicarPlanoChatbot(env, k, orgId, corpo, json, request);
+    const descricao = k.txt(corpo.descricao, 6000);
+    if (descricao.length < 20) return json({ erro: "Conte um pouco mais sobre o negócio (o que vende ou faz, para quem, horário, como atende)." }, 400);
+    const envIA = await k.comIA(env, orgId);
+    if (!envIA.OPENAI_API_KEY) return json({ erro: "A IA da plataforma ainda não está ligada. Fale com a equipe DENIA." }, 503);
+    const respostas = (Array.isArray(corpo.respostas) ? corpo.respostas : []).slice(0, 8).map(x => `P: ${k.txt(x.pergunta, 300)}\nR: ${k.txt(x.resposta, 1000)}`).join("\n");
+    const org = await env.DB.prepare("SELECT nome, segmento FROM plt_organizacoes WHERE id=?").bind(orgId).first();
+    try {
+      const o = await openaiResposta(envIA, { modelo: "gpt-5-mini", esforco: "low", maxTokens: 6000, recurso: "chatbot/assistente", instrucoes: INSTRUCOES_ASSISTENTE,
+        entrada: `EMPRESA: ${org?.nome || ""}${org?.segmento ? " (" + org.segmento + ")" : ""}\n\nCOMO A PESSOA DESCREVEU O NEGÓCIO E O QUE QUER:\n${descricao}${respostas ? `\n\nRESPOSTAS ÀS SUAS PERGUNTAS:\n${respostas}` : ""}\n\n${respostas || corpo.sem_perguntas ? "Agora monte o plano completo (sem perguntas)." : "Se faltar algo ESSENCIAL, faça até 4 perguntas; senão, monte o plano."}` });
+      if (Array.isArray(o?.perguntas) && o.perguntas.length && !respostas && !corpo.sem_perguntas) return json({ perguntas: o.perguntas.slice(0, 4).map(x => k.txt(x, 300)).filter(Boolean) });
+      return json({ plano: limparPlano(o?.plano || o, k) });
+    } catch (e) { return json({ erro: "A IA não conseguiu montar agora: " + e.message }, 502); }
+  }
   // Testar como cliente: nada vai para o WhatsApp e nada entra nas métricas.
   if (r === "testar" && metodo === "POST") {
     const { corpo, erro } = await ler(); if (erro) return erro;
@@ -778,6 +796,53 @@ export async function rotasZap(request, env, k, orgId, papel, resto) {
     return json({ respostas: z.registro });
   }
   return json({ erro: "Rota do chatbot não encontrada." }, 404);
+}
+
+const INSTRUCOES_ASSISTENTE = `Você é especialista em atendimento pelo WhatsApp e monta chatbots para pequenas e grandes empresas brasileiras.
+A partir da descrição, monte o atendimento automático ideal: menu enxuto e fácil (no máximo 3 opções no menu inicial quando possível, para virar botões), submenus para organizar, respostas prontas curtas e úteis, listas de contatos quando a empresa indica lojas/profissionais, e sempre uma opção para falar com a equipe.
+Escreva como uma pessoa simpática, em português do Brasil, frases curtas, emoji com moderação no começo dos títulos.
+Títulos das opções: no máximo 24 caracteres. Use as palavras-chave que os clientes realmente escreveriam (com e sem acento, sinônimos, erros comuns).
+Nunca invente preço, endereço, telefone ou horário que não esteja na descrição: quando faltar, deixe um marcador como "[preencha o horário]".
+Tipos: MENU (abre outras opções; tem "filhos"), RESPOSTA (texto pronto), LISTA (lista de contatos/lojas cadastrados depois), HUMANO (falar com a equipe).
+Se faltar informação ESSENCIAL e ainda não houver respostas, devolva {"perguntas":["..."]} (no máximo 4, objetivas).
+Senão devolva {"plano":{"modo":"BOTOES|MISTO|IA","boas_vindas":"","nao_entendi":"","humano":"","encerramento":"","rotulo_catalogo":"","sobre":"","ia_tom":"","ia_servicos":"","ia_precos":"","ia_regras":"","menu":[{"tipo":"MENU","titulo":"","texto":"","palavras":"","filhos":[{"tipo":"RESPOSTA","titulo":"","texto":"","palavras":""}]}]}}.
+Escolha o modo: BOTOES quando é só direcionar (ex.: guia de lojas), MISTO quando há dúvidas variadas, IA quando o atendimento é consultivo (vendas, orçamentos, agendamentos).`;
+function limparPlano(p, k) {
+  const tipo = t => TIPOS.includes(t) ? t : "RESPOSTA";
+  let total = 0;
+  const no = (x, prof) => {
+    if (!x || total >= 150) return null;
+    total++;
+    const t = prof >= 3 && x.tipo === "MENU" ? "RESPOSTA" : tipo(x.tipo);
+    return { tipo: t, titulo: cortar(k.txt(x.titulo, 60), 24) || "Opção", texto: k.txt(x.texto, 3000), palavras: k.txt(x.palavras, 500), filhos: t === "MENU" ? (Array.isArray(x.filhos) ? x.filhos : []).slice(0, 40).map(f => no(f, prof + 1)).filter(Boolean) : [] };
+  };
+  const menu = (Array.isArray(p?.menu) ? p.menu : []).slice(0, 12).map(x => no(x, 1)).filter(Boolean);
+  const campos = {};
+  for (const c of ["boas_vindas", "nao_entendi", "humano", "encerramento", "rotulo_catalogo", "sobre", "ia_tom", "ia_servicos", "ia_precos", "ia_regras"]) if (typeof p?.[c] === "string") campos[c] = k.txt(p[c], c === "sobre" || c.startsWith("ia_") ? 6000 : 1000);
+  return { modo: ["BOTOES", "MISTO", "IA"].includes(p?.modo) ? p.modo : "MISTO", ...campos, menu };
+}
+async function aplicarPlanoChatbot(env, k, orgId, corpo, json, request) {
+  const plano = limparPlano(corpo.plano, k);
+  if (!plano.menu.length) return json({ erro: "O plano não tem menu." }, 400);
+  const existentes = Number((await env.DB.prepare("SELECT COUNT(*) n FROM plt_zap_itens WHERE org_id=?").bind(orgId).first())?.n || 0);
+  if (existentes && !corpo.substituir) return json({ erro: "O menu já tem opções. Marque \"substituir o menu atual\" para trocar.", codigo: "MENU_EXISTE" }, 409);
+  if (existentes) await env.DB.batch([env.DB.prepare("DELETE FROM plt_zap_cat_itens WHERE item_id IN (SELECT id FROM plt_zap_itens WHERE org_id=?)").bind(orgId), env.DB.prepare("DELETE FROM plt_zap_itens WHERE org_id=?").bind(orgId)]);
+  let n = 0;
+  const criar = async (lista, pai) => {
+    for (const [i, x] of lista.entries()) {
+      const id = (await env.DB.prepare("INSERT INTO plt_zap_itens(org_id,pai_id,tipo,titulo,texto,palavras,ordem,ativo,exibicao) VALUES(?,?,?,?,?,?,?,1,'AUTO') RETURNING id").bind(orgId, pai, x.tipo, x.titulo, x.texto, x.palavras, i + 1).first()).id;
+      n++;
+      if (x.filhos.length) await criar(x.filhos, id);
+    }
+  };
+  await criar(plano.menu, 0);
+  const c = await contaDa(env, orgId), cfg = lerConfig(c);
+  for (const [ch, v] of Object.entries(plano)) if (ch !== "menu" && ch !== "modo" && typeof v === "string" && v) cfg[ch] = v;
+  const acesso = k.acesso;
+  const modo = acesso ? modoPermitido(plano.modo, acesso.recursos) : plano.modo;
+  await env.DB.prepare("INSERT INTO plt_zap_contas(org_id,config,modo,atualizado_ms) VALUES(?,?,?,?) ON CONFLICT(org_id) DO UPDATE SET config=excluded.config, modo=excluded.modo, atualizado_ms=excluded.atualizado_ms").bind(orgId, JSON.stringify(cfg), modo, k.agora(env)).run();
+  await k.auditar(env, request, k.sessao, orgId, "CHATBOT", `Chatbot montado pela IA (${n} opções, modo ${modo})`);
+  return json({ ok: true, opcoes: n, modo });
 }
 
 // A equipe responde o cliente (pelo painel ou pelo Telegram): o robô fica em pausa nessa conversa.

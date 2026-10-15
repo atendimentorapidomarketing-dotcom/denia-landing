@@ -1800,6 +1800,43 @@
         catch (e) { aviso(e.message, "erro"); }
       }, "btn-primario"))]);
   }
+  // Assistente: a pessoa conta como é o negócio e a IA monta tudo (menu, mensagens e treinamento).
+  function criarComIA(temMenu) {
+    const desc = h("textarea", { class: "entrada", maxlength: "6000", style: "min-height:180px", placeholder: "Ex.: Sou o Shopping Infomix, em Niterói. Temos 120 lojas de celular, informática e games, e serviços como conserto de celular. Quero que o cliente escolha o que procura e receba o WhatsApp das lojas. Horário: seg a sáb, 10h às 22h. Quando pedir atendente, avisar no Telegram." });
+    const area = h("div", { class: "grade" });
+    let perguntas = [], plano = null;
+    const substituir = h("input", { type: "checkbox" });
+    const desenharPlano = () => {
+      const linhas = [];
+      const desce = (lista, n) => lista.forEach(x => { linhas.push(h("div", { class: "zap-no", style: `margin-left:${n * 18}px` }, h("span", { class: "zap-no-titulo" }, h("strong", { text: x.titulo }), h("small", { class: "sub", text: " · " + TIPOS_ITEM[x.tipo].split(" (")[0] + (x.texto ? ` — ${x.texto.slice(0, 90)}${x.texto.length > 90 ? "…" : ""}` : "") })))); desce(x.filhos || [], n + 1); });
+      desce(plano.menu, 0);
+      trocar(area, h("p", { class: "nota", text: `Pronto! Modo sugerido: ${({ BOTOES: "só botões", MISTO: "botões + IA", IA: "IA completa" })[plano.modo]}. Confira e aplique; depois você ajusta qualquer coisa.` }),
+        plano.boas_vindas ? h("div", { class: "msg msg-saida", style: "max-width:100%" }, plano.boas_vindas) : null,
+        h("div", { class: "zap-arvore" }, linhas),
+        temMenu ? h("label", { class: "guia-cat" }, substituir, "Substituir o menu atual") : null,
+        h("div", { class: "acoes" }, botao("Aplicar no meu chatbot", async () => {
+          try { const r = await zap("assistente", { metodo: "POST", corpo: { acao: "aplicar", plano, substituir: substituir.checked } }); aviso(`Chatbot montado: ${r.opcoes} opções.`, "ok"); fechar(); navegar(); }
+          catch (e) { aviso(e.message, "erro"); }
+        }, "btn-primario"), botao("Gerar de novo", () => gerar(), "btn-secundario")));
+    };
+    const gerar = async (respostas) => {
+      trocar(area, carregando("A IA está montando o seu atendimento…"));
+      try {
+        const r = await zap("assistente", { metodo: "POST", corpo: { descricao: desc.value, respostas, sem_perguntas: Boolean(respostas) } });
+        if (r.perguntas) {
+          perguntas = r.perguntas;
+          const ents = perguntas.map(() => h("textarea", { class: "entrada", style: "min-height:60px" }));
+          trocar(area, h("p", { class: "nota", text: "Só preciso de mais isto para montar certinho:" }), perguntas.map((q, i) => campo(q, ents[i])),
+            h("div", { class: "acoes" }, botao("Montar o chatbot", () => gerar(perguntas.map((q, i) => ({ pergunta: q, resposta: ents[i].value }))), "btn-primario"), botao("Montar sem responder", () => gerar([]), "btn-secundario")));
+          return;
+        }
+        plano = r.plano; desenharPlano();
+      } catch (e) { trocar(area); aviso(e.message, "erro"); }
+    };
+    const fechar = gaveta("✨ Criar o chatbot com a IA", [
+      h("p", { text: "Conte com suas palavras como é o negócio e como quer atender. A IA monta o menu, as mensagens, as palavras-chave e o treinamento — e pergunta só o essencial." }),
+      campo("Sobre o seu negócio", desc), h("div", { class: "acoes" }, botao("Montar com a IA", () => gerar(), "btn-primario")), area]);
+  }
   async function abaZapMenu(area, vivo) {
     const d = await zap("itens");
     if (!vivo()) return;
@@ -1809,7 +1846,8 @@
     if (!itens.length) {
       const modelo = (tipo, nome, desc) => h("div", { class: "cartao vidro", style: "display:grid;gap:10px" }, h("h3", { style: "margin:0", text: nome }), h("p", { class: "sub", style: "margin:0", text: desc }),
         pode("AGENTE") ? botao("Usar este modelo", async () => { try { await zap("modelo", { metodo: "POST", corpo: { tipo } }); aviso("Menu criado. Agora ajuste do seu jeito.", "ok"); recarregar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario btn-pequeno") : null);
-      trocar(area, h("p", { class: "nota", text: "Comece por um modelo pronto (você muda tudo depois) ou crie as opções do zero." }),
+      trocar(area, pode("AGENTE") ? h("section", { class: "cartao vidro destaque-ia" }, h("h3", { style: "margin:0", text: "✨ Deixe a IA montar para você" }), h("p", { class: "sub", style: "margin:0", text: "Conte como é o negócio e a IA monta o menu, as mensagens e o treinamento em segundos." }), botao("Criar com a IA", () => criarComIA(false), "btn-primario")) : null,
+        h("p", { class: "nota", text: "Ou comece por um modelo pronto (você muda tudo depois), ou crie as opções do zero." }),
         h("section", { class: "grade grade-3" }, modelo("shopping", "🛍️ Shopping / guia de lojas", "Produtos e Serviços → categorias → lojas com o WhatsApp de cada uma. Ideal para importar a planilha de lojas."),
           modelo("servicos", "🔧 Empresa de serviços", "Nossos serviços, endereço e horário, falar com atendente."), modelo("restaurante", "🍽️ Restaurante / delivery", "Cardápio, delivery, endereço e horário, falar com atendente.")),
         pode("AGENTE") ? h("div", { class: "acoes" }, botao("Criar do zero", () => editarItem(null, itens, recarregar), "btn-secundario")) : null);
@@ -1829,7 +1867,7 @@
     const raiz = itens.filter(i => !i.pai_id && i.ativo).length;
     trocar(area,
       h("section", { class: "cartao vidro" }, h("div", { class: "cabeca-grafico" }, h("h3", { style: "margin:0", text: "Menu do WhatsApp" }),
-        pode("AGENTE") ? h("div", { class: "acoes" }, botao("+ Nova opção", () => editarItem(null, itens, recarregar), "btn-primario btn-pequeno"), h("a", { class: "btn btn-secundario btn-pequeno", href: "#/chatbot/testar" }, "Testar")) : null),
+        pode("AGENTE") ? h("div", { class: "acoes" }, botao("+ Nova opção", () => editarItem(null, itens, recarregar), "btn-primario btn-pequeno"), botao("✨ Refazer com a IA", () => criarComIA(true), "btn-secundario btn-pequeno"), h("a", { class: "btn btn-secundario btn-pequeno", href: "#/chatbot/testar" }, "Testar")) : null),
         h("p", { class: "sub", text: `Com até 3 opções o cliente vê botões; com mais, uma lista (9 por vez + "Mais opções"). O menu inicial tem ${raiz} opção(ões): ${raiz <= 3 ? "aparece em botões" : "aparece em lista"}. Depois de cada resposta o robô oferece Menu inicial, Voltar e Finalizar.` }),
         h("div", { class: "zap-arvore" }, arvore)));
   }
