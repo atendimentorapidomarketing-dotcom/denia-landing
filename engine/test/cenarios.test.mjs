@@ -29,7 +29,7 @@ test("Cenário 1 — chaveiro: não repete pergunta, consulta o chaveiro certo u
   await a.cliente(CLI, "Trocar a fechadura. Botafogo");
   assert.equal(a.para(CHAVEIRO).length, 1, "consulta enviada ao Anderson CHAVEIRO");
   assert.equal(a.para(ANDERSON_REFORMA).length, 0, "nunca o Anderson da reforma");
-  assert.match(a.para(CHAVEIRO)[0].texto, /caso \d+/i);
+  assert.doesNotMatch(a.para(CHAVEIRO)[0].texto, /caso\s*#?\d+|#\d+/i, "número de caso é interno: não vai ao profissional");
   assert.doesNotMatch(a.para(CHAVEIRO)[0].texto, /Solicitação:|Marca\/modelo:/, "escrita como gente, não como formulário");
   assert.doesNotMatch(a.para(CHAVEIRO)[0].texto, new RegExp(CLI), "telefone do cliente não vai ao prestador");
   assert.match(a.ultimoPara(CLI), /^Enviamos sua solicitação ao profissional/);
@@ -159,7 +159,8 @@ test("Prestador pergunta 'que cliente?' e recebe o contexto do caso certo", asyn
   a.llmPrestador = () => prest({ tipo: "PEDE_CONTEXTO" });
   await a.cliente(CHAVEIRO, "Que cliente? Verificar o quê?");
   const r = a.ultimoPara(CHAVEIRO);
-  assert.match(r, /caso \d+[\s\S]*Botafogo[\s\S]*troca de fechadura/);
+  assert.match(r, /Botafogo[\s\S]*troca de fechadura/);
+  assert.doesNotMatch(r, /caso\s*#?\d+|#\d+/i);
   assert.doesNotMatch(r, new RegExp(CLI));
 });
 
@@ -190,7 +191,8 @@ test("Prestador com dois casos: pergunta qual é, e resposta citando a mensagem 
   assert.equal(consultas.length, 2);
   a.llmPrestador = () => prest({ tipo: "ACEITA", valor_centavos: 20000, valor_e_final: "SIM", disponibilidade: "hoje às 18h" });
   await a.cliente(CHAVEIRO, "Faço por 200, hoje às 18h");
-  assert.match(a.ultimoPara(CHAVEIRO), /mais de um atendimento/);
+  assert.match(a.ultimoPara(CHAVEIRO), /só pra eu não confundir/);
+  assert.doesNotMatch(a.ultimoPara(CHAVEIRO), /caso\s*#?\d+|#\d+|número/i, "nunca pede número de caso");
   const segunda = consultas[1];
   await a.webhook({ contacts: [{ wa_id: CHAVEIRO }], messages: [{ id: "wamid.ctx.1", from: CHAVEIRO, timestamp: String(Math.floor(a.agora / 1000)), type: "text", text: { body: "Faço por 200, hoje às 18h" }, context: { id: segunda.id } }] });
   assert.match(a.ultimoPara(CLI2), /R\$ 200,00/, "valor final informado: sem acréscimo");
@@ -238,7 +240,7 @@ test("V30.7 — mensagem atrasada (20 min) é respondida com desculpas; mais de 
   await b.cliente(CLI, "Oi", { ts: b.agora - 13 * 3600 * 1000 });
   assert.equal(b.para(CLI).length, 0);
   assert.equal(b.DB.q("SELECT COUNT(*) n FROM mensagens")[0].n, 1);
-  assert.ok(b.telegram.some(t => /atraso/.test(t)));
+  assert.ok(b.telegram.some(t => /sem resposta/.test(t)));
 });
 
 test("V30.7 — falha passageira: a DENIA tenta de novo e responde", async () => {
@@ -338,7 +340,7 @@ test("Simulador do painel roda o fluxo sem enviar nada pela Meta", async () => {
   a.llmCliente = () => decisao({ resposta: "Ok", intencao: "NOVO_PEDIDO", quer_orcamento_ou_atendimento: true, pronto_para_profissional: true, fatos: { servico: "chaveiro", problema: "cópia de chave" } });
   const r = await (await a.http("/api/teste", { method: "POST", body: JSON.stringify({ remetente: "cliente", texto: "Preciso de cópia de chave" }) })).json();
   assert.equal(a.enviados.length, 0);
-  assert.ok(r.saidas.some(s => s.papel === "prestador" && /caso \d+/i.test(s.texto)));
+  assert.ok(r.saidas.some(s => s.papel === "prestador" && /Você consegue pegar/i.test(s.texto)));
   assert.ok(r.saidas.some(s => s.papel === "cliente" && /^Enviamos/.test(s.texto)));
   a.llmPrestador = () => prest({ tipo: "ACEITA", valor_centavos: 3000, valor_e_final: "SIM", disponibilidade: "hoje" });
   const r2 = await (await a.http("/api/teste", { method: "POST", body: JSON.stringify({ remetente: "CHAV-ANDERSON", texto: "faço por 30, hoje" }) })).json();
@@ -630,7 +632,7 @@ test("V30.4 — ponte contínua: cada dúvida do cliente vai ao profissional e a
 
   a.llmCliente = () => decisao({ resposta: "Vou confirmar com o profissional.", intencao: "PERGUNTA_PARA_PROFISSIONAL", resposta_para_profissional: "A fechadura nova está inclusa no valor?" });
   await a.cliente(CLI, "A fechadura nova está inclusa?");
-  assert.match(a.ultimoPara(CHAVEIRO), /o cliente do caso \d+ perguntou: A fechadura nova está inclusa no valor\?/);
+  assert.match(a.ultimoPara(CHAVEIRO), /o cliente de Botafogo perguntou: A fechadura nova está inclusa no valor\?/);
   assert.match(a.ultimoPara(CLI), /Vou confirmar com o profissional e já te respondo/);
 
   a.llmPrestador = (e) => { assert.match(e, /PERGUNTA DO CLIENTE: A fechadura nova/); return prest({ tipo: "RESPONDE", mensagem_para_cliente: "Sim, a fechadura nova já está inclusa." }); };
@@ -639,7 +641,7 @@ test("V30.4 — ponte contínua: cada dúvida do cliente vai ao profissional e a
 
   a.llmCliente = () => decisao({ resposta: "Vou confirmar.", intencao: "PERGUNTA_PARA_PROFISSIONAL", resposta_para_profissional: "Tem garantia?" });
   await a.cliente(CLI, "E tem garantia?");
-  assert.match(a.ultimoPara(CHAVEIRO), /o cliente do caso \d+ perguntou: Tem garantia\?/, "a ponte continua enquanto houver dúvidas");
+  assert.match(a.ultimoPara(CHAVEIRO), /o cliente de Botafogo perguntou: Tem garantia\?/, "a ponte continua enquanto houver dúvidas");
   a.llmPrestador = () => prest({ tipo: "RESPONDE", mensagem_para_cliente: "Sim, são 90 dias de garantia." });
   await a.cliente(CHAVEIRO, "90 dias");
   assert.equal(a.ultimoPara(CLI), "Sim, são 90 dias de garantia.");
@@ -890,4 +892,48 @@ test("Cron depois de horas parado — NUNCA manda mensagens em massa nem respond
   a.avancar(11 * 60000);
   await a.cron();
   assert.equal(a.para("5521977770002").length, n0, "a equipe já respondeu: nada sai");
+});
+
+test("Profissional responde à mensagem da equipe ('Serviço agendado: nome, endereço…') — a DENIA acha o caso certo sozinha, sem pedir número", async () => {
+  const a = await criarAmbiente();
+  a.llmCliente = () => decisao({ resposta: "Vou consultar o profissional.", intencao: "NOVO_PEDIDO", quer_orcamento_ou_atendimento: true, pronto_para_profissional: true, fatos: { servico: "chaveiro", problema: "troca de fechadura", bairro: "Botafogo" } });
+  await a.cliente(CLI, "Preciso trocar a fechadura, é em Botafogo", { nome: "Maria Souza" });
+  a.llmCliente = () => decisao({ resposta: "Vou consultar o profissional.", intencao: "NOVO_PEDIDO", quer_orcamento_ou_atendimento: true, pronto_para_profissional: true, fatos: { servico: "chaveiro", problema: "cópia de chave tetra", bairro: "Tijuca" } });
+  await a.cliente(CLI2, "Quero fazer cópia de chave tetra, sou da Tijuca", { nome: "João Lima" });
+  assert.equal(a.para(CHAVEIRO).length, 2, "duas consultas abertas com o mesmo profissional");
+  const casoJoao = a.DB.q("SELECT c.caso_id FROM d30_casos c JOIN pessoas p ON p.id=c.cliente_id WHERE p.nome LIKE 'João%'")[0].caso_id;
+  // A equipe manda pelo celular da empresa o resumo do serviço agendado do João.
+  await a.eco(CHAVEIRO, "Serviço agendado\nNome: João Lima\nEndereço: Rua Conde de Bonfim, 100\nBairro: Tijuca\nServiço: cópia de chave tetra\nData: amanhã 10h\nValor: R$ 80");
+  const eco = a.DB.q("SELECT whatsapp_message_id w FROM mensagens WHERE origem='HUMANO' ORDER BY id DESC LIMIT 1")[0].w;
+  a.avancar(11 * 60000); // passa a pausa de 10 min que a mensagem da equipe liga
+  let vistoNoPrompt = "";
+  a.llmPrestador = (e) => { vistoNoPrompt = e; return prest({ tipo: "COMENTARIO" }); };
+  const antes = a.para(CHAVEIRO).length;
+  await a.webhook({ contacts: [{ wa_id: CHAVEIRO }], messages: [{ id: "wamid.resp.eq", from: CHAVEIRO, timestamp: String(Math.floor(a.agora / 1000)), type: "text", text: { body: "Combinado, amanhã 10h estou lá na Tijuca" }, context: { id: eco } }] });
+  const novas = a.para(CHAVEIRO).slice(antes);
+  assert.ok(!novas.some(m => /não confundir|qual|número do caso/i.test(m.texto)), "não pergunta qual atendimento: " + JSON.stringify(novas.map(m => m.texto)));
+  assert.match(vistoNoPrompt, new RegExp(`CASO #${casoJoao}\\b`), "ligou ao caso do João");
+  for (const m of a.enviados) assert.doesNotMatch(String(m.texto || ""), /caso\s*#?\d+|#\d{2,}/i, "número de caso nunca sai: " + m.texto);
+});
+
+test("Memória completa — cliente antigo com meses de conversa: a DENIA lê o dossiê antes de responder", async () => {
+  const a = await criarAmbiente();
+  a.llmCliente = () => decisao({ resposta: "Oi!" });
+  await a.cliente(CLI, "Oi", { nome: "Carla" });
+  const pessoa = a.DB.q("SELECT id FROM pessoas WHERE telefone=?", CLI)[0].id;
+  // 120 mensagens antigas (há 6 meses), além das últimas 60 que o histórico mostra.
+  for (let i = 0; i < 120; i++) a.DB.prepare("INSERT INTO mensagens(empresa_id,pessoa_id,direcao,origem,tipo_conteudo,conteudo,criado_em) VALUES(1,?,?,?,'TEXTO',?,datetime('now','-180 days'))")
+    .bind(pessoa, i % 2 ? "SAIDA" : "ENTRADA", i % 2 ? "HUMANO" : "WHATSAPP", i === 0 ? "Oi, moro na Rua das Flores 12, Leblon, minha geladeira Brastemp parou" : "mensagem antiga " + i).run();
+  let pedidoMemoria = "";
+  a.llmMemoria = (e) => { pedidoMemoria = e; return { dossie: "Carla, cliente desde abril. Mora na Rua das Flores 12, Leblon. Geladeira Brastemp consertada em abril." }; };
+  let entradaCliente = "";
+  a.llmCliente = (e) => { entradaCliente = e; return decisao({ resposta: "Oi, Carla! A geladeira deu problema de novo?" }); };
+  await a.cliente(CLI, "Oi, preciso de ajuda de novo");
+  assert.match(pedidoMemoria, /Rua das Flores 12, Leblon/, "a memória leu desde a primeira mensagem");
+  assert.match(entradaCliente, /MEMÓRIA COMPLETA DO CLIENTE[\s\S]*Rua das Flores 12, Leblon/, "a resposta já sai sabendo do histórico antigo");
+  assert.match(entradaCliente, /Primeiro contato: /);
+  // Próxima mensagem: usa o dossiê guardado (não gera de novo).
+  pedidoMemoria = "";
+  await a.cliente(CLI, "É a mesma geladeira");
+  assert.equal(pedidoMemoria, "", "dossiê reaproveitado");
 });
