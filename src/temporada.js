@@ -538,6 +538,8 @@ export async function rotasTemporada(request, env, k, orgId, papel, resto) {
   if ((m = r.match(/^imoveis\/(\d{1,12})\/conectar$/)) && metodo === "POST") {
     const negado = precisa("ADMIN"); if (negado) return negado;
     if (!channexLigado(env)) return json({ erro: "A conexão oficial com as plataformas ainda não foi ativada na DENIA. Enquanto isso, use os calendários (iCal).", codigo: "SEM_CHANNEX" }, 503);
+    // A conexão oficial tem custo por imóvel: só para quem já pagou (ou tem cortesia). No teste grátis, use o calendário.
+    if (!k.superAdmin && k.acesso && !k.acesso.cortesia && k.acesso.status !== "ATIVO") return json({ erro: "A conexão oficial (mensagens, preços e reservas em tempo real) é liberada depois do primeiro pagamento. No teste grátis, use os calendários (iCal) — já evitam reserva dupla.", codigo: "PLANO_PAGO" }, 402);
     let im = await imovel(m[1]); if (!im) return json({ erro: "Imóvel não encontrado." }, 404);
     try {
       im = await garantirChannex(env, k, im);
@@ -564,4 +566,24 @@ export async function icalPublico(env, caminho) {
   const eventos = res.map(r => ({ uid: "r" + r.id, inicio: r.inicio, fim: r.fim, titulo: r.tipo === "BLOQUEIO" ? "Indisponível" : "Reservado" }));
   for (const f of fech) eventos.push({ uid: "f" + im.id + f.data, inicio: f.data, fim: somaDias(f.data, 1), titulo: "Fechado" });
   return new Response(gerarIcal(im.nome, eventos), { headers: { "content-type": "text/calendar; charset=utf-8", "cache-control": "no-store" } });
+}
+
+// Cron (1x por dia): quem parou de pagar tem a conexão oficial desligada, para não gerar custo por imóvel.
+// O calendário (iCal), os dados e o treinamento continuam guardados; ao voltar a pagar, é só conectar de novo.
+export async function desligarInadimplentes(env, k, acessoDe) {
+  if (!channexLigado(env)) return 0;
+  const orgs = (await env.DB.prepare("SELECT DISTINCT org_id FROM plt_tp_imoveis WHERE channex_property IS NOT NULL LIMIT 200").all())?.results || [];
+  let n = 0;
+  for (const { org_id } of orgs) {
+    const a = await acessoDe(org_id);
+    if (!a || a.liberado) continue;
+    const ims = (await env.DB.prepare("SELECT id, nome, channex_property FROM plt_tp_imoveis WHERE org_id=? AND channex_property IS NOT NULL").bind(org_id).all())?.results || [];
+    for (const im of ims) {
+      await cx(env, "DELETE", "/properties/" + im.channex_property).catch(e => console.warn("channex desligar", e?.message));
+      await env.DB.prepare("UPDATE plt_tp_imoveis SET channex_property=NULL, channex_room=NULL, channex_rates=NULL WHERE id=?").bind(im.id).run();
+      n++;
+    }
+    if (ims.length && k.avisar) await k.avisar(org_id, `A conexão oficial com Airbnb, Booking e Vrbo foi pausada (${ims.length} imóvel(is)) porque o plano está pendente. Seus calendários, reservas e o treinamento da IA continuam guardados. Para voltar, regularize em Plano e pagamento e conecte de novo.`).catch(() => {});
+  }
+  return n;
 }
