@@ -1275,10 +1275,12 @@ test("WhatsApp sem entregar — o cron avisa os responsáveis por e-mail (uma ve
   await p.engine.env.DB.prepare("INSERT OR REPLACE INTO d30_meta(chave,valor) VALUES('entrega_bloqueada',?)").bind(JSON.stringify({ codigo: 131042, erro: "Problema de pagamento na conta do WhatsApp Business", em: Date.now() })).run();
   const st = (await p.req("/api/orgs/1/engine/status", { quem: "admin" })).dados;
   assert.equal(st.entrega_bloqueada.codigo, 131042);
+  { const t0 = Date.now() + 26 * 60000; p.env.__agora = () => t0; }
   { let tarefa; await mod.default.scheduled({}, p.env, { waitUntil: (pr) => { tarefa = pr; } }); await tarefa; }
   const avisos = p.emails.filter(e => /não está entregando/.test(e.subject));
   assert.equal(avisos.length, 1);
   assert.match(avisos[0].text, /pagamento/);
+  { const t1 = Date.now() + 52 * 60000; p.env.__agora = () => t1; }
   { let tarefa; await mod.default.scheduled({}, p.env, { waitUntil: (pr) => { tarefa = pr; } }); await tarefa; }
   assert.equal(p.emails.filter(e => /não está entregando/.test(e.subject)).length, 1, "não repete o mesmo aviso em menos de 6 h");
 });

@@ -167,6 +167,14 @@ async function reconciliarContasLegadas(env) {
     await env.DB.batch(st);
   }
 }
+// Erros do banco (D1) explicados em português: limite diário do plano gratuito, banco cheio ou fora do ar.
+function erroDoBanco(e) {
+  const m = String(e?.message || e || "");
+  if (/row.?read|rows? read|daily.*limit|exceeded.*limit|free.?tier/i.test(m)) return { codigo: "D1_LIMITE_LEITURA", erro: "O banco de dados atingiu o limite diário do plano gratuito da Cloudflare. Ele libera sozinho às 21h (horário de Brasília). Para nunca mais acontecer: Cloudflare → Workers → Planos → Workers Paid (US$ 5/mês)." };
+  if (/SQLITE_FULL|database or disk is full|storage|size limit|too large|exceeds.*size/i.test(m)) return { codigo: "D1_CHEIO", erro: "O banco de dados está cheio (limite de espaço do plano gratuito da Cloudflare). Assine o Workers Paid (US$ 5/mês) para ter 5 GB, ou fale com a equipe DENIA para liberar espaço." };
+  if (/D1_|SQLITE|database/i.test(m)) return { codigo: "D1_FORA", erro: "O banco de dados da plataforma está indisponível agora. Tente de novo em instantes." };
+  return null;
+}
 async function garantirSchema(env) {
   if (schemaPronto) return;
   if (!env.DB) throw Object.assign(new Error("D1 ausente"), { codigo: "SEM_BANCO" });
@@ -692,6 +700,7 @@ async function cuidarDasAvaliacoes(env, k) {
 // (pagamento, token, número bloqueado) ou muitas mensagens falharam, avisa os responsáveis por
 // e-mail — no máximo uma vez a cada 6 horas para o mesmo problema.
 async function vigiarWhatsapp(env) {
+  if (!(await aCada(env, "vigiar_whatsapp", 25 * 60000))) return; // a cada 30 min (a consulta de saúde lê várias tabelas do motor)
   const orgs = new Set(((await env.DB.prepare("SELECT org_id FROM plt_integracoes LIMIT 50").all().catch(() => null))?.results || []).map(x => x.org_id));
   const central = await primeiraEmpresa(env).catch(() => null);
   if (central) orgs.add(central);
@@ -701,6 +710,7 @@ async function vigiarWhatsapp(env) {
       const con = await conexaoDa(env, org);
       if (!con?.token) continue;
       const st = (await chamarEngine(con, "GET", "status")).dados || {};
+      if (st.versao) await env.DB.prepare("INSERT OR REPLACE INTO plt_meta(chave,valor) VALUES(?,?)").bind("versao_motor_" + org, String(st.versao)).run().catch(() => {});
       const en = st.entregas_24h;
       const pendentes = en ? (en.falhas_pendentes != null ? en.falhas_pendentes : en.falhas) : 0;
       const muitas = en && pendentes >= Math.max(3, (en.total || 0) * 0.2);
@@ -723,13 +733,43 @@ async function vigiarWhatsapp(env) {
 // Cron (5 min): pede ao motor de cada empresa para enviar a fila de respostas e responder mensagens
 // recentes que ficaram para trás. Assim nada depende do cron do próprio motor (que a empresa pode deixar
 // desligado). O motor só responde o que é recente e nunca manda em massa.
+// Roda no máximo uma vez a cada "ms" (guardado no banco, vale entre execuções do cron).
+async function aCada(env, nome, ms) {
+  const t = agora(env);
+  const r = await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave=?").bind("acada_" + nome).first().catch(() => null);
+  if (r && t - Number(r.valor || 0) < ms) return false;
+  await env.DB.prepare("INSERT OR REPLACE INTO plt_meta(chave,valor) VALUES(?,?)").bind("acada_" + nome, String(t)).run().catch(() => {});
+  return true;
+}
+// Uma vez por dia: apaga o que só ocupa espaço (imagens geradas e não usadas, registros técnicos antigos).
+async function limparBanco(env) {
+  const hoje = new Date(agora(env) - 3 * 3600000).toISOString().slice(0, 10);
+  const feito = await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave='limpeza_dia'").first().catch(() => null);
+  if (feito?.valor === hoje) return;
+  await env.DB.prepare("INSERT OR REPLACE INTO plt_meta(chave,valor) VALUES('limpeza_dia',?)").bind(hoje).run();
+  const t = agora(env);
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM plt_mk_midias WHERE criado_ms < ? AND id NOT IN (SELECT midia_id FROM plt_mk_posts WHERE midia_id IS NOT NULL AND (status NOT IN ('PUBLICADO','REJEITADO') OR atualizado_ms > ?))").bind(t - 30 * 86400000, t - 90 * 86400000),
+    env.DB.prepare("DELETE FROM plt_tentativas WHERE ate < ?").bind(t - 86400000),
+    env.DB.prepare("DELETE FROM plt_redefinicoes WHERE expira_ms < ?").bind(t - 7 * 86400000),
+    env.DB.prepare("DELETE FROM plt_meta WHERE chave LIKE 'tg_codigo:%' AND CAST(json_extract(valor,'$.ate') AS INTEGER) < ?").bind(t),
+    env.DB.prepare("DELETE FROM plt_meta WHERE chave LIKE 'zap_ia_%' AND chave NOT LIKE 'zap_ia_mes_%' AND chave NOT LIKE ?").bind(`%_${hoje}`),
+    env.DB.prepare("DELETE FROM plt_zap_tg WHERE criado_ms < ?").bind(t - 30 * 86400000)
+  ]).catch(e => console.error("limpeza", e?.message));
+}
+
+// Motores antigos (antes do 31.9) liam o histórico inteiro a cada "tick": com eles, só a cada 30 min.
 async function tickMotores(env) {
   const orgs = new Set(((await env.DB.prepare("SELECT org_id FROM plt_integracoes LIMIT 50").all().catch(() => null))?.results || []).map(x => x.org_id));
   const central = await primeiraEmpresa(env).catch(() => null);
   if (central) orgs.add(central);
   for (const org of orgs) {
-    try { const con = await conexaoDa(env, org); if (con?.token) await chamarEngine(con, "POST", "tick", {}); }
-    catch (e) { console.error("tick motor", org, e?.message); }
+    try {
+      const versao = String((await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave=?").bind("versao_motor_" + org).first().catch(() => null))?.valor || "");
+      const novo = /^(3[2-9]|[4-9]\d)\.|^31\.(9|\d{2})\./.test(versao);
+      if (!novo && !(await aCada(env, "tick_" + org, 25 * 60000))) continue;
+      const con = await conexaoDa(env, org); if (con?.token) await chamarEngine(con, "POST", "tick", {});
+    } catch (e) { console.error("tick motor", org, e?.message); }
   }
 }
 
@@ -1004,7 +1044,8 @@ async function api(request, env, caminho) {
   try { await garantirSchema(env); }
   catch (e) {
     console.error("D1:", e?.message);
-    return json({ erro: e?.codigo === "SEM_BANCO" ? "A plataforma ainda não foi configurada: falta o banco D1 (binding DB)." : "O banco de dados da plataforma está indisponível. Tente novamente em instantes.", codigo: "SEM_BANCO" }, 503);
+    const b = erroDoBanco(e);
+    return json({ erro: e?.codigo === "SEM_BANCO" ? "A plataforma ainda não foi configurada: falta o banco D1 (binding DB)." : b ? b.erro : "O banco de dados da plataforma está indisponível. Tente novamente em instantes.", codigo: b?.codigo || "SEM_BANCO" }, 503);
   }
   if (caminho === "/api/entrar" && metodo === "POST") return entrar(request, env);
   if (caminho === "/api/cadastro" && metodo === "POST") return cadastrar(request, env);
@@ -1169,11 +1210,21 @@ function comSeguranca(resposta, request) {
   return new Response(resposta.body, { status: resposta.status, statusText: resposta.statusText, headers: h });
 }
 
+function paginaBancoIndisponivel(b) {
+  const esc = t => String(t).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+  return `<!doctype html><html lang="pt-BR"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>DENIA — banco indisponível</title>
+<body style="margin:0;font-family:system-ui,sans-serif;background:#070b14;color:#e8edf7;display:grid;place-items:center;min-height:100vh;padding:16px"><main style="max-width:560px;background:#0f1626;border:1px solid #24304a;border-radius:20px;padding:28px">
+<h1 style="margin:0 0 12px;font-size:22px">A plataforma está temporariamente sem acesso ao banco de dados</h1><p style="line-height:1.6;color:#b9c3d8">${esc(b.erro)}</p>
+<p style="line-height:1.6;color:#b9c3d8">Nada foi perdido: contas, conversas e configurações continuam guardadas.</p><p><a href="/entrar" style="color:#7aa7ff">Tentar de novo</a></p></main></body></html>`;
+}
+
 export default {
   async fetch(request, env, ctx) {
     try { return comSeguranca(await rotear(request, env, ctx), request); }
     catch (e) {
       console.error("Erro não tratado:", e?.stack || e);
+      const b = erroDoBanco(e);
+      if (b) return comSeguranca(new URL(request.url).pathname.startsWith("/api/") ? json(b, 503) : new Response(paginaBancoIndisponivel(b), { status: 503, headers: { "content-type": "text/html; charset=UTF-8" } }), request);
       return comSeguranca(json({ erro: "Erro interno. Tente novamente." }, 500), request);
     }
     finally { await descarregarUso(env); } // grava o consumo somado nesta requisição
@@ -1189,6 +1240,7 @@ export default {
       await cuidarDasAvaliacoes(env, k).catch(e => console.error("avaliações", e?.message));
       await tickMotores(env).catch(e => console.error("tick", e?.message));
       await vigiarWhatsapp(env).catch(e => console.error("whatsapp", e?.message));
+      await limparBanco(env).catch(e => console.error("limpeza", e?.message));
       await lembretesDePlano(env, { ...(await kitZap(env)), enviarEmail, responsaveis: o => responsaveisDa(env, o) }).catch(e => console.error("lembretes", e?.message));
     })().catch(e => console.error("cron", e?.message)).finally(() => descarregarUso(env));
     if (ctx && ctx.waitUntil) ctx.waitUntil(tarefa); else await tarefa;

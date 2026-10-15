@@ -339,9 +339,9 @@
     if (ehRevisor()) $("status-engine").replaceChildren(h("span", { class: "ponto" }), "Revisor de aprendizados");
     else if (!estado.eu.usuario.trocar_senha) {
       atualizarStatus(); atualizarAprovacoes();
-      // Confere de novo a cada 3 minutos (entregas do WhatsApp, aprovações e alertas).
+      // Confere de novo a cada 10 minutos (entregas do WhatsApp, aprovações e alertas).
       clearInterval(estado.relogioStatus);
-      estado.relogioStatus = setInterval(() => { if (document.visibilityState === "visible" && estado.org && estado.org.conectada) { cacheEng.delete(`/api/orgs/${estado.org.id}/engine/status`); atualizarStatus(); } }, 180000);
+      estado.relogioStatus = setInterval(() => { if (document.visibilityState === "visible" && estado.org && estado.org.conectada) { cacheEng.delete(`/api/orgs/${estado.org.id}/engine/status`); atualizarStatus(); } }, 600000);
     }
     else $("status-engine").replaceChildren(h("span", { class: "ponto" }), "Primeiro acesso");
   }
