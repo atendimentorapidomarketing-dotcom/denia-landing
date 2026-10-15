@@ -1825,3 +1825,23 @@ test("Temporada — plano: o Essencial não inclui; o plano Temporada libera at�
   const sexto = await p.req(`/api/orgs/${org.id}/tp/imoveis`, { metodo: "POST", quem: "ana", corpo: { nome: "Imóvel 6" } });
   assert.equal(sexto.status, 402); assert.equal(sexto.dados.codigo, "PLANO_LIMITE");
 });
+
+test("Temporada — conexão oficial só para quem pagou; quem para de pagar é desligado sozinho (sem custo à toa)", async () => {
+  const p = await criarPlataforma({ CHANNEX_API_KEY: "cx_teste", CHANNEX_STAGING: "1" });
+  p.channex = (caminho) => caminho === "/properties" ? { data: { id: "prop-x" } } : caminho === "/room_types" ? { data: { id: "room-x" } } : caminho === "/rate_plans" ? { data: { id: "rate-" + Math.random() } } : caminho === "/auth/one_time_token" ? { data: { token: "t" } } : { data: {} };
+  await p.req("/api/cadastro", { metodo: "POST", quem: "ana", corpo: { nome: "Ana", empresa: "Ana Temporada", email: "ana@t.test", senha: "SenhaMuitoForte#2026", aceite: true, plano: "temporada" } });
+  const org = (await p.req("/api/eu", { quem: "ana" })).dados.organizacoes[0];
+  const id = (await p.req(`/api/orgs/${org.id}/tp/imoveis`, { metodo: "POST", quem: "ana", corpo: { nome: "Casa", preco_base: 300 } })).dados.id;
+  const teste = await p.req(`/api/orgs/${org.id}/tp/imoveis/${id}/conectar`, { metodo: "POST", quem: "ana", corpo: {} });
+  assert.equal(teste.status, 402); assert.equal(teste.dados.codigo, "PLANO_PAGO", "no teste grátis, só calendário");
+  assert.equal((p.channexChamadas || []).length, 0, "nada criado no Channex");
+  p.env.DB.db.prepare("UPDATE plt_organizacoes SET plano_status='ATIVO', pago_ate=? WHERE id=?").run(Date.now() + 30 * 86400000, org.id);
+  assert.equal((await p.req(`/api/orgs/${org.id}/tp/imoveis/${id}/conectar`, { metodo: "POST", quem: "ana", corpo: {} })).status, 200);
+  // Parou de pagar: no cron, a conexão é desligada no Channex e os dados ficam.
+  p.env.DB.db.prepare("UPDATE plt_organizacoes SET plano_status='ATRASADO', pago_ate=? WHERE id=?").run(Date.now() - 10 * 86400000, org.id);
+  const mod = await import("../src/worker.js?inadimplente");
+  await mod.default.scheduled({}, p.env, null);
+  assert.ok(p.channexChamadas.some(c => c.metodo === "DELETE" && c.caminho === "/properties/prop-x"));
+  assert.equal(p.env.DB.q("SELECT channex_property FROM plt_tp_imoveis WHERE id=?", id)[0].channex_property, null);
+  assert.equal(p.env.DB.q("SELECT nome FROM plt_tp_imoveis WHERE id=?", id)[0].nome, "Casa", "imóvel e dados continuam");
+});
