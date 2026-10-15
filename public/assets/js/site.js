@@ -2,6 +2,10 @@
 (function () {
   "use strict";
   var raiz = document.documentElement;
+  // Aberto pelo ícone na tela inicial (aplicativo): vai direto para o painel, nunca para o site.
+  var comoApp = (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) || window.navigator.standalone === true;
+  var paginasDoSite = ["/", "/index.html", "/contato", "/contato.html"];
+  if (comoApp && paginasDoSite.indexOf(location.pathname) >= 0) { location.replace("/app"); return; }
   var semMovimento = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
   // ---------- Revelar ao rolar ----------

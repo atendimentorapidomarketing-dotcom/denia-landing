@@ -221,9 +221,9 @@ function configAdmin(env) {
   const senha = String(env.PLATFORM_ADMIN_PASSWORD || "");
   return emailValido(email) && senha.length >= 12 ? { email, senha } : null;
 }
-const SESSAO_LONGA_MS = 30 * 24 * 60 * 60 * 1000;
+const SESSAO_LONGA_MS = 90 * 24 * 60 * 60 * 1000; // "manter conectado" e o aplicativo na tela inicial
 async function criarCookie(env, usuario, duracao = SESSAO_MS) {
-  const dados = b64url(enc.encode(JSON.stringify({ u: usuario.id, sv: usuario.sessao_versao, exp: agora(env) + duracao, v: 2 })));
+  const dados = b64url(enc.encode(JSON.stringify({ u: usuario.id, sv: usuario.sessao_versao, exp: agora(env) + duracao, v: 2, ...(duracao >= SESSAO_LONGA_MS ? { l: 1 } : {}) })));
   return `${dados}.${await hmac(await segredo(env), dados)}`;
 }
 function cookieSessao(valor, maxAge) { return `${COOKIE}=${valor}; Path=/; HttpOnly; Secure; SameSite=Strict${maxAge === null ? "" : `; Max-Age=${maxAge}`}`; }
@@ -238,7 +238,7 @@ async function lerSessao(request, env) {
   const u = await env.DB.prepare("SELECT id,email,nome,super_admin,ativo,trocar_senha,sessao_versao,origem,(senha_hash IS NOT NULL) tem_senha FROM plt_usuarios WHERE id=?").bind(Number(s.u)).first();
   if (!u || !u.ativo || u.sessao_versao !== s.sv) return null;
   if (u.super_admin && u.origem === "ENV" && configAdmin(env)?.email !== u.email) return null; // admin geral trocado ou removido da configuração
-  return { usuario: { ...u, super_admin: Boolean(u.super_admin), trocar_senha: Boolean(u.trocar_senha), tem_senha: Boolean(u.tem_senha) }, exp: s.exp };
+  return { usuario: { ...u, super_admin: Boolean(u.super_admin), trocar_senha: Boolean(u.trocar_senha), tem_senha: Boolean(u.tem_senha) }, exp: s.exp, longa: s.l === 1 };
 }
 
 async function chaveCifra(env) {
@@ -1028,9 +1028,19 @@ async function rotear(request, env) {
   const sessao = ehPainel || caminho === "/entrar" || caminho === "/entrar.html" || caminho === "/cadastro" ? await lerSessao(request, env).catch(() => null) : null;
   if (ehPainel) {
     if (!sessao) return redirecionar("/entrar");
-    return env.ASSETS.fetch(new Request(new URL("/app", url).toString(), { headers: request.headers }));
+    const pagina = await env.ASSETS.fetch(new Request(new URL("/app", url).toString(), { headers: request.headers }));
+    // Quem marcou "manter conectado" (e o aplicativo na tela inicial) nunca precisa entrar de novo:
+    // a cada abertura, se já passou um mês, a sessão é renovada por mais 90 dias.
+    if (sessao.longa && sessao.exp - agora(env) < SESSAO_LONGA_MS - 30 * 24 * 3600000) {
+      const renovada = new Response(pagina.body, pagina);
+      renovada.headers.append("set-cookie", cookieSessao(await criarCookie(env, sessao.usuario, SESSAO_LONGA_MS), SESSAO_LONGA_MS / 1000));
+      return renovada;
+    }
+    return pagina;
   }
   if (caminho === "/cadastro" && sessao) return redirecionar("/app");
+  // Já conectado: entrar vai direto para o painel (?trocar=1 deixa entrar com outra conta).
+  if ((caminho === "/entrar" || caminho === "/entrar.html") && sessao && url.searchParams.get("trocar") !== "1") return redirecionar("/app");
   return env.ASSETS.fetch(request);
 }
 

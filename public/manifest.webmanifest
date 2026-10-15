@@ -3,7 +3,7 @@
   "short_name": "DENIA",
   "description": "Centro de comando da operação digital com inteligência artificial.",
   "lang": "pt-BR",
-  "start_url": "/app",
+  "start_url": "/app?origem=app",
   "scope": "/",
   "display": "standalone",
   "background_color": "#04060c",
@@ -26,6 +26,26 @@
       "sizes": "any",
       "type": "image/svg+xml",
       "purpose": "any"
+    }
+  ],
+  "id": "/app",
+  "display_override": [
+    "standalone",
+    "minimal-ui"
+  ],
+  "orientation": "any",
+  "shortcuts": [
+    {
+      "name": "Conversas",
+      "url": "/app#/conversas"
+    },
+    {
+      "name": "Atendimentos",
+      "url": "/app#/atendimentos"
+    },
+    {
+      "name": "Falar com a DENIA",
+      "url": "/app#/denia"
     }
   ]
 }

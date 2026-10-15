@@ -90,7 +90,9 @@ test("Plataforma — login do administrador geral, primeira empresa criada e cab
   assert.equal(app.r.headers.get("x-frame-options"), "DENY");
   assert.equal(app.r.headers.get("cache-control"), "no-store");
   const entrar = await p.req("/entrar", { quem: "admin" });
-  assert.equal(entrar.status, 200, "a página de login sempre aparece, mesmo já conectado");
+  assert.equal(entrar.status, 302, "já conectado: o login (e o ícone do aplicativo) vai direto para o painel");
+  assert.equal(new URL(entrar.r.headers.get("location"), "https://x").pathname, "/app");
+  assert.equal((await p.req("/entrar?trocar=1", { quem: "admin" })).status, 200, "dá para entrar com outra conta");
   assert.doesNotMatch(r.r.headers.get("set-cookie"), /Max-Age/, "sem 'manter conectado', a sessão termina ao fechar o navegador");
 });
 
@@ -374,7 +376,16 @@ test("Plataforma — esqueceu a senha: link por e-mail, uso único, e não revel
 test("Plataforma — lembrar de mim, formulário de contato e páginas antigas", async () => {
   const p = await criarPlataforma();
   const r = await p.req("/api/entrar", { metodo: "POST", quem: "a", corpo: { email: ADMIN, senha: SENHA_ADMIN, lembrar: true } });
-  assert.match(r.r.headers.get("set-cookie"), /Max-Age=2592000/, "30 dias");
+  assert.match(r.r.headers.get("set-cookie"), /Max-Age=7776000/, "90 dias");
+  // Abrir o painel com a sessão longa já usada há mais de um mês renova por mais 90 dias.
+  const app1 = await p.req("/app", { quem: "a" });
+  assert.equal(app1.r.headers.get("set-cookie"), null, "sessão nova não precisa renovar");
+  const agoraReal = Date.now;
+  Date.now = () => agoraReal() + 40 * 86400000;
+  try {
+    const app2 = await p.req("/app", { quem: "a" });
+    assert.match(app2.r.headers.get("set-cookie") || "", /Max-Age=7776000/, "renovada");
+  } finally { Date.now = agoraReal; }
   const robo = await p.req("/api/contato", { metodo: "POST", corpo: { nome: "Bot", email: "b@x.test", mensagem: "spam spam", site: "http://spam" } });
   assert.equal(robo.status, 200);
   const c = await p.req("/api/contato", { metodo: "POST", corpo: { nome: "Paula", email: "paula@x.test", telefone: "21 99999-0000", assunto: "Planos e valores", mensagem: "Quero uma demonstração" } });
