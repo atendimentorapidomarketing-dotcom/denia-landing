@@ -1755,6 +1755,7 @@
         h("div", { class: "conversa-cabeca" }, h("button", { type: "button", class: "btn btn-secundario btn-pequeno so-celular", onclick: () => { estado.zapAberta = ""; grade.classList.remove("com-aberta"); } }, "‹ Voltar"),
           h("h3", { text: c.nome || telefone(c.telefone) }), h("span", { class: "sub", text: telefone(c.telefone) }),
           h("div", { class: "acoes" }, pode("AGENTE") ? botao(c.pausado ? "Devolver ao robô" : "Assumir (pausar o robô)", async () => { try { await zap(`conversas/${tel}/robo`, { metodo: "POST", corpo: { ligar: c.pausado } }); aviso(c.pausado ? "O robô voltou a atender esta conversa." : "Robô em pausa nesta conversa.", "ok"); abrir(tel); } catch (e) { aviso(e.message, "erro"); } }, c.pausado ? "btn-primario btn-pequeno" : "btn-secundario btn-pequeno") : null)),
+        c.memoria ? h("details", { class: "detalhes", style: "padding:0 18px" }, h("summary", { text: "O que a IA lembra deste cliente" }), h("p", { class: "sub", style: "white-space:pre-wrap", text: c.memoria })) : null,
         msgs,
         h("div", { class: "compor" }, texto, botao("Enviar", async () => {
           const t = texto.value.trim(); if (!t) return;
@@ -1919,7 +1920,10 @@
     const d = await zap("config");
     if (!vivo()) return;
     const cfg = d.config || {};
-    const modo = h("select", { class: "entrada" }, [["BOTOES", "Só botões — sem IA, custo zero (recomendado para começar)"], ["MISTO", "Botões + IA — a IA responde o que o cliente escrever"]].map(([v, n]) => h("option", { value: v, selected: d.modo === v, text: n })));
+    const modo = h("select", { class: "entrada" }, [["BOTOES", "Só botões — sem IA, custo zero"], ["MISTO", "Botões + IA — a IA entra só quando a busca por palavra não acha"], ["IA", "IA completa — conversa como uma pessoa, com memória (os botões continuam)"]].map(([v, n]) => h("option", { value: v, selected: d.modo === v, text: n })));
+    const treino = {};
+    const CAMPOS_TREINO_ZAP = [["nome_atendente", "Nome da atendente (opcional)", "Ex.: Bia. Se ficar vazio, ela se apresenta como a equipe.", 1], ["ia_tom", "Jeito de atender", "Ex.: simpática, direta, trata por você, usa emoji com moderação.", 2], ["ia_servicos", "Produtos e serviços", "O que a empresa vende ou faz, o que NÃO faz, prazos.", 4], ["ia_precos", "Preços autorizados", "Só os valores que a IA pode informar. Fora daqui, ela diz que vai confirmar.", 3], ["ia_regras", "Regras", "Pagamento, entrega, garantia, trocas, regiões atendidas, quando chamar a equipe.", 3], ["ia_exemplos", "Exemplos de como a equipe responde", "Cole trechos reais: a IA imita o jeito de escrever.", 4]];
+    const modeloConversa = h("select", { class: "entrada" }, [["gpt-5-mini", "gpt-5-mini — ótimo e econômico (recomendado)"], ["gpt-4.1", "gpt-4.1 — mais caprichado, custa mais"], ["gpt-5-nano", "gpt-5-nano — o mais barato"]].map(([v, n]) => h("option", { value: v, selected: (cfg.modelo_conversa || "gpt-5-mini") === v, text: n })));
     const ativo = h("input", { type: "checkbox", checked: d.ativo !== false });
     const campos = [["boas_vindas", "Boas-vindas (aparece com o menu inicial)", "", 3], ["nao_entendi", "Quando o robô não entende", "", 1], ["humano", "Ao chamar a equipe", "", 2], ["rodape_lista", "Depois de uma lista de contatos", "", 2], ["encerramento", "Ao finalizar", "", 2], ["rotulo_catalogo", "Como chamar os contatos", "Ex.: lojas, profissionais, unidades. Aparece como \"3 lojas\" na lista.", 1], ["rede_nome", "Rede social (nome)", "Ex.: Instagram", 1], ["rede_url", "Rede social (link)", "Vai na mensagem de encerramento.", 1]];
     const ent = {};
@@ -1936,11 +1940,15 @@
         campo("Como mostrar o menu inicial", exibIni)),
       h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Mensagens" }),
         campos.map(([k, rot, dica, l]) => { ent[k] = l > 1 ? h("textarea", { class: "entrada", maxlength: "1000", style: `min-height:${l * 34}px` }) : h("input", { class: "entrada", maxlength: "300" }); ent[k].value = cfg[k] || ""; return campo(rot, ent[k], dica); })),
-      h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "IA (só no modo Botões + IA)" }),
+      h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Treinamento da IA completa" }),
+        h("p", { class: "sub", text: "A IA atende como uma pessoa da equipe usando só o que estiver aqui, no campo \"O que a IA pode responder\" e no menu. Ela lembra de cada cliente (nome, preferências, o que já pediu), responde no idioma do cliente e chama a equipe quando não sabe." }),
+        CAMPOS_TREINO_ZAP.map(([k, rot, dica, l]) => { treino[k] = l > 1 ? h("textarea", { class: "entrada", maxlength: "6000", style: `min-height:${l * 40}px` }) : h("input", { class: "entrada", maxlength: "60" }); treino[k].value = cfg[k] || ""; return campo(rot, treino[k], dica); }),
+        campo("Modelo da IA completa", modeloConversa)),
+      h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "IA para dúvidas e limites" }),
         campo("O que a IA pode responder sobre a empresa", sobre, "A IA só responde com o que estiver aqui ou no menu. Nunca inventa preço, telefone ou horário."),
         h("div", { class: "grade grade-2" }, campo("Modelo", modelo), campo("Limite de respostas da IA por dia", limite, "Proteção de custo: passou disso, o robô volta a mostrar o menu."))),
       pode("AGENTE") ? h("div", { class: "acoes" }, botao("Salvar", async () => {
-        try { await zap("config", { metodo: "POST", corpo: { ...Object.fromEntries(Object.entries(ent).map(([k, e]) => [k, e.value])), sobre: sobre.value, modelo_ia: modelo.value, limite_ia_dia: Number(limite.value), avisar_buscas: avisar.checked, exibicao_inicio: exibIni.value, modo: modo.value, ativo: ativo.checked } }); aviso("Salvo.", "ok"); }
+        try { await zap("config", { metodo: "POST", corpo: { ...Object.fromEntries(Object.entries(ent).map(([k, e]) => [k, e.value])), sobre: sobre.value, modelo_ia: modelo.value, limite_ia_dia: Number(limite.value), avisar_buscas: avisar.checked, exibicao_inicio: exibIni.value, modo: modo.value, ativo: ativo.checked, modelo_conversa: modeloConversa.value, ...Object.fromEntries(Object.entries(treino).map(([k, e]) => [k, e.value])) } }); aviso("Salvo.", "ok"); }
         catch (e) { aviso(e.message, "erro"); }
       }, "btn-primario"), h("a", { class: "btn btn-secundario", href: "#/chatbot/testar" }, "Testar como cliente")) : null);
   }
@@ -1981,10 +1989,12 @@
     const tela = h("div", { class: "mensagens guia-tela", "aria-live": "polite" });
     const entrada = h("input", { class: "entrada", placeholder: "Escreva como um cliente…", maxlength: "500" });
     const balao = (t, cli) => h("div", { class: "msg " + (cli ? "msg-entrada" : "msg-saida") }, t);
+    const historico = [];
     const enviar = async (texto, acao, rotulo) => {
       tela.appendChild(balao(rotulo || texto, true));
       try {
-        const r = await zap("testar", { metodo: "POST", corpo: { texto, acao } });
+        const r = await zap("testar", { metodo: "POST", corpo: { texto, acao, historico: historico.slice(-20) } });
+        historico.push({ cliente: true, texto: rotulo || texto }, ...(r.respostas || []).map(x => ({ cliente: false, texto: x.texto })));
         for (const x of r.respostas || []) {
           const it = x.interativo;
           if (!it) { tela.appendChild(balao(x.texto, false)); continue; }
@@ -2000,7 +2010,7 @@
     entrada.addEventListener("keydown", e => { if (e.key === "Enter") mandar(); });
     trocar(area, h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Testar como cliente" }),
       h("p", { class: "sub", text: "Simula a conversa: nada é enviado pelo WhatsApp e nada entra nas métricas. No modo Botões + IA, o que você escrever pode usar a IA (centavos)." }),
-      h("div", { class: "acoes", style: "margin:8px 0" }, botao("Começar (oi)", () => enviar("oi", "", "oi"), "btn-primario btn-pequeno"), botao("Limpar", () => tela.replaceChildren(), "btn-secundario btn-pequeno")),
+      h("div", { class: "acoes", style: "margin:8px 0" }, botao("Começar (oi)", () => enviar("oi", "", "oi"), "btn-primario btn-pequeno"), botao("Limpar", () => { tela.replaceChildren(); historico.length = 0; }, "btn-secundario btn-pequeno")),
       tela, h("div", { class: "compor" }, entrada, botao("Enviar", mandar, "btn-primario"))));
   }
 

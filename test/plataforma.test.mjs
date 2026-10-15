@@ -1637,3 +1637,56 @@ test("Telegram — bot da plataforma conecta o grupo com um toque e a equipe res
     assert.equal(p.engine.enviados.length, antes);
   } finally { globalThis.fetch = anterior; }
 });
+
+test("IA completa — qualquer empresa: conversa como gente, lembra do cliente, não mistura empresas e chama a equipe", async () => {
+  const { p, inf } = await duasEmpresasComChatbot();
+  await p.req("/api/orgs/1/ia/chave", { metodo: "POST", quem: "admin", corpo: { chave: "sk-proj-" + "d".repeat(40) } });
+  await p.req(`/api/orgs/${inf}/zap/modelo`, { metodo: "POST", quem: "admin", corpo: { tipo: "shopping" } });
+  await p.req(`/api/orgs/${inf}/zap/config`, { metodo: "POST", quem: "admin", corpo: { modo: "IA", nome_atendente: "Bia", sobre: "Shopping Infomix: aberto de segunda a sábado, 10h às 22h. Estacionamento grátis por 2 horas.", ia_tom: "Simpática e direta." } });
+  await p.req(`/api/orgs/1/zap/config`, { metodo: "POST", quem: "admin", corpo: { modo: "IA", sobre: "Central de Atendimento: eletricistas e chaveiros 24h." } });
+  const entradas = [];
+  p.openai = (url, corpo) => {
+    const t = corpo.input[0].content[0].text; entradas.push({ t, modelo: corpo.model });
+    const nova = t.match(/MENSAGEM NOVA DO CLIENTE: "([^"]*)"/)[1];
+    let o = { resposta: "Oi! Como posso ajudar?" };
+    if (/estacionamento/i.test(nova)) o = { resposta: "Temos estacionamento grátis por 2 horas! 🚗", lembrar: "Vem de carro." };
+    if (/meu nome é/i.test(nova)) o = { resposta: "Prazer, Marcos!", lembrar: "Chama-se Marcos." };
+    if (/parking/i.test(nova)) o = { resposta: "Yes! Free parking for 2 hours." };
+    if (/gerente|reembolso/i.test(nova)) o = { resposta: "Entendo. Vou chamar alguém da equipe agora.", humano: true };
+    return { output: [{ content: [{ type: "output_text", text: JSON.stringify(o) }] }], usage: { input_tokens: 900, output_tokens: 40 } };
+  };
+  const CLI = "5521977770000";
+  await webhookZap(p, "111111111111", { from: CLI, type: "text", text: { body: "Oi, meu nome é Marcos" } });
+  assert.equal(enviadosPara(p, CLI).at(-1).corpo.text.body, "Prazer, Marcos!");
+  await webhookZap(p, "111111111111", { from: CLI, type: "text", text: { body: "tem estacionamento?" } });
+  assert.match(enviadosPara(p, CLI).at(-1).corpo.text.body, /estacionamento grátis/);
+  const ultima = entradas.at(-1);
+  assert.equal(ultima.modelo, "gpt-5-mini");
+  assert.match(ultima.t, /SEU NOME NO ATENDIMENTO: Bia/);
+  assert.match(ultima.t, /Chama-se Marcos/, "lembra do que o cliente disse");
+  assert.match(ultima.t, /CLIENTE: Oi, meu nome é Marcos[\s\S]*VOCÊ: Prazer, Marcos!/, "lê a conversa");
+  assert.doesNotMatch(ultima.t, /eletricistas/, "só os dados desta empresa");
+  // O mesmo número falando com a outra empresa: memória e treinamento da outra empresa, sem misturar.
+  await webhookZap(p, "222222222222", { from: CLI, type: "text", text: { body: "boa noite" } });
+  const outra = entradas.at(-1).t;
+  assert.match(outra, /eletricistas/); assert.doesNotMatch(outra, /Chama-se|Vem de carro|Infomix|estacionamento|Prazer/);
+  // Idioma do cliente.
+  await webhookZap(p, "111111111111", { from: CLI, type: "text", text: { body: "do you have parking?" } });
+  assert.equal(enviadosPara(p, CLI).at(-1).corpo.text.body, "Yes! Free parking for 2 hours.");
+  // Assunto sensível: chama a equipe e pausa.
+  await webhookZap(p, "111111111111", { from: CLI, type: "text", text: { body: "quero reembolso de uma compra" } });
+  assert.match(enviadosPara(p, CLI).at(-1).corpo.text.body, /chamar alguém/);
+  const conv = (await p.req(`/api/orgs/${inf}/zap/conversas/${CLI}`, { quem: "admin" })).dados;
+  assert.equal(conv.contato.pausado, true); assert.match(conv.contato.memoria, /Vem de carro/);
+  // Botões continuam funcionando no modo IA, sem gastar IA.
+  await p.req(`/api/orgs/${inf}/zap/conversas/${CLI}/robo`, { metodo: "POST", quem: "admin", corpo: { ligar: true } });
+  const n = entradas.length;
+  await clicar(p, "111111111111", CLI, "z:inicio");
+  assert.equal(enviadosPara(p, CLI).at(-1).corpo.interactive.type, "button"); assert.equal(entradas.length, n);
+  // Plano sem IA completa (Essencial): não deixa ligar o modo IA.
+  const anaOrg = await p.req("/api/cadastro", { metodo: "POST", quem: "ana", corpo: { nome: "Ana", empresa: "Loja Ana", email: "ana@x.test", senha: "SenhaMuitoForte#2026", aceite: true, plano: "essencial" } });
+  const oa = (await p.req("/api/eu", { quem: "ana" })).dados.organizacoes[0];
+  const r = await p.req(`/api/orgs/${oa.id}/zap/config`, { metodo: "POST", quem: "ana", corpo: { modo: "IA" } });
+  assert.equal(r.status, 402); assert.match(r.dados.erro, /Start/);
+  assert.equal(anaOrg.status, 200);
+});
