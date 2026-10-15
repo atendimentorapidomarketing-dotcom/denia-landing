@@ -30,13 +30,14 @@
 //                MARKUP_PERCENT, JANELA_AGRUPAMENTO_MS, VIDEO_PROCESSOR_URL,
 //                VIDEO_PROCESSOR_TOKEN, RELATORIO_GMAIL_URL, RELATORIO_GMAIL_SEGREDO,
 //                RELATORIO_EMAIL_TO, DENIA_PLATFORM_SERVICE_TOKEN
+//                MODO = guia  -> guia de lojas (shopping): menu de botões sem IA (ver "MODO GUIA")
 //
 // CRON: "* * * * *" (a cada minuto) — recuperação da fila, envios das 8h,
 //       relatório diário. Nunca inicia conversa nova por conta própria.
 // ============================================================================
 
-const VERSAO = "31.7.0";
-const SCHEMA_VERSAO = "31.5.0"; // mude sempre que acrescentar tabela ou índice (senão o banco de produção não recebe)
+const VERSAO = "31.8.0";
+const SCHEMA_VERSAO = "31.8.0"; // mude sempre que acrescentar tabela ou índice (senão o banco de produção não recebe)
 const EMPRESA_ID = 1;
 const PHONE_ID_PADRAO = "473474732510163";
 const GRAPH = "v25.0";
@@ -355,6 +356,11 @@ const SQL_SCHEMA = [
   `CREATE INDEX IF NOT EXISTS d30_sugestoes_status ON d30_sugestoes(status, ocorrencias)`,
   `CREATE TABLE IF NOT EXISTS d30_ficha (id INTEGER PRIMARY KEY AUTOINCREMENT, telefone TEXT NOT NULL, dados_json TEXT NOT NULL, origem TEXT, importado_ms INTEGER NOT NULL)`,
   `CREATE INDEX IF NOT EXISTS d30_ficha_tel ON d30_ficha(telefone)`,
+  `CREATE TABLE IF NOT EXISTS d30_guia_categorias (id INTEGER PRIMARY KEY AUTOINCREMENT, tipo TEXT NOT NULL, nome TEXT NOT NULL, palavras TEXT, ordem INTEGER NOT NULL DEFAULT 0, ativo INTEGER NOT NULL DEFAULT 1)`,
+  `CREATE TABLE IF NOT EXISTS d30_guia_lojas (id INTEGER PRIMARY KEY AUTOINCREMENT, nome TEXT NOT NULL, telefone TEXT, whatsapp TEXT, local TEXT, descricao TEXT, destaque INTEGER NOT NULL DEFAULT 0, ativo INTEGER NOT NULL DEFAULT 1)`,
+  `CREATE TABLE IF NOT EXISTS d30_guia_loja_cat (loja_id INTEGER NOT NULL, categoria_id INTEGER NOT NULL, PRIMARY KEY (loja_id, categoria_id))`,
+  `CREATE TABLE IF NOT EXISTS d30_guia_buscas (id INTEGER PRIMARY KEY AUTOINCREMENT, telefone TEXT, nome TEXT, tipo TEXT, categoria_id INTEGER, categoria TEXT, texto TEXT, via TEXT, lojas INTEGER, criado_ms INTEGER NOT NULL)`,
+  `CREATE INDEX IF NOT EXISTS d30_guia_buscas_ms ON d30_guia_buscas(criado_ms)`,
   `CREATE TABLE IF NOT EXISTS d30_dossie (pessoa_id INTEGER PRIMARY KEY, resumo TEXT NOT NULL, ate_id INTEGER NOT NULL DEFAULT 0, total INTEGER NOT NULL DEFAULT 0, atualizado_ms INTEGER NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS d30_saida_fila (id INTEGER PRIMARY KEY AUTOINCREMENT, para TEXT NOT NULL, corpo TEXT NOT NULL, motivo TEXT, status TEXT NOT NULL DEFAULT 'PENDENTE', tentativas INTEGER NOT NULL DEFAULT 0, erro TEXT, wamid TEXT, criado_ms INTEGER NOT NULL, atualizado_ms INTEGER NOT NULL)`,
   `CREATE INDEX IF NOT EXISTS d30_saida_fila_status ON d30_saida_fila(status, id)`,
@@ -1289,6 +1295,7 @@ function criarSaida(c) {
   };
   return {
     texto: (to, t, info = {}) => c.sim ? simular("whatsapp", to, t, info) : controlado(to, corpoTexto(to, t)),
+    bruto: (to, corpo) => controlado(to, corpo),
     midia: (to, m, info = {}) => c.sim ? simular("whatsapp-midia", to, `[${m.tipo}] ${m.legenda || ""}`, info) : controlado(to, corpoMidia(to, m.tipo, m.mediaId, m.legenda)),
     template: (to, nome, params, info = {}) => c.sim ? simular("whatsapp-template", to, `${nome}: ${params.join(" | ")}`, info) : controlado(to, corpoTemplate(env, to, nome, params)),
     telegram: async t => {
@@ -1539,7 +1546,7 @@ async function consumoDoPeriodo(c, de, ate) {
   }
   return r;
 }
-async function openaiJSON(c, instrucoes, entrada, anexos = [], maxTokens = 1400) {
+async function openaiJSON(c, instrucoes, entrada, anexos = [], maxTokens = 1400, modeloForcado = "") {
   const env = c.env;
   if (!env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY não configurada.");
   const content = [{ type: "input_text", text: entrada }];
@@ -1548,7 +1555,7 @@ async function openaiJSON(c, instrucoes, entrada, anexos = [], maxTokens = 1400)
     if (a.mime.startsWith("image/")) content.push({ type: "input_image", image_url: url, detail: "auto" });
     else content.push({ type: "input_file", filename: a.nome || "documento.pdf", file_data: url });
   }
-  const corpo = { model: modelo(env), instructions: instrucoes, input: [{ role: "user", content }], text: { format: { type: "json_object" } }, max_output_tokens: maxTokens, store: false };
+  const corpo = { model: String(modeloForcado || "").trim() || modelo(env), instructions: instrucoes, input: [{ role: "user", content }], text: { format: { type: "json_object" } }, max_output_tokens: maxTokens, store: false };
   if (/^(gpt-5|o\d)/i.test(corpo.model)) corpo.reasoning = { effort: "low" };
   gastar(c);
   const r = await fetch("https://api.openai.com/v1/responses", {
@@ -2599,6 +2606,7 @@ async function processarLote(c, tel, itens) {
     }
   }
   const id = await identificar(c, tel);
+  if (modoGuia(c.env)) return processarGuia(c, tel, id, msgs, opts); // guia de lojas (shopping): botões sem IA
   if (id.papel === "PRESTADOR") return processarPrestador(c, tel, id, msgs, opts);
   if (id.papel === "ATENDENTE") {
     for (const m of msgs) await registrarMensagem(c, { pessoaId: id.pessoa?.id, wamid: m.wamid, direcao: "ENTRADA", origem: "WHATSAPP", tipo: String(m.tipo || "text").toUpperCase(), conteudo: txt(m.texto, 4000) || `[${m.tipo}]` });
@@ -2645,6 +2653,7 @@ function normalizarMsg(m, nome, para) {
   const obj = m?.[tipo] || {};
   return {
     wamid: String(m?.id || ""), de: digitos(para ? "" : m?.from), para: para ? digitos(m?.to) : "", nome: txt(nome, 120), ts: String(m?.timestamp || ""),
+    interativoId: String(m?.interactive?.list_reply?.id || m?.interactive?.button_reply?.id || m?.button?.payload || ""),
     tipo, texto: textoDaMensagem(m), mediaId: String(obj?.id && tipo !== "text" ? obj.id : ""), mime: String(obj?.mime_type || ""),
     caption: String(obj?.caption || ""), filename: String(obj?.filename || ""), contextId: String(m?.context?.id || "")
   };
@@ -2975,6 +2984,223 @@ async function enviarEmailRelatorio(c, texto, dia) {
 }
 
 // ============================================================================
+// ============================================================================
+// MODO GUIA (variável MODO=guia) — guia de lojas pelo WhatsApp, para shoppings e centros comerciais.
+// Botões e listas do WhatsApp respondem SEM usar a IA (custo zero de GPT). Só quando a pessoa ESCREVE
+// uma pergunta a DENIA usa a IA (modelo econômico) para achar as lojas certas. Cada busca é avisada no
+// Telegram (nome, número e o que buscou) e entra nas métricas do painel.
+// ============================================================================
+function modoGuia(env) { return String(env?.MODO || "").trim().toLowerCase() === "guia"; }
+const GUIA_PADRAO = {
+  nome: "nosso shopping",
+  boas_vindas: "Olá! 👋 Seja bem-vindo(a)! Eu te ajudo a achar a loja certa. O que você procura?",
+  encerramento: "Foi um prazer ajudar! Quando precisar, é só mandar um oi. 😊",
+  humano: "Certo! Vou chamar alguém da equipe para falar com você. Só um instante.",
+  rede_nome: "", rede_url: "", rodape_lojas: "É só chamar a loja no WhatsApp e falar que veio pelo nosso guia. 😉",
+  modelo_ia: ""
+};
+let cacheGuia = { em: 0, valor: null };
+async function configGuia(c) {
+  if (cacheGuia.valor && c.agora() - cacheGuia.em < 60000) return cacheGuia.valor;
+  let v = {};
+  try { v = JSON.parse((await c.db.prepare("SELECT valor FROM d30_meta WHERE chave='guia_config'").first())?.valor || "{}") || {}; } catch { v = {}; }
+  cacheGuia = { em: c.agora(), valor: { ...GUIA_PADRAO, ...v } };
+  return cacheGuia.valor;
+}
+async function categoriasGuia(c, tipo) {
+  return (await c.db.prepare(`SELECT g.id, g.tipo, g.nome, g.palavras, (SELECT COUNT(*) FROM d30_guia_loja_cat lc JOIN d30_guia_lojas l ON l.id=lc.loja_id AND l.ativo=1 WHERE lc.categoria_id=g.id) lojas
+    FROM d30_guia_categorias g WHERE g.ativo=1 ${tipo ? "AND g.tipo=?" : ""} ORDER BY g.ordem, g.nome`).bind(...(tipo ? [tipo] : [])).all())?.results || [];
+}
+async function lojasDaCategoria(c, catId) {
+  return (await c.db.prepare(`SELECT l.* FROM d30_guia_lojas l JOIN d30_guia_loja_cat lc ON lc.loja_id=l.id WHERE lc.categoria_id=? AND l.ativo=1 ORDER BY l.destaque DESC, l.nome LIMIT 25`).bind(catId).all())?.results || [];
+}
+const cortar = (t, n) => { t = String(t || "").trim(); return t.length > n ? t.slice(0, n - 1).trimEnd() + "…" : t; };
+function linkZap(tel) { const d = digitos(tel); return d.length >= 10 ? `wa.me/${d.length <= 11 ? "55" + d : d}` : ""; }
+
+async function enviarGuia(c, tel, pessoaId, interativo, texto, origem = "SISTEMA") {
+  const corpo = interativo ? { messaging_product: "whatsapp", recipient_type: "individual", to: digitos(tel), type: "interactive", interactive: interativo } : corpoTexto(tel, texto);
+  const r = c.sim ? { ok: true, id: "sim." + crypto.randomUUID() } : await c.saida.bruto(tel, corpo);
+  if (c.sim) c.registro.push({ canal: "whatsapp", para: tel, texto, interativo });
+  if (r.ok) await registrarMensagem(c, { pessoaId, wamid: r.id, direcao: "SAIDA", origem, conteudo: texto });
+  return r;
+}
+async function guiaMenuInicial(c, tel, pessoaId, cfg, prefixo = "") {
+  const botoes = [{ type: "reply", reply: { id: "g:prod", title: "🛍️ Produtos" } }, { type: "reply", reply: { id: "g:serv", title: "🔧 Serviços" } }, { type: "reply", reply: { id: "g:humano", title: "💬 Falar com alguém" } }];
+  const corpo = (prefixo ? prefixo + "\n\n" : "") + cfg.boas_vindas;
+  return enviarGuia(c, tel, pessoaId, { type: "button", body: { text: cortar(corpo, 1024) }, action: { buttons: botoes } }, corpo + " [Produtos] [Serviços] [Falar com alguém]");
+}
+async function guiaListaCategorias(c, tel, pessoaId, tipo, pagina = 0) {
+  const cats = (await categoriasGuia(c, tipo)).filter(x => x.lojas > 0);
+  if (!cats.length) return enviarGuia(c, tel, pessoaId, null, `Ainda não temos ${tipo === "PRODUTO" ? "produtos" : "serviços"} cadastrados no guia. Quer falar com alguém da equipe? Responda "atendente".`);
+  const porPagina = 9, inicio = pagina * porPagina, parte = cats.slice(inicio, inicio + porPagina);
+  const rows = parte.map(x => ({ id: "g:cat:" + x.id, title: cortar(x.nome, 24), description: cortar(`${x.lojas} loja${x.lojas === 1 ? "" : "s"}`, 72) }));
+  if (inicio + porPagina < cats.length) rows.push({ id: `g:pg:${tipo}:${pagina + 1}`, title: "➡️ Mais opções", description: `Ver mais ${tipo === "PRODUTO" ? "produtos" : "serviços"}` });
+  else if (pagina > 0) rows.push({ id: "g:inicio", title: "🏠 Menu inicial", description: "Voltar ao começo" });
+  const titulo = tipo === "PRODUTO" ? "Qual produto você procura?" : "Qual serviço você precisa?";
+  return enviarGuia(c, tel, pessoaId, { type: "list", body: { text: titulo + " Toque no botão abaixo e escolha." }, action: { button: "Ver opções", sections: [{ title: tipo === "PRODUTO" ? "Produtos" : "Serviços", rows }] } }, `${titulo} [lista: ${parte.map(x => x.nome).join(", ")}]`);
+}
+async function guiaMostrarLojas(c, tel, pessoa, cat, via, texto, cfg) {
+  const lojas = await lojasDaCategoria(c, cat.id);
+  const linhas = lojas.map(l => `• *${l.nome}*${l.local ? ` — ${l.local}` : ""}${l.descricao ? `\n  ${cortar(l.descricao, 120)}` : ""}${linkZap(l.whatsapp || l.telefone) ? `\n  📲 ${linkZap(l.whatsapp || l.telefone)}` : l.telefone ? `\n  📞 ${l.telefone}` : ""}`);
+  const msg = lojas.length ? `${cat.tipo === "PRODUTO" ? "🛍️" : "🔧"} *${cat.nome}* — ${lojas.length === 1 ? "esta loja tem" : "estas lojas têm"}:\n\n${linhas.join("\n\n")}${cfg.rodape_lojas ? "\n\n" + cfg.rodape_lojas : ""}` : `No momento não tenho lojas cadastradas para *${cat.nome}*.`;
+  await enviarGuia(c, tel, pessoa.id, null, cortar(msg, 4000), via === "IA" ? "IA" : "SISTEMA");
+  const botoes = [{ type: "reply", reply: { id: "g:inicio", title: "🏠 Menu inicial" } }, { type: "reply", reply: { id: cat.tipo === "PRODUTO" ? "g:prod" : "g:serv", title: "⬅️ Voltar" } }, { type: "reply", reply: { id: "g:fim", title: "✅ Finalizar" } }];
+  await enviarGuia(c, tel, pessoa.id, { type: "button", body: { text: "Posso te ajudar com mais alguma coisa?" }, action: { buttons: botoes } }, "Posso te ajudar com mais alguma coisa? [Menu inicial] [Voltar] [Finalizar]");
+  await c.db.prepare("INSERT INTO d30_guia_buscas(telefone,nome,tipo,categoria_id,categoria,texto,via,lojas,criado_ms) VALUES(?,?,?,?,?,?,?,?,?)").bind(digitos(tel), pessoa.nome || "", cat.tipo, cat.id, cat.nome, txt(texto, 300), via, lojas.length, c.agora()).run().catch(() => {});
+  if (await reservarChave(c, `busca:${digitos(tel)}:${cat.id}:${Math.floor(c.agora() / 3600000)}`))
+    await c.saida.telegram(`🔎 ${cfg.nome} — nova busca\nCliente: ${pessoa.nome || "sem nome"} (${digitos(tel)})\nBuscou: ${cat.tipo === "PRODUTO" ? "Produtos" : "Serviços"} › ${cat.nome}${via === "IA" ? ` (escreveu: "${txt(texto, 120)}")` : via === "PALAVRA" ? ` (escreveu: "${txt(texto, 120)}")` : ""}\nLojas indicadas: ${lojas.map(l => l.nome).join(", ") || "nenhuma"}`).catch(() => {});
+}
+// Busca por palavra (sem IA): nome da categoria, palavras-chave e o que cada loja vende.
+function pontuarCategoria(cat, alvo) {
+  let p = 0;
+  for (const w of new Set(norm([cat.nome, cat.palavras].join(" ")).split(/[^a-z0-9]+/).filter(x => x.length >= 3))) {
+    const raiz = w.length > 5 ? w.slice(0, w.length - 1) : w; // "celulares" ~ "celular"
+    if (alvo.includes(raiz)) p += w.length >= 5 ? 2 : 1;
+  }
+  return p;
+}
+const INSTRUCOES_GUIA = `Você é a atendente virtual do guia de lojas de um shopping, no WhatsApp. A pessoa escreveu uma pergunta. Escolha nas CATEGORIAS (use só os ids da lista) as que respondem ao que ela procura (no máximo 2). Se ela quer falar com uma pessoa, reclamar ou algo fora do guia (horário, estacionamento, vaga de emprego), deixe categorias vazio e escreva uma resposta curta e simpática (1 frase). Nunca invente loja, preço ou telefone. Responda em JSON {"categorias":[id],"resposta":"","humano":false}`;
+
+async function processarGuia(c, tel, id, msgs, { apenasRegistrar, chaveLote }) {
+  const pessoa = id.pessoa || await obterPessoa(c, tel, msgs.map(m => m.nome).filter(Boolean).pop() || "", "CLIENTE");
+  for (const m of msgs) await registrarMensagem(c, { pessoaId: pessoa?.id, wamid: m.wamid, direcao: "ENTRADA", origem: "WHATSAPP", tipo: String(m.tipo || "text").toUpperCase(), conteudo: txt(m.texto, 4000) || `[${m.tipo}]` });
+  if (id.papel === "ATENDENTE" || apenasRegistrar || await estaPausado(c, tel)) return;
+  const cfg = await configGuia(c);
+  const ultima = msgs[msgs.length - 1];
+  const acao = String(ultima.interativoId || "");
+  const texto = msgs.map(m => m.texto || "").join(" ").trim();
+  if (acao === "g:prod") return guiaListaCategorias(c, tel, pessoa.id, "PRODUTO");
+  if (acao === "g:serv") return guiaListaCategorias(c, tel, pessoa.id, "SERVICO");
+  if (acao.startsWith("g:pg:")) { const [, , tipo, pg] = acao.split(":"); return guiaListaCategorias(c, tel, pessoa.id, tipo === "SERVICO" ? "SERVICO" : "PRODUTO", Number(pg) || 0); }
+  if (acao.startsWith("g:cat:")) {
+    const cat = await c.db.prepare("SELECT * FROM d30_guia_categorias WHERE id=?").bind(Number(acao.slice(6))).first();
+    return cat ? guiaMostrarLojas(c, tel, pessoa, cat, "BOTAO", cat.nome, cfg) : guiaMenuInicial(c, tel, pessoa.id, cfg);
+  }
+  if (acao === "g:fim") return enviarGuia(c, tel, pessoa.id, null, cfg.encerramento + (cfg.rede_url ? `\n\nSiga a gente${cfg.rede_nome ? " no " + cfg.rede_nome : ""}: ${cfg.rede_url}` : ""));
+  const querHumano = acao === "g:humano" || /\b(atendente|humano|falar com (uma )?(pessoa|algu[eé]m)|reclama[rcç])/i.test(norm(texto));
+  if (querHumano) {
+    await enviarGuia(c, tel, pessoa.id, null, cfg.humano);
+    await pausar(c, tel, PAUSA_TAKEOVER_MS, "GUIA_HUMANO");
+    await alertarEquipe(c, `💬 ${pessoa.nome || "Um cliente"} (${digitos(tel)}) quer falar com alguém da equipe no WhatsApp do ${cfg.nome}. A DENIA ficou em pausa nessa conversa.`, "guia-humano:" + chaveLote);
+    return;
+  }
+  if (acao === "g:inicio" || !texto || ehMensagemSocial(texto) || /^(oi|ol[aá]|bom dia|boa tarde|boa noite|menu|in[ií]cio|come[cç]ar|voltar)\b/i.test(norm(texto)) && texto.length < 30) return guiaMenuInicial(c, tel, pessoa.id, cfg);
+  // Pergunta escrita: primeiro por palavra (grátis); só se ficar em dúvida usa a IA.
+  const cats = await categoriasGuia(c);
+  const alvo = norm(texto);
+  const pontos = cats.map(x => ({ cat: x, p: pontuarCategoria(x, alvo) })).filter(x => x.p > 0 && x.cat.lojas > 0).sort((a, b) => b.p - a.p);
+  if (pontos.length && (pontos.length === 1 || pontos[0].p >= pontos[1].p + 2)) return guiaMostrarLojas(c, tel, pessoa, pontos[0].cat, "PALAVRA", texto, cfg);
+  if (!c.env.OPENAI_API_KEY || !cats.length) return guiaMenuInicial(c, tel, pessoa.id, cfg, "Não encontrei exatamente o que você escreveu, mas te mostro as opções:");
+  let o = null;
+  try {
+    const lista = cats.filter(x => x.lojas > 0).map(x => `${x.id}|${x.tipo === "PRODUTO" ? "produto" : "serviço"}|${x.nome}${x.palavras ? " (" + cortar(x.palavras, 80) + ")" : ""}`).join("\n");
+    o = await openaiJSON(c, INSTRUCOES_GUIA, `CATEGORIAS (id|tipo|nome):\n${lista}\n\nA PESSOA ESCREVEU: "${txt(texto, 500)}"\nResponda em JSON.`, [], 200, cfg.modelo_ia);
+  } catch (e) { console.warn("guia IA", e?.message); }
+  const escolhidas = (Array.isArray(o?.categorias) ? o.categorias : []).map(Number).map(x => cats.find(k => k.id === x)).filter(Boolean).slice(0, 2);
+  if (o?.humano === true) {
+    await enviarGuia(c, tel, pessoa.id, null, txt(o.resposta, 300) || cfg.humano, "IA");
+    await alertarEquipe(c, `💬 ${pessoa.nome || "Um cliente"} (${digitos(tel)}) escreveu no ${cfg.nome}: "${txt(texto, 200)}". Precisa de alguém da equipe.`, "guia-ia-humano:" + chaveLote);
+    return;
+  }
+  if (!escolhidas.length) return guiaMenuInicial(c, tel, pessoa.id, cfg, txt(o?.resposta, 300) || "Não encontrei isso no guia, mas te mostro as opções:");
+  for (const cat of escolhidas) await guiaMostrarLojas(c, tel, pessoa, cat, "IA", texto, cfg);
+}
+
+// ----- Rotas do painel (guia)
+async function rotasGuia(c, caminho, metodo, corpo, url) {
+  if (!caminho.startsWith("/platform/guide")) return null;
+  if (caminho === "/platform/guide" && metodo === "GET") {
+    const cats = await categoriasGuia(c);
+    const inativas = (await c.db.prepare("SELECT id, tipo, nome, palavras, 0 lojas FROM d30_guia_categorias WHERE ativo=0 ORDER BY nome").all())?.results || [];
+    const lojas = (await c.db.prepare("SELECT * FROM d30_guia_lojas ORDER BY nome").all())?.results || [];
+    const lc = (await c.db.prepare("SELECT loja_id, categoria_id FROM d30_guia_loja_cat").all())?.results || [];
+    const porLoja = new Map(); for (const x of lc) { if (!porLoja.has(x.loja_id)) porLoja.set(x.loja_id, []); porLoja.get(x.loja_id).push(x.categoria_id); }
+    return json({ sucesso: true, modo: modoGuia(c.env) ? "guia" : "central", config: await configGuia(c), categorias: [...cats, ...inativas.map(x => ({ ...x, inativa: true }))], lojas: lojas.map(l => ({ ...l, categorias: porLoja.get(l.id) || [] })) });
+  }
+  if (caminho === "/platform/guide/config" && metodo === "POST") {
+    const atual = await configGuia(c), novo = { ...atual };
+    for (const k of Object.keys(GUIA_PADRAO)) if (typeof corpo?.[k] === "string") novo[k] = corpo[k].slice(0, k === "boas_vindas" || k === "encerramento" ? 900 : 300);
+    await c.db.prepare("INSERT OR REPLACE INTO d30_meta(chave,valor) VALUES('guia_config',?)").bind(JSON.stringify(novo)).run();
+    cacheGuia = { em: 0, valor: null };
+    return json({ sucesso: true, config: novo });
+  }
+  let m;
+  if (caminho === "/platform/guide/categories" && metodo === "POST") {
+    const tipo = corpo?.tipo === "SERVICO" ? "SERVICO" : "PRODUTO", nome = txt(corpo?.nome, 60);
+    if (!nome) return json({ sucesso: false, erro: "Dê um nome à categoria." }, 400);
+    if (corpo?.id) await c.db.prepare("UPDATE d30_guia_categorias SET tipo=?, nome=?, palavras=?, ordem=?, ativo=? WHERE id=?").bind(tipo, nome, txt(corpo?.palavras, 400), Number(corpo?.ordem) || 0, corpo?.ativo === false ? 0 : 1, Number(corpo.id)).run();
+    else await c.db.prepare("INSERT INTO d30_guia_categorias(tipo,nome,palavras,ordem,ativo) VALUES(?,?,?,?,1)").bind(tipo, nome, txt(corpo?.palavras, 400), Number(corpo?.ordem) || 0).run();
+    return json({ sucesso: true });
+  }
+  if ((m = caminho.match(/^\/platform\/guide\/categories\/(\d+)\/delete$/)) && metodo === "POST") {
+    await c.db.batch([c.db.prepare("DELETE FROM d30_guia_loja_cat WHERE categoria_id=?").bind(Number(m[1])), c.db.prepare("DELETE FROM d30_guia_categorias WHERE id=?").bind(Number(m[1]))]);
+    return json({ sucesso: true });
+  }
+  if (caminho === "/platform/guide/stores" && metodo === "POST") {
+    const nome = txt(corpo?.nome, 80);
+    if (!nome) return json({ sucesso: false, erro: "Dê o nome da loja." }, 400);
+    const campos = [nome, txt(corpo?.telefone, 30), txt(corpo?.whatsapp, 30), txt(corpo?.local, 80), txt(corpo?.descricao, 300), corpo?.destaque ? 1 : 0, corpo?.ativo === false ? 0 : 1];
+    let lojaId = Number(corpo?.id) || 0;
+    if (lojaId) await c.db.prepare("UPDATE d30_guia_lojas SET nome=?, telefone=?, whatsapp=?, local=?, descricao=?, destaque=?, ativo=? WHERE id=?").bind(...campos, lojaId).run();
+    else lojaId = Number((await c.db.prepare("INSERT INTO d30_guia_lojas(nome,telefone,whatsapp,local,descricao,destaque,ativo) VALUES(?,?,?,?,?,?,?) RETURNING id").bind(...campos).first())?.id || 0);
+    const cats = (Array.isArray(corpo?.categorias) ? corpo.categorias : []).map(Number).filter(Boolean).slice(0, 60);
+    await c.db.batch([c.db.prepare("DELETE FROM d30_guia_loja_cat WHERE loja_id=?").bind(lojaId), ...cats.map(k => c.db.prepare("INSERT OR IGNORE INTO d30_guia_loja_cat(loja_id,categoria_id) VALUES(?,?)").bind(lojaId, k))]);
+    return json({ sucesso: true, id: lojaId });
+  }
+  if ((m = caminho.match(/^\/platform\/guide\/stores\/(\d+)\/delete$/)) && metodo === "POST") {
+    await c.db.batch([c.db.prepare("DELETE FROM d30_guia_loja_cat WHERE loja_id=?").bind(Number(m[1])), c.db.prepare("DELETE FROM d30_guia_lojas WHERE id=?").bind(Number(m[1]))]);
+    return json({ sucesso: true });
+  }
+  // Importar planilha: loja; telefone; whatsapp; local; produtos (separados por vírgula); serviços; descrição.
+  if (caminho === "/platform/guide/import" && metodo === "POST") {
+    const linhas = (Array.isArray(corpo?.linhas) ? corpo.linhas : []).slice(0, 2000);
+    const cats = new Map(((await c.db.prepare("SELECT id, tipo, nome FROM d30_guia_categorias").all())?.results || []).map(x => [x.tipo + "|" + norm(x.nome), x.id]));
+    let lojas = 0, novas = 0;
+    for (const l of linhas) {
+      const nome = txt(l.loja || l.nome, 80);
+      if (!nome) continue;
+      const ids = [];
+      for (const [tipo, campo] of [["PRODUTO", l.produtos], ["SERVICO", l.servicos]]) for (const n of String(campo || "").split(/[,;|]/).map(x => txt(x, 60)).filter(Boolean)) {
+        const k = tipo + "|" + norm(n);
+        if (!cats.has(k)) { const r = await c.db.prepare("INSERT INTO d30_guia_categorias(tipo,nome,palavras,ordem,ativo) VALUES(?,?,'',0,1) RETURNING id").bind(tipo, n).first(); cats.set(k, r.id); novas++; }
+        ids.push(cats.get(k));
+      }
+      const existente = await c.db.prepare("SELECT id FROM d30_guia_lojas WHERE nome=?").bind(nome).first();
+      let lojaId = existente?.id;
+      if (lojaId) await c.db.prepare("UPDATE d30_guia_lojas SET telefone=COALESCE(NULLIF(?,''),telefone), whatsapp=COALESCE(NULLIF(?,''),whatsapp), local=COALESCE(NULLIF(?,''),local), descricao=COALESCE(NULLIF(?,''),descricao) WHERE id=?").bind(txt(l.telefone, 30), txt(l.whatsapp, 30), txt(l.local, 80), txt(l.descricao, 300), lojaId).run();
+      else lojaId = (await c.db.prepare("INSERT INTO d30_guia_lojas(nome,telefone,whatsapp,local,descricao,destaque,ativo) VALUES(?,?,?,?,?,0,1) RETURNING id").bind(nome, txt(l.telefone, 30), txt(l.whatsapp, 30), txt(l.local, 80), txt(l.descricao, 300)).first())?.id;
+      if (lojaId && ids.length) await c.db.batch(ids.map(k => c.db.prepare("INSERT OR IGNORE INTO d30_guia_loja_cat(loja_id,categoria_id) VALUES(?,?)").bind(lojaId, k)));
+      lojas++;
+    }
+    return json({ sucesso: true, lojas, categorias_novas: novas });
+  }
+  if (caminho === "/platform/guide/stats" && metodo === "GET") {
+    const de = url.searchParams.get("de"), ate = url.searchParams.get("ate");
+    const ini = /^\d{4}-\d{2}-\d{2}$/.test(de || "") ? Date.parse(de + "T00:00:00Z") + 3 * 3600000 : c.agora() - 30 * 86400000;
+    const fim = /^\d{4}-\d{2}-\d{2}$/.test(ate || "") ? Date.parse(ate + "T00:00:00Z") + 27 * 3600000 : c.agora() + 1;
+    const q = (sql) => c.db.prepare(sql).bind(ini, fim).all().then(r => r?.results || []).catch(() => []);
+    const [porDia, porCat, porVia, contatos, porHora] = await Promise.all([
+      q("SELECT strftime('%Y-%m-%d', (criado_ms - 10800000)/1000, 'unixepoch') dia, COUNT(*) n FROM d30_guia_buscas WHERE criado_ms >= ? AND criado_ms < ? GROUP BY dia ORDER BY dia"),
+      q("SELECT categoria, tipo, COUNT(*) n, SUM(CASE WHEN lojas=0 THEN 1 ELSE 0 END) sem_loja FROM d30_guia_buscas WHERE criado_ms >= ? AND criado_ms < ? GROUP BY categoria, tipo ORDER BY n DESC LIMIT 20"),
+      q("SELECT via, COUNT(*) n FROM d30_guia_buscas WHERE criado_ms >= ? AND criado_ms < ? GROUP BY via"),
+      q("SELECT COUNT(DISTINCT telefone) n FROM d30_guia_buscas WHERE criado_ms >= ? AND criado_ms < ?"),
+      q("SELECT CAST(strftime('%w', (criado_ms - 10800000)/1000, 'unixepoch') AS INTEGER) d, CAST(strftime('%H', (criado_ms - 10800000)/1000, 'unixepoch') AS INTEGER) h, COUNT(*) n FROM d30_guia_buscas WHERE criado_ms >= ? AND criado_ms < ? GROUP BY d, h")
+    ]);
+    const horarios = Array.from({ length: 7 }, () => Array(24).fill(0)); for (const x of porHora) if (horarios[x.d]) horarios[x.d][x.h] = x.n;
+    return json({ sucesso: true, por_dia: porDia, por_categoria: porCat, por_via: porVia, contatos: Number(contatos[0]?.n || 0), horarios, total: porDia.reduce((s, x) => s + x.n, 0) });
+  }
+  // Testar sem mandar nada pelo WhatsApp: mostra o que a DENIA responderia.
+  if (caminho === "/platform/guide/test" && metodo === "POST") {
+    const t = criarContexto(c.env, { simulacao: true });
+    const tel = "0005500000000";
+    await processarGuia(t, tel, await identificar(t, tel), [{ wamid: "sim." + crypto.randomUUID(), texto: txt(corpo?.texto, 500), tipo: "text", interativoId: String(corpo?.acao || ""), nome: "Teste" }], { chaveLote: "teste:" + Date.now() });
+    await c.db.prepare("DELETE FROM d30_guia_buscas WHERE telefone=?").bind(digitos(tel)).run().catch(() => {});
+    return json({ sucesso: true, respostas: t.registro.filter(r => r.canal === "whatsapp").map(r => ({ texto: r.texto, interativo: r.interativo || null })) });
+  }
+  return json({ sucesso: false, erro: "Rota do guia não encontrada." }, 404);
+}
+
+// ============================================================================
 // API PRIVADA PARA A DENIA PLATFORM (compatível com a V28)
 // ============================================================================
 
@@ -3010,6 +3236,7 @@ async function platformApi(request, env, caminho, metodo) {
     const r = String(corpo?.tipo || "") === "pesquisa" ? await pesquisaSemanal(c, { forcar: true }) : await estudoDiario(c, { forcar: true });
     return json({ sucesso: true, resultado: r });
   }
+  if (caminho.startsWith("/platform/guide")) return rotasGuia(c, caminho, metodo, corpo, new URL(request.url));
   if (caminho === "/platform/metrics" && metodo === "GET") { const q = new URL(request.url).searchParams; return json({ sucesso: true, versao: VERSAO, ...(await metricasAtendimento(c, q.get("de"), q.get("ate"))) }); }
   if (caminho === "/platform/usage" && metodo === "GET") { const q = new URL(request.url).searchParams; return json({ sucesso: true, versao: VERSAO, ...(await consumoDoPeriodo(c, q.get("de"), q.get("ate"))) }); }
   if (caminho === "/platform/status") return json({ sucesso: true, versao: VERSAO, ...(await saude(c, { completo: new URL(request.url).searchParams.get("completo") === "1" })) });
@@ -3256,6 +3483,7 @@ async function saude(c, { completo = false } = {}) {
     } catch (e) { r.teste_openai = { ok: false, erro: txt(e?.message, 200) }; }
   }
   r.limites_envio = LIMITES_ENVIO;
+  r.modo = modoGuia(env) ? "guia" : "central";
   r.ok = r.d1.operacional && r.openai_configurado && r.whatsapp_configurado;
   return r;
 }

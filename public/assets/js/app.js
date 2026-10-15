@@ -232,6 +232,7 @@
     auditoria: { titulo: "Auditoria", render: paginaAuditoria, minimo: "ADMIN" },
     empresas: { titulo: "Empresas", render: paginaEmpresas, superAdmin: true },
     conta: { titulo: "Conta e segurança", render: paginaConta },
+    guia: { titulo: "Guia de lojas", render: paginaGuia },
     whatsapp: { titulo: "WhatsApp", render: paginaWhatsapp },
     instagram: { titulo: "Instagram", render: (el, aba, vivo) => paginaCanalSocial(el, "instagram", vivo, aba) },
     facebook: { titulo: "Facebook", render: (el, aba, vivo) => paginaCanalSocial(el, "facebook", vivo, aba) },
@@ -324,6 +325,7 @@
     document.querySelectorAll("#lateral-nav a[data-minimo]").forEach(a => a.classList.toggle("oculto", !pode(a.dataset.minimo)));
     document.querySelectorAll("#lateral-nav a[data-super]").forEach(a => a.classList.toggle("oculto", !estado.eu.usuario.super_admin));
     document.querySelectorAll("#lateral-nav a[data-rota]:not([data-minimo]):not([data-super])").forEach(a => a.classList.toggle("oculto", ehRevisor() && !ROTAS_REVISOR.includes(a.dataset.rota)));
+    aplicarModo();
     // Título de grupo do menu some quando todos os links do grupo estão ocultos.
     document.querySelectorAll("#lateral-nav .lateral-grupo").forEach(g => {
       let el = g.nextElementSibling, algum = false;
@@ -367,6 +369,8 @@
       const s = await eng("status");
       if (!estado.org || estado.org.id !== alvo) return;
       estado.status = s;
+      armazenamento.gravar("denia_modo_" + alvo, s.modo === "guia" ? "guia" : "central");
+      aplicarModo();
       faixaEntrega(s);
       if (s.entrega_bloqueada) marcar("WhatsApp sem entregar", "erro");
       else if (s.pausa_geral) marcar("IA pausada", "alerta");
@@ -421,7 +425,7 @@
       h("p", { text: estado.org.conectada ? "Este é o centro de comando da operação. Acompanhe a IA, as conversas e os atendimentos em tempo real." : "Vamos colocar a inteligência desta empresa para funcionar. O primeiro passo é conectar a IA." }),
       h("div", { class: "acoes" },
         estado.org.conectada ? h("a", { class: "btn btn-primario", href: "#/conversas" }, "Ver conversas") : h("a", { class: "btn btn-primario", href: "#/integracoes" }, "Conectar a IA"),
-        h("a", { class: "btn btn-secundario", href: "#/treinamento" }, "Treinar a IA"))));
+        modoGuia() ? h("a", { class: "btn btn-secundario", href: "#/guia" }, "Guia de lojas") : h("a", { class: "btn btn-secundario", href: "#/treinamento" }, "Treinar a IA"))));
 
     if (!estado.org.conectada) {
       el.appendChild(h("section", { class: "grade grade-3" },
@@ -441,6 +445,17 @@
     if (!vivo()) return;
     estado.status = s;
     const somar = (lista, filtro) => (lista || []).filter(filtro).reduce((t, x) => t + Number(x.n || 0), 0);
+    if (s.modo === "guia") {
+      const st = await eng(`guide/stats?de=${isoLocal(new Date(Date.now() - 29 * 86400000))}&ate=${isoLocal(new Date())}`).catch(() => null);
+      if (!vivo()) return;
+      const via = Object.fromEntries(((st && st.por_via) || []).map(x => [x.via, Number(x.n || 0)]));
+      const top = ((st && st.por_categoria) || [])[0];
+      metricas.replaceChildren(
+        metrica("Mensagens recebidas", numero(somar(s.fila_24h, () => true)), "nas últimas 24 horas"),
+        metrica("Buscas no guia", numero((st && st.total) || 0), "últimos 30 dias"),
+        metrica("Sem gastar IA", st && st.total ? `${Math.round((((via.BOTAO || 0) + (via.PALAVRA || 0)) / st.total) * 100)}%` : "—", "pelos botões ou por palavra"),
+        metrica("Mais procurado", top ? top.categoria : "—", top ? `${numero(top.n)} busca(s)` : "ainda sem buscas"));
+    } else {
     const ativos = somar(s.casos_por_etapa, x => !["CONCLUIDO", "CANCELADO"].includes(x.etapa));
     const agendados = somar(s.casos_por_etapa, x => x.etapa === "AGENDADO");
     const equipe = somar(s.casos_por_etapa, x => x.etapa === "EQUIPE");
@@ -449,6 +464,7 @@
       metrica("Casos em andamento", numero(ativos), "últimos 30 dias"),
       metrica("Agendados", numero(agendados), "confirmados pelo profissional"),
       metrica("Com a equipe", numero(equipe), "precisam de uma pessoa"));
+    }
 
     const ok = v => v ? selo("Funcionando", "ok") : selo("Pendente", "alerta");
     const saude = h("div", { class: "cartao vidro" }, h("h3", { text: "Saúde da IA" }), h("p", { text: `DENIA Engine ${s.versao || ""} · modelo ${s.modelo || "—"}` }),
@@ -1163,7 +1179,7 @@
   // Auditoria
   // ---------------------------------------------------------------------------
 
-  const NOME_ACAO = { CONVERSA: "Conversa", ATENDIMENTO: "Atendimento", TREINAMENTO: "Treinamento", APRENDIZADO: "Aprendizado", IMPORTACAO: "Importação", PAUSA_GERAL: "Pausa geral", EQUIPE: "Equipe", INTEGRACAO: "Integração", EMPRESA: "Empresa" };
+  const NOME_ACAO = { CONVERSA: "Conversa", ATENDIMENTO: "Atendimento", TREINAMENTO: "Treinamento", APRENDIZADO: "Aprendizado", IMPORTACAO: "Importação", PAUSA_GERAL: "Pausa geral", GUIA: "Guia de lojas", EQUIPE: "Equipe", INTEGRACAO: "Integração", EMPRESA: "Empresa" };
   async function paginaAuditoria(el, _p, vivo) {
     el.appendChild(cabeca("Auditoria", "Tudo o que foi feito pelo painel nesta empresa: quem fez, o quê e quando."));
     const area = h("div", {}, carregando());
@@ -1371,10 +1387,230 @@
       h("p", { class: "sub", style: "margin:8px 0 0", text: total ? `Pico: ${dias[pico[0]]} às ${pico[1]}h (${numero(pico[2])} mensagens). Horário de Brasília. Quanto mais forte o azul, mais mensagens.` : "Sem mensagens no período." }));
   }
 
+  // ----- Guia de lojas (motor com MODO=guia, ex.: shopping): buscas, lojas, categorias, mensagens e teste.
+  // Botões e listas do WhatsApp não usam IA; só a pergunta escrita que a busca por palavra não resolve.
+  const modoGuia = () => Boolean(estado.org && (estado.status ? estado.status.modo === "guia" : armazenamento.ler("denia_modo_" + estado.org.id) === "guia"));
+  function aplicarModo() {
+    const guia = modoGuia();
+    document.querySelectorAll('#lateral-nav a[data-modo="guia"]').forEach(a => a.classList.toggle("oculto", !guia || ehRevisor()));
+    document.querySelectorAll("#lateral-nav a[data-so-central]").forEach(a => a.classList.toggle("oculto", guia || ehRevisor()));
+  }
+  const NOME_VIA = { BOTAO: "Pelos botões", PALAVRA: "Escreveu (achado sem IA)", IA: "Escreveu (achado pela IA)" };
+  async function paginaGuia(el, aba, vivo) {
+    el.appendChild(cabeca("Guia de lojas", "O cliente toca nos botões do WhatsApp (Produtos ou Serviços → categoria) e recebe as lojas com o contato de cada uma. Os botões não usam IA; só uma pergunta escrita que a busca por palavra não resolve usa o modelo econômico."));
+    if (!estado.org.conectada) { falha(el, new ErroApi("A IA desta empresa ainda não foi conectada.", 503, { codigo: "ENGINE_NAO_CONFIGURADO" })); return; }
+    const abas = [["visao", "Buscas"], ["lojas", "Lojas"], ["categorias", "Categorias"], ["mensagens", "Mensagens"], ["testar", "Testar"]];
+    const atual = abas.some(a => a[0] === aba) ? aba : "visao";
+    el.appendChild(h("div", { class: "abas", role: "tablist" }, abas.map(([k, n]) => h("a", { class: "aba" + (k === atual ? " ativo" : ""), href: "#/guia/" + k, role: "tab" }, n))));
+    const area = h("div", { class: "grade" }, carregando());
+    el.appendChild(area);
+    const recarregar = () => { cacheEng.clear(); navegar(); };
+    try {
+      if (atual === "visao") return await abaGuiaBuscas(area, vivo);
+      if (atual === "testar") return abaGuiaTestar(area);
+      const g = await eng("guide", { fresco: true });
+      if (!vivo()) return;
+      if (atual === "lojas") return abaGuiaLojas(area, g, recarregar);
+      if (atual === "categorias") return abaGuiaCategorias(area, g, recarregar);
+      if (atual === "mensagens") return abaGuiaMensagens(area, g.config || {});
+    } catch (e) {
+      if (!vivo()) return;
+      if (e.status === 404) trocar(area, h("section", { class: "cartao vidro" }, h("p", { class: "nota", text: "Cole o motor 31.8 (ou mais novo) no Worker desta empresa e crie nele a variável MODO = guia para usar o guia de lojas." })));
+      else falha(area, e);
+    }
+  }
+  async function abaGuiaBuscas(area, vivo) {
+    const f = estado.guiaF = estado.guiaF || { dias: 30 };
+    const de = isoLocal(new Date(Date.now() - (f.dias - 1) * 86400000)), ate = isoLocal(new Date());
+    const st = await eng(`guide/stats?de=${de}&ate=${ate}`, { fresco: true });
+    if (!vivo()) return;
+    const dias = [];
+    for (let t = Date.parse(de + "T12:00:00Z"); t <= Date.parse(ate + "T12:00:00Z"); t += 86400000) dias.push(new Date(t).toISOString().slice(0, 10));
+    const porDia = new Map((st.por_dia || []).map(x => [x.dia, Number(x.n || 0)]));
+    const diario = dias.map(d => ({ data: d, buscas: porDia.get(d) || 0 }));
+    const via = Object.fromEntries((st.por_via || []).map(x => [x.via, Number(x.n || 0)]));
+    const total = st.total || 0, semLoja = (st.por_categoria || []).reduce((s, x) => s + Number(x.sem_loja || 0), 0);
+    const pct = n => total ? `${Math.round((n / total) * 100)}%` : "—";
+    const pontos = agruparSerie(diario, dias.length <= 92 ? "dia" : "semana", "buscas");
+    const csv = () => baixarCsv(`guia-buscas-${de}-a-${ate}.csv`, [["Categoria", "Tipo", "Buscas", "Sem loja cadastrada"], ...(st.por_categoria || []).map(x => [x.categoria, x.tipo === "PRODUTO" ? "Produto" : "Serviço", x.n, x.sem_loja || 0])]);
+    trocar(area,
+      h("section", { class: "cartao vidro filtros-desempenho" }, h("div", { class: "abas abas-chips", role: "group", "aria-label": "Período" },
+        [[1, "Hoje"], [7, "7 dias"], [30, "30 dias"], [90, "90 dias"], [180, "6 meses"], [365, "12 meses"]].map(([v, n]) => h("button", { type: "button", class: "aba" + (f.dias === v ? " ativo" : ""), "aria-pressed": f.dias === v ? "true" : "false", onclick: () => { f.dias = v; navegar(); } }, n)))),
+      h("section", { class: "grade grade-4" },
+        metrica("Buscas", numero(total), `${numero(Math.round((total / (dias.length || 1)) * 10) / 10)} por dia`),
+        metrica("Clientes diferentes", numero(st.contatos || 0), "pessoas que usaram o guia"),
+        metrica("Sem gastar IA", pct((via.BOTAO || 0) + (via.PALAVRA || 0)), `${numero((via.BOTAO || 0) + (via.PALAVRA || 0))} pelos botões ou por palavra`),
+        metrica("Sem loja cadastrada", numero(semLoja), semLoja ? "procuraram algo que ainda não tem loja" : "toda busca encontrou loja")),
+      h("section", { class: "cartao vidro" }, h("div", { class: "cabeca-grafico" }, h("h3", { style: "margin:0", text: "Buscas por dia" }), botao("Baixar planilha", csv, "btn-secundario btn-pequeno")),
+        pontos.some(p => p.valor) ? graficoLinha(pontos, null, "Buscas", "") : vazio("Nenhuma busca neste período", "Quando os clientes usarem o guia no WhatsApp, os números aparecem aqui.")),
+      h("section", { class: "grade grade-2" },
+        h("div", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "O que mais procuram" }),
+          (st.por_categoria || []).length ? barras(st.por_categoria.slice(0, 12).map(x => ({ rotulo: `${x.categoria}${x.tipo === "SERVICO" ? " (serviço)" : ""}`, valor: Number(x.n || 0) }))) : vazio("Sem buscas", "")),
+        h("div", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Como chegaram à loja" }),
+          barras(["BOTAO", "PALAVRA", "IA"].map(k => ({ rotulo: NOME_VIA[k], valor: via[k] || 0 }))),
+          h("p", { class: "sub", style: "margin:10px 0 0", text: "Só a última linha usa a IA (e o modelo mais barato). Para gastar ainda menos, coloque palavras-chave nas categorias (ex.: \"celular, smartphone, iphone\")." }))),
+      h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Horários com mais buscas" }), mapaHorarios(st.horarios || Array.from({ length: 7 }, () => Array(24).fill(0)))));
+  }
+  function abaGuiaLojas(area, g, recarregar) {
+    const cats = (g.categorias || []).filter(c => !c.inativa);
+    const nomeCat = new Map((g.categorias || []).map(c => [c.id, c.nome]));
+    const lojas = g.lojas || [];
+    const busca = h("input", { class: "entrada", type: "search", placeholder: "Buscar loja, local ou categoria", "aria-label": "Buscar loja" });
+    const corpo = h("tbody", {});
+    const desenhar = () => {
+      const q = busca.value.trim().toLowerCase();
+      const lista = lojas.filter(l => !q || [l.nome, l.local, ...(l.categorias || []).map(id => nomeCat.get(id))].join(" ").toLowerCase().includes(q));
+      corpo.replaceChildren(...lista.map(l => h("tr", {},
+        h("td", {}, h("strong", { text: l.nome }), l.destaque ? h("span", { text: " ★", title: "Destaque: aparece primeiro" }) : null, !l.ativo ? h("small", { style: "display:block;color:var(--texto-3)", text: "fora do guia" }) : null),
+        h("td", { text: l.local || "—" }),
+        h("td", { text: (d => d ? telefone(d.length <= 11 ? "55" + d : d) : "—")(String(l.whatsapp || l.telefone || "").replace(/\D/g, "")) }),
+        h("td", { text: (l.categorias || []).map(id => nomeCat.get(id)).filter(Boolean).join(", ") || "—" }),
+        h("td", {}, pode("AGENTE") ? h("div", { class: "acoes" }, botao("Editar", () => editarLoja(l, cats, recarregar), "btn-secundario btn-pequeno"),
+          botao("Excluir", async () => { if (!(await modal({ titulo: "Excluir a loja?", conteudo: `"${l.nome}" sai do guia e da lista de lojas.`, confirmar: "Excluir", perigo: true }))) return; try { await eng(`guide/stores/${l.id}/delete`, { metodo: "POST", corpo: {} }); aviso("Loja excluída.", "ok"); recarregar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno")) : null))));
+      if (!lista.length) corpo.appendChild(h("tr", {}, h("td", { colspan: "5", text: lojas.length ? "Nenhuma loja encontrada." : "Nenhuma loja ainda. Importe a planilha ou cadastre a primeira." })));
+    };
+    busca.addEventListener("input", desenhar);
+    desenhar();
+    trocar(area,
+      h("section", { class: "grade grade-4" },
+        metrica("Lojas no guia", numero(lojas.filter(l => l.ativo).length), `${numero(lojas.length)} cadastradas`),
+        metrica("Categorias de produtos", numero(cats.filter(c => c.tipo === "PRODUTO").length), ""),
+        metrica("Categorias de serviços", numero(cats.filter(c => c.tipo === "SERVICO").length), ""),
+        metrica("Lojas sem categoria", numero(lojas.filter(l => !(l.categorias || []).length).length), "não aparecem no menu")),
+      h("section", { class: "cartao vidro" },
+        h("div", { class: "cabeca-grafico" }, h("h3", { style: "margin:0", text: "Lojas" }),
+          pode("AGENTE") ? h("div", { class: "acoes" }, botao("Nova loja", () => editarLoja(null, cats, recarregar), "btn-primario btn-pequeno"), botao("Importar planilha", () => importarGuia(recarregar), "btn-secundario btn-pequeno"),
+            botao("Baixar planilha", () => baixarCsv("guia-lojas.csv", [["loja", "telefone", "whatsapp", "local", "produtos", "servicos", "descricao"], ...lojas.map(l => [l.nome, l.telefone, l.whatsapp, l.local, ...["PRODUTO", "SERVICO"].map(t => (l.categorias || []).filter(id => (g.categorias.find(c => c.id === id) || {}).tipo === t).map(id => nomeCat.get(id)).join(", ")), l.descricao])]), "btn-secundario btn-pequeno")) : null),
+        h("div", { style: "margin:12px 0" }, busca),
+        h("div", { class: "tabela-caixa" }, h("table", {}, h("thead", {}, h("tr", {}, ["Loja", "Local", "WhatsApp", "Categorias", ""].map(t => h("th", { text: t })))), corpo))));
+  }
+  function editarLoja(l, cats, recarregar) {
+    l = l || { nome: "", telefone: "", whatsapp: "", local: "", descricao: "", destaque: 0, ativo: 1, categorias: [] };
+    const nome = h("input", { class: "entrada", value: l.nome, maxlength: "80" });
+    const local = h("input", { class: "entrada", value: l.local || "", maxlength: "80", placeholder: "Ex.: Loja 12, 1º piso" });
+    const zap = h("input", { class: "entrada", value: l.whatsapp || "", maxlength: "30", inputmode: "tel", placeholder: "(21) 98888-7777" });
+    const tel = h("input", { class: "entrada", value: l.telefone || "", maxlength: "30", inputmode: "tel" });
+    const desc = h("textarea", { class: "entrada", maxlength: "300", style: "min-height:80px", placeholder: "O que a loja oferece (aparece para o cliente)" }); desc.value = l.descricao || "";
+    const destaque = h("input", { type: "checkbox", checked: Boolean(l.destaque) });
+    const ativo = h("input", { type: "checkbox", checked: l.ativo !== 0 });
+    const marcadas = new Set(l.categorias || []);
+    const grupo = tipo => h("fieldset", { class: "guia-cats" }, h("legend", { text: tipo === "PRODUTO" ? "Produtos" : "Serviços" }),
+      cats.filter(c => c.tipo === tipo).map(c => h("label", { class: "guia-cat" }, h("input", { type: "checkbox", checked: marcadas.has(c.id), onchange: e => { e.target.checked ? marcadas.add(c.id) : marcadas.delete(c.id); } }), c.nome)),
+      cats.some(c => c.tipo === tipo) ? null : h("p", { class: "sub", text: "Nenhuma categoria. Crie em Categorias." }));
+    const fechar = gaveta(l.id ? "Editar loja" : "Nova loja", [
+      campo("Nome da loja", nome), campo("WhatsApp da loja", zap, "O cliente recebe o link para chamar a loja direto."), campo("Telefone fixo (opcional)", tel), campo("Local", local), campo("Descrição", desc),
+      h("label", { class: "guia-cat" }, destaque, "Destaque (aparece primeiro na lista)"), h("label", { class: "guia-cat" }, ativo, "Aparece no guia"),
+      grupo("PRODUTO"), grupo("SERVICO"),
+      h("div", { class: "acoes" }, botao("Salvar", async () => {
+        try { await eng("guide/stores", { metodo: "POST", corpo: { id: l.id, nome: nome.value, local: local.value, whatsapp: zap.value, telefone: tel.value, descricao: desc.value, destaque: destaque.checked, ativo: ativo.checked, categorias: [...marcadas] } }); aviso("Loja salva.", "ok"); fechar(); recarregar(); }
+        catch (e) { aviso(e.message, "erro"); }
+      }, "btn-primario"))]);
+  }
+  function importarGuia(recarregar) {
+    const entrada = h("input", { type: "file", accept: ".csv,text/csv,text/plain" });
+    const previa = h("div", {});
+    const fechar = gaveta("Importar planilha de lojas", [
+      h("p", { text: "Uma linha por loja. Colunas: loja, telefone, whatsapp, local, produtos, servicos, descricao. Em produtos e servicos, separe as categorias por vírgula (ex.: \"Celulares, Capinhas\"). No Excel ou no Google Planilhas: Arquivo → Baixar → CSV." }),
+      h("p", { class: "sub", text: "Lojas com o mesmo nome são atualizadas (nada é apagado). Categorias novas são criadas sozinhas." }),
+      botao("Baixar modelo", () => baixarCsv("modelo-guia-lojas.csv", [["loja", "telefone", "whatsapp", "local", "produtos", "servicos", "descricao"], ["Cell Center", "(21) 3333-1111", "(21) 98888-7777", "Loja 12, 1º piso", "Celulares, Capinhas", "Conserto de celular", "Celulares novos e seminovos"]]), "btn-secundario btn-pequeno"),
+      h("label", { class: "soltar", style: "margin-top:12px" }, icone(ICONES.nuvem), h("strong", { text: "Escolha a planilha (CSV)" }), entrada), previa]);
+    entrada.addEventListener("change", async () => {
+      const arquivo = entrada.files[0];
+      if (!arquivo) return;
+      let texto = await arquivo.text();
+      if (texto.includes("�")) { try { texto = new TextDecoder("windows-1252").decode(await arquivo.arrayBuffer()); } catch { /* mantém */ } }
+      const linhas = lerCsv(texto);
+      const sem = s => String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().trim();
+      const cab = (linhas[0] || []).map(sem);
+      const col = (...nomes) => cab.findIndex(c => nomes.some(n => c === n || c.startsWith(n)));
+      const ix = { loja: col("loja", "nome", "empresa"), telefone: col("telefone", "fone", "fixo"), whatsapp: col("whatsapp", "whats", "celular", "zap"), local: col("local", "piso", "endereco", "localizacao"), produtos: col("produto"), servicos: col("servico"), descricao: col("descricao", "observ", "sobre") };
+      if (ix.loja < 0) { trocar(previa, h("p", { class: "nota nota-alerta", text: "Não encontrei a coluna \"loja\" (ou \"nome\") na primeira linha." })); return; }
+      const dados = linhas.slice(1).map(l => Object.fromEntries(Object.entries(ix).map(([k, i]) => [k, i >= 0 ? String(l[i] || "").trim() : ""]))).filter(l => l.loja);
+      trocar(previa, h("p", { text: `${numero(dados.length)} loja(s) encontradas. Primeiras: ${dados.slice(0, 4).map(d => d.loja).join(", ")}${dados.length > 4 ? "…" : ""}` }),
+        botao(`Importar ${numero(dados.length)} loja(s)`, async () => {
+          let lojas = 0, novas = 0;
+          try {
+            for (let i = 0; i < dados.length; i += 300) { const r = await eng("guide/import", { metodo: "POST", corpo: { linhas: dados.slice(i, i + 300) } }); lojas += r.lojas || 0; novas += r.categorias_novas || 0; }
+            aviso(`${numero(lojas)} loja(s) importada(s), ${numero(novas)} categoria(s) nova(s).`, "ok"); fechar(); recarregar();
+          } catch (e) { aviso(`Parou com ${numero(lojas)} loja(s): ${e.message}`, "erro"); }
+        }, "btn-primario"));
+    });
+  }
+  function abaGuiaCategorias(area, g, recarregar) {
+    const cats = g.categorias || [];
+    const editar = c => {
+      c = c || { tipo: "PRODUTO", nome: "", palavras: "", ordem: 0 };
+      const tipo = h("select", { class: "entrada" }, h("option", { value: "PRODUTO", selected: c.tipo === "PRODUTO", text: "Produto" }), h("option", { value: "SERVICO", selected: c.tipo === "SERVICO", text: "Serviço" }));
+      const nome = h("input", { class: "entrada", value: c.nome, maxlength: "24" });
+      const palavras = h("textarea", { class: "entrada", maxlength: "400", style: "min-height:80px", placeholder: "celular, smartphone, iphone, samsung, xiaomi" }); palavras.value = c.palavras || "";
+      const ordem = h("input", { class: "entrada", type: "number", value: String(c.ordem || 0), min: "0", max: "999" });
+      const ativa = h("input", { type: "checkbox", checked: !c.inativa });
+      const fechar = gaveta(c.id ? "Editar categoria" : "Nova categoria", [
+        campo("Tipo", tipo), campo("Nome (aparece no botão — até 24 letras)", nome), campo("Palavras-chave", palavras, "Quando o cliente escreve em vez de tocar no botão, a DENIA procura por estas palavras primeiro — sem gastar IA."), campo("Ordem no menu (menor aparece primeiro)", ordem),
+        c.id ? h("label", { class: "guia-cat" }, ativa, "Aparece no menu") : null,
+        h("div", { class: "acoes" }, botao("Salvar", async () => {
+          try { await eng("guide/categories", { metodo: "POST", corpo: { id: c.id, tipo: tipo.value, nome: nome.value, palavras: palavras.value, ordem: Number(ordem.value) || 0, ativo: ativa.checked } }); aviso("Categoria salva.", "ok"); fechar(); recarregar(); }
+          catch (e) { aviso(e.message, "erro"); }
+        }, "btn-primario"))]);
+    };
+    const tabela = tipo => {
+      const lista = cats.filter(c => c.tipo === tipo);
+      return h("div", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: tipo === "PRODUTO" ? "🛍️ Produtos" : "🔧 Serviços" }),
+        lista.length ? h("div", { class: "tabela-caixa" }, h("table", {}, h("thead", {}, h("tr", {}, ["Categoria", "Lojas", ""].map(t => h("th", { text: t })))),
+          h("tbody", {}, lista.map(c => h("tr", {}, h("td", {}, h("strong", { text: c.nome }), c.inativa ? h("small", { style: "display:block;color:var(--texto-3)", text: "fora do menu" }) : null, c.palavras ? h("small", { style: "display:block;color:var(--texto-3)", text: c.palavras.slice(0, 80) }) : null),
+            h("td", { text: c.inativa ? "—" : numero(c.lojas || 0) }),
+            h("td", {}, pode("AGENTE") ? h("div", { class: "acoes" }, botao("Editar", () => editar(c), "btn-secundario btn-pequeno"),
+              botao("Excluir", async () => { if (!(await modal({ titulo: "Excluir a categoria?", conteudo: `"${c.nome}" sai do menu. As lojas continuam cadastradas.`, confirmar: "Excluir", perigo: true }))) return; try { await eng(`guide/categories/${c.id}/delete`, { metodo: "POST", corpo: {} }); recarregar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno")) : null)))))) : vazio("Nenhuma categoria", ""));
+    };
+    trocar(area,
+      h("p", { class: "nota", text: "O menu mostra 9 categorias por vez e um \"Mais opções\" para as seguintes. Categorias sem nenhuma loja não aparecem para o cliente." }),
+      pode("AGENTE") ? h("div", { class: "acoes" }, botao("Nova categoria", () => editar(null), "btn-primario btn-pequeno")) : null,
+      h("section", { class: "grade grade-2" }, tabela("PRODUTO"), tabela("SERVICO")));
+  }
+  function abaGuiaMensagens(area, cfg) {
+    const campos = [["nome", "Nome do shopping", "Aparece nos avisos do Telegram.", 1], ["boas_vindas", "Boas-vindas (com os botões Produtos, Serviços e Falar com alguém)", "", 3], ["rodape_lojas", "Depois da lista de lojas", "", 2], ["humano", "Quando pedem para falar com alguém", "A DENIA fica em pausa nessa conversa e a equipe é avisada no Telegram.", 2], ["encerramento", "Ao finalizar", "", 2], ["rede_nome", "Rede social (nome)", "Ex.: Instagram", 1], ["rede_url", "Rede social (link)", "Aparece na mensagem de encerramento.", 1]];
+    const ent = {};
+    const modelo = h("select", { class: "entrada" }, [["", "Padrão do motor"], ["gpt-5-nano", "gpt-5-nano — o mais barato (recomendado)"], ["gpt-5-mini", "gpt-5-mini — econômico"], ["gpt-4o-mini", "gpt-4o-mini — econômico"]].map(([v, n]) => h("option", { value: v, selected: (cfg.modelo_ia || "") === v, text: n })));
+    trocar(area, h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Mensagens do guia" }),
+      campos.map(([k, rot, dica, linhas]) => { ent[k] = linhas > 1 ? h("textarea", { class: "entrada", maxlength: "900", style: `min-height:${linhas * 34}px` }) : h("input", { class: "entrada", maxlength: "300" }); ent[k].value = cfg[k] || ""; return campo(rot, ent[k], dica); }),
+      campo("IA para perguntas escritas", modelo, "Os botões nunca usam IA. Este modelo só entra quando a pessoa escreve algo que a busca por palavra não achou."),
+      pode("AGENTE") ? h("div", { class: "acoes" }, botao("Salvar mensagens", async () => {
+        try { await eng("guide/config", { metodo: "POST", corpo: { ...Object.fromEntries(Object.entries(ent).map(([k, e]) => [k, e.value])), modelo_ia: modelo.value } }); aviso("Mensagens salvas.", "ok"); }
+        catch (e) { aviso(e.message, "erro"); }
+      }, "btn-primario"), h("a", { class: "btn btn-secundario", href: "#/guia/testar" }, "Testar como cliente")) : null));
+  }
+  function abaGuiaTestar(area) {
+    const tela = h("div", { class: "mensagens guia-tela", "aria-live": "polite" });
+    const entrada = h("input", { class: "entrada", placeholder: "Escreva como um cliente (ex.: onde conserto meu celular?)", maxlength: "500" });
+    const balao = (texto, minha) => h("div", { class: "msg " + (minha ? "msg-entrada" : "msg-saida") }, texto);
+    const enviar = async (texto, acao, rotulo) => {
+      tela.appendChild(balao(rotulo || texto, true));
+      try {
+        const r = await eng("guide/test", { metodo: "POST", corpo: { texto, acao } });
+        for (const x of r.respostas || []) {
+          const it = x.interativo;
+          if (!it) { tela.appendChild(balao(x.texto, false)); continue; }
+          const caixa = balao((it.body || {}).text || "", false);
+          const opcoes = it.type === "button" ? it.action.buttons.map(b => ({ id: b.reply.id, title: b.reply.title })) : ((it.action.sections || [])[0] || {}).rows || [];
+          caixa.appendChild(h("div", { class: "guia-botoes" }, opcoes.map(o => h("button", { type: "button", class: "btn btn-secundario btn-pequeno", title: o.description || "", onclick: () => enviar(o.title, o.id, o.title) }, o.title))));
+          tela.appendChild(caixa);
+        }
+        if (!(r.respostas || []).length) tela.appendChild(h("p", { class: "sub", text: "(sem resposta: a conversa de teste pode estar em pausa)" }));
+      } catch (e) { aviso(e.message, "erro"); }
+      tela.scrollTop = tela.scrollHeight;
+    };
+    const mandar = () => { const t = entrada.value.trim(); if (!t) return; entrada.value = ""; enviar(t, ""); };
+    entrada.addEventListener("keydown", e => { if (e.key === "Enter") mandar(); });
+    trocar(area, h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Testar como cliente" }),
+      h("p", { class: "sub", text: "Simula a conversa: nada é enviado pelo WhatsApp e nada entra nas buscas. Toque nos botões como o cliente faria." }),
+      h("div", { class: "acoes", style: "margin:8px 0" }, botao("Começar (oi)", () => enviar("oi", "", "oi"), "btn-primario btn-pequeno"), botao("Limpar", () => tela.replaceChildren(), "btn-secundario btn-pequeno")),
+      tela, h("div", { class: "compor" }, entrada, botao("Enviar", mandar, "btn-primario"))));
+  }
+
   async function paginaWhatsapp(el, aba, vivo) {
     el.appendChild(cabeca("WhatsApp", "Atendimento aos clientes e conversa com os profissionais pela API oficial: números, qualidade, entregas e diagnóstico."));
     if (!estado.org.conectada) { falha(el, new ErroApi("A IA desta empresa ainda não foi conectada.", 503, { codigo: "ENGINE_NAO_CONFIGURADO" })); return; }
-    const abas = [["visao", "Visão geral"], ["atendimento", "Atendimento"], ["atendimentos", "Atendimentos"], ["profissionais", "Profissionais"], ["entregas", "Entregas"], ["diagnostico", "Diagnóstico"], ["conexao", "Conexão"]];
+    const abas = [["visao", "Visão geral"], ["atendimento", "Atendimento"], ["atendimentos", "Atendimentos"], ["profissionais", "Profissionais"], ["entregas", "Entregas"], ["diagnostico", "Diagnóstico"], ["conexao", "Conexão"]].filter(a => !(modoGuia() && ["atendimentos", "profissionais"].includes(a[0])));
     const atual = abas.some(a => a[0] === aba) ? aba : "visao";
     el.appendChild(h("div", { class: "abas", role: "tablist" }, abas.map(([k, n]) => h("a", { class: "aba" + (k === atual ? " ativo" : ""), href: "#/whatsapp/" + k, role: "tab" }, n))));
     const f = estado.numerosZap = estado.numerosZap || { dias: 30, metrica: "recebidas" };

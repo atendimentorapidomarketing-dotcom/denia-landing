@@ -1,5 +1,20 @@
 # Changelog — DENIA Engine
 
+## 31.8.0 — 2026-10-15
+
+### Novo — modo guia de lojas (`MODO=guia`), para shoppings e centros comerciais
+- Menu do WhatsApp com botões e listas oficiais: Produtos / Serviços / Falar com alguém → categorias
+  (9 por página + "Mais opções") → lojas com local e link do WhatsApp de cada uma → Menu inicial /
+  Voltar / Finalizar (com a rede social). **Botões e listas não usam IA.**
+- Pergunta escrita: primeiro busca por palavra (nome e palavras-chave da categoria), sem IA; só na
+  dúvida usa a IA com o modelo escolhido no painel (ex.: gpt-5-nano), com no máximo 200 tokens.
+- Cada busca vai ao Telegram (nome, número, o que buscou e as lojas indicadas; 1 aviso por hora por
+  pessoa e categoria) e fica em `d30_guia_buscas` para as métricas.
+- "Falar com alguém": a DENIA pausa a conversa e avisa a equipe.
+- Rotas: `/platform/guide` (lojas, categorias e mensagens), `config`, `categories`, `stores`,
+  `import` (planilha), `stats?de&ate` (por dia, categoria, via, contatos e horários) e `test`
+  (simulação sem enviar nada).
+
 ## 31.7.0 — 2026-10-15
 
 ### Novo
