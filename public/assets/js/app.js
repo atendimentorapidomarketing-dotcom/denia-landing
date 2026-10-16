@@ -294,6 +294,25 @@
     catch (e) { if (id === estado.render) falha(el, e); }
   }
 
+  // Celular: listas longas mostram 15 linhas e um botão "Ver mais" (em vez de uma rolagem dentro da página).
+  const LINHAS_CELULAR = 15;
+  function encurtarListas(raiz) {
+    if (window.innerWidth > 720) return;
+    raiz.querySelectorAll(".lista-rolavel tbody:not([data-curta])").forEach(tb => {
+      tb.dataset.curta = "1";
+      const linhas = [...tb.rows];
+      if (linhas.length <= LINHAS_CELULAR + 3) return;
+      let visiveis = LINHAS_CELULAR;
+      const aplicar = () => linhas.forEach((l, i) => { l.hidden = i >= visiveis; });
+      const mais = h("button", { type: "button", class: "btn btn-secundario btn-pequeno ver-mais-linhas" });
+      const rotulo = () => { const falta = linhas.length - visiveis; mais.textContent = falta > 0 ? `Ver mais ${numero(Math.min(falta, 30))} (faltam ${numero(falta)})` : "Mostrar menos"; };
+      mais.addEventListener("click", () => { visiveis = visiveis >= linhas.length ? LINHAS_CELULAR : visiveis + 30; aplicar(); rotulo(); if (visiveis === LINHAS_CELULAR) tb.closest(".lista-rolavel").scrollIntoView({ block: "start", behavior: "smooth" }); });
+      aplicar(); rotulo();
+      tb.closest(".lista-rolavel").after(mais);
+    });
+  }
+  new MutationObserver(() => encurtarListas($("conteudo"))).observe($("conteudo"), { childList: true, subtree: true });
+
   function semEmpresa(el) {
     el.appendChild(h("div", { class: "cartao vidro" }, vazio("Você ainda não faz parte de nenhuma empresa", "Peça ao responsável pela sua empresa para adicionar o seu e-mail na equipe.")));
   }
@@ -1428,17 +1447,17 @@
       h("div", { class: "barra-trilho" }, h("i", { style: `width:${Math.max(2, Math.round((x.valor / max) * 100))}%` })), h("strong", { text: formato(x.valor) }))));
   }
   // Mapa de calor dia da semana × hora (um tom só: mais forte = mais mensagens).
-  function mapaHorarios(matriz) {
+  function mapaHorarios(matriz, unidade = "mensagens", fuso = "Horário de Brasília. ") {
     const dias = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
     const max = Math.max(1, ...matriz.flat());
     const total = matriz.flat().reduce((s, x) => s + x, 0);
     let pico = [0, 0, 0];
     matriz.forEach((l, d) => l.forEach((v, hr) => { if (v > pico[2]) pico = [d, hr, v]; }));
-    return h("div", {}, h("div", { class: "mapa-calor", role: "table", "aria-label": "Mensagens recebidas por dia da semana e hora" },
+    return h("div", {}, h("div", { class: "mapa-calor", role: "table", "aria-label": `${unidade} por dia da semana e hora` },
       h("div", { class: "mapa-linha mapa-cabeca", role: "row" }, h("span", { role: "columnheader" }), Array.from({ length: 24 }, (_, hr) => h("span", { role: "columnheader", text: hr % 3 === 0 ? String(hr) : "" }))),
       matriz.map((l, d) => h("div", { class: "mapa-linha", role: "row" }, h("span", { class: "mapa-dia", role: "rowheader", text: dias[d] }),
-        l.map((v, hr) => h("span", { class: "mapa-celula", role: "cell", title: `${dias[d]} ${hr}h: ${numero(v)} mensagem(ns)`, "aria-label": `${dias[d]} ${hr}h: ${v}`, style: `background:rgba(79,140,255,${v ? (0.12 + 0.88 * v / max).toFixed(2) : 0.04})` }))))),
-      h("p", { class: "sub", style: "margin:8px 0 0", text: total ? `Pico: ${dias[pico[0]]} às ${pico[1]}h (${numero(pico[2])} mensagens). Horário de Brasília. Quanto mais forte o azul, mais mensagens.` : "Sem mensagens no período." }));
+        l.map((v, hr) => h("span", { class: "mapa-celula", role: "cell", title: `${dias[d]} ${hr}h: ${numero(v)} ${unidade}`, "aria-label": `${dias[d]} ${hr}h: ${v}`, style: `background:rgba(79,140,255,${v ? (0.12 + 0.88 * v / max).toFixed(2) : 0.04})` }))))),
+      h("p", { class: "sub", style: "margin:8px 0 0", text: total ? `Pico: ${dias[pico[0]]} às ${pico[1]}h (${numero(pico[2])} ${unidade}). ${fuso}Quanto mais forte o azul, mais ${unidade}.` : `Sem ${unidade} no período.` }));
   }
 
   // ----- Guia de lojas (motor com MODO=guia, ex.: shopping): buscas, lojas, categorias, mensagens e teste.
@@ -1675,7 +1694,7 @@
   const NOME_VIA_ZAP = { BOTAO: "Tocou nos botões", PALAVRA: "Escreveu (achado sem IA)", IA: "Escreveu (resolvido pela IA)" };
   async function paginaChatbot(el, aba, vivo) {
     el.appendChild(cabeca("Chatbot do WhatsApp", "Monte o atendimento automático da empresa sem programar: botões e listas oficiais do WhatsApp (sem custo de IA) e, se quiser, a IA para responder o que o cliente escrever."));
-    const abas = [["visao", "Visão geral"], ["conversas", "Conversas"], ["menu", "Menu"], ["contatos", "Contatos e lojas"], ["mensagens", "Mensagens e IA"], ["conexao", "Conexão"], ["testar", "Testar"]];
+    const abas = [["visao", "Visão geral"], ["conversas", "Conversas"], ["clientes", "Clientes"], ["campanhas", "Campanhas"], ["modelos", "Modelos"], ["respostas", "Respostas rápidas"], ["perfil", "Perfil comercial"], ["saude", "Saúde do número"], ["menu", "Menu"], ["contatos", "Contatos e lojas"], ["mensagens", "Mensagens e IA"], ["conexao", "Conexão"], ["testar", "Testar"]];
     const atual = abas.some(a => a[0] === aba) ? aba : "visao";
     el.appendChild(h("div", { class: "abas", role: "tablist" }, abas.map(([k, n]) => h("a", { class: "aba" + (k === atual ? " ativo" : ""), href: "#/chatbot/" + k, role: "tab" }, n))));
     const area = h("div", { class: "grade" }, carregando());
@@ -1688,7 +1707,184 @@
       if (atual === "mensagens") return await abaZapMensagens(area, vivo);
       if (atual === "conexao") return await abaZapConexao(area, vivo);
       if (atual === "testar") return abaZapTestar(area);
+      if (atual === "clientes") return await abaZapClientes(area, vivo);
+      if (atual === "campanhas") return await abaZapCampanhas(area, vivo);
+      if (atual === "modelos") return await abaZapModelos(area, vivo);
+      if (atual === "respostas") return await abaZapRespostas(area, vivo);
+      if (atual === "perfil") return await abaZapPerfil(area, vivo);
+      if (atual === "saude") return await abaZapSaude(area, vivo);
     } catch (e) { if (vivo()) falha(area, e); }
+  }
+  // ----- WhatsApp completo: perfil comercial, saúde, modelos, campanhas, clientes e respostas rápidas
+  const semConexaoZap = (area, e) => {
+    if (e && e.codigo === "SEM_CONEXAO") { trocar(area, h("section", { class: "cartao vidro" }, vazio("Conecte o número primeiro", e.message), h("div", { class: "acoes" }, h("a", { class: "btn btn-primario", href: "#/chatbot/conexao" }, "Conectar o número")))); return true; }
+    if (e && e.codigo === "SEM_WABA") { trocar(area, h("section", { class: "cartao vidro" }, vazio("Falta o ID da conta do WhatsApp Business", e.message), h("div", { class: "acoes" }, h("a", { class: "btn btn-primario", href: "#/chatbot/conexao" }, "Abrir a conexão")))); return true; }
+    return false;
+  };
+  async function abaZapPerfil(area, vivo) {
+    let d;
+    try { d = await zap("perfil"); } catch (e) { if (!semConexaoZap(area, e)) falha(area, e); return; }
+    if (!vivo()) return;
+    const p = d.perfil || {};
+    const VERT = [["", "Escolha…"], ["RETAIL", "Comércio / loja"], ["PROF_SERVICES", "Serviços profissionais"], ["AUTO", "Automotivo"], ["BEAUTY", "Beleza e estética"], ["HEALTH", "Saúde"], ["RESTAURANT", "Restaurante"], ["GROCERY", "Mercado"], ["HOTEL", "Hospedagem"], ["TRAVEL", "Turismo"], ["EDU", "Educação"], ["FINANCE", "Finanças"], ["EVENT_PLAN", "Eventos"], ["ENTERTAIN", "Entretenimento"], ["APPAREL", "Moda"], ["NONPROFIT", "Sem fins lucrativos"], ["OTHER", "Outro"]];
+    const ent = {
+      about: h("input", { class: "entrada", maxlength: "139", value: p.about || "" }),
+      description: h("textarea", { class: "entrada", maxlength: "512", style: "min-height:90px" }, p.description || ""),
+      address: h("input", { class: "entrada", maxlength: "256", value: p.address || "" }),
+      email: h("input", { class: "entrada", type: "email", maxlength: "128", value: p.email || "" }),
+      site1: h("input", { class: "entrada", type: "url", value: (p.websites || [])[0] || "", placeholder: "https://" }),
+      site2: h("input", { class: "entrada", type: "url", value: (p.websites || [])[1] || "", placeholder: "https://" }),
+      vertical: h("select", { class: "entrada" }, VERT.map(([v, n]) => h("option", { value: v, selected: p.vertical === v, text: n })))
+    };
+    trocar(area, h("section", { class: "grade grade-2" },
+      h("section", { class: "cartao vidro formulario" }, h("h3", { style: "margin:0", text: "Perfil comercial do WhatsApp" }),
+        h("p", { class: "sub", text: "É o que o cliente vê ao tocar no nome da empresa no WhatsApp. Muda na hora, direto na Meta." }),
+        campo("Recado (aparece abaixo do nome)", ent.about, "Até 139 letras."), campo("Descrição", ent.description), campo("Endereço", ent.address), campo("E-mail", ent.email),
+        h("div", { class: "grade grade-2" }, campo("Site", ent.site1), campo("Outro site", ent.site2)), campo("Ramo", ent.vertical),
+        pode("ADMIN") ? h("div", { class: "acoes" }, botao("Salvar na Meta", async () => {
+          try { await zap("perfil", { metodo: "POST", corpo: { about: ent.about.value, description: ent.description.value, address: ent.address.value, email: ent.email.value, websites: [ent.site1.value, ent.site2.value].filter(Boolean), vertical: ent.vertical.value || undefined } }); aviso("Perfil atualizado no WhatsApp.", "ok"); } catch (e) { aviso(e.message, "erro"); }
+        }, "btn-primario")) : null),
+      h("section", { class: "cartao vidro zap-previa" }, h("h3", { style: "margin-top:0", text: "Como o cliente vê" }),
+        h("div", { class: "zap-cartao" }, p.profile_picture_url ? h("img", { src: p.profile_picture_url, alt: "", class: "zap-foto" }) : h("div", { class: "zap-foto zap-foto-vazia", text: iniciais(d.nome || "?") }),
+          h("strong", { text: d.nome || "Empresa" }), h("span", { class: "sub", text: d.numero || "" }), h("p", { text: p.about || "" }), h("p", { class: "sub", text: p.description || "" }),
+          h("ul", { class: "lista-simples" }, p.address ? h("li", { text: p.address }) : null, p.email ? h("li", { text: p.email }) : null, ...(p.websites || []).map(w => h("li", { text: w })))),
+        h("p", { class: "sub", text: "A foto do perfil e o nome exibido mudam no Gerenciador do WhatsApp (business.facebook.com → WhatsApp Manager → Números de telefone). Troca de nome passa por aprovação da Meta." }))));
+  }
+  async function abaZapSaude(area, vivo) {
+    let d;
+    try { d = await zap("saude"); } catch (e) { if (!semConexaoZap(area, e)) falha(area, e); return; }
+    if (!vivo()) return;
+    const corQ = { GREEN: "ok", YELLOW: "alerta", RED: "erro" }[d.qualidade] || "info";
+    const e7 = d.envio_7d || {}, tot = Number(e7.total || 0);
+    trocar(area,
+      h("section", { class: "grade grade-4" },
+        h("div", { class: "metrica vidro" }, h("span", { text: "Qualidade do número" }), h("strong", {}, selo(d.qualidade_nome || "—", corQ)), h("small", { text: "Cai com bloqueios e denúncias. Baixa = risco de limite menor." })),
+        metrica("Limite de conversas novas/dia", d.limite == null ? "—" : typeof d.limite === "number" ? numero(d.limite) : d.limite, "Clientes diferentes por dia iniciados pela empresa (sobe sozinho com bom uso)"),
+        metrica("Entregues em 7 dias", tot ? `${Math.round((Number(e7.entregues || 0) / tot) * 100)}%` : "—", `${numero(e7.entregues || 0)} de ${numero(tot)} enviadas`),
+        metrica("Lidas em 7 dias", tot ? `${Math.round((Number(e7.lidas || 0) / tot) * 100)}%` : "—", `${numero(e7.falhas || 0)} falharam`)),
+      h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Número" }),
+        h("ul", { class: "lista-simples" }, h("li", { text: `${d.nome || ""} · ${d.numero || ""}` }), d.oficial ? h("li", { text: "Conta comercial oficial (selo verde)." }) : null,
+          d.nome_status ? h("li", { text: `Nome exibido: ${({ APPROVED: "aprovado", PENDING_REVIEW: "em análise", DECLINED: "recusado", NONE: "—" })[d.nome_status] || d.nome_status}` }) : null,
+          d.status ? h("li", { text: `Situação: ${({ CONNECTED: "conectado", FLAGGED: "sinalizado pela Meta", RESTRICTED: "restrito", DISCONNECTED: "desconectado" })[d.status] || d.status}` }) : null,
+          d.plataforma ? h("li", { text: `Plataforma: ${d.plataforma === "CLOUD_API" ? "API oficial na nuvem" : d.plataforma}` }) : null,
+          d.waba && !d.waba.erro ? h("li", { text: `Verificação da empresa na Meta: ${({ verified: "verificada", unverified: "não verificada", pending: "em análise" })[d.waba.business_verification_status] || d.waba.business_verification_status || "—"}` }) : null)),
+      h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Por que mensagens falharam (7 dias)" }),
+        (d.falhas || []).length ? h("div", { class: "tabela-caixa" }, h("table", {}, h("thead", {}, h("tr", {}, h("th", { text: "Código" }), h("th", { text: "Quantas" }), h("th", { text: "O que significa" }))),
+          h("tbody", {}, d.falhas.map(f => h("tr", {}, h("td", { text: f.codigo || "—" }), h("td", { text: numero(f.n) }), h("td", { text: f.dica || f.exemplo || "" })))))) : vazio("Nenhuma falha nos últimos 7 dias", "")));
+  }
+  async function abaZapModelos(area, vivo) {
+    let d;
+    try { d = await zap("modelos"); } catch (e) { if (!semConexaoZap(area, e)) falha(area, e); return; }
+    if (!vivo()) return;
+    const ST = { APPROVED: ["Aprovado", "ok"], PENDING: ["Em análise", "info"], REJECTED: ["Recusado", "erro"], PAUSED: ["Pausado", "alerta"], DISABLED: ["Desativado", "erro"], IN_APPEAL: ["Em recurso", "info"] };
+    const CAT = { MARKETING: "Marketing", UTILITY: "Utilidade", AUTHENTICATION: "Código de acesso" };
+    const nome = h("input", { class: "entrada", placeholder: "ex.: promocao_outubro", maxlength: "60" });
+    const cat = h("select", { class: "entrada" }, [["MARKETING", "Marketing (promoções, novidades)"], ["UTILITY", "Utilidade (pedido, agendamento, cobrança)"]].map(([v, n]) => h("option", { value: v, text: n })));
+    const idioma = h("select", { class: "entrada" }, [["pt_BR", "Português (Brasil)"], ["en_US", "Inglês"], ["es", "Espanhol"]].map(([v, n]) => h("option", { value: v, text: n })));
+    const cab = h("input", { class: "entrada", maxlength: "60", placeholder: "Título (opcional)" });
+    const corpoT = h("textarea", { class: "entrada", maxlength: "1024", style: "min-height:110px", placeholder: "Olá {{1}}! Esta semana a troca de tela está com 20% de desconto. Quer agendar?" });
+    const exemplos = h("div", { class: "grade grade-2" });
+    const rod = h("input", { class: "entrada", maxlength: "60", placeholder: "Rodapé (opcional)" });
+    const bt1 = h("input", { class: "entrada", maxlength: "25", placeholder: "Botão de resposta (ex.: Quero agendar)" });
+    const btUrlT = h("input", { class: "entrada", maxlength: "25", placeholder: "Botão de site (texto)" }), btUrl = h("input", { class: "entrada", type: "url", placeholder: "https://" });
+    const atualizarEx = () => { const n = (corpoT.value.match(/\{\{\s*\d+\s*\}\}/g) || []).length; const tem = exemplos.querySelectorAll("input").length; if (n !== tem) exemplos.replaceChildren(...Array.from({ length: n }, (_, i) => campo(`Exemplo para {{${i + 1}}}`, h("input", { class: "entrada", placeholder: i === 0 ? "Maria" : "" })))); };
+    corpoT.addEventListener("input", atualizarEx);
+    const criar = async () => {
+      try {
+        const r = await zap("modelos", { metodo: "POST", corpo: { nome: nome.value, categoria: cat.value, idioma: idioma.value, cabecalho: cab.value, corpo: corpoT.value, rodape: rod.value, exemplos: [...exemplos.querySelectorAll("input")].map(i => i.value),
+          botoes: [bt1.value ? { tipo: "QUICK_REPLY", texto: bt1.value } : null, btUrlT.value && btUrl.value ? { tipo: "URL", texto: btUrlT.value, url: btUrl.value } : null].filter(Boolean) } });
+        aviso(`Modelo "${r.nome}" enviado para a Meta. A aprovação costuma levar de minutos a 24 h.`, "ok"); navegar();
+      } catch (e) { aviso(e.message, "erro"); }
+    };
+    const previa = m => (m.componentes || []).map(c => c.type === "HEADER" && c.text ? h("strong", { text: c.text }) : c.type === "BODY" ? h("p", { style: "white-space:pre-wrap;margin:4px 0", text: c.text }) : c.type === "FOOTER" ? h("small", { class: "sub", text: c.text }) : c.type === "BUTTONS" ? h("div", { class: "acoes" }, c.buttons.map(b => h("span", { class: "selo", text: b.text }))) : null);
+    trocar(area,
+      h("p", { class: "nota", text: "Modelos são as mensagens aprovadas pela Meta. Só eles podem iniciar conversa ou responder depois de 24 h sem o cliente escrever — e são a base das campanhas. A Meta cobra cada conversa iniciada por modelo (marketing custa mais que utilidade)." }),
+      tabelaDados([["nome", "Modelo"], ["status", "Situação", v => selo(...(ST[v] || [v, "info"]))], ["categoria", "Tipo", v => CAT[v] || v], ["idioma", "Idioma"], ["variaveis", "Variáveis", numero, { num: true }], ["qualidade", "Qualidade", v => ({ GREEN: "Alta", YELLOW: "Média", RED: "Baixa" })[v] || "—"], ["motivo", "Motivo da recusa", v => v || "—"]],
+        d.modelos || [], { titulo: "Modelos da conta", vazioTxt: "Nenhum modelo ainda", acoes: m => h("div", { class: "acoes" },
+          botao("Ver", () => modal({ titulo: m.nome, soInformar: true, conteudo: [h("div", { class: "zap-bolha" }, previa(m))] }), "btn-secundario btn-pequeno"),
+          pode("ADMIN") ? botao("Excluir", async () => { if (await modal({ titulo: `Excluir "${m.nome}"?`, conteudo: "O nome fica bloqueado por 30 dias na Meta.", confirmar: "Excluir", perigo: true })) { try { await zap("modelos/excluir", { metodo: "POST", corpo: { nome: m.nome } }); aviso("Modelo excluído.", "ok"); navegar(); } catch (e) { aviso(e.message, "erro"); } } }, "btn-secundario btn-pequeno") : null) }),
+      pode("ADMIN") ? h("section", { class: "cartao vidro formulario" }, h("h3", { style: "margin:0", text: "Criar modelo" }),
+        h("div", { class: "grade grade-3" }, campo("Nome", nome, "Só letras minúsculas e _ (a DENIA ajusta)."), campo("Tipo", cat), campo("Idioma", idioma)),
+        campo("Título", cab), campo("Texto", corpoT, "Use {{1}}, {{2}}… para o que muda por cliente (ex.: nome). Evite letras maiúsculas demais e promessas exageradas: a Meta recusa."), exemplos, campo("Rodapé", rod),
+        h("div", { class: "grade grade-3" }, campo("Botão de resposta", bt1), campo("Botão de site", btUrlT), campo("Endereço do site", btUrl)),
+        h("p", { class: "sub", text: "Em modelos de marketing a DENIA inclui o botão \"Parar promoções\": quem tocar sai das campanhas. Isso protege a qualidade do número." }),
+        h("div", { class: "acoes" }, botao("Enviar para aprovação da Meta", criar, "btn-primario"))) : null);
+  }
+  async function abaZapCampanhas(area, vivo) {
+    let [camps, mods, cli] = await Promise.all([zap("campanhas"), zap("modelos").catch(e => ({ erro: e })), zap("clientes")]);
+    if (!vivo()) return;
+    if (mods.erro && semConexaoZap(area, mods.erro)) return;
+    const aprovados = (mods.modelos || []).filter(m => m.status === "APPROVED" && !m.cabecalho_midia && m.categoria !== "AUTHENTICATION");
+    const ST = { AGENDADA: ["Na fila", "info"], ENVIANDO: ["Enviando", "info"], CONCLUIDA: ["Concluída", "ok"], PAUSADA: ["Pausada", "alerta"], CANCELADA: ["Cancelada", "erro"] };
+    const nome = h("input", { class: "entrada", placeholder: "Ex.: Promoção de outubro" });
+    const modelo = h("select", { class: "entrada" }, h("option", { value: "", text: aprovados.length ? "Escolha um modelo aprovado…" : "Nenhum modelo aprovado ainda" }), aprovados.map(m => h("option", { value: m.nome + "|" + m.idioma, text: `${m.nome} (${m.idioma})` })));
+    const vars = h("div", { class: "grade grade-2" });
+    modelo.addEventListener("change", () => { const m = aprovados.find(x => x.nome + "|" + x.idioma === modelo.value); vars.replaceChildren(...Array.from({ length: m ? m.variaveis : 0 }, (_, i) => campo(`Valor de {{${i + 1}}}`, h("input", { class: "entrada", value: i === 0 ? "{nome}" : "" }), i === 0 ? "{nome} = primeiro nome de cada cliente." : ""))); });
+    const publico = h("select", { class: "entrada" }, [["todos", "Todos os clientes"], ["etiqueta", "Clientes com uma etiqueta"], ["recentes", "Quem falou com a empresa nos últimos dias"]].map(([v, n]) => h("option", { value: v, text: n })));
+    const etiqueta = h("select", { class: "entrada" }, (cli.etiquetas || []).map(e => h("option", { value: e.nome, text: `${e.nome} (${e.n})` })));
+    const diasE = h("input", { class: "entrada", type: "number", min: "1", max: "365", value: "30" });
+    const quando = h("input", { class: "entrada", type: "datetime-local" });
+    const contagem = h("p", { class: "sub" });
+    const corpo = () => { const [mn, mi] = modelo.value.split("|"); return { nome: nome.value, modelo: mn, idioma: mi, variaveis: [...vars.querySelectorAll("input")].map(i => i.value), publico: publico.value, etiqueta: etiqueta.value, dias: Number(diasE.value), agendada_ms: quando.value ? new Date(quando.value).getTime() : 0 }; };
+    const contar = async () => { try { const r = await zap("campanhas", { metodo: "POST", corpo: { ...corpo(), nome: nome.value || "x", modelo: corpo().modelo || "x", idioma: corpo().idioma || "pt_BR", simular: true } }); contagem.textContent = `${numero(r.total)} cliente(s) vão receber.`; } catch (e) { contagem.textContent = e.message; } };
+    [publico, etiqueta, diasE].forEach(x => x.addEventListener("change", contar));
+    const linhaPublico = h("div", { class: "grade grade-2" }, campo("Quem recebe", publico), campo("Etiqueta", etiqueta), campo("Dias", diasE));
+    const mostrar = () => { etiqueta.closest(".campo").style.display = publico.value === "etiqueta" ? "" : "none"; diasE.closest(".campo").style.display = publico.value === "recentes" ? "" : "none"; };
+    publico.addEventListener("change", mostrar);
+    trocar(area,
+      h("section", { class: "grade grade-3" }, metrica("Clientes no WhatsApp", numero(cli.total || 0), `${numero(cli.descadastrados || 0)} pediram para não receber`), metrica("Modelos aprovados", numero(aprovados.length), "para campanhas"), metrica("Campanhas", numero((camps.campanhas || []).length), "últimas 50")),
+      pode("ADMIN") ? h("section", { class: "cartao vidro formulario" }, h("h3", { style: "margin:0", text: "Nova campanha" }),
+        campo("Nome da campanha", nome), campo("Modelo", modelo, aprovados.length ? "" : "Crie e aprove um modelo em Modelos de mensagem."), vars, linhaPublico, campo("Enviar em (opcional)", quando, "Vazio = começa em até 5 minutos."), contagem,
+        h("p", { class: "sub", text: "Envia aos poucos (até 120 a cada 5 minutos) para respeitar o limite da Meta e proteger a qualidade do número. Quem respondeu SAIR ou tocou em \"Parar promoções\" nunca recebe." }),
+        h("div", { class: "acoes" }, botao("Criar campanha", async () => {
+          const c = corpo(); if (!c.modelo) return aviso("Escolha um modelo aprovado.", "erro");
+          if (!(await modal({ titulo: "Enviar a campanha?", conteudo: contagem.textContent || "Confirme o envio.", confirmar: "Enviar" }))) return;
+          try { const r = await zap("campanhas", { metodo: "POST", corpo: c }); aviso(`Campanha criada: ${numero(r.total)} cliente(s).`, "ok"); navegar(); } catch (e) { aviso(e.message, "erro"); }
+        }, "btn-primario"))) : null,
+      tabelaDados([["nome", "Campanha"], ["status", "Situação", v => selo(...(ST[v] || [v, "info"]))], ["modelo", "Modelo"], ["total", "Público", numero, { num: true }], ["enviados", "Enviadas", numero, { num: true }], ["entregues", "Entregues", numero, { num: true }], ["lidas", "Lidas", numero, { num: true }], ["respostas", "Responderam", numero, { num: true }], ["falhas", "Falhas", numero, { num: true }], ["criado_ms", "Criada", v => new Date(v).toLocaleString(LOCALE)]],
+        camps.campanhas || [], { titulo: "Campanhas", vazioTxt: "Nenhuma campanha ainda", busca: false, acoes: c => pode("ADMIN") && !["CONCLUIDA", "CANCELADA"].includes(c.status) ? h("div", { class: "acoes" },
+          botao(c.status === "PAUSADA" ? "Retomar" : "Pausar", async () => { try { await zap(`campanhas/${c.id}/${c.status === "PAUSADA" ? "retomar" : "pausar"}`, { metodo: "POST", corpo: {} }); navegar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno"),
+          botao("Cancelar", async () => { if (await modal({ titulo: "Cancelar a campanha?", conteudo: "Quem ainda não recebeu não recebe mais.", confirmar: "Cancelar campanha", perigo: true })) { try { await zap(`campanhas/${c.id}/cancelar`, { metodo: "POST", corpo: {} }); navegar(); } catch (e) { aviso(e.message, "erro"); } } }, "btn-secundario btn-pequeno")) : null }));
+    mostrar(); contar();
+  }
+  async function abaZapClientes(area, vivo) {
+    const f = estado.zapCli = estado.zapCli || { q: "", etiqueta: "" };
+    const d = await zap(`clientes?q=${encodeURIComponent(f.q)}&etiqueta=${encodeURIComponent(f.etiqueta)}`);
+    if (!vivo()) return;
+    const busca = h("input", { class: "entrada", type: "search", placeholder: "Buscar por nome ou telefone", value: f.q });
+    busca.addEventListener("change", () => { f.q = busca.value.trim(); navegar(); });
+    const chips = h("div", { class: "abas abas-chips" }, [{ nome: "", n: d.total }, ...(d.etiquetas || [])].map(e => h("button", { type: "button", class: "aba" + (f.etiqueta === e.nome ? " ativo" : ""), onclick: () => { f.etiqueta = e.nome; navegar(); } }, e.nome ? `${e.nome} (${e.n})` : "Todos")));
+    const editar = async c => {
+      const et = h("input", { class: "entrada", value: c.etiquetas.join(", "), placeholder: "cliente fiel, orçamento, Niterói" });
+      const nm = h("input", { class: "entrada", value: c.nome || "" });
+      const opt = h("input", { type: "checkbox", checked: c.optout });
+      if (!(await modal({ titulo: c.nome || telefone(c.telefone), conteudo: [campo("Nome", nm), campo("Etiquetas (separadas por vírgula)", et), h("label", { class: "opcao" }, opt, " Não quer receber campanhas")], confirmar: "Salvar" }))) return;
+      try { await zap(`clientes/${c.telefone}`, { metodo: "POST", corpo: { nome: nm.value, etiquetas: et.value, optout: opt.checked } }); aviso("Salvo.", "ok"); navegar(); } catch (e) { aviso(e.message, "erro"); }
+    };
+    const importar = async () => {
+      const txt = h("textarea", { class: "entrada", style: "min-height:140px", placeholder: "telefone;nome;etiquetas\n21988887777;Maria Souza;cliente fiel\n21977776666;João;orçamento" });
+      const ok = h("input", { type: "checkbox" });
+      if (!(await modal({ titulo: "Importar clientes", conteudo: [h("p", { class: "sub", text: "Cole uma linha por cliente (telefone; nome; etiquetas) ou o conteúdo de uma planilha CSV." }), txt, h("label", { class: "opcao" }, ok, " Estas pessoas autorizaram receber mensagens da empresa no WhatsApp.")], confirmar: "Importar" }))) return;
+      const linhas = txt.value.split(/\r?\n/).map(l => l.split(/[;\t,]/)).filter(p => p[0] && /\d{8}/.test(p[0].replace(/\D/g, ""))).map(p => ({ telefone: p[0], nome: (p[1] || "").trim(), etiquetas: p.slice(2).join(",") }));
+      try { const r = await zap("clientes/importar", { metodo: "POST", corpo: { linhas, consentimento: ok.checked } }); aviso(`${numero(r.importados)} cliente(s) importado(s).`, "ok"); navegar(); } catch (e) { aviso(e.message, "erro"); }
+    };
+    trocar(area,
+      h("section", { class: "cartao vidro filtros-desempenho" }, h("div", { class: "linha-form" }, busca, pode("ADMIN") ? botao("Importar clientes", importar, "btn-secundario") : null), (d.etiquetas || []).length ? chips : null),
+      tabelaDados([["nome", "Cliente", (v, l) => v || telefone(l.telefone)], ["telefone", "Telefone", v => telefone(v)], ["etiquetas", "Etiquetas", v => (v.length ? h("span", {}, v.map(e => h("span", { class: "selo", text: e }))) : "—")], ["optout", "Campanhas", v => (v ? selo("Não recebe", "erro") : selo("Recebe", "ok"))], ["ultimo_ms", "Último contato", v => (v ? new Date(v).toLocaleDateString(LOCALE) : "—")]],
+        d.clientes || [], { titulo: `Clientes (${numero(d.total)})`, arquivo: "clientes-whatsapp.csv", busca: false, vazioTxt: "Ninguém ainda", acoes: c => h("div", { class: "acoes" }, pode("AGENTE") ? botao("Editar", () => editar(c), "btn-secundario btn-pequeno") : null, h("a", { class: "btn btn-secundario btn-pequeno", href: "#/chatbot/conversas", onclick: () => { estado.zapAberta = c.telefone; } }, "Conversa")) }));
+  }
+  async function abaZapRespostas(area, vivo) {
+    const d = await zap("respostas");
+    if (!vivo()) return;
+    const lista = h("div", { class: "grade" });
+    const linha = (x = { atalho: "", texto: "" }) => h("div", { class: "cartao vidro resposta-rapida" }, h("div", { class: "grade grade-2" }, campo("Atalho", h("input", { class: "entrada", value: x.atalho, placeholder: "horario", "data-c": "atalho" })),
+      h("div", { class: "acoes", style: "align-self:end" }, botao("Remover", (e, b) => b.closest(".resposta-rapida").remove(), "btn-secundario btn-pequeno"))), campo("Texto", h("textarea", { class: "entrada", "data-c": "texto", style: "min-height:70px" }, x.texto)));
+    (d.respostas.length ? d.respostas : [{ atalho: "horario", texto: "Nosso horário é de segunda a sábado, das 9h às 18h." }]).forEach(x => lista.append(linha(x)));
+    trocar(area, h("p", { class: "nota", text: "Textos prontos que a equipe usa nas conversas: na caixa de resposta, escolha a resposta rápida ou digite / e o atalho." }), lista,
+      h("div", { class: "acoes" }, botao("Adicionar resposta", () => lista.append(linha()), "btn-secundario"), pode("AGENTE") ? botao("Salvar", async () => {
+        const respostas = [...lista.querySelectorAll(".resposta-rapida")].map(c => ({ atalho: c.querySelector('[data-c="atalho"]').value, texto: c.querySelector('[data-c="texto"]').value }));
+        try { await zap("respostas", { metodo: "POST", corpo: { respostas } }); estado.respostasZap = null; aviso("Respostas salvas.", "ok"); } catch (e) { aviso(e.message, "erro"); }
+      }, "btn-primario") : null));
   }
   async function abaZapVisao(area, vivo) {
     const f = estado.zapF = estado.zapF || { dias: 30, metrica: "buscas" };
@@ -1751,15 +1947,30 @@
       try { d = await zap("conversas/" + tel); } catch (e) { falha(painel, e); return; }
       const c = d.contato;
       const msgs = h("div", { class: "mensagens" }, (d.mensagens || []).map(m => h("div", { class: "msg " + (m.direcao === "E" ? "msg-entrada" : "msg-saida") + (m.origem === "EQUIPE" ? " msg-humano" : "") + (m.status === "FALHOU" || m.status === "FAILED" ? " msg-falhou" : "") },
-        m.texto, h("small", { text: `${m.direcao === "E" ? "" : ({ ROBO: "Robô", IA: "IA", EQUIPE: "Equipe" }[m.origem] || "") + " · "}${quando(m.criado_ms)}${m.direcao === "S" ? " " + ({ READ: "✓✓ lida", DELIVERED: "✓✓", ENVIADA: "✓", SENT: "✓", FALHOU: "⚠", FAILED: "⚠" }[m.status] || "") : ""}` }),
+        m.texto, h("small", { text: `${m.direcao === "E" ? "" : ({ ROBO: "Robô", IA: "IA", EQUIPE: "Equipe", CAMPANHA: "Campanha" }[m.origem] || "") + " · "}${quando(m.criado_ms)}${m.direcao === "S" ? " " + ({ READ: "✓✓ lida", DELIVERED: "✓✓", ENVIADA: "✓", SENT: "✓", FALHOU: "⚠", FAILED: "⚠" }[m.status] || "") : ""}` }),
         m.erro ? h("span", { class: "msg-falha", text: m.erro }) : null)));
-      const texto = h("textarea", { class: "entrada", placeholder: c.janela_aberta ? "Escreva a resposta… (o robô fica em pausa nesta conversa por 12 h)" : "Passaram 24 h desde a última mensagem do cliente: a Meta só deixa responder quando ele escrever de novo.", disabled: !c.janela_aberta || !pode("AGENTE"), "aria-label": "Mensagem" });
+      const texto = h("textarea", { class: "entrada", placeholder: c.janela_aberta ? "Escreva a resposta… (digite / para as respostas rápidas; o robô fica em pausa por 12 h)" : "Passaram 24 h desde a última mensagem do cliente: só um modelo aprovado reabre a conversa.", disabled: !c.janela_aberta || !pode("AGENTE"), "aria-label": "Mensagem" });
+      const rapidas = estado.respostasZap || (estado.respostasZap = (await zap("respostas").catch(() => ({ respostas: [] }))).respostas);
+      const selRapida = rapidas.length && c.janela_aberta ? h("select", { class: "entrada entrada-pequena", "aria-label": "Respostas rápidas", onchange: e => { const x = rapidas[Number(e.target.value)]; if (x) { texto.value = (texto.value ? texto.value + "\n" : "") + x.texto.replace(/\{nome\}/g, (c.nome || "").split(" ")[0]); texto.focus(); } e.target.value = ""; } }, h("option", { value: "", text: "Respostas rápidas…" }), rapidas.map((x, i) => h("option", { value: i, text: "/" + x.atalho }))) : null;
+      texto.addEventListener("input", () => { const mm = texto.value.match(/^\/(\S+)\s$/); if (mm) { const x = rapidas.find(r => r.atalho === mm[1]); if (x) texto.value = x.texto.replace(/\{nome\}/g, (c.nome || "").split(" ")[0]); } });
+      const botaoModelo = !c.janela_aberta && pode("AGENTE") ? botao("Enviar modelo aprovado", async () => {
+        let mods; try { mods = ((await zap("modelos")).modelos || []).filter(m => m.status === "APPROVED" && !m.cabecalho_midia); } catch (e) { return aviso(e.message, "erro"); }
+        if (!mods.length) return aviso("Nenhum modelo aprovado. Crie em WhatsApp → Modelos de mensagem.", "erro");
+        const sel = h("select", { class: "entrada" }, mods.map((m, i) => h("option", { value: i, text: `${m.nome} (${m.idioma})` })));
+        const vs = h("div", { class: "grade" });
+        const ajustar = () => { const m = mods[Number(sel.value)]; vs.replaceChildren(...Array.from({ length: m.variaveis }, (_, i) => campo(`{{${i + 1}}}`, h("input", { class: "entrada", value: i === 0 ? "{nome}" : "" })))); };
+        sel.addEventListener("change", ajustar); ajustar();
+        if (!(await modal({ titulo: "Reabrir a conversa com um modelo", conteudo: [campo("Modelo", sel), vs], confirmar: "Enviar" }))) return;
+        const m = mods[Number(sel.value)];
+        try { await zap(`clientes/${tel}/modelo`, { metodo: "POST", corpo: { modelo: m.nome, idioma: m.idioma, variaveis: [...vs.querySelectorAll("input")].map(i => i.value) } }); aviso("Modelo enviado. Quando o cliente responder, a conversa reabre.", "ok"); abrir(tel); } catch (e) { aviso(e.message, "erro"); }
+      }, "btn-primario btn-pequeno") : null;
       trocar(painel,
         h("div", { class: "conversa-cabeca" }, h("button", { type: "button", class: "btn btn-secundario btn-pequeno so-celular", onclick: () => { estado.zapAberta = ""; grade.classList.remove("com-aberta"); } }, "‹ Voltar"),
           h("h3", { text: c.nome || telefone(c.telefone) }), h("span", { class: "sub", text: telefone(c.telefone) }),
           h("div", { class: "acoes" }, pode("AGENTE") ? botao(c.pausado ? "Devolver ao robô" : "Assumir (pausar o robô)", async () => { try { await zap(`conversas/${tel}/robo`, { metodo: "POST", corpo: { ligar: c.pausado } }); aviso(c.pausado ? "O robô voltou a atender esta conversa." : "Robô em pausa nesta conversa.", "ok"); abrir(tel); } catch (e) { aviso(e.message, "erro"); } }, c.pausado ? "btn-primario btn-pequeno" : "btn-secundario btn-pequeno") : null)),
         c.memoria ? h("details", { class: "detalhes", style: "padding:0 18px" }, h("summary", { text: "O que a IA lembra deste cliente" }), h("p", { class: "sub", style: "white-space:pre-wrap", text: c.memoria })) : null,
         msgs,
+        selRapida || botaoModelo ? h("div", { class: "acoes", style: "padding:0 14px" }, selRapida, botaoModelo) : null,
         h("div", { class: "compor" }, texto, botao("Enviar", async () => {
           const t = texto.value.trim(); if (!t) return;
           try { await zap(`conversas/${tel}/enviar`, { metodo: "POST", corpo: { texto: t } }); texto.value = ""; abrir(tel); } catch (e) { aviso(e.message, "erro"); }
@@ -2328,7 +2539,7 @@
     const botaoItem = (ic, rotulo, fn, ativo) => h("button", { type: "button", class: "barra-app-item" + (ativo ? " ativo" : ""), onclick: fn }, svgIc(ic), h("span", { text: rotulo }));
     if (modo) {
       const primeiros = visiveis.slice(0, 4), resto = visiveis.slice(4);
-      const curto = { "Visão geral e evolução": "Visão", "Mensagens dos hóspedes": "Mensagens", "Calendário e preços": "Calendário", "Desempenho e cliques": "Desempenho", "Estúdio de criação": "Estúdio", "Calendário de posts": "Calendário", "Visão do chatbot": "Visão", "Métricas de atendimento": "Métricas", "Avaliações 1★ (triagem)": "1 estrela", "Imóveis (todos)": "Imóveis", "Conexões e idiomas": "Conexões", "Palavras-chave e buscas": "Palavras", "Relatório semanal": "Relatório", "Posicionamento no Google": "Posição" };
+      const curto = { "Visão geral e evolução": "Visão", "Mensagens dos hóspedes": "Mensagens", "Calendário e preços": "Calendário", "Desempenho e cliques": "Desempenho", "Estúdio de criação": "Estúdio", "Calendário de posts": "Calendário", "Visão do chatbot": "Visão", "Métricas de atendimento": "Métricas", "Avaliações 1★ (triagem)": "1 estrela", "Imóveis (todos)": "Imóveis", "Conexões e idiomas": "Conexões", "Palavras-chave e buscas": "Palavras", "Relatório semanal": "Relatório", "Posicionamento no Google": "Posição", "Google orgânico (SEO)": "SEO", "Concorrentes no Maps": "Concorrentes", "Clientes e etiquetas": "Clientes", "Modelos de mensagem": "Modelos", "Saúde do número": "Saúde", "Respostas rápidas": "Rápidas", "Perfil comercial": "Perfil", "Melhores horários": "Horários", "Recomendações": "Avaliações" };
       b.replaceChildren(...primeiros.map(a => { const t = a.textContent.replace("›", "").trim(); return item(a, curto[t] || t.split(" ")[0]); }), botaoItem(IC.mais, "Mais", () => maisDoModo(modo, resto), resto.some(a => a.classList.contains("ativo"))));
     } else {
       const entra = m => nav.querySelector(`[data-entra="${m}"]`);
@@ -2666,7 +2877,16 @@
     };
     const idioma = h("select", { class: "entrada" }, ["português do Brasil", "English", "español", "italiano", "français", "Deutsch"].map(x => h("option", { value: x, selected: cfg.config.idioma === x, text: x })));
     const idiomaResp = h("select", { class: "entrada" }, [["HOSPEDE", "No idioma do hóspede (ele entende) — você vê tudo traduzido no seu idioma"], ["ANFITRIAO", "Sempre no idioma do anfitrião"]].map(([v, n]) => h("option", { value: v, selected: (cfg.config.idioma_resposta || "HOSPEDE") === v, text: n })));
+    const contaInteira = h("section", { class: "cartao vidro conexao-destaque" }, h("h3", { style: "margin-top:0", text: "Conectar a conta inteira (todos os anúncios de uma vez)" }),
+      h("ol", { class: "passos" }, h("li", {}, "Toque em Entrar nas plataformas: abre a tela segura e oficial do Channex (gerenciador certificado pelo Airbnb, Booking.com e Vrbo)."),
+        h("li", {}, "Entre com o login do Airbnb, do Booking e do Vrbo e escolha os anúncios. A DENIA nunca vê a sua senha."),
+        h("li", {}, "Volte e toque em Importar meus anúncios: todos os imóveis, reservas futuras e mensagens chegam sozinhos. Anúncios novos entram automaticamente.")),
+      cfg.channex ? (pode("ADMIN") ? h("div", { class: "acoes" },
+        botao("Entrar nas plataformas", async () => { try { const r = await tp("channex/conta", { metodo: "POST", corpo: {} }); window.open(r.url, "_blank", "noopener"); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario"),
+        botao("Importar meus anúncios", async (_e, b) => { b.textContent = "Importando…"; try { const r = await tp("channex/importar", { metodo: "POST", corpo: {} }); aviso(r.sem_grupo ? "Primeiro toque em Entrar nas plataformas." : `${numero(r.total)} anúncio(s) na conta · ${numero(r.imoveis_novos)} novo(s) · ${numero(r.reservas)} reserva(s) futura(s).`, r.sem_grupo ? "erro" : "ok"); if (!r.sem_grupo) navegar(); } catch (e) { aviso(e.message, "erro"); } finally { b.textContent = "Importar meus anúncios"; } }, "btn-secundario")) : null)
+        : h("p", { class: "nota", text: "A conexão oficial está em ativação na DENIA (parceria com o Channex). Enquanto isso, use o link do calendário de cada anúncio, abaixo — funciona na hora." }));
     trocar(area,
+      contaInteira,
       h("section", { class: "grade grade-3" }, ["airbnb", "booking", "vrbo"].map(c => h("article", { class: "cartao vidro conexao-tp" }, h("h3", { style: "margin:0" }, seloCanal(c)),
         h("p", {}, cfg.channex ? selo("Conexão oficial disponível", "ok") : selo("Calendário (iCal) disponível", "info")),
         h("ol", { class: "lista-simples" }, COMO[c].map(x => h("li", { text: x }))),
@@ -3248,7 +3468,7 @@
     return d;
   }
   const contaGoogleDa = (g, marcaId) => (g.contas || []).find(c => String(c.marca_id) === String(marcaId)) || null;
-  async function conectarGoogle(marca) {
+  async function conectarGoogle(marca, extra) {
     const g = await estadoGoogle(true);
     if (g.erro) { aviso(g.erro, "erro"); return; }
     if (!g.configurada) {
@@ -3257,7 +3477,9 @@
         "No Google Cloud, crie o cliente OAuth (Aplicativo da Web) com o URI de redirecionamento do site terminado em /api/google/retorno. Depois, na Cloudflare, vá em Workers e Pages → denia-landing → Settings → Variables and Secrets → Add, escolha o tipo Secret, crie com o nome exato e clique em Deploy."] });
       return;
     }
-    location.href = `/api/orgs/${estado.org.id}/mk/google/conectar?marca=${marca.id}`;
+    const atual = contaGoogleDa(g, marca.id), ja = String((atual && atual.escopos) || "");
+    const pedir = [extra, /webmasters/.test(ja) ? "sc" : "", /adwords/.test(ja) ? "ads" : ""].filter(Boolean).join("-");
+    location.href = `/api/orgs/${estado.org.id}/mk/google/conectar?marca=${marca.id}${pedir ? "&extra=" + pedir : ""}`;
   }
   async function escolherLocalGoogle(nonce) {
     let d;
@@ -3383,7 +3605,7 @@
     if (!lista.length) { semMarcas(el); return; }
     const meta = await estadoMeta(true);
     if (!vivo()) return;
-    const abas = [["visao", "Visão geral"], ["publicacoes", "Publicações"], ["comentarios", "Comentários"], ["agenda", "Agenda e criação"], ...(canal === "instagram" ? [["concorrentes", "Concorrentes"]] : []), ["conexao", "Conexão"]];
+    const abas = [["visao", "Visão geral"], ["publicacoes", "Publicações"], ["comentarios", "Comentários"], ["horarios", "Melhores horários"], ...(canal === "instagram" ? [["stories", "Stories"], ["marcacoes", "Marcações"], ["concorrentes", "Concorrentes"]] : [["avaliacoes", "Recomendações"]]), ["agenda", "Agenda e criação"], ["conexao", "Conexão"]];
     const chaveMarca = canal === "instagram" ? "marcaInstagram" : "marcaFacebook";
     const sel = seletorMarca(lista, estado[chaveMarca] || lista[0].id);
     sel.addEventListener("change", () => { estado[chaveMarca] = sel.value; navegar(); });
@@ -3404,9 +3626,60 @@
       else if (atual === "publicacoes") await abaPublicacoesSocial(area, canal, marcaId);
       else if (atual === "comentarios") await abaComentariosSocial(area, canal, marcaId);
       else if (atual === "concorrentes") await abaConcorrentes(area, marcaId);
+      else if (atual === "horarios") await abaHorariosSocial(area, canal, marcaId);
+      else if (atual === "stories") await abaStoriesSocial(area, marcaId);
+      else if (atual === "marcacoes") await abaMarcacoesSocial(area, marcaId);
+      else if (atual === "avaliacoes") await abaAvaliacoesFacebook(area, marcaId);
     } catch (e) { falha(area, e); }
   }
 
+  const DIAS_SEMANA = ["domingo", "segunda", "terça", "quarta", "quinta", "sexta", "sábado"];
+  async function abaHorariosSocial(area, canal, marcaId) {
+    const d = await mk(`social/horarios?marca=${marcaId}&canal=${canal}`);
+    trocar(area,
+      h("section", { class: "grade grade-3" }, metrica("Publicações analisadas", numero(d.analisadas), "as mais recentes"),
+        metrica("Melhor horário", d.melhores[0] ? `${DIAS_SEMANA[d.melhores[0].dia]}, ${d.melhores[0].hora}h` : "—", d.melhores[0] ? `${numero(d.melhores[0].media)} de engajamento médio` : "publique mais para medir"),
+        metrica("Formato que mais engaja", d.por_tipo[0] ? d.por_tipo[0].tipo.toLowerCase() : "—", d.por_tipo[0] ? `${numero(d.por_tipo[0].media)} por publicação` : "")),
+      h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Engajamento médio por dia e hora da publicação" }),
+        h("p", { class: "sub", text: "Engajamento = curtidas + comentários x2 + compartilhamentos x3. Horário de Brasília. Quadros vazios = horários em que a marca ainda não publicou." }),
+        mapaHorarios(d.mapa, "de engajamento médio", "")),
+      h("section", { class: "grade grade-2" },
+        tabelaDados([["dia", "Dia", v => DIAS_SEMANA[v]], ["hora", "Hora", v => `${v}h`, { num: true }], ["media", "Engajamento médio", numero, { num: true }], ["posts", "Publicações", numero, { num: true }]], d.melhores, { titulo: "Os melhores horários", busca: false }),
+        tabelaDados([["tipo", "Formato", v => String(v).toLowerCase()], ["posts", "Publicações", numero, { num: true }], ["media", "Engajamento médio", numero, { num: true }]], d.por_tipo, { titulo: "Por formato", busca: false })));
+  }
+  async function abaStoriesSocial(area, marcaId) {
+    const d = await mk(`social/stories?marca=${marcaId}&canal=instagram`);
+    const NAV = { tap_forward: "Avançaram", tap_back: "Voltaram", tap_exit: "Saíram", swipe_forward: "Pularam a conta" };
+    trocar(area, h("p", { class: "nota", text: "A Meta só entrega os stories que estão no ar (últimas 24 horas). Depois disso, os números ficam somados em Visão geral." }),
+      d.stories.length ? h("div", { class: "grade-midias" }, d.stories.map(s => h("article", { class: "cartao vidro midia-cartao" }, s.imagem ? h("img", { src: s.imagem, alt: "", loading: "lazy", class: "midia-img" }) : null,
+        h("div", { class: "midia-corpo" }, h("small", { class: "sub", text: new Date(s.quando).toLocaleString(LOCALE) }),
+          h("ul", { class: "lista-simples" }, h("li", { text: `Alcance: ${numero(s.metricas.reach || 0)}` }), h("li", { text: `Visualizações: ${numero(s.metricas.views || 0)}` }), h("li", { text: `Respostas: ${numero(s.metricas.replies || 0)}` }), h("li", { text: `Compartilhamentos: ${numero(s.metricas.shares || 0)}` }),
+            s.metricas.navigation ? h("li", { text: `Navegação: ${numero(s.metricas.navigation)}` }) : null, ...Object.entries(NAV).filter(([k2]) => s.metricas[k2]).map(([k2, n]) => h("li", { text: `${n}: ${numero(s.metricas[k2])}` }))),
+          s.link ? h("a", { class: "btn btn-secundario btn-pequeno", href: s.link, target: "_blank", rel: "noopener" }, "Abrir") : null)))) : h("section", { class: "cartao vidro" }, vazio("Nenhum story no ar agora", "Quando a marca postar um story, os números aparecem aqui por 24 horas.")));
+  }
+  async function abaMarcacoesSocial(area, marcaId) {
+    const d = await mk(`social/marcacoes?marca=${marcaId}&canal=instagram`);
+    trocar(area, h("p", { class: "nota", text: "Publicações públicas em que outras pessoas marcaram o perfil. Ótimo para repostar, agradecer e achar clientes que já divulgam a marca. Perfis privados não aparecem (regra da Meta)." }),
+      d.marcacoes.length ? h("div", { class: "grade-midias" }, d.marcacoes.map(m => h("article", { class: "cartao vidro midia-cartao" }, m.imagem ? h("img", { src: m.imagem, alt: "", loading: "lazy", class: "midia-img" }) : null,
+        h("div", { class: "midia-corpo" }, h("strong", { text: "@" + m.autor }), h("small", { class: "sub", text: new Date(m.quando).toLocaleDateString(LOCALE) + ` · ${numero(m.curtidas)} curtidas · ${numero(m.comentarios)} comentários` }),
+          h("p", { class: "midia-texto", text: m.texto ? m.texto.slice(0, 180) + (m.texto.length > 180 ? "…" : "") : "" }), m.link ? h("a", { class: "btn btn-secundario btn-pequeno", href: m.link, target: "_blank", rel: "noopener" }, "Abrir no Instagram") : null)))) : h("section", { class: "cartao vidro" }, vazio("Nenhuma marcação recente", "")));
+  }
+  async function abaAvaliacoesFacebook(area, marcaId) {
+    const d = await mk(`social/avaliacoes?marca=${marcaId}&canal=facebook`);
+    const responder = async a => {
+      const t = h("textarea", { class: "entrada", style: "min-height:90px", placeholder: "Obrigado pela recomendação, " + a.autor.split(" ")[0] + "!" });
+      if (!(await modal({ titulo: `Responder ${a.autor}`, conteudo: [h("p", { class: "sub", text: a.texto }), t], confirmar: "Publicar resposta" }))) return;
+      try { await mk(`social/comentarios/${a.historia}/responder`, { metodo: "POST", corpo: { canal: "facebook", marca_id: marcaId, texto: t.value } }); aviso("Resposta publicada no Facebook.", "ok"); } catch (e) { aviso(e.message, "erro"); }
+    };
+    trocar(area,
+      h("section", { class: "grade grade-3" }, metrica("Nota da página", d.nota != null ? String(d.nota).replace(".", ",") + " ★" : "—", `${numero(d.total || 0)} avaliações no total`),
+        metrica("Recomendam", numero(d.positivas), "nas últimas 100"), metrica("Não recomendam", numero(d.negativas), "nas últimas 100")),
+      d.avaliacoes.length ? h("div", { class: "lista-casos" }, d.avaliacoes.map(a => h("div", { class: "caso-linha vidro" + (a.recomenda === false ? " cor-vermelho" : a.recomenda ? " cor-verde" : "") },
+        h("div", { class: "caso-linha-topo" }, h("strong", { text: a.autor }), a.recomenda === true ? selo("Recomenda", "ok") : a.recomenda === false ? selo("Não recomenda", "erro") : null, a.nota ? h("span", { text: "★".repeat(a.nota) }) : null, h("span", { class: "sub", text: new Date(a.quando).toLocaleDateString(LOCALE) })),
+        a.texto ? h("p", { style: "margin:4px 0", text: a.texto }) : h("p", { class: "sub", text: "(sem texto)" }),
+        a.historia && pode("AGENTE") ? h("div", { class: "acoes" }, botao("Responder", () => responder(a), "btn-secundario btn-pequeno")) : null))) : h("section", { class: "cartao vidro" }, vazio("Nenhuma recomendação ainda", "")),
+      h("p", { class: "sub", text: "Precisa da permissão pages_read_user_content (reconecte a marca se não aparecer nada). A Meta mostra o nome público de quem avaliou — nunca e-mail, telefone ou IP." }));
+  }
   async function abaVisaoSocial(area, canal, marcaId) {
     const f = estado.socialVisao = estado.socialVisao || { dias: "30", metrica: "alcance" };
     const [perf, ins] = await Promise.all([mk(`social/perfil?marca=${marcaId}&canal=${canal}`), mk(`social/insights?marca=${marcaId}&canal=${canal}&dias=${f.dias}`).catch(e => ({ erro: e.message }))]);
@@ -3600,7 +3873,7 @@
     el.appendChild(cabeca("Google Meu Negócio", "Reputação, posição nas buscas e desempenho de cada perfil, acompanhados semana a semana."));
     if (!lista.length) { semMarcas(el); return; }
     const abas = [["publicacoes", "Posts e imagens"], ["avaliacoes", "Avaliações"], ["triagem", "Triagem 1★"], ["relatorio", "Relatório"], ["palavras", "Palavras-chave"], ["desempenho", "Desempenho"], ["conexao", "Conexão"]];
-    abas.push(["seo", "Posicionamento"], ["ads", "Google Ads"]);
+    abas.push(["seo", "Google orgânico"], ["ads", "Google Ads"], ["concorrentes", "Concorrentes"]);
     const atual = abas.some(a => a[0] === aba) ? aba : "desempenho";
     const sel = seletorMarca(lista, estado.marcaGoogle || lista[0].id);
     sel.addEventListener("change", () => { estado.marcaGoogle = sel.value; navegar(); });
@@ -3614,8 +3887,9 @@
       else if (atual === "triagem") await abaTriagem(area, marcaId);
       else if (atual === "palavras") await abaPalavras(area, marcaId, lista.find(m => String(m.id) === String(marcaId)));
       else if (atual === "desempenho") await abaDesempenho(area, marcaId);
-      else if (atual === "seo") abaGoogleSeo(area, lista.find(m => String(m.id) === String(marcaId)));
-      else if (atual === "ads") abaGoogleAds(area);
+      else if (atual === "seo") await abaGoogleSeo(area, lista.find(m => String(m.id) === String(marcaId)));
+      else if (atual === "ads") await abaGoogleAds(area, lista.find(m => String(m.id) === String(marcaId)));
+      else if (atual === "concorrentes") await abaConcorrentesGoogle(area, lista.find(m => String(m.id) === String(marcaId)));
       else if (atual === "publicacoes") {
         const [posts, cfg] = await Promise.all([mk(`posts?canal=google&marca=${marcaId}`).then(r => r.posts || []), mk("config").catch(() => null)]);
         estado.marcaCriador = marcaId;
@@ -3640,24 +3914,239 @@
   function cartaoPossivel(titulo, itens) {
     return h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: titulo }), h("ul", { class: "lista-possivel" }, itens.map(([estadoI, t, d]) => h("li", { class: "possivel-" + estadoI }, h("span", { class: "possivel-selo", text: { ok: "Disponível", conectar: "Após conectar", breve: "Em construção", nao: "O Google não fornece" }[estadoI] }), h("div", {}, h("strong", { text: t }), d ? h("small", { text: d }) : null)))));
   }
-  function abaGoogleSeo(area, marca) {
-    trocar(area,
-      cartaoPossivel("Posicionamento e Google orgânico", [
-        ["ok", "Buscas que mostraram o seu perfil", "Palavras que as pessoas digitaram e acharam você no Google e no Maps (aba Palavras-chave e buscas)."],
-        ["ok", "Visualizações, cliques no site, ligações e rotas", "Dia a dia, por período, com comparação (aba Desempenho e cliques)."],
-        ["breve", "Posição do site nas buscas (Search Console)", "Cliques, impressões, posição média e páginas que mais aparecem, por palavra. Vem com a conexão do Google Search Console do site."],
-        ["breve", "Concorrentes da região", "Nota, número de avaliações e categorias dos concorrentes próximos, para comparar (usa a API de lugares do Google, que tem custo por consulta)."],
-        ["nao", "Quem clicou (nome, e-mail, telefone)", "O Google só entrega números somados. Nenhuma ferramenta tem acesso a quem clicou — é proteção de privacidade e a LGPD."]
-      ]),
-      h("div", { class: "acoes" }, h("a", { class: "btn btn-secundario", href: "#/google/palavras" }, "Ver palavras-chave"), h("a", { class: "btn btn-secundario", href: "#/google/desempenho" }, "Ver desempenho")));
+  // ----- Peças comuns das telas de SEO, Ads e concorrentes
+  const pct = v => `${String(Math.round(Number(v || 0) * 10) / 10).replace(".", ",")}%`;
+  const dec = v => String(Math.round(Number(v || 0) * 10) / 10).replace(".", ",");
+  function chipsPeriodo(opcoes, atual, aoEscolher) {
+    return h("div", { class: "abas abas-chips", role: "group", "aria-label": "Período" }, opcoes.map(([v, n]) => h("button", { type: "button", class: "aba" + (String(atual) === String(v) ? " ativo" : ""), "aria-pressed": String(atual) === String(v) ? "true" : "false", onclick: () => aoEscolher(v) }, n)));
   }
-  function abaGoogleAds(area) {
-    trocar(area, cartaoPossivel("Google Ads", [
-      ["breve", "Saldo, gasto do dia e do mês", "Com a conexão da conta do Google Ads (precisa da aprovação da API do Google Ads para a DENIA)."],
-      ["breve", "Campanhas, cliques, custo por clique e conversões", "Por campanha, palavra-chave e período, com alerta de saldo baixo."],
-      ["breve", "Sugestões da IA", "Palavras que gastam sem trazer cliente, horários que convertem mais e textos de anúncio."],
-      ["nao", "Quem clicou no anúncio", "O Google Ads só mostra números somados (e região aproximada), nunca a pessoa."]
-    ]), h("p", { class: "nota", text: "Enquanto a conexão do Google Ads não está ativa, os custos de IA, WhatsApp e Google da DENIA aparecem em Consumo e custos." }));
+  // Tabela com busca, ordenação por coluna e planilha. colunas: [chave, título, formatar?, {num:true}]
+  function tabelaDados(colunas, linhas, { titulo, arquivo, busca = true, vazioTxt = "Nada neste período", inicial, acoes } = {}) {
+    const st = { q: "", ord: inicial || null, desc: true };
+    const corpo = h("tbody");
+    const cab = h("tr", {}, colunas.map(([k, n, , o = {}]) => h("th", { class: o.num ? "num" : "", style: "cursor:pointer", title: "Ordenar", onclick: () => { st.desc = st.ord === k ? !st.desc : true; st.ord = k; desenhar(); } }, n)), acoes ? h("th", { text: "" }) : null);
+    const contador = h("small", { class: "sub" });
+    function desenhar() {
+      let ls = linhas.filter(l => !st.q || colunas.some(([k]) => String(l[k] ?? "").toLowerCase().includes(st.q)));
+      if (st.ord) ls = ls.slice().sort((a, b) => { const x = a[st.ord], y = b[st.ord]; const r = typeof x === "number" && typeof y === "number" ? x - y : String(x ?? "").localeCompare(String(y ?? ""), LOCALE); return st.desc ? -r : r; });
+      corpo.removeAttribute("data-curta");
+      corpo.replaceChildren(...ls.map(l => h("tr", {}, colunas.map(([k, n, f, o = {}]) => h("td", { class: o.num ? "num" : "", "data-rotulo": n }, f ? f(l[k], l) : String(l[k] ?? "—"))), acoes ? h("td", { class: "td-acoes" }, acoes(l)) : null)));
+      contador.textContent = `${numero(ls.length)} de ${numero(linhas.length)}`;
+      const caixa = corpo.closest(".lista-rolavel"); if (caixa && caixa.nextElementSibling && caixa.nextElementSibling.classList.contains("ver-mais-linhas")) caixa.nextElementSibling.remove();
+    }
+    desenhar();
+    const filtro = busca && linhas.length > 8 ? h("input", { class: "entrada entrada-pequena", type: "search", placeholder: "Filtrar…", oninput: e => { st.q = e.target.value.trim().toLowerCase(); desenhar(); } }) : null;
+    return h("section", { class: "cartao vidro" },
+      h("div", { class: "cabeca-grafico" }, titulo ? h("h3", { style: "margin:0", text: titulo }) : h("span"),
+        h("div", { class: "acoes" }, filtro, arquivo && linhas.length ? botao("Planilha", () => baixarCsv(arquivo, [colunas.map(c => c[1]), ...linhas.map(l => colunas.map(([k]) => l[k] ?? ""))]), "btn-secundario btn-pequeno") : null)),
+      linhas.length ? h("div", {}, contador, h("div", { class: "tabela-caixa lista-rolavel" + (colunas.length > 3 ? " tabela-cartoes" : "") }, h("table", {}, h("thead", {}, cab), corpo))) : vazio(vazioTxt, ""));
+  }
+  function cartaoMetricaClicavel(rotulo, valor, antes, ativo, aoClicar, inverter, formatar = numero) {
+    const v = antes != null ? variacaoPct(Number(valor) || 0, Number(antes) || 0) : null;
+    const bom = v && !v.zero ? (inverter ? !v.sobe : v.sobe) : null;
+    return h("button", { type: "button", class: "metrica vidro metrica-botao" + (ativo ? " ativo" : ""), "aria-pressed": ativo ? "true" : "false", onclick: aoClicar },
+      h("span", { text: rotulo }), h("strong", { text: formatar(valor) }), h("small", {}, v ? h("span", { class: v.zero ? "" : bom ? "sobe" : "desce", text: v.texto }) : null, antes != null ? ` antes: ${formatar(antes)}` : ""));
+  }
+  function pedirReconexao(area, marca, texto, extra) {
+    trocar(area, h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Falta uma permissão do Google" }),
+      h("p", { text: texto }), pode("ADMIN") ? h("div", { class: "acoes" }, botao(extra === "ads" ? "Ligar o Google Ads" : "Ligar o Search Console", () => conectarGoogle(marca, extra), "btn-primario")) : h("p", { class: "nota", text: "Peça a um administrador para reconectar." }),
+      h("p", { class: "sub", text: "Nada do que já está na DENIA se perde: avaliações, posts e números continuam. Na tela do Google, marque todas as caixas." })));
+  }
+
+  // ----- Google orgânico (Search Console): posição, cliques e impressões do site por palavra e página.
+  const PERIODOS_SC = [["7", "7 dias"], ["28", "28 dias"], ["90", "3 meses"], ["180", "6 meses"], ["365", "12 meses"], ["485", "16 meses"]];
+  async function abaGoogleSeo(area, marca) {
+    const marcaId = marca.id;
+    const sites = await mk(`google/sc/sites?marca=${marcaId}`).catch(e => ({ erro: e.message, codigo: e.codigo }));
+    if (sites.conectada === false) {
+      trocar(area, h("section", { class: "cartao vidro" }, vazio("Conecte o Google desta marca", "O Search Console usa o mesmo login do Google do perfil da empresa."), pode("ADMIN") ? h("div", { class: "acoes" }, botao("Conectar Google", () => conectarGoogle(marca), "btn-primario")) : null), cartaoSeoLimites());
+      return;
+    }
+    if (sites.precisa_reconectar || sites.codigo === "RECONECTAR") return pedirReconexao(area, marca, "Para ver a posição do site no Google orgânico, a DENIA precisa da permissão do Search Console. Toque abaixo, entre com a conta do Google que administra o site e aceite.", "sc");
+    if (sites.erro) { trocar(area, h("section", { class: "cartao vidro" }, h("p", { class: "nota nota-alerta", text: sites.erro }))); return; }
+    const escolherSite = h("select", { class: "entrada", "aria-label": "Site no Search Console" }, h("option", { value: "", text: sites.sites.length ? "Escolha o site…" : "Nenhum site nesta conta do Google" }), sites.sites.map(s => h("option", { value: s.site, selected: s.site === sites.atual, text: s.site.replace("sc-domain:", "Domínio: ") })));
+    const salvarSite = botao("Usar este site", async () => { try { await mk("google/sc/site", { metodo: "POST", corpo: { marca_id: marcaId, site: escolherSite.value } }); aviso("Site escolhido.", "ok"); navegar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario btn-pequeno");
+    const blocoSite = h("section", { class: "cartao vidro" }, h("div", { class: "cabeca-grafico" }, h("h3", { style: "margin:0", text: "Site no Search Console" }), pode("ADMIN") ? h("div", { class: "acoes" }, escolherSite, salvarSite) : h("span", { text: sites.atual || "—" })),
+      !sites.sites.length ? h("p", { class: "sub", text: "A conta do Google conectada não tem nenhum site verificado. Em search.google.com/search-console, adicione e verifique o site com esta mesma conta; depois volte aqui." }) : null);
+    if (!sites.atual) { trocar(area, blocoSite, cartaoSeoLimites()); return; }
+    const f = estado.scF = estado.scF || { dias: "28", metrica: "cliques", agrupar: "auto" };
+    const d = await mk(`google/sc?marca=${marcaId}&dias=${f.dias}`).catch(e => ({ erro: e.message }));
+    if (d.erro) { trocar(area, blocoSite, h("section", { class: "cartao vidro" }, h("p", { class: "nota nota-alerta", text: d.erro }))); return; }
+    const t = d.totais || {}, a = d.comparacao ? d.comparacao.totais : null;
+    const recarregar = () => abaGoogleSeo(area, marca).catch(e => aviso(e.message, "erro"));
+    const M = [["cliques", "Cliques", numero], ["impressoes", "Impressões", numero], ["ctr", "CTR (taxa de clique)", pct], ["posicao", "Posição média", dec]];
+    const cartoes = h("section", { class: "grade grade-4" }, M.map(([k, n, fm]) => cartaoMetricaClicavel(n, t[k], a ? a[k] : null, f.metrica === k, () => { f.metrica = k; recarregar(); }, k === "posicao", fm)));
+    const agrupar = f.agrupar !== "auto" ? f.agrupar : d.dias <= 92 ? "dia" : d.dias <= 370 ? "semana" : "mes";
+    const media = ["ctr", "posicao"].includes(f.metrica);
+    const serie = lista => { const pts = agruparSerie(lista || [], agrupar, f.metrica); if (media && agrupar !== "dia") pts.forEach(p => { p.valor = Math.round((p.valor / (p.dias || 1)) * 10) / 10; }); return pts; };
+    const pontos = serie(d.diario), comp = d.comparacao ? serie(d.comparacao.diario) : null;
+    const nomeM = (M.find(m => m[0] === f.metrica) || M[0])[1];
+    const grafico = h("section", { class: "cartao vidro" }, h("div", { class: "cabeca-grafico" }, h("h3", { style: "margin:0", text: `${nomeM} ${agrupar === "dia" ? "dia a dia" : agrupar === "semana" ? "por semana" : "por mês"}` }),
+      h("select", { class: "entrada entrada-pequena", onchange: e => { f.agrupar = e.target.value; recarregar(); } }, [["auto", "Agrupar: automático"], ["dia", "Por dia"], ["semana", "Por semana"], ["mes", "Por mês"]].map(([v, n]) => h("option", { value: v, selected: f.agrupar === v, text: n })))),
+      f.metrica === "posicao" ? h("p", { class: "sub", text: "Posição: quanto menor, melhor (1 = primeiro resultado do Google)." }) : null,
+      pontos.length ? graficoLinha(pontos, comp, nomeM, "Período anterior") : vazio("Sem números neste período", "O Search Console ainda não tem dados para essas datas."));
+    const linkPagina = v => h("a", { href: v, target: "_blank", rel: "noopener", text: String(v).replace(/^https?:\/\/[^/]+/, "") || "/" });
+    const colsBusca = [["palavra", "Busca"], ["cliques", "Cliques", numero, { num: true }], ["impressoes", "Impressões", numero, { num: true }], ["ctr", "CTR", pct, { num: true }], ["posicao", "Posição", dec, { num: true }]];
+    const inspUrl = h("input", { class: "entrada", type: "url", placeholder: "https://seusite.com.br/pagina" });
+    const inspRes = h("div");
+    const mapaUrl = h("input", { class: "entrada", type: "url", placeholder: "https://seusite.com.br/sitemap.xml" });
+    const NOME_VER = { PASS: ["Está no Google", "ok"], PARTIAL: ["No Google, com avisos", "alerta"], FAIL: ["Não está no Google", "erro"], NEUTRAL: ["Fora do Google (excluída)", "info"] };
+    const inspecionar = async () => {
+      if (!inspUrl.value) return aviso("Cole o endereço da página.", "erro");
+      trocar(inspRes, carregando("Perguntando ao Google…"));
+      try {
+        const r = await mk("google/sc/inspecionar", { metodo: "POST", corpo: { marca_id: marcaId, url: inspUrl.value } });
+        const v = NOME_VER[r.veredito] || [r.veredito || "Sem resposta", "info"];
+        trocar(inspRes, h("div", { class: "grade" }, h("p", {}, selo(v[0], v[1]), " ", r.cobertura || ""),
+          h("ul", { class: "lista-simples" }, r.rastreio ? h("li", { text: `Última visita do Google: ${new Date(r.rastreio).toLocaleString(LOCALE)}` }) : h("li", { text: "O Google ainda não visitou esta página." }),
+            r.canonica_google ? h("li", { text: `Endereço que o Google considera principal: ${r.canonica_google}` }) : null,
+            r.robots === "DISALLOWED" ? h("li", { text: "O robots.txt bloqueia esta página." }) : null,
+            r.busca && r.busca !== "SUCCESSFUL" ? h("li", { text: `Problema ao ler a página: ${r.busca}` }) : null,
+            (r.ricos || []).length ? h("li", { text: `Resultados especiais detectados: ${r.ricos.join(", ")}` }) : null),
+          r.link ? h("a", { class: "btn btn-secundario btn-pequeno", href: r.link, target: "_blank", rel: "noopener" }, "Abrir no Search Console (pedir indexação)") : null));
+      } catch (e) { trocar(inspRes, h("p", { class: "nota nota-alerta", text: e.message })); }
+    };
+    trocar(area,
+      blocoSite,
+      h("section", { class: "cartao vidro filtros-desempenho" }, chipsPeriodo(PERIODOS_SC, f.dias, v => { f.dias = v; recarregar(); }),
+        h("p", { class: "sub", style: "margin:0", text: `${dataCompleta(d.de)} a ${dataCompleta(d.ate)}${d.comparacao ? ` · comparando com ${dataCompleta(d.comparacao.de)} a ${dataCompleta(d.comparacao.ate)}` : ""}. O Google libera com 2 a 3 dias de atraso e guarda 16 meses.` })),
+      cartoes, grafico,
+      d.oportunidades && d.oportunidades.length ? tabelaDados([["palavra", "Busca"], ["posicao", "Posição", dec, { num: true }], ["impressoes", "Impressões", numero, { num: true }], ["ctr", "CTR", pct, { num: true }], ["ganho", "Cliques a mais/período", v => "+" + numero(v), { num: true }], ["motivo", "O que fazer"]],
+        d.oportunidades, { titulo: "Oportunidades: onde dá para ganhar cliques", arquivo: `oportunidades-seo-${d.de}-${d.ate}.csv`, inicial: "ganho" }) : null,
+      tabelaDados(colsBusca, d.palavras || [], { titulo: "Buscas que trazem o site (Google orgânico)", arquivo: `buscas-site-${d.de}-${d.ate}.csv`, inicial: "cliques" }),
+      tabelaDados([["pagina", "Página", linkPagina], ["cliques", "Cliques", numero, { num: true }], ["impressoes", "Impressões", numero, { num: true }], ["ctr", "CTR", pct, { num: true }], ["posicao", "Posição", dec, { num: true }]], d.paginas || [], { titulo: "Páginas do site", arquivo: `paginas-${d.de}-${d.ate}.csv`, inicial: "cliques" }),
+      h("section", { class: "grade grade-2" },
+        tabelaDados([["aparelho", "Aparelho", v => ({ MOBILE: "Celular", DESKTOP: "Computador", TABLET: "Tablet" })[v] || v], ["cliques", "Cliques", numero, { num: true }], ["impressoes", "Impressões", numero, { num: true }], ["posicao", "Posição", dec, { num: true }]], d.aparelhos || [], { titulo: "Por aparelho", busca: false }),
+        tabelaDados([["pais", "País", v => String(v || "").toUpperCase()], ["cliques", "Cliques", numero, { num: true }], ["impressoes", "Impressões", numero, { num: true }], ["posicao", "Posição", dec, { num: true }]], d.paises || [], { titulo: "Por país", inicial: "cliques" })),
+      h("section", { class: "cartao vidro formulario" }, h("h3", { style: "margin:0", text: "Esta página está no Google?" }),
+        h("p", { class: "sub", text: "Cole o endereço de uma página do site: o Google diz se ela está indexada, quando a visitou e se há algum bloqueio." }),
+        h("div", { class: "linha-form" }, inspUrl), h("div", { class: "acoes" }, botao("Verificar no Google", inspecionar, "btn-primario")), inspRes),
+      h("section", { class: "cartao vidro formulario" }, h("h3", { style: "margin:0", text: "Sitemaps" }),
+        (d.sitemaps || []).length ? h("div", { class: "tabela-caixa" }, h("table", {}, h("thead", {}, h("tr", {}, h("th", { text: "Sitemap" }), h("th", { text: "Páginas" }), h("th", { text: "Lido em" }), h("th", { text: "Situação" }))),
+          h("tbody", {}, d.sitemaps.map(m => h("tr", {}, h("td", { text: m.caminho }), h("td", { text: numero(m.urls) }), h("td", { text: m.lido ? new Date(m.lido).toLocaleDateString(LOCALE) : "—" }), h("td", {}, m.erros ? selo(`${m.erros} erro(s)`, "erro") : m.pendente ? selo("Aguardando o Google", "info") : selo(m.avisos ? `${m.avisos} aviso(s)` : "OK", m.avisos ? "alerta" : "ok"))))))) : h("p", { class: "sub", text: "Nenhum sitemap enviado. Envie o do site para o Google achar todas as páginas." }),
+        pode("ADMIN") ? h("div", { class: "linha-form" }, mapaUrl, botao("Enviar ao Google", async () => { try { await mk("google/sc/sitemap", { metodo: "POST", corpo: { marca_id: marcaId, url: mapaUrl.value } }); aviso("Sitemap enviado. O Google lê nas próximas horas.", "ok"); recarregar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario")) : null),
+      cartaoSeoLimites());
+  }
+  function cartaoSeoLimites() {
+    return h("details", { class: "cartao vidro" }, h("summary", { text: "O que o Google entrega (e o que não entrega)" }), cartaoPossivel("Google orgânico e Maps", [
+      ["ok", "Posição, cliques, impressões e CTR do site por busca e página", "Search Console, até 16 meses."],
+      ["ok", "Buscas que mostraram o perfil da empresa no Maps", "Aba Palavras-chave e buscas."],
+      ["ok", "Posição no Google Maps e concorrentes da região", "Menu Concorrentes (usa a API de lugares do Google, cobrada por consulta)."],
+      ["nao", "Quem clicou (nome, e-mail, telefone, IP)", "O Google só entrega números somados. Nenhuma ferramenta recebe isso — é proteção de privacidade e LGPD."],
+      ["nao", "IP ou e-mail de quem avaliou", "O Google mostra só o nome público e a foto de quem avaliou."]
+    ]));
+  }
+
+  // ----- Google Ads: gasto, campanhas, palavras, termos de pesquisa, horários e recomendações, com ações.
+  const PERIODOS_ADS = [["1", "Hoje"], ["7", "7 dias"], ["30", "30 dias"], ["90", "3 meses"], ["180", "6 meses"], ["365", "12 meses"]];
+  async function abaGoogleAds(area, marca) {
+    const marcaId = marca.id;
+    const contas = await mk(`google/ads/contas?marca=${marcaId}`).catch(e => ({ erro: e.message, codigo: e.codigo }));
+    if (contas.conectada === false) { trocar(area, h("section", { class: "cartao vidro" }, vazio("Conecte o Google desta marca", "O Google Ads usa o mesmo login do Google."), pode("ADMIN") ? h("div", { class: "acoes" }, botao("Conectar Google", () => conectarGoogle(marca), "btn-primario")) : null)); return; }
+    if (contas.configurado === false) {
+      trocar(area, h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Ligar o Google Ads na DENIA (uma vez, para todas as empresas)" }),
+        h("ol", { class: "passos" }, h("li", {}, "Em ads.google.com, abra a sua conta gerente (MCC) → Administrador → Central de API e peça o token de desenvolvedor (acesso básico)."),
+          h("li", {}, "No Google Cloud do mesmo projeto do login do Google, ative a Google Ads API."),
+          h("li", {}, "Na Cloudflare → Worker denia-landing → Variables and Secrets, crie o secret GOOGLE_ADS_DEVELOPER_TOKEN com o token. Não mande o token por mensagem."),
+          h("li", {}, "Volte aqui e conecte o Google de novo nesta marca, aceitando o Google Ads.")),
+        h("p", { class: "sub", text: "Enquanto o Google não aprova o acesso básico, o token funciona só com contas de teste." })));
+      return;
+    }
+    if (contas.precisa_reconectar || contas.codigo === "RECONECTAR") return pedirReconexao(area, marca, "Para ver e ajustar os anúncios, a DENIA precisa da permissão do Google Ads. Toque abaixo, entre com a conta do Google que acessa o Google Ads e aceite.", "ads");
+    if (contas.erro) { trocar(area, h("section", { class: "cartao vidro" }, h("p", { class: "nota nota-alerta", text: contas.erro }))); return; }
+    const selConta = h("select", { class: "entrada", "aria-label": "Conta do Google Ads" }, h("option", { value: "", text: contas.contas.length ? "Escolha a conta de anúncios…" : "Nenhuma conta de anúncios neste login" }),
+      contas.contas.filter(c => !c.gerente).map(c => h("option", { value: c.id, "data-via": c.via || "", "data-nome": c.nome, "data-moeda": c.moeda || "", selected: c.id === contas.atual, text: `${c.nome} (${c.id.replace(/(\d{3})(\d{3})(\d+)/, "$1-$2-$3")})${c.teste ? " · teste" : ""}` })));
+    const blocoConta = h("section", { class: "cartao vidro" }, h("div", { class: "cabeca-grafico" }, h("h3", { style: "margin:0", text: "Conta do Google Ads" }),
+      pode("ADMIN") ? h("div", { class: "acoes" }, selConta, botao("Usar esta conta", async () => { const o = selConta.selectedOptions[0]; try { await mk("google/ads/conta", { metodo: "POST", corpo: { marca_id: marcaId, cliente: selConta.value, gerente: o?.dataset.via || "", nome: o?.dataset.nome || "", moeda: o?.dataset.moeda || "" } }); aviso("Conta escolhida.", "ok"); navegar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario btn-pequeno")) : null));
+    if (!contas.atual) { trocar(area, blocoConta); return; }
+    const f = estado.adsF = estado.adsF || { dias: "30", metrica: "custo" };
+    const d = await mk(`google/ads?marca=${marcaId}&dias=${f.dias}`).catch(e => ({ erro: e.message }));
+    if (d.erro) { trocar(area, blocoConta, h("section", { class: "cartao vidro" }, h("p", { class: "nota nota-alerta", text: d.erro }))); return; }
+    const moeda = d.moeda || "BRL", $$ = v => dinheiro(v, moeda);
+    const t = d.totais || {}, a = d.anterior ? d.anterior.totais : null;
+    const recarregar = () => abaGoogleAds(area, marca).catch(e => aviso(e.message, "erro"));
+    const M = [["custo", "Gasto", $$, true], ["cliques", "Cliques", numero], ["impressoes", "Impressões", numero], ["ctr", "CTR", pct], ["cpc", "Custo por clique", $$, true], ["conversoes", "Conversões", dec], ["custo_conversao", "Custo por conversão", $$, true], ["valor_conversoes", "Valor das conversões", $$]];
+    const cartoes = h("section", { class: "grade grade-4" }, M.map(([k, n, fm, inv]) => cartaoMetricaClicavel(n, t[k], a ? a[k] : null, f.metrica === k, () => { f.metrica = k; recarregar(); }, inv, fm)));
+    const nomeM = (M.find(m => m[0] === f.metrica) || M[0])[1];
+    const pontos = (d.diario || []).map(x => ({ chave: x.data, rotulo: dataCompleta(x.data), curto: dataCurta(x.data), valor: x[f.metrica] || 0 }));
+    const acao = async (rota, corpo, ok) => { try { await mk("google/ads/" + rota, { metodo: "POST", corpo: { marca_id: marcaId, ...corpo } }); aviso(ok, "ok"); recarregar(); } catch (e) { aviso(e.message, "erro"); } };
+    const NOME_ST = { ENABLED: ["Ativa", "ok"], PAUSED: ["Pausada", "info"], REMOVED: ["Removida", "erro"] };
+    const NOME_TIPO = { SEARCH: "Pesquisa", DISPLAY: "Display", PERFORMANCE_MAX: "Performance Max", VIDEO: "YouTube", SHOPPING: "Shopping", LOCAL: "Local", SMART: "Inteligente", DEMAND_GEN: "Demand Gen", MULTI_CHANNEL: "App" };
+    const acoesCampanha = c => pode("ADMIN") ? h("div", { class: "acoes" },
+      botao(c.status === "ENABLED" ? "Pausar" : "Ativar", async () => { if (await modal({ titulo: `${c.status === "ENABLED" ? "Pausar" : "Ativar"} "${c.nome}"?`, conteudo: c.status === "ENABLED" ? "Os anúncios desta campanha param de aparecer agora." : "Os anúncios voltam a aparecer e a gastar.", confirmar: c.status === "ENABLED" ? "Pausar" : "Ativar", perigo: c.status !== "ENABLED" })) await acao("campanha", { campanha_id: c.id, status: c.status === "ENABLED" ? "PAUSED" : "ENABLED" }, "Feito no Google Ads."); }, "btn-secundario btn-pequeno"),
+      c.orcamento ? botao("Orçamento", async () => {
+        const ent = h("input", { class: "entrada", type: "number", min: "1", step: "0.01", value: c.orcamento_dia });
+        if (await modal({ titulo: `Orçamento diário de "${c.nome}"`, conteudo: [campo(`Valor por dia (${moeda})`, ent, "O Google pode gastar até 2x num dia, mas não passa de 30,4x o valor diário no mês.")], confirmar: "Salvar" })) await acao("orcamento", { orcamento: c.orcamento, valor: Number(ent.value) }, "Orçamento atualizado no Google Ads.");
+      }, "btn-secundario btn-pequeno") : null) : null;
+    // Sugestões da DENIA (regras claras, sem IA): onde o dinheiro está indo embora.
+    const desperdicio = (d.termos || []).filter(x => x.custo > 0 && !x.conversoes && x.cliques >= 3).sort((x, y) => y.custo - x.custo);
+    const sugestoes = [
+      ...desperdicio.slice(0, 5).map(x => `O termo "${x.termo}" gastou ${$$(x.custo)} em ${numero(x.cliques)} cliques sem nenhuma conversão. Avalie negativar.`),
+      ...(d.palavras || []).filter(p => p.qualidade != null && p.qualidade <= 4 && p.custo > 0).slice(0, 3).map(p => `A palavra "${p.texto}" tem índice de qualidade ${p.qualidade}/10: melhore o anúncio e a página de destino para pagar menos por clique.`),
+      ...(d.campanhas || []).filter(c => c.status === "ENABLED" && c.parcela_impressoes != null && c.parcela_impressoes < 50 && c.conversoes > 0).slice(0, 3).map(c => `"${c.nome}" aparece em só ${pct(c.parcela_impressoes)} das buscas possíveis e converte: mais orçamento tende a trazer mais clientes.`),
+      ...(() => { const ap = (d.aparelhos || []).filter(x => x.conversoes > 0); if (ap.length < 2) return []; const caro = ap.reduce((x, y) => (y.custo_conversao > x.custo_conversao ? y : x)), barato = ap.reduce((x, y) => (y.custo_conversao < x.custo_conversao ? y : x)); return caro.custo_conversao > barato.custo_conversao * 1.8 ? [`A conversão no ${({ MOBILE: "celular", DESKTOP: "computador", TABLET: "tablet" })[caro.aparelho] || caro.aparelho} custa ${$$(caro.custo_conversao)}, contra ${$$(barato.custo_conversao)} no ${({ MOBILE: "celular", DESKTOP: "computador", TABLET: "tablet" })[barato.aparelho] || barato.aparelho}. Ajuste o lance por aparelho.`] : []; })()
+    ];
+    trocar(area,
+      blocoConta,
+      h("section", { class: "cartao vidro filtros-desempenho" }, chipsPeriodo(PERIODOS_ADS, f.dias, v => { f.dias = v; recarregar(); }),
+        h("p", { class: "sub", style: "margin:0", text: `${d.nome} · ${dataCompleta(d.de)} a ${dataCompleta(d.ate)}${d.anterior ? ` · comparando com ${dataCompleta(d.anterior.de)} a ${dataCompleta(d.anterior.ate)}` : ""}` })),
+      h("section", { class: "grade grade-3" },
+        metrica("Gasto hoje", $$(d.hoje?.custo || 0), `${numero(d.hoje?.cliques || 0)} cliques hoje`),
+        d.saldo ? metrica("Saldo do orçamento da conta", $$(d.saldo.restante), `Gasto ${$$(d.saldo.gasto)} de ${$$(d.saldo.limite)}`) : metrica("Saldo", "—", "Contas pré-pagas (Pix/boleto): o Google não informa o saldo pela API. Veja em Faturamento no Google Ads."),
+        metrica("Pontuação de otimização", d.pontuacao != null ? pct(d.pontuacao) : "—", "Nota do Google para a conta (100% = tudo aplicado)")),
+      cartoes,
+      h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: `${nomeM} dia a dia` }), pontos.length ? graficoLinha(pontos, null, nomeM, "") : vazio("Sem gasto neste período", "")),
+      sugestoes.length ? h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Sugestões da DENIA" }), h("ul", { class: "lista-simples" }, sugestoes.map(x => h("li", { text: x })))) : null,
+      tabelaDados([["nome", "Campanha"], ["status", "Situação", v => selo(...(NOME_ST[v] || [v, "info"]))], ["tipo", "Tipo", v => NOME_TIPO[v] || v], ["orcamento_dia", "Orçamento/dia", $$, { num: true }], ["custo", "Gasto", $$, { num: true }], ["cliques", "Cliques", numero, { num: true }], ["ctr", "CTR", pct, { num: true }], ["cpc", "CPC", $$, { num: true }], ["conversoes", "Conv.", dec, { num: true }], ["custo_conversao", "Custo/conv.", $$, { num: true }], ["parcela_impressoes", "Parcela de impr.", v => (v == null ? "—" : pct(v)), { num: true }]],
+        d.campanhas || [], { titulo: "Campanhas", arquivo: `campanhas-${d.de}-${d.ate}.csv`, inicial: "custo", acoes: acoesCampanha }),
+      tabelaDados([["termo", "O que a pessoa pesquisou"], ["campanha", "Campanha"], ["custo", "Gasto", $$, { num: true }], ["cliques", "Cliques", numero, { num: true }], ["conversoes", "Conv.", dec, { num: true }], ["status", "Situação", v => ({ ADDED: "Já é palavra", EXCLUDED: "Negativado", NONE: "—" })[v] || "—"]],
+        d.termos || [], { titulo: "Termos de pesquisa (o que digitaram antes de clicar)", arquivo: `termos-${d.de}-${d.ate}.csv`, inicial: "custo",
+          acoes: x => pode("ADMIN") && x.status !== "EXCLUDED" && x.campanha_id ? botao("Negativar", async () => { if (await modal({ titulo: `Negativar "${x.termo}"?`, conteudo: `A campanha "${x.campanha}" deixa de aparecer para exatamente esta busca.`, confirmar: "Negativar" })) await acao("negativa", { campanha_id: x.campanha_id, termo: x.termo }, "Palavra negativa adicionada."); }, "btn-secundario btn-pequeno") : null }),
+      tabelaDados([["texto", "Palavra-chave"], ["tipo", "Correspondência", v => ({ EXACT: "Exata", PHRASE: "Frase", BROAD: "Ampla" })[v] || v], ["qualidade", "Qualidade", v => (v == null ? "—" : `${v}/10`), { num: true }], ["campanha", "Campanha"], ["custo", "Gasto", $$, { num: true }], ["cliques", "Cliques", numero, { num: true }], ["cpc", "CPC", $$, { num: true }], ["conversoes", "Conv.", dec, { num: true }]],
+        d.palavras || [], { titulo: "Palavras-chave", arquivo: `palavras-ads-${d.de}-${d.ate}.csv`, inicial: "custo" }),
+      h("section", { class: "grade grade-2" },
+        tabelaDados([["aparelho", "Aparelho", v => ({ MOBILE: "Celular", DESKTOP: "Computador", TABLET: "Tablet", CONNECTED_TV: "TV", OTHER: "Outros" })[v] || v], ["custo", "Gasto", $$, { num: true }], ["cliques", "Cliques", numero, { num: true }], ["conversoes", "Conv.", dec, { num: true }], ["custo_conversao", "Custo/conv.", $$, { num: true }]], d.aparelhos || [], { titulo: "Por aparelho", busca: false }),
+        h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Cliques por dia e hora" }), mapaHorarios(d.horarios || Array.from({ length: 7 }, () => Array(24).fill(0)), "cliques", "Fuso da conta do Google Ads. "))),
+      h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Recomendações do Google" }),
+        (d.recomendacoes || []).length ? h("div", { class: "lista-casos" }, d.recomendacoes.map(r => h("div", { class: "caso-linha vidro" }, h("div", { class: "caso-linha-topo" }, h("strong", { text: r.nome }),
+          r.ganho_cliques ? selo(`+${numero(r.ganho_cliques)} cliques/semana`, "ok") : null, r.ganho_conversoes ? selo(`+${dec(r.ganho_conversoes)} conversões`, "ok") : null),
+          pode("ADMIN") ? h("div", { class: "acoes" }, botao("Aplicar", async () => { if (await modal({ titulo: `Aplicar "${r.nome}"?`, conteudo: "A mudança é feita direto na conta do Google Ads.", confirmar: "Aplicar" })) await acao("recomendacao", { id: r.id }, "Recomendação aplicada."); }, "btn-primario btn-pequeno"), botao("Descartar", () => acao("recomendacao", { id: r.id, descartar: true }, "Recomendação descartada."), "btn-secundario btn-pequeno")) : null))) : vazio("Nenhuma recomendação agora", "")),
+      h("p", { class: "nota", text: "O Google Ads só mostra números somados e região aproximada — nunca quem clicou no anúncio (privacidade e LGPD)." }));
+  }
+
+  // ----- Concorrentes no Google Maps: posição do perfil numa busca, notas e avaliações dos outros.
+  async function abaConcorrentesGoogle(area, marca) {
+    const marcaId = marca.id;
+    const d = await mk(`google/concorrentes?marca=${marcaId}`);
+    if (d.conectada === false) { trocar(area, h("section", { class: "cartao vidro" }, vazio("Conecte o Google desta marca", "A posição é medida para o perfil conectado."), pode("ADMIN") ? h("div", { class: "acoes" }, botao("Conectar Google", () => conectarGoogle(marca), "btn-primario")) : null)); return; }
+    const busca = h("input", { class: "entrada", placeholder: "Ex.: oficina mecânica em Niterói", value: estado.ultimaBuscaConc || (d.ultimo ? d.ultimo.busca : "") });
+    const res = h("div", { class: "grade" });
+    const desenhar = r => {
+      const meus = r.lugares.find(p => p.voce);
+      trocar(res,
+        h("section", { class: "grade grade-3" },
+          metrica("Sua posição no Maps", r.posicao ? `${r.posicao}º` : "Fora do top 20", r.posicao ? `para "${r.busca}"` : "O perfil não apareceu entre os 20 primeiros"),
+          metrica("Nota média dos concorrentes", r.media_nota != null ? dec(r.media_nota) + " ★" : "—", meus && meus.nota != null ? `A sua: ${dec(meus.nota)} ★` : ""),
+          metrica("Avaliações (média dos concorrentes)", r.media_avaliacoes != null ? numero(r.media_avaliacoes) : "—", meus ? `Você: ${numero(meus.avaliacoes)}` : "")),
+        tabelaDados([["posicao", "#", v => `${v}º`, { num: true }], ["nome", "Empresa", (v, l) => h("span", {}, l.mapa ? h("a", { href: l.mapa, target: "_blank", rel: "noopener", text: v }) : v, l.voce ? " " : "", l.voce ? selo("Você", "ok") : null)], ["nota", "Nota", v => (v == null ? "—" : dec(v) + " ★"), { num: true }], ["avaliacoes", "Avaliações", numero, { num: true }], ["categoria", "Categoria"], ["endereco", "Endereço"], ["site", "Site", v => (v ? h("a", { href: v, target: "_blank", rel: "noopener", text: "abrir" }) : "—")]],
+          r.lugares || [], { titulo: `Resultado do Google Maps para "${r.busca}"`, arquivo: `concorrentes-${r.dia}.csv`, busca: false }));
+    };
+    if (d.ultimo) desenhar({ ...d.ultimo, media_nota: null, media_avaliacoes: null, ...(() => { const o = d.ultimo.lugares.filter(p => !p.voce && p.nota != null); return o.length ? { media_nota: o.reduce((s, p) => s + p.nota, 0) / o.length, media_avaliacoes: Math.round(o.reduce((s, p) => s + p.avaliacoes, 0) / o.length) } : {}; })() });
+    // Evolução da posição por busca (uma linha por busca, últimas medições).
+    const porBusca = new Map();
+    for (const x of d.historico || []) { const l = porBusca.get(x.busca) || []; l.push(x); porBusca.set(x.busca, l); }
+    trocar(area,
+      h("section", { class: "cartao vidro formulario" }, h("h3", { style: "margin:0", text: "Medir a posição no Google Maps" }),
+        h("p", { class: "sub", text: `Escreva a busca como o cliente faria, com a cidade ou bairro. A DENIA procura no Google Maps, mostra em que lugar "${d.perfil || "o perfil"}" aparece e quem está na frente.` }),
+        h("div", { class: "linha-form" }, busca), d.configurado ? h("div", { class: "acoes" }, botao("Pesquisar no Google Maps", async (_e, b) => {
+          if (busca.value.trim().length < 3) return aviso("Escreva a busca.", "erro");
+          estado.ultimaBuscaConc = busca.value.trim(); b.textContent = "Pesquisando…";
+          try { desenhar(await mk("google/concorrentes", { metodo: "POST", corpo: { marca_id: marcaId, busca: busca.value.trim() } })); } catch (e) { aviso(e.message, "erro"); } finally { b.textContent = "Pesquisar no Google Maps"; }
+        }, "btn-primario")) : h("p", { class: "nota nota-alerta", text: "Para ligar: crie uma chave da Places API (New) no Google Cloud e salve na Cloudflare como o secret GOOGLE_PLACES_API_KEY (Worker denia-landing). O Google cobra cada pesquisa (cerca de US$ 0,035)." })),
+      res,
+      porBusca.size ? h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Evolução da posição" }),
+        h("div", { class: "tabela-caixa" }, h("table", {}, h("thead", {}, h("tr", {}, h("th", { text: "Busca" }), h("th", { text: "Última" }), h("th", { text: "Antes" }), h("th", { text: "Medições" }))),
+          h("tbody", {}, [...porBusca.entries()].map(([b, l]) => h("tr", {}, h("td", { text: b }), h("td", { text: l[0].posicao ? `${l[0].posicao}º (${dataCompleta(l[0].dia)})` : "fora do top 20" }), h("td", { text: l[1] ? (l[1].posicao ? `${l[1].posicao}º (${dataCompleta(l[1].dia)})` : "fora") : "—" }), h("td", { text: numero(l.length) }))))))) : null);
   }
   // Lê o perfil inteiro no Google, em partes de 1.000, mostrando o andamento.
   async function buscarTodasNoGoogle(marcaId, mostrar) {

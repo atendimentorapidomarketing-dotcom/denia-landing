@@ -218,6 +218,54 @@ export async function rotasSocial(request, env, k, orgId, papel, resto, ajuda = 
       const media = posts.length ? posts.reduce((s, x) => s + x.curtidas + x.comentarios, 0) / posts.length : 0;
       return { usuario: b.username, nome: b.name, bio: b.biography || "", site: b.website || "", seguidores: b.followers_count ?? null, publicacoes: b.media_count ?? null, foto: b.profile_picture_url || null, posts, engajamento_medio: Math.round(media), taxa_engajamento: b.followers_count ? Math.round((media / b.followers_count) * 10000) / 100 : null };
     });
+    // Melhores horários: engajamento médio das últimas 100 publicações por dia da semana e hora (fuso de Brasília).
+    if (resto === "social/horarios") return responder(async () => {
+      const { conta, token } = await contaDa(env, k, orgId, marcaId);
+      const itens = [];
+      let depois = null;
+      for (let i = 0; i < 4 && itens.length < 100; i++) { const r = await midias(env, conta, token, canal, depois); itens.push(...r.itens); depois = r.proximo; if (!depois) break; }
+      const soma = Array.from({ length: 7 }, () => Array(24).fill(0)), qtd = Array.from({ length: 7 }, () => Array(24).fill(0));
+      const porTipo = {};
+      for (const x of itens) {
+        if (!x.quando) continue;
+        const t = new Date(Date.parse(x.quando) - 3 * 3600000), d = t.getUTCDay(), hr = t.getUTCHours();
+        const eng = Number(x.curtidas || 0) + Number(x.comentarios || 0) * 2 + Number(x.compartilhamentos || 0) * 3;
+        soma[d][hr] += eng; qtd[d][hr]++;
+        const pt = porTipo[x.tipo] || (porTipo[x.tipo] = { tipo: x.tipo, posts: 0, engajamento: 0 }); pt.posts++; pt.engajamento += eng;
+      }
+      const media = soma.map((l, d) => l.map((v, hr) => (qtd[d][hr] ? Math.round(v / qtd[d][hr]) : 0)));
+      const melhores = [];
+      media.forEach((l, d) => l.forEach((v, hr) => { if (qtd[d][hr]) melhores.push({ dia: d, hora: hr, media: v, posts: qtd[d][hr] }); }));
+      melhores.sort((a, b) => b.media - a.media);
+      return { analisadas: itens.length, mapa: media, melhores: melhores.slice(0, 8), por_tipo: Object.values(porTipo).map(x => ({ ...x, media: Math.round(x.engajamento / x.posts) })).sort((a, b) => b.media - a.media) };
+    });
+    // Stories no ar agora (a Meta só entrega os das últimas 24 h) com alcance, respostas e saídas.
+    if (resto === "social/stories") return responder(async () => {
+      if (canal !== "instagram") throw new Error("Stories são do Instagram.");
+      const { conta, token } = await contaDa(env, k, orgId, marcaId);
+      const d = await graph(env, "GET", `${conta.ig_id}/stories`, { fields: "id,media_type,media_url,thumbnail_url,permalink,timestamp", access_token: token });
+      const lista = [];
+      for (const st of (d.data || []).slice(0, 25)) lista.push({ id: st.id, tipo: st.media_type, imagem: st.thumbnail_url || st.media_url || null, link: st.permalink, quando: st.timestamp, metricas: await insightsDaMidia(env, token, "instagram", st.id, "STORY").catch(() => ({})) });
+      return { stories: lista };
+    });
+    // Publicações de outras pessoas que marcaram o perfil (só as públicas; a Meta não mostra as privadas).
+    if (resto === "social/marcacoes") return responder(async () => {
+      if (canal !== "instagram") throw new Error("Marcações são do Instagram.");
+      const { conta, token } = await contaDa(env, k, orgId, marcaId);
+      const d = await graph(env, "GET", `${conta.ig_id}/tags`, { fields: "id,caption,media_type,media_url,thumbnail_url,permalink,timestamp,username,like_count,comments_count", limit: "50", access_token: token });
+      return { marcacoes: (d.data || []).map(m => ({ id: m.id, autor: m.username || "", texto: String(m.caption || "").slice(0, 400), imagem: m.thumbnail_url || m.media_url || null, link: m.permalink, quando: m.timestamp, curtidas: m.like_count ?? 0, comentarios: m.comments_count ?? 0 })) };
+    });
+    // Recomendações (avaliações) da página do Facebook.
+    if (resto === "social/avaliacoes") return responder(async () => {
+      if (canal !== "facebook") throw new Error("Recomendações são da página do Facebook.");
+      const { conta, token } = await contaDa(env, k, orgId, marcaId);
+      const [pag, d] = await Promise.all([
+        graph(env, "GET", conta.pagina_id, { fields: "overall_star_rating,rating_count", access_token: token }).catch(() => ({})),
+        graph(env, "GET", `${conta.pagina_id}/ratings`, { fields: "created_time,recommendation_type,review_text,rating,reviewer{name},open_graph_story{id}", limit: "100", access_token: token })
+      ]);
+      const lista = (d.data || []).map(x => ({ quando: x.created_time, recomenda: x.recommendation_type === "positive" ? true : x.recommendation_type === "negative" ? false : null, nota: x.rating ?? null, texto: x.review_text || "", autor: x.reviewer?.name || "Pessoa no Facebook", historia: x.open_graph_story?.id || null }));
+      return { nota: pag.overall_star_rating ?? null, total: pag.rating_count ?? lista.length, positivas: lista.filter(x => x.recomenda === true).length, negativas: lista.filter(x => x.recomenda === false).length, avaliacoes: lista };
+    });
     return null;
   }
 

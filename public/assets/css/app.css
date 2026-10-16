@@ -598,7 +598,13 @@ details > summary { cursor: pointer; font-weight: 700; }
 .detalhes summary { cursor: pointer; color: var(--texto-2); font-size: 14px; margin-bottom: 10px; }
 .destaque-ia { display: grid; gap: 10px; border-color: rgba(139, 92, 246, 0.5); background: linear-gradient(135deg, rgba(79, 140, 255, 0.12), rgba(139, 92, 246, 0.12)); }
 .destaque-ia .btn { justify-self: start; }
-@media (max-width: 720px) { .tabela-caixa table { min-width: 620px; } .tabela-caixa .selo { white-space: nowrap; } }
+@media (max-width: 720px) {
+  .tabela-caixa table { width: 100%; }
+  .tabela-caixa table:has(thead th:nth-child(5)) { min-width: 620px; }
+  .tabela-caixa td { overflow-wrap: break-word; }
+  .tabela-caixa .selo { white-space: nowrap; }
+  .ver-mais-linhas { width: 100%; margin-top: 8px; }
+}
 
 /* Locação por temporada */
 :root { --c-airbnb: #ff5a5f; --c-booking: #3b82f6; --c-vrbo: #8b5cf6; --c-direto: #22c55e; --c-bloqueio: #64748b; }
@@ -712,10 +718,12 @@ details > summary { cursor: pointer; font-weight: 700; }
 }
 @media (max-width: 560px) { .cal-dica { display: none; } }
 @media (max-width: 720px) {
-  .abas-chips { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
-  .abas-chips::-webkit-scrollbar { display: none; }
-  .abas-chips .aba { flex: 0 0 auto; white-space: nowrap; }
+  /* Celular: todos os períodos à vista, em linhas (nada escondido para o lado). */
+  .abas-chips { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); width: 100%; }
+  .abas-chips .aba { white-space: normal; line-height: 1.2; text-align: center; justify-content: center; padding-left: 6px; padding-right: 6px; }
   .filtros-desempenho { padding: 10px; }
+  /* Sem rolagem dentro da rolagem: a lista cresce com a página e mostra "Ver mais". */
+  .lista-rolavel { max-height: none; overflow-y: visible; overflow-x: auto; padding-right: 0; }
 }
 
 /* Menu por canal */
@@ -735,3 +743,38 @@ body[data-modo] .conteudo .abas[role="tablist"] { display: none; }
 .possivel-selo { flex: 0 0 auto; font-size: 11.5px; font-weight: 700; padding: 3px 9px; border-radius: 999px; white-space: nowrap; }
 .possivel-ok .possivel-selo { background: rgba(34, 197, 94, 0.16); color: #4ade80; } .possivel-conectar .possivel-selo { background: rgba(79, 140, 255, 0.16); color: #7aa7ff; }
 .possivel-breve .possivel-selo { background: rgba(250, 204, 21, 0.14); color: #facc15; } .possivel-nao .possivel-selo { background: rgba(148, 163, 184, 0.16); color: var(--texto-3); }
+/* Celular: a semana do calendário de posts vira uma lista de dias (sem deslizar para o lado). */
+@media (max-width: 720px) {
+  .semana { grid-template-columns: 1fr; overflow-x: visible; }
+  .semana-titulo { white-space: normal; }
+}
+@media (max-width: 720px) {
+  .mapa-calor { overflow-x: visible; gap: 2px; }
+  .mapa-linha { min-width: 0; grid-template-columns: 30px repeat(24, minmax(0, 1fr)); gap: 1px; }
+  .mapa-celula { height: 16px; border-radius: 2px; }
+  .mapa-cabeca span { font-size: 9.5px; }
+}
+.tabela-caixa th.num, .tabela-caixa td.num { text-align: right; font-variant-numeric: tabular-nums; } .tabela-caixa td.num { white-space: nowrap; }
+.tabela-caixa td .acoes { flex-wrap: nowrap; gap: 6px; }
+/* Celular: tabelas com muitas colunas viram cartões (cada linha um bloco, rótulo: valor). */
+@media (max-width: 720px) {
+  .tabela-cartoes { border: 0; background: transparent; overflow: visible; }
+  .tabela-cartoes table, .tabela-cartoes table:has(thead th:nth-child(5)) { min-width: 0; width: 100%; display: block; }
+  .tabela-cartoes thead { display: none; }
+  .tabela-cartoes tbody { display: grid; gap: 10px; }
+  .tabela-cartoes tr { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 12px; padding: 12px 14px; border: 1px solid var(--borda); border-radius: 14px; background: var(--painel); }
+  .tabela-cartoes tr[hidden] { display: none; }
+  .tabela-cartoes td { display: grid; gap: 1px; padding: 0; border: 0; text-align: left !important; white-space: normal !important; font-size: 14px; }
+  .tabela-cartoes td::before { content: attr(data-rotulo); font-size: 11px; font-weight: 700; letter-spacing: 0.03em; text-transform: uppercase; color: var(--texto-3); }
+  .tabela-cartoes td:first-child { grid-column: 1 / -1; font-weight: 700; font-size: 15px; }
+  .tabela-cartoes td:first-child::before { display: none; }
+  .tabela-cartoes td.td-acoes { grid-column: 1 / -1; }
+  .tabela-cartoes td.td-acoes::before { display: none; }
+  .tabela-cartoes td.td-acoes .acoes { flex-wrap: wrap; }
+}
+.zap-cartao { display: grid; gap: 6px; justify-items: center; text-align: center; padding: 18px; border-radius: 18px; background: var(--painel); border: 1px solid var(--borda); }
+.zap-cartao p { margin: 0; }
+.zap-foto { width: 84px; height: 84px; border-radius: 50%; object-fit: cover; }
+.zap-foto-vazia { display: grid; place-items: center; background: linear-gradient(135deg, #22c55e, #128c7e); color: #fff; font-weight: 800; font-size: 28px; }
+.zap-bolha { background: rgba(37, 211, 102, 0.12); border: 1px solid rgba(37, 211, 102, 0.3); border-radius: 14px; padding: 12px 14px; display: grid; gap: 6px; }
+.conexao-destaque { border-color: rgba(79, 140, 255, 0.45); background: linear-gradient(135deg, rgba(79, 140, 255, 0.10), rgba(139, 92, 246, 0.08)); }

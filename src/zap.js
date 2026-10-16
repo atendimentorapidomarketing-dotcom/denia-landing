@@ -22,6 +22,9 @@ export const DDL_ZAP = [
   `CREATE INDEX IF NOT EXISTS idx_zap_msgs_tempo ON plt_zap_msgs(org_id, criado_ms)`,
   `CREATE TABLE IF NOT EXISTS plt_zap_buscas (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, telefone TEXT, nome TEXT, item_id INTEGER, tipo TEXT, titulo TEXT, caminho TEXT, texto TEXT, via TEXT, resultados INTEGER, criado_ms INTEGER NOT NULL)`,
   `CREATE INDEX IF NOT EXISTS idx_zap_buscas_tempo ON plt_zap_buscas(org_id, criado_ms)`,
+  `CREATE TABLE IF NOT EXISTS plt_zap_campanhas (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, nome TEXT NOT NULL, modelo TEXT NOT NULL, idioma TEXT NOT NULL, variaveis TEXT, status TEXT NOT NULL, total INTEGER NOT NULL DEFAULT 0, enviados INTEGER NOT NULL DEFAULT 0, falhas INTEGER NOT NULL DEFAULT 0, agendada_ms INTEGER, criado_por TEXT, criado_ms INTEGER NOT NULL, fim_ms INTEGER)`,
+  `CREATE TABLE IF NOT EXISTS plt_zap_envios (campanha_id INTEGER NOT NULL, org_id INTEGER NOT NULL, telefone TEXT NOT NULL, nome TEXT, status TEXT NOT NULL DEFAULT 'PENDENTE', wamid TEXT, erro TEXT, ms INTEGER, PRIMARY KEY (campanha_id, telefone))`,
+  `CREATE INDEX IF NOT EXISTS plt_zap_envios_fila ON plt_zap_envios(status, campanha_id)`,
   `CREATE TABLE IF NOT EXISTS plt_zap_tg (chat_id TEXT NOT NULL, message_id INTEGER NOT NULL, org_id INTEGER NOT NULL, telefone TEXT NOT NULL, criado_ms INTEGER NOT NULL, PRIMARY KEY (chat_id, message_id))`
 ];
 
@@ -429,6 +432,9 @@ async function processarWebhook(env, k, d, bruto, assinatura) {
     if (Array.isArray(v.statuses) && v.statuses.length) {
       await env.DB.batch(v.statuses.slice(0, 50).map(s => env.DB.prepare("UPDATE plt_zap_msgs SET status=?, erro=COALESCE(?, erro) WHERE wamid=? AND org_id=?")
         .bind(String(s.status || "").toUpperCase().slice(0, 20), s.errors?.[0] ? cortar(`${s.errors[0].code}: ${s.errors[0].error_data?.details || s.errors[0].title || ""}`, 300) : null, String(s.id || ""), conta.org_id)));
+      const falhas = v.statuses.filter(s => s.status === "failed" || s.status === "read" || s.status === "delivered").slice(0, 50);
+      if (falhas.length) await env.DB.batch(falhas.map(s => env.DB.prepare("UPDATE plt_zap_envios SET status=?, erro=COALESCE(?, erro) WHERE wamid=? AND org_id=?")
+        .bind(s.status === "failed" ? "FALHOU" : s.status === "read" ? "LIDA" : "ENTREGUE", s.errors?.[0] ? cortar(`${s.errors[0].code}: ${s.errors[0].error_data?.details || s.errors[0].title || ""}`, 300) : null, String(s.id || ""), conta.org_id))).catch(() => { });
     }
     if (!conta.ativo || conta.org_status !== "ATIVA") continue;
     // Plano: sem teste ou pagamento em dia, as mensagens só ficam registradas (o robô não responde).
@@ -466,7 +472,7 @@ async function receberMensagem(env, k, conta, msg, nome) {
   const [ins, , ctt, recentes, idMsg] = await env.DB.batch([
     env.DB.prepare("INSERT OR IGNORE INTO plt_zap_msgs(org_id,telefone,direcao,origem,texto,wamid,status,criado_ms) VALUES(?,?,?,?,?,?,'RECEBIDA',?)").bind(z.org, tel, "E", "CLIENTE", cortar(e.rotulo, 4000), wamid, agora),
     env.DB.prepare("INSERT INTO plt_zap_contatos(org_id,telefone,nome,ultima_entrada_ms,ultimo_ms) VALUES(?,?,?,?,?) ON CONFLICT(org_id,telefone) DO UPDATE SET nome=COALESCE(NULLIF(excluded.nome,''),nome), ultima_entrada_ms=excluded.ultima_entrada_ms, ultimo_ms=excluded.ultimo_ms").bind(z.org, tel, nome, agora, agora),
-    env.DB.prepare("SELECT pausado_ate, nome, ultimo_menu FROM plt_zap_contatos WHERE org_id=? AND telefone=?").bind(z.org, tel),
+    env.DB.prepare("SELECT pausado_ate, nome, ultimo_menu, optout FROM plt_zap_contatos WHERE org_id=? AND telefone=?").bind(z.org, tel),
     env.DB.prepare("SELECT COUNT(*) n FROM plt_zap_msgs WHERE org_id=? AND telefone=? AND direcao='S' AND criado_ms>?").bind(z.org, tel, agora - 600000),
     env.DB.prepare("SELECT id FROM plt_zap_msgs WHERE wamid=?").bind(wamid)
   ]);
@@ -475,6 +481,13 @@ async function receberMensagem(env, k, conta, msg, nome) {
   const enviadaMs = Number(msg.timestamp || 0) * 1000;
   if (enviadaMs && agora - enviadaMs > 30 * 60000) return; // mensagem velha (reenvio depois de queda): não responde fora de hora
   const c = ctt?.results?.[0] || {};
+  // Descadastro de campanhas: "SAIR"/"PARAR" tira o contato das próximas campanhas (exigência da Meta e da LGPD).
+  if (/^\s*(sair|parar|pare|cancelar inscri[cç][aã]o|descadastrar|stop|unsubscribe)\s*[.!]?\s*$/i.test(e.texto)) {
+    await env.DB.prepare("UPDATE plt_zap_contatos SET optout=1 WHERE org_id=? AND telefone=?").bind(z.org, tel).run().catch(() => { });
+    await enviarTexto(z, "Pronto: você não vai mais receber nossas campanhas por aqui. Para voltar, é só mandar VOLTAR. O atendimento continua normal.", "ROBO");
+    return;
+  }
+  if (/^\s*voltar\s*[.!]?\s*$/i.test(e.texto) && Number(c.optout || 0)) await env.DB.prepare("UPDATE plt_zap_contatos SET optout=0 WHERE org_id=? AND telefone=?").bind(z.org, tel).run().catch(() => { });
   if (Number(c.pausado_ate || 0) > agora) return; // a equipe está atendendo
   if (Number(recentes?.results?.[0]?.n || 0) >= 25) return; // trava contra robô conversando com robô
   if (!rec.includes("chatbot")) return;
@@ -511,6 +524,8 @@ export async function rotasZap(request, env, k, orgId, papel, resto) {
   const ler = async (lim = 20000) => { const { corpo, erro } = await lerCorpo(request, lim); return erro ? { erro } : { corpo }; };
   const precisa = nivel => pode(papel, nivel) ? null : json({ erro: nivel === "ADMIN" ? "Somente administradores mudam a conexão do WhatsApp." : "Seu perfil não pode mudar o chatbot." }, 403);
   let m;
+  const extra = await rotasZapExtra(request, env, k, orgId, papel, r, { json, ler, precisa, agora });
+  if (extra) return extra;
 
   if (r === "conta" && metodo === "GET") {
     const c = await contaDa(env, orgId);
@@ -975,4 +990,270 @@ export async function webhookTelegram(request, env, k) {
 // Para o painel: empresas que usam o chatbot da plataforma.
 export async function orgsComChatbot(env) {
   return new Set(((await env.DB.prepare("SELECT org_id FROM plt_zap_contas WHERE phone_number_id IS NOT NULL").all().catch(() => null))?.results || []).map(x => x.org_id));
+}
+
+// ---------------------------------------------------------------------------
+// WhatsApp completo: perfil comercial, saúde do número, modelos (templates), campanhas, clientes,
+// etiquetas e respostas rápidas. Tudo pela API oficial (Cloud API), com o token da própria empresa.
+// ---------------------------------------------------------------------------
+async function graphZap(token, metodo, caminho, corpo) {
+  const r = await fetch(`${GRAPH}/${caminho}`, {
+    method: metodo, signal: AbortSignal.timeout(20000),
+    headers: { authorization: `Bearer ${token}`, ...(corpo ? { "content-type": "application/json" } : {}) },
+    body: corpo ? JSON.stringify(corpo) : undefined
+  });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    const er = d?.error || {};
+    let msg = er.error_user_msg || er.error_data?.details || er.message || `HTTP ${r.status}`;
+    if (er.code === 190) msg = "A Meta recusou o token do WhatsApp (vencido ou sem permissão). Conecte de novo em Conexão.";
+    else if (er.code === 200 || er.code === 10) msg = "O token não tem permissão para isso. Ele precisa de whatsapp_business_management e whatsapp_business_messaging.";
+    const e = new Error("Meta: " + cortar(msg, 300)); e.status = r.status; e.codigo = er.code; throw e;
+  }
+  return d;
+}
+const QUALIDADE = { GREEN: "Alta", YELLOW: "Média", RED: "Baixa", UNKNOWN: "Ainda sem nota" };
+const LIMITE_TIER = { TIER_50: 50, TIER_250: 250, TIER_1K: 1000, TIER_10K: 10000, TIER_100K: 100000, TIER_UNLIMITED: "ilimitado" };
+const varsDoTexto = t => [...new Set((String(t || "").match(/\{\{\s*(\d+)\s*\}\}/g) || []).map(x => Number(x.replace(/\D/g, ""))))].sort((a, b) => a - b);
+const etiquetasDe = s => String(s || "").split(",").map(x => x.trim()).filter(Boolean);
+
+async function rotasZapExtra(request, env, k, orgId, papel, r, { json, ler, precisa, agora }) {
+  const metodo = request.method;
+  const url = new URL(request.url);
+  let m;
+  const comConta = async () => {
+    const conta = await contaDa(env, orgId);
+    if (!conta?.token_cifrado || !conta.phone_number_id) throw Object.assign(new Error("Conecte o WhatsApp desta empresa primeiro (menu WhatsApp → Conexão)."), { status: 409, codigo: "SEM_CONEXAO" });
+    return { conta, token: await k.decifrar(env, conta.token_cifrado) };
+  };
+  const falhou = e => json({ erro: e.message, codigo: e.codigo }, e.status && e.status < 500 ? (e.status === 401 ? 400 : e.status) : 502);
+
+  // Perfil comercial (o que o cliente vê ao tocar no nome da empresa no WhatsApp).
+  if (r === "perfil" && metodo === "GET") {
+    try {
+      const { conta, token } = await comConta();
+      const d = await graphZap(token, "GET", `${encodeURIComponent(conta.phone_number_id)}/whatsapp_business_profile?fields=about,address,description,email,profile_picture_url,websites,vertical`);
+      return json({ perfil: d.data?.[0] || {}, numero: conta.numero, nome: conta.nome_verificado });
+    } catch (e) { return falhou(e); }
+  }
+  if (r === "perfil" && metodo === "POST") {
+    const negado = precisa("ADMIN"); if (negado) return negado;
+    const { corpo, erro } = await ler(); if (erro) return erro;
+    const VERT = ["UNDEFINED", "OTHER", "AUTO", "BEAUTY", "APPAREL", "EDU", "ENTERTAIN", "EVENT_PLAN", "FINANCE", "GROCERY", "GOVT", "HOTEL", "HEALTH", "NONPROFIT", "PROF_SERVICES", "RETAIL", "TRAVEL", "RESTAURANT", "ALCOHOL", "ONLINE_GAMBLING", "PHYSICAL_GAMBLING", "OTC_DRUGS"];
+    const sites = (Array.isArray(corpo.websites) ? corpo.websites : []).map(x => String(x).trim()).filter(x => /^https?:\/\/\S+$/.test(x)).slice(0, 2);
+    const p = { messaging_product: "whatsapp", about: cortar(corpo.about, 139), address: cortar(corpo.address, 256), description: cortar(corpo.description, 512), email: cortar(corpo.email, 128), websites: sites };
+    if (VERT.includes(corpo.vertical)) p.vertical = corpo.vertical;
+    try { const { conta, token } = await comConta(); await graphZap(token, "POST", `${encodeURIComponent(conta.phone_number_id)}/whatsapp_business_profile`, p); await k.auditar(env, request, k.sessao, orgId, "WHATSAPP", "Atualizou o perfil comercial do WhatsApp"); return json({ ok: true }); }
+    catch (e) { return falhou(e); }
+  }
+
+  // Saúde do número: qualidade, limite de conversas por dia, verificação, e as falhas recentes por motivo.
+  if (r === "saude" && metodo === "GET") {
+    try {
+      const { conta, token } = await comConta();
+      const [num, waba, falhas, envio] = await Promise.all([
+        graphZap(token, "GET", `${encodeURIComponent(conta.phone_number_id)}?fields=display_phone_number,verified_name,quality_rating,messaging_limit_tier,throughput,name_status,code_verification_status,platform_type,is_official_business_account,status`),
+        conta.waba_id ? graphZap(token, "GET", `${encodeURIComponent(conta.waba_id)}?fields=name,account_review_status,business_verification_status,currency,timezone_id,message_template_namespace`).catch(e => ({ erro: e.message })) : null,
+        linhasDe(env, "SELECT substr(erro,1,instr(erro||':',':')-1) codigo, MAX(erro) exemplo, COUNT(*) n FROM plt_zap_msgs WHERE org_id=? AND direcao='S' AND status IN ('FAILED','FALHOU') AND criado_ms>? GROUP BY codigo ORDER BY n DESC LIMIT 10", orgId, agora - 7 * 86400000),
+        env.DB.prepare("SELECT COUNT(*) total, SUM(CASE WHEN status IN ('DELIVERED','READ') THEN 1 ELSE 0 END) entregues, SUM(CASE WHEN status='READ' THEN 1 ELSE 0 END) lidas, SUM(CASE WHEN status IN ('FAILED','FALHOU') THEN 1 ELSE 0 END) falhas FROM plt_zap_msgs WHERE org_id=? AND direcao='S' AND criado_ms>?").bind(orgId, agora - 7 * 86400000).first()
+      ]);
+      const DICA = { 131049: "A Meta segurou a mensagem para não cansar o cliente (muitas campanhas para a mesma pessoa). Espalhe os envios.", 131026: "Número sem WhatsApp ou com app antigo.", 131047: "Passaram 24h desde a última mensagem do cliente: só modelos aprovados podem ser enviados.", 131056: "Muitas mensagens seguidas para o mesmo número.", 131048: "Envio limitado por denúncias ou bloqueios. Revise as campanhas.", 470: "Fora da janela de 24h: use um modelo aprovado.", 131051: "Tipo de mensagem não suportado.", 130429: "Limite de velocidade da Meta. A DENIA tenta mais devagar." };
+      return json({ numero: num.display_phone_number, nome: num.verified_name, qualidade: num.quality_rating || "UNKNOWN", qualidade_nome: QUALIDADE[num.quality_rating] || num.quality_rating, limite: LIMITE_TIER[num.messaging_limit_tier] ?? num.messaging_limit_tier ?? null,
+        nome_status: num.name_status || null, verificacao: num.code_verification_status || null, plataforma: num.platform_type || null, oficial: Boolean(num.is_official_business_account), status: num.status || null, vazao: num.throughput?.level || null,
+        waba, envio_7d: envio || {}, falhas: falhas.map(f => ({ ...f, dica: DICA[Number(f.codigo)] || null })) });
+    } catch (e) { return falhou(e); }
+  }
+
+  // Modelos de mensagem (templates): os únicos que podem abrir conversa fora da janela de 24h.
+  if (r === "modelos" && metodo === "GET") {
+    try {
+      const { conta, token } = await comConta();
+      if (!conta.waba_id) return json({ erro: "Falta o ID da conta do WhatsApp Business (WABA) na conexão. Em Conexão, cole o WABA ID ou conecte pelo Facebook.", codigo: "SEM_WABA" }, 409);
+      const d = await graphZap(token, "GET", `${encodeURIComponent(conta.waba_id)}/message_templates?fields=name,status,category,language,components,quality_score,rejected_reason&limit=200`);
+      return json({ modelos: (d.data || []).map(t => ({ nome: t.name, status: t.status, categoria: t.category, idioma: t.language, qualidade: t.quality_score?.score || null, motivo: t.rejected_reason && t.rejected_reason !== "NONE" ? t.rejected_reason : null, componentes: t.components || [],
+        variaveis: varsDoTexto((t.components || []).find(c => c.type === "BODY")?.text).length, cabecalho_midia: ["IMAGE", "VIDEO", "DOCUMENT"].includes((t.components || []).find(c => c.type === "HEADER")?.format) })) });
+    } catch (e) { return falhou(e); }
+  }
+  if (r === "modelos" && metodo === "POST") {
+    const negado = precisa("ADMIN"); if (negado) return negado;
+    const { corpo, erro } = await ler(); if (erro) return erro;
+    const nome = String(corpo.nome || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "").slice(0, 512);
+    const categoria = ["MARKETING", "UTILITY", "AUTHENTICATION"].includes(corpo.categoria) ? corpo.categoria : "MARKETING";
+    const idioma = /^[a-z]{2}(_[A-Z]{2})?$/.test(String(corpo.idioma || "")) ? corpo.idioma : "pt_BR";
+    const texto = String(corpo.corpo || "").trim().slice(0, 1024);
+    if (!nome || !texto) return json({ erro: "Dê um nome e escreva o texto da mensagem." }, 400);
+    const vars = varsDoTexto(texto);
+    if (vars.some((v, i) => v !== i + 1)) return json({ erro: "As variáveis precisam ser {{1}}, {{2}}, {{3}}… em ordem." }, 400);
+    const exemplos = (Array.isArray(corpo.exemplos) ? corpo.exemplos : []).map(x => cortar(x, 60));
+    if (vars.length && exemplos.filter(Boolean).length < vars.length) return json({ erro: "Dê um exemplo para cada variável (a Meta exige para aprovar)." }, 400);
+    const comps = [];
+    if (String(corpo.cabecalho || "").trim()) comps.push({ type: "HEADER", format: "TEXT", text: cortar(corpo.cabecalho, 60) });
+    comps.push({ type: "BODY", text: texto, ...(vars.length ? { example: { body_text: [exemplos.slice(0, vars.length)] } } : {}) });
+    if (String(corpo.rodape || "").trim()) comps.push({ type: "FOOTER", text: cortar(corpo.rodape, 60) });
+    const bts = (Array.isArray(corpo.botoes) ? corpo.botoes : []).slice(0, 10).map(b => b.tipo === "URL" && /^https?:\/\/\S+$/.test(b.url || "") ? { type: "URL", text: cortar(b.texto, 25), url: b.url }
+      : b.tipo === "PHONE_NUMBER" && digitos(b.telefone).length >= 10 ? { type: "PHONE_NUMBER", text: cortar(b.texto, 25), phone_number: "+" + digitos(b.telefone) }
+        : String(b.texto || "").trim() ? { type: "QUICK_REPLY", text: cortar(b.texto, 25) } : null).filter(Boolean);
+    if (categoria === "MARKETING" && !bts.some(b => b.type === "QUICK_REPLY") && corpo.botao_sair !== false) bts.push({ type: "QUICK_REPLY", text: "Parar promoções" });
+    if (bts.length) comps.push({ type: "BUTTONS", buttons: bts });
+    try {
+      const { conta, token } = await comConta();
+      if (!conta.waba_id) return json({ erro: "Falta o WABA ID na conexão.", codigo: "SEM_WABA" }, 409);
+      const d = await graphZap(token, "POST", `${encodeURIComponent(conta.waba_id)}/message_templates`, { name: nome, category: categoria, language: idioma, components: comps });
+      await k.auditar(env, request, k.sessao, orgId, "WHATSAPP", `Enviou o modelo ${nome} para aprovação da Meta`);
+      return json({ ok: true, nome, status: d.status || "PENDING" });
+    } catch (e) { return falhou(e); }
+  }
+  if (r === "modelos/excluir" && metodo === "POST") {
+    const negado = precisa("ADMIN"); if (negado) return negado;
+    const { corpo, erro } = await ler(); if (erro) return erro;
+    const nome = String(corpo.nome || "");
+    if (!/^[a-z0-9_]{1,512}$/.test(nome)) return json({ erro: "Modelo inválido." }, 400);
+    try { const { conta, token } = await comConta(); await graphZap(token, "DELETE", `${encodeURIComponent(conta.waba_id)}/message_templates?name=${encodeURIComponent(nome)}`); return json({ ok: true }); }
+    catch (e) { return falhou(e); }
+  }
+
+  // Clientes do WhatsApp (todo mundo que já falou com a empresa), com etiquetas e descadastro.
+  if (r === "clientes" && metodo === "GET") {
+    const q = String(url.searchParams.get("q") || "").trim().slice(0, 60), et = String(url.searchParams.get("etiqueta") || "").trim().slice(0, 40);
+    const conds = ["org_id=?"], args = [orgId];
+    if (q) { conds.push("(nome LIKE ? OR telefone LIKE ?)"); args.push(`%${q}%`, `%${digitos(q) || q}%`); }
+    if (et) { conds.push("(',' || REPLACE(COALESCE(etiquetas,''),', ',',') || ',') LIKE ?"); args.push(`%,${et},%`); }
+    const [lista, tot, ets] = await Promise.all([
+      linhasDe(env, `SELECT telefone, nome, etiquetas, optout, ultimo_ms, ultima_entrada_ms FROM plt_zap_contatos WHERE ${conds.join(" AND ")} ORDER BY ultimo_ms DESC LIMIT 500`, ...args),
+      env.DB.prepare(`SELECT COUNT(*) n, SUM(optout) sairam FROM plt_zap_contatos WHERE ${conds.join(" AND ")}`).bind(...args).first(),
+      linhasDe(env, "SELECT etiquetas FROM plt_zap_contatos WHERE org_id=? AND etiquetas IS NOT NULL AND etiquetas<>'' LIMIT 5000", orgId)
+    ]);
+    const contagem = {};
+    for (const x of ets) for (const e of etiquetasDe(x.etiquetas)) contagem[e] = (contagem[e] || 0) + 1;
+    return json({ clientes: lista.map(c => ({ ...c, etiquetas: etiquetasDe(c.etiquetas), optout: Boolean(c.optout), janela_aberta: agora - Number(c.ultima_entrada_ms || 0) < JANELA_24H })), total: Number(tot?.n || 0), descadastrados: Number(tot?.sairam || 0), etiquetas: Object.entries(contagem).sort((a, b) => b[1] - a[1]).map(([nome, n]) => ({ nome, n })) });
+  }
+  if ((m = r.match(/^clientes\/(\d{8,15})$/)) && metodo === "POST") {
+    const negado = precisa("AGENTE"); if (negado) return negado;
+    const { corpo, erro } = await ler(); if (erro) return erro;
+    const ets = (Array.isArray(corpo.etiquetas) ? corpo.etiquetas : etiquetasDe(corpo.etiquetas)).map(x => cortar(String(x).replace(/,/g, " "), 30)).filter(Boolean).slice(0, 12);
+    await env.DB.prepare("UPDATE plt_zap_contatos SET etiquetas=?, nome=COALESCE(NULLIF(?,''),nome), optout=COALESCE(?,optout) WHERE org_id=? AND telefone=?").bind(ets.join(", ") || null, k.txt(corpo.nome, 80) || "", corpo.optout === undefined ? null : corpo.optout ? 1 : 0, orgId, m[1]).run();
+    return json({ ok: true });
+  }
+  if (r === "clientes/importar" && metodo === "POST") {
+    const negado = precisa("ADMIN"); if (negado) return negado;
+    const { corpo, erro } = await ler(400000); if (erro) return erro;
+    if (corpo.consentimento !== true) return json({ erro: "Confirme que essas pessoas autorizaram receber mensagens da empresa no WhatsApp (exigência da Meta e da LGPD)." }, 400);
+    const linhas = (Array.isArray(corpo.linhas) ? corpo.linhas : []).slice(0, 5000).map(l => {
+      let t = digitos(l.telefone); if (t.length === 10 || t.length === 11) t = "55" + t;
+      return t.length >= 12 && t.length <= 15 ? [t, cortar(l.nome, 80), etiquetasDe(l.etiquetas).map(x => cortar(x, 30)).slice(0, 12).join(", ")] : null;
+    }).filter(Boolean);
+    for (let i = 0; i < linhas.length; i += 80) await env.DB.batch(linhas.slice(i, i + 80).map(([t, n, e]) => env.DB.prepare("INSERT INTO plt_zap_contatos(org_id,telefone,nome,etiquetas,ultimo_ms) VALUES(?,?,?,?,?) ON CONFLICT(org_id,telefone) DO UPDATE SET nome=COALESCE(NULLIF(excluded.nome,''),nome), etiquetas=COALESCE(NULLIF(excluded.etiquetas,''),etiquetas)").bind(orgId, t, n || null, e || null, 0)));
+    await k.auditar(env, request, k.sessao, orgId, "WHATSAPP", `Importou ${linhas.length} cliente(s) do WhatsApp`);
+    return json({ ok: true, importados: linhas.length });
+  }
+
+  // Um modelo para um cliente só (reabre a conversa quando a janela de 24h já fechou).
+  if ((m = r.match(/^clientes\/(\d{8,15})\/modelo$/)) && metodo === "POST") {
+    const negado = precisa("AGENTE"); if (negado) return negado;
+    const { corpo, erro } = await ler(); if (erro) return erro;
+    if (!/^[a-z0-9_]{1,512}$/.test(String(corpo.modelo || "")) || !/^[a-z]{2}(_[A-Z]{2})?$/.test(String(corpo.idioma || ""))) return json({ erro: "Escolha um modelo aprovado." }, 400);
+    const c = await env.DB.prepare("SELECT nome FROM plt_zap_contatos WHERE org_id=? AND telefone=?").bind(orgId, m[1]).first();
+    if (!c) return json({ erro: "Cliente não encontrado." }, 404);
+    try {
+      const { conta, token } = await comConta();
+      const params = (Array.isArray(corpo.variaveis) ? corpo.variaveis : []).slice(0, 10).map(v => ({ type: "text", text: v === "{nome}" ? (String(c.nome || "").split(" ")[0] || "cliente") : cortar(v || "-", 200) }));
+      const d = await graphZap(token, "POST", `${encodeURIComponent(conta.phone_number_id)}/messages`, { messaging_product: "whatsapp", to: m[1], type: "template", template: { name: corpo.modelo, language: { code: corpo.idioma }, ...(params.length ? { components: [{ type: "body", parameters: params }] } : {}) } });
+      await env.DB.batch([
+        env.DB.prepare("INSERT OR IGNORE INTO plt_zap_msgs(org_id,telefone,direcao,origem,texto,wamid,status,criado_ms) VALUES(?,?,'S','EQUIPE',?,?,'ENVIADA',?)").bind(orgId, m[1], `[Modelo ${corpo.modelo}]`, d?.messages?.[0]?.id || null, agora),
+        env.DB.prepare("UPDATE plt_zap_contatos SET pausado_ate=MAX(pausado_ate,?), ultimo_ms=? WHERE org_id=? AND telefone=?").bind(agora + PAUSA_HUMANO_MS, agora, orgId, m[1])
+      ]);
+      return json({ ok: true });
+    } catch (e) { return falhou(e); }
+  }
+
+  // Respostas rápidas da equipe (atalhos de texto nas conversas).
+  if (r === "respostas" && metodo === "GET") {
+    const conta = await contaDa(env, orgId);
+    return json({ respostas: lerConfig(conta).respostas_rapidas || [] });
+  }
+  if (r === "respostas" && metodo === "POST") {
+    const negado = precisa("AGENTE"); if (negado) return negado;
+    const { corpo, erro } = await ler(); if (erro) return erro;
+    const lista = (Array.isArray(corpo.respostas) ? corpo.respostas : []).slice(0, 60).map(x => ({ atalho: cortar(String(x.atalho || "").replace(/^\/+/, ""), 30), texto: cortar(x.texto, 1500) })).filter(x => x.atalho && x.texto);
+    const conta = await contaDa(env, orgId);
+    const cfg = (() => { try { return JSON.parse(conta?.config || "{}") || {}; } catch { return {}; } })();
+    cfg.respostas_rapidas = lista;
+    await env.DB.prepare(`INSERT INTO plt_zap_contas(org_id,ativo,modo,config,atualizado_ms) VALUES(?,1,'BOTOES',?,?) ON CONFLICT(org_id) DO UPDATE SET config=excluded.config, atualizado_ms=excluded.atualizado_ms`).bind(orgId, JSON.stringify(cfg), agora).run();
+    return json({ ok: true, respostas: lista });
+  }
+
+  // Campanhas: envio de um modelo aprovado para uma lista de clientes, em fila (a DENIA respeita o limite da Meta).
+  if (r === "campanhas" && metodo === "GET") {
+    const lista = await linhasDe(env, `SELECT c.*, (SELECT COUNT(*) FROM plt_zap_envios e WHERE e.campanha_id=c.id AND e.status IN ('ENTREGUE','LIDA')) entregues, (SELECT COUNT(*) FROM plt_zap_envios e WHERE e.campanha_id=c.id AND e.status='LIDA') lidas,
+      (SELECT COUNT(*) FROM plt_zap_msgs mm JOIN plt_zap_envios e ON e.telefone=mm.telefone AND e.campanha_id=c.id WHERE mm.org_id=c.org_id AND mm.direcao='E' AND mm.criado_ms>c.criado_ms AND mm.criado_ms<COALESCE(c.fim_ms, c.criado_ms)+3*86400000) respostas
+      FROM plt_zap_campanhas c WHERE c.org_id=? ORDER BY c.id DESC LIMIT 50`, orgId);
+    return json({ campanhas: lista.map(c => ({ ...c, variaveis: JSON.parse(c.variaveis || "[]") })) });
+  }
+  if (r === "campanhas" && metodo === "POST") {
+    const negado = precisa("ADMIN"); if (negado) return negado;
+    const { corpo, erro } = await ler(200000); if (erro) return erro;
+    const nome = k.txt(corpo.nome, 80), modelo = String(corpo.modelo || ""), idioma = String(corpo.idioma || "pt_BR");
+    if (!nome || !/^[a-z0-9_]{1,512}$/.test(modelo) || !/^[a-z]{2}(_[A-Z]{2})?$/.test(idioma)) return json({ erro: "Escolha o nome da campanha e um modelo aprovado." }, 400);
+    const vars = (Array.isArray(corpo.variaveis) ? corpo.variaveis : []).slice(0, 10).map(v => (v === "{nome}" ? "{nome}" : cortar(v, 200)));
+    // Quem recebe: todos, uma etiqueta, quem falou nos últimos N dias, ou uma lista escolhida. Nunca quem pediu para sair.
+    const conds = ["org_id=?", "optout=0"], args = [orgId];
+    if (corpo.publico === "etiqueta") { conds.push("(',' || REPLACE(COALESCE(etiquetas,''),', ',',') || ',') LIKE ?"); args.push(`%,${String(corpo.etiqueta || "").trim()},%`); }
+    else if (corpo.publico === "recentes") { conds.push("ultima_entrada_ms>?"); args.push(agora - Math.min(365, Math.max(1, Number(corpo.dias) || 30)) * 86400000); }
+    else if (corpo.publico === "lista") { const tels = (Array.isArray(corpo.telefones) ? corpo.telefones : []).map(digitos).filter(t => t.length >= 10).slice(0, 10000); if (!tels.length) return json({ erro: "Escolha ao menos um cliente." }, 400); conds.push(`telefone IN (${tels.map(() => "?").join(",")})`); args.push(...tels); }
+    const alvo = await linhasDe(env, `SELECT telefone, nome FROM plt_zap_contatos WHERE ${conds.join(" AND ")} LIMIT 10000`, ...args);
+    if (!alvo.length) return json({ erro: "Nenhum cliente para esse público (quem pediu para sair nunca recebe)." }, 400);
+    if (corpo.simular) return json({ total: alvo.length });
+    const agendada = Number(corpo.agendada_ms) > agora ? Number(corpo.agendada_ms) : agora;
+    const ins = await env.DB.prepare("INSERT INTO plt_zap_campanhas(org_id,nome,modelo,idioma,variaveis,status,total,agendada_ms,criado_por,criado_ms) VALUES(?,?,?,?,?,?,?,?,?,?)")
+      .bind(orgId, nome, modelo, idioma, JSON.stringify(vars), "AGENDADA", alvo.length, agendada, k.sessao?.usuario?.email || "", agora).run();
+    const cid = ins.meta.last_row_id;
+    for (let i = 0; i < alvo.length; i += 90) await env.DB.batch(alvo.slice(i, i + 90).map(a => env.DB.prepare("INSERT OR IGNORE INTO plt_zap_envios(campanha_id,org_id,telefone,nome) VALUES(?,?,?,?)").bind(cid, orgId, a.telefone, a.nome || null)));
+    await k.auditar(env, request, k.sessao, orgId, "WHATSAPP", `Criou a campanha "${nome}" (${alvo.length} clientes, modelo ${modelo})`);
+    return json({ ok: true, id: cid, total: alvo.length });
+  }
+  if ((m = r.match(/^campanhas\/(\d{1,12})\/(cancelar|pausar|retomar)$/)) && metodo === "POST") {
+    const negado = precisa("ADMIN"); if (negado) return negado;
+    const novo = { cancelar: "CANCELADA", pausar: "PAUSADA", retomar: "AGENDADA" }[m[2]];
+    await env.DB.prepare("UPDATE plt_zap_campanhas SET status=? WHERE id=? AND org_id=? AND status NOT IN ('CONCLUIDA','CANCELADA')").bind(novo, Number(m[1]), orgId).run();
+    return json({ ok: true });
+  }
+  if ((m = r.match(/^campanhas\/(\d{1,12})$/)) && metodo === "GET") {
+    const envios = await linhasDe(env, "SELECT telefone, nome, status, erro, ms FROM plt_zap_envios WHERE campanha_id=? AND org_id=? ORDER BY ms DESC LIMIT 1000", Number(m[1]), orgId);
+    return json({ envios });
+  }
+  return null;
+}
+
+// Cron: envia as campanhas em fila, devagar (até 120 por empresa a cada 5 minutos), registrando cada envio.
+export async function processarCampanhas(env, k) {
+  const agora = k.agora(env);
+  const camps = await linhasDe(env, "SELECT c.*, z.phone_number_id, z.token_cifrado FROM plt_zap_campanhas c JOIN plt_zap_contas z ON z.org_id=c.org_id WHERE c.status IN ('AGENDADA','ENVIANDO') AND c.agendada_ms<=? ORDER BY c.id LIMIT 5", agora);
+  for (const c of camps) {
+    if (!c.token_cifrado || !c.phone_number_id) { await env.DB.prepare("UPDATE plt_zap_campanhas SET status='PAUSADA' WHERE id=?").bind(c.id).run(); continue; }
+    const token = await k.decifrar(env, c.token_cifrado);
+    const vars = JSON.parse(c.variaveis || "[]");
+    const fila = await linhasDe(env, "SELECT telefone, nome FROM plt_zap_envios WHERE campanha_id=? AND status='PENDENTE' LIMIT 120", c.id);
+    if (!fila.length) { await env.DB.prepare("UPDATE plt_zap_campanhas SET status='CONCLUIDA', fim_ms=? WHERE id=?").bind(agora, c.id).run(); continue; }
+    await env.DB.prepare("UPDATE plt_zap_campanhas SET status='ENVIANDO' WHERE id=?").bind(c.id).run();
+    let ok = 0, falha = 0, seguidas = 0;
+    for (const p of fila) {
+      const params = vars.map(v => ({ type: "text", text: v === "{nome}" ? (String(p.nome || "").split(" ")[0] || "cliente") : String(v || "-") }));
+      const corpo = { messaging_product: "whatsapp", to: p.telefone, type: "template", template: { name: c.modelo, language: { code: c.idioma }, ...(params.length ? { components: [{ type: "body", parameters: params }] } : {}) } };
+      let wamid = null, erro = null;
+      try {
+        const r = await fetch(`${GRAPH}/${encodeURIComponent(c.phone_number_id)}/messages`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify(corpo), signal: AbortSignal.timeout(15000) });
+        const d = await r.json().catch(() => ({}));
+        if (r.ok) wamid = d?.messages?.[0]?.id || null; else erro = cortar(`${d?.error?.code || r.status}: ${d?.error?.error_data?.details || d?.error?.message || "erro"}`, 300);
+      } catch (e) { erro = cortar(e?.message || "falha de rede", 300); }
+      const ms = k.agora(env);
+      await env.DB.batch([
+        env.DB.prepare("UPDATE plt_zap_envios SET status=?, wamid=?, erro=?, ms=? WHERE campanha_id=? AND telefone=?").bind(wamid ? "ENVIADA" : "FALHOU", wamid, erro, ms, c.id, p.telefone),
+        env.DB.prepare("INSERT OR IGNORE INTO plt_zap_msgs(org_id,telefone,direcao,origem,texto,wamid,status,erro,criado_ms) VALUES(?,?,'S','CAMPANHA',?,?,?,?,?)").bind(c.org_id, p.telefone, `[Campanha "${c.nome}" — modelo ${c.modelo}]`, wamid, wamid ? "ENVIADA" : "FALHOU", erro, ms)
+      ]);
+      if (wamid) { ok++; seguidas = 0; } else { falha++; seguidas++; }
+      // Token inválido, número bloqueado ou modelo pausado: para a campanha em vez de insistir.
+      if (seguidas >= 15 || /^(190|132001|132015|132016|131031|368):/.test(erro || "")) { await env.DB.prepare("UPDATE plt_zap_campanhas SET status='PAUSADA' WHERE id=?").bind(c.id).run(); break; }
+    }
+    await env.DB.prepare("UPDATE plt_zap_campanhas SET enviados=enviados+?, falhas=falhas+? WHERE id=?").bind(ok, falha, c.id).run();
+  }
 }

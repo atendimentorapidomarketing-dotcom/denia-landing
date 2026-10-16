@@ -28,7 +28,7 @@ async function criarPlataforma(extra = {}) {
       const r = p.meta(String(url), op.method || "GET", corpo);
       return new Response(JSON.stringify(r), { status: r && r.error ? 400 : 200, headers: { "content-type": "application/json" } });
     }
-    if (p && p.google && /^https:\/\/(oauth2|mybusiness[a-z]*|businessprofileperformance)\.googleapis\.com\//.test(String(url))) {
+    if (p && p.google && /^https:\/\/(oauth2|mybusiness[a-z]*|businessprofileperformance|www|searchconsole|googleads|places)\.googleapis\.com\//.test(String(url))) {
       const corpo = op.body ? (typeof op.body === "string" ? JSON.parse(op.body) : Object.fromEntries(new URLSearchParams(String(op.body)))) : null;
       (p.googleChamadas ||= []).push({ url: String(url), metodo: op.method || "GET", corpo });
       const r = p.google(String(url), op.method || "GET", corpo);
@@ -1895,3 +1895,222 @@ test("WhatsApp — conectar pelo Facebook com coexistência: número continua no
   await webhookZap(p, "555666777888", { from: CLI, type: "text", text: { body: "obrigado" } });
   assert.equal(enviadosPara(p, CLI).length, 1, "robô em pausa enquanto a equipe atende pelo celular");
 });
+
+// Conecta o Google de uma marca (login do Google simulado), com as permissões pedidas.
+async function conectarGoogleTeste(p, escopos, extra = "") {
+  const marca = (await p.req("/api/orgs/1/mk/marcas", { metodo: "POST", quem: "admin", corpo: { nome: "Oficina" } })).dados.id;
+  const ida = await p.req(`/api/orgs/1/mk/google/conectar?marca=${marca}${extra ? "&extra=" + extra : ""}`, { quem: "admin" });
+  const dialogo = new URL(ida.r.headers.get("location"));
+  const base = p.google;
+  p.google = (url, metodo, corpo) => {
+    if (url.startsWith("https://oauth2.googleapis.com/token")) return corpo.grant_type === "authorization_code" ? { access_token: "ya29.a", refresh_token: "1//perm", expires_in: 3599, scope: escopos } : { access_token: "ya29.b", expires_in: 3599 };
+    if (url.includes("/v1/accounts?")) return { accounts: [{ name: "accounts/111" }] };
+    if (url.includes("/accounts/111/locations?")) return { locations: [{ name: "locations/222", title: "Oficina Niterói" }] };
+    if (/reviews\?|fetchMultiDailyMetrics|searchkeywords/.test(url)) return {};
+    return base ? base(url, metodo, corpo) : { error: { code: 404, message: "inesperado " + url } };
+  };
+  const volta = await p.req(`/api/google/retorno?code=abc&state=${encodeURIComponent(dialogo.searchParams.get("state"))}`);
+  const nonce = (await volta.r.text()).match(/google-([A-Za-z0-9_-]+)/)[1];
+  await p.req("/api/orgs/1/mk/google/escolher", { metodo: "POST", quem: "admin", corpo: { n: nonce, local_id: "locations/222" } });
+  return { marca, dialogo };
+}
+
+test("Google — Search Console: escolher o site, números por busca e página, oportunidades, inspecionar e sitemap", async () => {
+  const p = await criarPlataforma({ GOOGLE_CLIENT_ID: "c.apps.googleusercontent.com", GOOGLE_CLIENT_SECRET: "s" });
+  p.env.__agora = () => Date.parse("2026-10-16T12:00:00Z");
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  // Conexão antiga (só o perfil): pede para reconectar, sem quebrar.
+  const antiga = await conectarGoogleTeste(p, "https://www.googleapis.com/auth/business.manage");
+  assert.equal(antiga.dialogo.searchParams.get("scope"), "https://www.googleapis.com/auth/business.manage", "a conexão normal pede só o perfil");
+  assert.equal(antiga.dialogo.searchParams.get("include_granted_scopes"), "true");
+  assert.equal((await p.req(`/api/orgs/1/mk/google/sc/sites?marca=${antiga.marca}`, { quem: "admin" })).dados.precisa_reconectar, true);
+  const consultas = [];
+  p.google = (url, metodo, corpo) => {
+    if (url.endsWith("/webmasters/v3/sites")) return { siteEntry: [{ siteUrl: "https://oficina.test/", permissionLevel: "siteOwner" }, { siteUrl: "https://outro.test/", permissionLevel: "siteUnverifiedUser" }] };
+    if (url.includes("/searchAnalytics/query")) {
+      consultas.push(corpo);
+      const dim = corpo.dimensions[0];
+      if (dim === "date") return { rows: [{ keys: [corpo.startDate], clicks: 10, impressions: 200, ctr: 0.05, position: 8 }, { keys: [corpo.endDate], clicks: 30, impressions: 800, ctr: 0.0375, position: 6 }] };
+      if (dim === "query") return { rows: [{ keys: ["conserto de macbook"], clicks: 5, impressions: 900, ctr: 0.0055, position: 6.2 }, { keys: ["oficina niteroi"], clicks: 40, impressions: 100, ctr: 0.4, position: 1.1 }] };
+      if (dim === "page") return { rows: [{ keys: ["https://oficina.test/servicos"], clicks: 20, impressions: 500, ctr: 0.04, position: 7 }] };
+      return { rows: [] };
+    }
+    if (url.includes("/sitemaps") && metodo === "GET") return { sitemap: [{ path: "https://oficina.test/sitemap.xml", lastDownloaded: "2026-10-10T00:00:00Z", errors: "0", warnings: "1", contents: [{ submitted: "42" }] }] };
+    if (url.includes("/sitemaps/") && metodo === "PUT") return {};
+    if (url.includes("urlInspection/index:inspect")) return { inspectionResult: { indexStatusResult: { verdict: "PASS", coverageState: "Enviada e indexada", lastCrawlTime: "2026-10-12T10:00:00Z", googleCanonical: "https://oficina.test/servicos" }, inspectionResultLink: "https://search.google.com/x" } };
+    return { error: { code: 404, message: "inesperado " + url } };
+  };
+  const { marca, dialogo } = await conectarGoogleTeste(p, "https://www.googleapis.com/auth/business.manage https://www.googleapis.com/auth/webmasters", "sc");
+  assert.match(dialogo.searchParams.get("scope"), /webmasters/);
+  const sites = (await p.req(`/api/orgs/1/mk/google/sc/sites?marca=${marca}`, { quem: "admin" })).dados;
+  assert.deepEqual(sites.sites.map(s => s.site), ["https://oficina.test/"], "site não verificado fica de fora");
+  assert.equal((await p.req("/api/orgs/1/mk/google/sc/site", { metodo: "POST", quem: "admin", corpo: { marca_id: marca, site: "https://oficina.test/" } })).status, 200);
+  const sc = (await p.req(`/api/orgs/1/mk/google/sc?marca=${marca}&dias=28`, { quem: "admin" })).dados;
+  assert.equal(sc.totais.cliques, 40); assert.equal(sc.totais.impressoes, 1000); assert.equal(sc.totais.posicao, 6.4);
+  assert.equal(sc.ate, "2026-10-13", "Search Console com 3 dias de atraso"); assert.equal(sc.de, "2026-09-16");
+  assert.ok(sc.comparacao, "compara com o período anterior");
+  assert.equal(sc.oportunidades[0].palavra, "conserto de macbook", "aparece muito, poucos cliques: oportunidade");
+  assert.ok(!sc.oportunidades.some(o => o.palavra === "oficina niteroi"), "já em 1º com bom CTR não é oportunidade");
+  assert.equal(sc.sitemaps[0].urls, 42);
+  const insp = (await p.req("/api/orgs/1/mk/google/sc/inspecionar", { metodo: "POST", quem: "admin", corpo: { marca_id: marca, url: "https://oficina.test/servicos" } })).dados;
+  assert.equal(insp.veredito, "PASS");
+  assert.equal((await p.req("/api/orgs/1/mk/google/sc/sitemap", { metodo: "POST", quem: "admin", corpo: { marca_id: marca, url: "https://oficina.test/sitemap.xml" } })).status, 200);
+  assert.ok(p.googleChamadas.some(c => c.metodo === "PUT" && c.url.includes(encodeURIComponent("https://oficina.test/sitemap.xml"))));
+});
+
+test("Google Ads — contas (com MCC), gasto e campanhas, pausar, orçamento e palavra negativa; sem token da DENIA explica como ligar", async () => {
+  const sem = await criarPlataforma({ GOOGLE_CLIENT_ID: "c.apps.googleusercontent.com", GOOGLE_CLIENT_SECRET: "s" });
+  await sem.entrar("admin", ADMIN, SENHA_ADMIN);
+  const m0 = await conectarGoogleTeste(sem, "https://www.googleapis.com/auth/business.manage", "ads");
+  assert.ok(!m0.dialogo.searchParams.get("scope").includes("adwords"), "sem token de desenvolvedor não pede o Google Ads");
+  assert.equal((await sem.req(`/api/orgs/1/mk/google/ads/contas?marca=${m0.marca}`, { quem: "admin" })).dados.configurado, false);
+
+  const p = await criarPlataforma({ GOOGLE_CLIENT_ID: "c.apps.googleusercontent.com", GOOGLE_CLIENT_SECRET: "s", GOOGLE_ADS_DEVELOPER_TOKEN: "dev-token" });
+  p.env.__agora = () => Date.parse("2026-10-16T12:00:00Z");
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  const mut = [];
+  p.google = (url, metodo, corpo) => {
+    if (url.endsWith("customers:listAccessibleCustomers")) return { resourceNames: ["customers/9990001111"] };
+    if (url.includes(":mutate")) { mut.push({ url, corpo }); return { results: [{}] }; }
+    if (url.includes("googleAds:search")) {
+      const q = corpo.query;
+      if (/FROM customer_client/.test(q)) return { results: [{ customerClient: { id: "1234567890", descriptiveName: "Oficina Ads", currencyCode: "BRL", manager: false } }] };
+      if (/FROM customer LIMIT 1/.test(q) && url.includes("9990001111")) return { results: [{ customer: { id: "9990001111", descriptiveName: "Agência MCC", manager: true } }] };
+      if (/optimization_score/.test(q)) return { results: [{ customer: { descriptiveName: "Oficina Ads", currencyCode: "BRL", optimizationScore: 0.785 } }] };
+      if (/segments.date, metrics.cost_micros/.test(q)) return { results: [{ segments: { date: "2026-10-15" }, metrics: { costMicros: "50000000", clicks: "25", impressions: "1000", conversions: 2 } }, { segments: { date: "2026-10-14" }, metrics: { costMicros: "30000000", clicks: "15", impressions: "600", conversions: 1 } }] };
+      if (/FROM campaign WHERE/.test(q)) return { results: [{ campaign: { id: "77", name: "Pesquisa", status: "ENABLED", advertisingChannelType: "SEARCH" }, campaignBudget: { resourceName: "customers/1234567890/campaignBudgets/55", amountMicros: "40000000" }, metrics: { costMicros: "80000000", clicks: "40", impressions: "1600", conversions: 3, searchImpressionShare: 0.35 } }] };
+      if (/FROM search_term_view/.test(q)) return { results: [{ searchTermView: { searchTerm: "conserto gratis", status: "NONE" }, campaign: { id: "77", name: "Pesquisa" }, metrics: { costMicros: "20000000", clicks: "8", impressions: "100", conversions: 0 } }] };
+      if (/DURING TODAY/.test(q)) return { results: [{ metrics: { costMicros: "12340000", clicks: "6" } }] };
+      return { results: [] };
+    }
+    return { error: { code: 404, message: "inesperado " + url } };
+  };
+  const { marca, dialogo } = await conectarGoogleTeste(p, "https://www.googleapis.com/auth/business.manage https://www.googleapis.com/auth/webmasters https://www.googleapis.com/auth/adwords", "sc-ads");
+  assert.match(dialogo.searchParams.get("scope"), /adwords/);
+  const contas = (await p.req(`/api/orgs/1/mk/google/ads/contas?marca=${marca}`, { quem: "admin" })).dados;
+  assert.deepEqual(contas.contas.filter(c => !c.gerente).map(c => [c.id, c.via]), [["1234567890", "9990001111"]], "conta de anúncios debaixo da MCC");
+  await p.req("/api/orgs/1/mk/google/ads/conta", { metodo: "POST", quem: "admin", corpo: { marca_id: marca, cliente: "123-456-7890", gerente: "9990001111", nome: "Oficina Ads", moeda: "BRL" } });
+  const d = (await p.req(`/api/orgs/1/mk/google/ads?marca=${marca}&dias=30`, { quem: "admin" })).dados;
+  assert.equal(d.totais.custo, 80); assert.equal(d.totais.cliques, 40); assert.equal(d.totais.cpc, 2); assert.equal(d.hoje.custo, 12.34);
+  assert.equal(d.pontuacao, 78.5); assert.equal(d.campanhas[0].orcamento_dia, 40); assert.equal(d.campanhas[0].parcela_impressoes, 35);
+  assert.equal(d.ate, "2026-10-16", "Ads mostra até hoje");
+  const ads = p.googleChamadas.filter(c => c.url.includes("googleads.googleapis.com/v25/customers/1234567890"));
+  assert.ok(ads.length > 3, "usa a versão atual da API e a conta escolhida");
+  await p.req("/api/orgs/1/mk/google/ads/campanha", { metodo: "POST", quem: "admin", corpo: { marca_id: marca, campanha_id: "77", status: "PAUSED" } });
+  await p.req("/api/orgs/1/mk/google/ads/orcamento", { metodo: "POST", quem: "admin", corpo: { marca_id: marca, orcamento: "customers/1234567890/campaignBudgets/55", valor: 55.5 } });
+  await p.req("/api/orgs/1/mk/google/ads/negativa", { metodo: "POST", quem: "admin", corpo: { marca_id: marca, campanha_id: "77", termo: "conserto gratis" } });
+  assert.deepEqual(mut[0].corpo.operations[0], { update: { resourceName: "customers/1234567890/campaigns/77", status: "PAUSED" }, updateMask: "status" });
+  assert.equal(mut[1].corpo.operations[0].update.amountMicros, "55500000");
+  assert.equal(mut[2].corpo.operations[0].create.negative, true);
+  assert.equal((await p.req("/api/orgs/1/mk/google/ads/orcamento", { metodo: "POST", quem: "admin", corpo: { marca_id: marca, orcamento: "customers/999/campaignBudgets/55", valor: 10 } })).status, 400, "orçamento de outra conta é recusado");
+});
+
+test("Google — concorrentes no Maps: posição do perfil, notas dos outros e histórico", async () => {
+  const p = await criarPlataforma({ GOOGLE_CLIENT_ID: "c.apps.googleusercontent.com", GOOGLE_CLIENT_SECRET: "s", GOOGLE_PLACES_API_KEY: "chave-places" });
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  p.google = (url, metodo, corpo) => url.includes("places:searchText") ? { places: [
+    { id: "a", displayName: { text: "Auto Center Icaraí" }, rating: 4.8, userRatingCount: 900 },
+    { id: "b", displayName: { text: "Oficina Niterói" }, rating: 4.9, userRatingCount: 120 },
+    { id: "c", displayName: { text: "Mecânica Boa" }, rating: 4.2, userRatingCount: 300 }] } : { error: { code: 404, message: "x" } };
+  const { marca } = await conectarGoogleTeste(p, "https://www.googleapis.com/auth/business.manage");
+  const r = (await p.req("/api/orgs/1/mk/google/concorrentes", { metodo: "POST", quem: "admin", corpo: { marca_id: marca, busca: "oficina em niterói" } })).dados;
+  assert.equal(r.posicao, 2); assert.equal(r.media_nota, 4.5); assert.equal(r.media_avaliacoes, 600);
+  assert.ok(r.lugares.find(l => l.voce).nome === "Oficina Niterói");
+  const ch = p.googleChamadas.find(c => c.url.includes("places:searchText"));
+  assert.equal(ch.corpo.textQuery, "oficina em niterói");
+  const hist = (await p.req(`/api/orgs/1/mk/google/concorrentes?marca=${marca}`, { quem: "admin" })).dados;
+  assert.equal(hist.historico[0].posicao, 2); assert.equal(hist.ultimo.lugares.length, 3);
+});
+
+test("WhatsApp — perfil comercial, saúde, modelos, clientes com etiqueta, campanha em fila e quem pede SAIR não recebe", async () => {
+  const p = await criarPlataforma();
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  const org = (await p.req("/api/admin/organizacoes", { metodo: "POST", quem: "admin", corpo: { nome: "Loja Campanhas" } })).dados.id;
+  const PN = "777000111222";
+  const enviados = [];
+  p.meta = (url, metodo, corpo) => {
+    if (url.includes(`/${PN}?fields=display_phone_number,verified_name,quality_rating`) && !url.includes("messaging_limit")) return { display_phone_number: "+55 21 98888-0000", verified_name: "Loja" };
+    if (url.includes(`/${PN}?fields=`)) return { display_phone_number: "+55 21 98888-0000", verified_name: "Loja", quality_rating: "GREEN", messaging_limit_tier: "TIER_1K", status: "CONNECTED" };
+    if (url.includes("/whatsapp_business_profile")) return metodo === "GET" ? { data: [{ about: "Oi", websites: ["https://loja.test"] }] } : { success: true };
+    if (url.includes("/message_templates") && metodo === "GET") return { data: [{ name: "promo", status: "APPROVED", category: "MARKETING", language: "pt_BR", components: [{ type: "BODY", text: "Olá {{1}}, 20% off!" }] }] };
+    if (url.includes("/message_templates") && metodo === "POST") return { id: "t1", status: "PENDING" };
+    if (url.includes("/WABA1?")) return { business_verification_status: "verified" };
+    if (url.endsWith(`/${PN}/messages`)) { enviados.push(JSON.parse(p.ultimoCorpo || "{}")); return { messages: [{ id: "wamid.c" + enviados.length }] }; }
+    return {};
+  };
+  // O mock da Meta lê o corpo como formulário; os envios do WhatsApp são JSON: guarda o original.
+  const f0 = globalThis.fetch;
+  globalThis.fetch = (url, op = {}) => { if (String(url).startsWith("https://graph.facebook.com/")) p.ultimoCorpo = op.body; return f0(url, op); };
+  try {
+    const con = await p.req(`/api/orgs/${org}/zap/conta`, { metodo: "POST", quem: "admin", corpo: { phone_number_id: PN, waba_id: "WABA1".replace(/\D/g, "") || "", token: "EAAT" + "z".repeat(60) } });
+    assert.equal(con.status, 200, JSON.stringify(con.dados));
+    p.env.DB.prepare("UPDATE plt_zap_contas SET waba_id='WABA1' WHERE org_id=?").bind(org).run();
+    assert.equal((await p.req(`/api/orgs/${org}/zap/perfil`, { quem: "admin" })).dados.perfil.about, "Oi");
+    assert.equal((await p.req(`/api/orgs/${org}/zap/perfil`, { metodo: "POST", quem: "admin", corpo: { about: "Conserto em 1 hora", websites: ["https://loja.test", "javascript:alert(1)"] } })).status, 200);
+    const s = (await p.req(`/api/orgs/${org}/zap/saude`, { quem: "admin" })).dados;
+    assert.equal(s.qualidade_nome, "Alta"); assert.equal(s.limite, 1000);
+    const mods = (await p.req(`/api/orgs/${org}/zap/modelos`, { quem: "admin" })).dados.modelos;
+    assert.equal(mods[0].variaveis, 1);
+    const novo = await p.req(`/api/orgs/${org}/zap/modelos`, { metodo: "POST", quem: "admin", corpo: { nome: "Promoção de Outubro!", categoria: "MARKETING", corpo: "Olá {{1}}! Temos novidade.", exemplos: ["Maria"] } });
+    assert.equal(novo.dados.nome, "promocao_de_outubro");
+    assert.equal((await p.req(`/api/orgs/${org}/zap/modelos`, { metodo: "POST", quem: "admin", corpo: { nome: "x", corpo: "Oi {{1}}" } })).status, 400, "sem exemplo da variável a Meta recusa");
+    // Clientes: importados com consentimento, com etiqueta.
+    assert.equal((await p.req(`/api/orgs/${org}/zap/clientes/importar`, { metodo: "POST", quem: "admin", corpo: { linhas: [{ telefone: "21911110000" }] } })).status, 400, "precisa confirmar o consentimento");
+    const imp = await p.req(`/api/orgs/${org}/zap/clientes/importar`, { metodo: "POST", quem: "admin", corpo: { consentimento: true, linhas: [{ telefone: "21911110000", nome: "Maria Souza", etiquetas: "fiel" }, { telefone: "21922220000", nome: "João", etiquetas: "fiel" }, { telefone: "21933330000", nome: "Ana" }, { telefone: "123" }] } });
+    assert.equal(imp.dados.importados, 3);
+    const cl = (await p.req(`/api/orgs/${org}/zap/clientes?etiqueta=fiel`, { quem: "admin" })).dados;
+    assert.equal(cl.clientes.length, 2); assert.deepEqual(cl.etiquetas, [{ nome: "fiel", n: 2 }]);
+    // João pede para sair.
+    await p.req("/api/orgs/" + org + "/zap/modelo", { metodo: "POST", quem: "admin", corpo: { tipo: "servicos" } });
+    await webhookZap(p, PN, { from: "5521922220000", type: "text", text: { body: "SAIR" } });
+    assert.equal(p.env.DB.q("SELECT optout FROM plt_zap_contatos WHERE org_id=? AND telefone='5521922220000'", org)[0].optout, 1);
+    // Campanha para a etiqueta "fiel": só a Maria recebe.
+    const sim = await p.req(`/api/orgs/${org}/zap/campanhas`, { metodo: "POST", quem: "admin", corpo: { nome: "Promo", modelo: "promo", idioma: "pt_BR", publico: "etiqueta", etiqueta: "fiel", variaveis: ["{nome}"], simular: true } });
+    assert.equal(sim.dados.total, 1);
+    const c = await p.req(`/api/orgs/${org}/zap/campanhas`, { metodo: "POST", quem: "admin", corpo: { nome: "Promo", modelo: "promo", idioma: "pt_BR", publico: "etiqueta", etiqueta: "fiel", variaveis: ["{nome}"] } });
+    assert.equal(c.dados.total, 1);
+    enviados.length = 0;
+    const mod = await import("../src/worker.js");
+    { let tarefa; await mod.default.scheduled({}, p.env, { waitUntil: pr => { tarefa = pr; } }); await tarefa; }
+    const tpl = enviados.filter(e => e.type === "template");
+    assert.equal(tpl.length, 1); assert.equal(tpl[0].to, "5521911110000");
+    assert.deepEqual(tpl[0].template.components[0].parameters, [{ type: "text", text: "Maria" }], "{nome} vira o primeiro nome");
+    const camp = (await p.req(`/api/orgs/${org}/zap/campanhas`, { quem: "admin" })).dados.campanhas[0];
+    assert.equal(camp.enviados, 1);
+    { let tarefa; await mod.default.scheduled({}, p.env, { waitUntil: pr => { tarefa = pr; } }); await tarefa; }
+    assert.equal((await p.req(`/api/orgs/${org}/zap/campanhas`, { quem: "admin" })).dados.campanhas[0].status, "CONCLUIDA");
+    // Respostas rápidas.
+    await p.req(`/api/orgs/${org}/zap/respostas`, { metodo: "POST", quem: "admin", corpo: { respostas: [{ atalho: "/horario", texto: "9h às 18h" }, { atalho: "", texto: "x" }] } });
+    assert.deepEqual((await p.req(`/api/orgs/${org}/zap/respostas`, { quem: "admin" })).dados.respostas, [{ atalho: "horario", texto: "9h às 18h" }]);
+  } finally { globalThis.fetch = f0; }
+});
+
+test("Temporada — importar todos os anúncios da conta (Channex): só os do grupo da empresa, com reservas futuras", async () => {
+  const p = await criarPlataforma({ CHANNEX_API_KEY: "cx_teste", CHANNEX_STAGING: "1" });
+  p.env.__agora = () => Date.parse("2026-10-16T12:00:00Z");
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  p.channex = (caminho, metodo) => {
+    if (caminho === "/groups") return { data: { id: "grp-1" } };
+    if (caminho === "/auth/one_time_token") return { data: { token: "tokG" } };
+    if (caminho.startsWith("/properties?filter[group_id]=grp-1")) return { data: [{ id: "p-a", attributes: { title: "Loft Ipanema", city: "Rio de Janeiro", currency: "BRL" } }, { id: "p-b", attributes: { title: "Casa Búzios", currency: "BRL" } }] };
+    if (caminho.startsWith("/room_types?")) return { data: [{ id: "r-1", attributes: { occ_adults: 4 } }] };
+    if (caminho.startsWith("/bookings?filter[property_id]=p-a")) return { data: [{ id: "bk-1", attributes: { ota_name: "Airbnb", status: "new", arrival_date: "2026-11-01", departure_date: "2026-11-05", amount: "2000.00", currency: "BRL", customer: { name: "John" } } }] };
+    if (caminho.startsWith("/bookings?")) return { data: [] };
+    return { data: {} };
+  };
+  const vazio = await p.req("/api/orgs/1/tp/channex/importar", { metodo: "POST", quem: "admin", corpo: {} });
+  assert.equal(vazio.dados.sem_grupo, true, "antes de entrar nas plataformas não há o que importar");
+  const conta = await p.req("/api/orgs/1/tp/channex/conta", { metodo: "POST", quem: "admin", corpo: {} });
+  assert.match(conta.dados.url, /oauth_session_key=tokG.*group_id=grp-1/);
+  const r = (await p.req("/api/orgs/1/tp/channex/importar", { metodo: "POST", quem: "admin", corpo: {} })).dados;
+  assert.equal(r.total, 2); assert.equal(r.imoveis_novos, 2); assert.equal(r.reservas, 1);
+  const ims = (await p.req("/api/orgs/1/tp/imoveis", { quem: "admin" })).dados.imoveis;
+  assert.deepEqual(ims.map(i => i.nome).sort(), ["Casa Búzios", "Loft Ipanema"]);
+  assert.ok(ims.every(i => i.conectado_channex && i.ical_url));
+  assert.equal(p.env.DB.q("SELECT hospede, canal FROM plt_tp_reservas")[0].canal, "airbnb");
+  const de2 = (await p.req("/api/orgs/1/tp/channex/importar", { metodo: "POST", quem: "admin", corpo: {} })).dados;
+  assert.equal(de2.imoveis_novos, 0, "importar de novo não duplica");
+  assert.equal(p.env.DB.q("SELECT COUNT(*) n FROM plt_tp_reservas")[0].n, 1);
+  assert.ok(p.channexChamadas.filter(c => c.caminho === "/webhooks").length === 2, "cada anúncio importado já avisa reservas e mensagens");
+});
+
