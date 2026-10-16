@@ -25,6 +25,8 @@ export const DDL_ZAP = [
   `CREATE TABLE IF NOT EXISTS plt_zap_campanhas (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, nome TEXT NOT NULL, modelo TEXT NOT NULL, idioma TEXT NOT NULL, variaveis TEXT, status TEXT NOT NULL, total INTEGER NOT NULL DEFAULT 0, enviados INTEGER NOT NULL DEFAULT 0, falhas INTEGER NOT NULL DEFAULT 0, agendada_ms INTEGER, criado_por TEXT, criado_ms INTEGER NOT NULL, fim_ms INTEGER)`,
   `CREATE TABLE IF NOT EXISTS plt_zap_envios (campanha_id INTEGER NOT NULL, org_id INTEGER NOT NULL, telefone TEXT NOT NULL, nome TEXT, status TEXT NOT NULL DEFAULT 'PENDENTE', wamid TEXT, erro TEXT, ms INTEGER, PRIMARY KEY (campanha_id, telefone))`,
   `CREATE INDEX IF NOT EXISTS plt_zap_envios_fila ON plt_zap_envios(status, campanha_id)`,
+  // Imagens do fluxo usam a mesma tabela de mídias do Marketing (endereço público assinado /m/…).
+  `CREATE TABLE IF NOT EXISTS plt_mk_midias (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, mime TEXT NOT NULL, dados TEXT NOT NULL, prompt TEXT, criado_ms INTEGER NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS plt_zap_tg (chat_id TEXT NOT NULL, message_id INTEGER NOT NULL, org_id INTEGER NOT NULL, telefone TEXT NOT NULL, criado_ms INTEGER NOT NULL, PRIMARY KEY (chat_id, message_id))`
 ];
 
@@ -43,7 +45,11 @@ export const ZAP_PADRAO = {
   nome_atendente: "", ia_tom: "", ia_servicos: "", ia_precos: "", ia_regras: "", ia_exemplos: "",
   modelo_conversa: "gpt-5-mini",
   limite_ia_dia: 300,
-  avisar_buscas: true
+  avisar_buscas: true,
+  // Aviso de novo cliente no Telegram (quando ele chega numa loja/resposta do fluxo).
+  lead_titulo: "🔔 NOVO CLIENTE!",
+  lead_tags: "",
+  imagem_inicio: ""
 };
 const TIPOS = ["MENU", "RESPOSTA", "LISTA", "HUMANO"];
 const PAUSA_HUMANO_MS = 12 * 3600000;
@@ -80,7 +86,7 @@ async function gravarMsg(z, direcao, origem, texto, wamid, status, erro) {
     .bind(z.org, z.tel, direcao, origem, cortar(texto, 4000), wamid || null, status || null, erro || null, z.agora).run();
 }
 async function enviar(z, corpo, textoLog, origem = "ROBO") {
-  if (z.sim) { z.registro.push({ texto: textoLog, interativo: corpo.type === "interactive" ? corpo.interactive : null }); return true; }
+  if (z.sim) { z.registro.push({ texto: textoLog, interativo: corpo.type === "interactive" ? corpo.interactive : null, ...(corpo.type === "image" ? { imagem: corpo.image.link } : {}) }); return true; }
   if (z.enviadas >= 6) return false; // nunca mais que 6 mensagens por mensagem recebida
   z.enviadas++;
   const token = await tokenDa(z);
@@ -98,14 +104,36 @@ async function enviar(z, corpo, textoLog, origem = "ROBO") {
   return Boolean(id);
 }
 const enviarTexto = (z, texto, origem) => enviar(z, { type: "text", text: { body: cortar(texto, 4000), preview_url: false } }, texto, origem);
-function botoes(z, corpo, lista, origem) {
-  return enviar(z, { type: "interactive", interactive: { type: "button", body: { text: cortar(corpo, 1024) }, action: { buttons: lista.slice(0, 3).map(b => ({ type: "reply", reply: { id: b.id, title: cortar(b.titulo, 20) } })) } } },
+function botoes(z, corpo, lista, origem, imagem) {
+  return enviar(z, { type: "interactive", interactive: { type: "button", ...(imagem ? { header: { type: "image", image: { link: imagem } } } : {}), body: { text: cortar(corpo, 1024) }, action: { buttons: lista.slice(0, 3).map(b => ({ type: "reply", reply: { id: b.id, title: cortar(b.titulo, 20) } })) } } },
     `${corpo} ${lista.map(b => `[${b.titulo}]`).join(" ")}`, origem);
 }
 function lista(z, corpo, secao, linhas, origem) {
   return enviar(z, { type: "interactive", interactive: { type: "list", body: { text: cortar(corpo, 1024) }, action: { button: "Ver opções", sections: [{ title: cortar(secao, 24), rows: linhas.slice(0, 10).map(l => ({ id: l.id, title: cortar(l.titulo, 24), ...(l.descricao ? { description: cortar(l.descricao, 72) } : {}) })) }] } } },
     `${corpo} [lista: ${linhas.map(l => l.titulo).join(", ")}]`, origem);
 }
+
+// Imagens do fluxo: guardadas na DENIA e servidas por um endereço público assinado (o WhatsApp busca por ele).
+async function urlImagem(z, id) {
+  id = Number(id);
+  if (!id) return "";
+  const sig = (await z.k.hmac(await z.k.segredo(z.env), "midia-publica:" + id)).slice(0, 32);
+  const base = z.sim ? "" : String(z.env.SITE_URL || z.k.base || "").replace(/\/+$/, "");
+  return `${base}/m/${id}-${sig}.jpg`;
+}
+const enviarImagem = (z, url, legenda, origem) => enviar(z, { type: "image", image: { link: url, ...(legenda ? { caption: cortar(legenda, 1024) } : {}) } }, `[imagem] ${legenda || ""}`.trim(), origem);
+// Cartão: imagem (opcional) + texto + botão de link (abre site, Instagram, mapa, WhatsApp da loja…).
+async function enviarCartao(z, c, origem) {
+  const img = c.imagem_id ? await urlImagem(z, c.imagem_id) : "";
+  const texto = [c.titulo ? `*${c.titulo}*` : "", c.texto || ""].filter(Boolean).join("\n") || (img ? "" : "…");
+  if (c.link_url && c.link_texto) {
+    return enviar(z, { type: "interactive", interactive: { type: "cta_url", ...(img ? { header: { type: "image", image: { link: img } } } : {}), body: { text: cortar(texto || c.link_texto, 1024) },
+      action: { name: "cta_url", parameters: { display_text: cortar(c.link_texto, 20), url: c.link_url } } } }, `${texto} [${c.link_texto}: ${c.link_url}]`, origem);
+  }
+  if (img) return enviarImagem(z, img, texto, origem);
+  return enviarTexto(z, texto, origem);
+}
+function extraDe(i) { if (i && typeof i.extra === "object" && i.extra) return i.extra; try { return JSON.parse(i?.extra || "{}") || {}; } catch { return {}; } }
 
 // Telegram: o bot da própria DENIA (conectado com um toque, pelo link) ou um bot próprio da empresa.
 export function tokenTelegramPlataforma(env) { return String(env.TELEGRAM_BOT_TOKEN_PLATAFORMA || env.TELEGRAM_BOT_TOKEN || "").trim(); }
@@ -120,11 +148,11 @@ async function tgApi(token, metodo, corpo) {
     return await r.json().catch(() => ({ ok: r.ok }));
   } catch { return { ok: false }; }
 }
-async function telegram(z, texto, telCliente) {
+async function telegram(z, texto, telCliente, semDica = false) {
   if (z.sim) return false;
   const d = await destinoTelegram(z.env, z.k, z.conta);
   if (!d) return false;
-  const r = await tgApi(d.token, "sendMessage", { chat_id: d.chat, text: cortar(texto, 3500) + (telCliente ? "\n\n↩️ Responda esta mensagem aqui no Telegram e a resposta vai para o cliente no WhatsApp." : ""), disable_web_page_preview: true });
+  const r = await tgApi(d.token, "sendMessage", { chat_id: d.chat, text: cortar(texto, 3500) + (telCliente && !semDica ? "\n\n↩️ Responda esta mensagem aqui no Telegram e a resposta vai para o cliente no WhatsApp." : ""), disable_web_page_preview: true });
   const id = r?.result?.message_id;
   // Guarda de qual cliente é o aviso, para a equipe responder pelo próprio Telegram.
   if (id && telCliente) await z.env.DB.prepare("INSERT OR REPLACE INTO plt_zap_tg(chat_id,message_id,org_id,telefone,criado_ms) VALUES(?,?,?,?,?)").bind(String(d.chat), id, z.org, telCliente, z.agora).run().catch(() => {});
@@ -189,7 +217,10 @@ async function mostrarMenu(z, menuId = 0, pagina = 0, prefixo = "") {
     if (!menuId) return enviarTexto(z, corpo + (z.cfg.sobre ? "" : "\n\n(Em breve teremos mais opções por aqui.)"));
     return mostrarMenu(z, 0, 0, "Essa opção ainda não tem nada cadastrado.");
   }
-  if (itens.length <= 3 && pagina === 0) return botoes(z, corpo, itens.map(i => ({ id: "z:i:" + i.id, titulo: i.titulo })));
+  const imgId = pagina === 0 ? (pai ? extraDe(pai).imagem_id : Number(z.cfg.imagem_inicio) || 0) : 0;
+  const img = imgId ? await urlImagem(z, imgId) : "";
+  if (itens.length <= 3 && pagina === 0) return botoes(z, corpo, itens.map(i => ({ id: "z:i:" + i.id, titulo: i.titulo })), undefined, img);
+  if (img) await enviarImagem(z, img, "");
   const porPagina = 9, ini = pagina * porPagina, parte = itens.slice(ini, ini + porPagina);
   const linhas = parte.map(i => ({ id: "z:i:" + i.id, titulo: i.titulo, descricao: descricaoDe(i, z.cfg, m) }));
   if (ini + porPagina < itens.length) linhas.push({ id: `z:pg:${menuId}:${pagina + 1}`, titulo: "➡️ Mais opções", descricao: "Ver as próximas" });
@@ -208,8 +239,24 @@ async function registrarBusca(z, item, via, resultados, caminho) {
     z.env.DB.prepare("SELECT 1 x FROM plt_zap_buscas WHERE org_id=? AND telefone=? AND item_id=? AND criado_ms>? LIMIT 1").bind(z.org, z.tel, item.id, umaHora),
     z.env.DB.prepare("INSERT INTO plt_zap_buscas(org_id,telefone,nome,item_id,tipo,titulo,caminho,texto,via,resultados,criado_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?)").bind(z.org, z.tel, z.nome || "", item.id, item.tipo, item.titulo, caminho, cortar(z.texto, 300), via, resultados, z.agora)
   ]);
-  if (z.cfg.avisar_buscas && !(repetida?.results || []).length)
-    await telegram(z, `🔎 ${z.nomeEmpresa} — nova busca no WhatsApp\nCliente: ${z.nome || "sem nome"} (${z.tel})\nBuscou: ${caminho}${via !== "BOTAO" && z.texto ? ` (escreveu: "${cortar(z.texto, 120)}")` : ""}${z.resultados ? `\nIndicados: ${z.resultados}` : ""}`, z.tel);
+  if (z.cfg.avisar_buscas && item.tipo !== "HUMANO" && extraDe(item).lead !== false && !(repetida?.results || []).length)
+    await telegram(z, textoLead(z, caminho, via), z.tel, true);
+}
+const semAcento = t => String(t || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+export function tagsLead(cfg, nomeEmpresa) {
+  const proprias = String(cfg.lead_tags || "").trim();
+  if (proprias) return proprias.split(/[\s,]+/).filter(Boolean).map(t => "#" + semAcento(t.replace(/^#+/, "")).replace(/[^A-Za-z0-9_]/g, "")).filter(t => t.length > 1).join(" ");
+  const nome = semAcento(nomeEmpresa).toLowerCase().replace(/\b(shopping|loja|lojas|centro|ltda|me|eireli|s\.?a\.?)\b/g, "").replace(/[^a-z0-9]/g, "");
+  return [nome ? "#" + nome.slice(0, 30) : "", "#leads"].filter(Boolean).join(" ");
+}
+export function textoLead(z, caminho, via) {
+  const quando = new Date(z.agora).toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo", day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
+  const pedido = String(caminho || "").split(" › ").join(" > ");
+  return [z.cfg.lead_titulo || ZAP_PADRAO.lead_titulo, "",
+    `👤 Nome: ${z.nome || "sem nome"}`, `📱 WhatsApp: ${z.tel}`, `💬 Pedido: ${pedido}`,
+    ...(via !== "BOTAO" && z.texto ? [`✍️ Escreveu: "${cortar(z.texto, 160)}"`] : []),
+    ...(z.resultados ? [`🏪 Indicados: ${cortar(z.resultados, 400)}`] : []),
+    `🕒 Horário: ${quando}`, "", tagsLead(z.cfg, z.nomeEmpresa)].join("\n").trim();
 }
 async function abrirItem(z, item, via) {
   const m = await carregarMenu(z);
@@ -217,16 +264,30 @@ async function abrirItem(z, item, via) {
   const origem = via === "IA" ? "IA" : "ROBO";
   if (item.tipo === "MENU") return mostrarMenu(z, item.id);
   if (item.tipo === "HUMANO") { await transferir(z, item.texto); return registrarBusca(z, item, via, 0, caminho); }
+  const ex = extraDe(item);
   if (item.tipo === "RESPOSTA") {
-    await enviarTexto(z, item.texto || item.titulo, origem);
+    const temRico = ex.imagem_id || (ex.link_url && ex.link_texto);
+    if (temRico) await enviarCartao(z, { imagem_id: ex.imagem_id, texto: item.texto || item.titulo, link_texto: ex.link_texto, link_url: ex.link_url }, origem);
+    else await enviarTexto(z, item.texto || item.titulo, origem);
+    // Carrossel: até 4 cartões (imagem + texto + botão), um embaixo do outro.
+    for (const c of (Array.isArray(ex.cartoes) ? ex.cartoes : []).slice(0, 4)) await enviarCartao(z, c, origem);
     await rodape(z, item);
     return registrarBusca(z, item, via, 0, caminho);
   }
   // LISTA: os contatos do catálogo ligados a esta opção.
   const r = (await z.env.DB.prepare("SELECT c.* FROM plt_zap_catalogo c JOIN plt_zap_cat_itens ci ON ci.catalogo_id=c.id WHERE ci.item_id=? AND c.org_id=? AND c.ativo=1 ORDER BY c.destaque DESC, c.nome LIMIT 25").bind(item.id, z.org).all())?.results || [];
-  const linhas = r.map(cartaoContato);
-  const texto = r.length ? `*${item.titulo}*${item.texto ? "\n" + item.texto : ""}\n\n${linhas.join("\n\n")}${z.cfg.rodape_lista ? "\n\n" + z.cfg.rodape_lista : ""}` : `No momento não tenho ${z.cfg.rotulo_catalogo} cadastrados para *${item.titulo}*.`;
-  await enviarTexto(z, texto, origem);
+  if (ex.estilo === "CARTOES" && r.length && r.length <= 4) {
+    // Um cartão por loja, com o botão "Chamar no WhatsApp".
+    await enviarTexto(z, `*${item.titulo}*${item.texto ? "\n" + item.texto : ""}`, origem);
+    for (const c of r) {
+      const zap = linkZap(c.whatsapp || c.telefone);
+      await enviarCartao(z, { titulo: c.nome, texto: [c.local, c.descricao ? cortar(c.descricao, 200) : ""].filter(Boolean).join("\n") || " ", ...(zap ? { link_texto: "💬 Chamar no WhatsApp", link_url: "https://" + zap } : {}) }, origem);
+    }
+  } else {
+    const linhas = r.map(cartaoContato);
+    const texto = r.length ? `*${item.titulo}*${item.texto ? "\n" + item.texto : ""}\n\n${linhas.join("\n\n")}${z.cfg.rodape_lista ? "\n\n" + z.cfg.rodape_lista : ""}` : `No momento não tenho ${z.cfg.rotulo_catalogo} cadastrados para *${item.titulo}*.`;
+    await enviarTexto(z, texto, origem);
+  }
   await rodape(z, item);
   z.resultados = r.map(c => c.nome).join(", ");
   return registrarBusca(z, item, via, r.length, caminho);
@@ -407,6 +468,8 @@ export async function webhookZap(request, env, k, ctx) {
   let d;
   try { d = JSON.parse(bruto); } catch { return new Response("JSON inválido.", { status: 400 }); }
   const assinatura = String(request.headers.get("x-hub-signature-256") || "").replace(/^sha256=/, "");
+  // Endereço público desta plataforma (a Meta chamou aqui): usado nos links das imagens do fluxo.
+  if (!k.base) k = { ...k, base: url.origin };
   const tarefa = processarWebhook(env, k, d, bruto, assinatura).catch(e => console.error("webhook whatsapp", e?.stack || e?.message));
   if (ctx && ctx.waitUntil) ctx.waitUntil(tarefa); else await tarefa;
   return new Response("ok", { status: 200 });
@@ -533,6 +596,41 @@ function publicaConta(c, extra) {
   };
 }
 async function linhasDe(env, sql, ...args) { return (await env.DB.prepare(sql).bind(...args).all())?.results || []; }
+
+const URL_OK = u => /^https:\/\/[^\s<>"']{4,600}$/i.test(String(u || "").trim());
+async function midiaDaEmpresa(env, orgId, id) {
+  id = Number(id) || 0;
+  if (!id) return 0;
+  const x = await env.DB.prepare("SELECT id FROM plt_mk_midias WHERE id=? AND org_id=?").bind(id, orgId).first().catch(() => null);
+  return x ? id : 0;
+}
+async function limparExtra(env, orgId, e) {
+  e = e && typeof e === "object" ? e : {};
+  const out = {};
+  const img = await midiaDaEmpresa(env, orgId, e.imagem_id);
+  if (img) out.imagem_id = img;
+  const lt = cortar(e.link_texto, 20), lu = String(e.link_url || "").trim();
+  if (lt || lu) {
+    if (!lt || !URL_OK(lu)) return { erro: "O botão de link precisa de um nome (até 20 letras) e de um endereço que comece com https://" };
+    out.link_texto = lt; out.link_url = lu;
+  }
+  const cartoes = [];
+  for (const c of (Array.isArray(e.cartoes) ? e.cartoes : []).slice(0, 4)) {
+    const x = { titulo: cortar(c?.titulo, 60), texto: cortar(c?.texto, 600) };
+    const ci = await midiaDaEmpresa(env, orgId, c?.imagem_id);
+    if (ci) x.imagem_id = ci;
+    const clt = cortar(c?.link_texto, 20), clu = String(c?.link_url || "").trim();
+    if (clt || clu) {
+      if (!clt || !URL_OK(clu)) return { erro: `O botão do cartão "${x.titulo || cartoes.length + 1}" precisa de nome e de um endereço https://` };
+      x.link_texto = clt; x.link_url = clu;
+    }
+    if (x.titulo || x.texto || x.imagem_id) cartoes.push(x);
+  }
+  if (cartoes.length) out.cartoes = cartoes;
+  if (e.estilo === "CARTOES") out.estilo = "CARTOES";
+  if (e.lead === false) out.lead = false;
+  return { extra: out };
+}
 
 export async function rotasZap(request, env, k, orgId, papel, resto) {
   if (!resto.startsWith("zap/") && resto !== "zap") return null;
@@ -669,6 +767,10 @@ export async function rotasZap(request, env, k, orgId, papel, resto) {
     }
     if (!["gpt-5-nano", "gpt-5-mini", "gpt-4o-mini", "gpt-4.1-mini"].includes(cfg.modelo_ia)) cfg.modelo_ia = "gpt-5-nano";
     if (cfg.exibicao_inicio !== "NUMERADO") cfg.exibicao_inicio = "AUTO";
+    if (corpo.imagem_inicio !== undefined) cfg.imagem_inicio = String(corpo.imagem_inicio ?? "");
+    cfg.imagem_inicio = String(await midiaDaEmpresa(env, orgId, cfg.imagem_inicio) || "");
+    cfg.lead_titulo = cortar(cfg.lead_titulo, 80) || ZAP_PADRAO.lead_titulo;
+    cfg.lead_tags = cortar(cfg.lead_tags, 120);
     const modo = ["BOTOES", "MISTO", "IA"].includes(corpo.modo) ? corpo.modo : c?.modo || "BOTOES";
     if (modo !== "BOTOES" && k.acesso && modoPermitido(modo, k.acesso.recursos) !== modo) return json({ erro: modo === "IA" ? "A IA completa faz parte do plano Start ou superior. Atualize em Plano e pagamento." : "A IA no chatbot faz parte de um plano superior. Atualize em Plano e pagamento.", codigo: "PLANO_RECURSO" }, 402);
     if (!["gpt-5-mini", "gpt-5-nano", "gpt-4o-mini", "gpt-4.1-mini", "gpt-4.1"].includes(cfg.modelo_conversa)) cfg.modelo_conversa = "gpt-5-mini";
@@ -685,7 +787,17 @@ export async function rotasZap(request, env, k, orgId, papel, resto) {
     ]);
     const porCat = new Map();
     for (const x of lig?.results || []) { if (!porCat.has(x.catalogo_id)) porCat.set(x.catalogo_id, []); porCat.get(x.catalogo_id).push(x.item_id); }
-    return json({ itens: itens?.results || [], catalogo: (catalogo?.results || []).map(c => ({ ...c, itens: porCat.get(c.id) || [] })) });
+    // Endereço das imagens (só para a prévia no painel).
+    const kz = { env, k };
+    const lista = await Promise.all((itens?.results || []).map(async i => {
+      const ex = extraDe(i);
+      const urls = {};
+      for (const id of [ex.imagem_id, ...(Array.isArray(ex.cartoes) ? ex.cartoes.map(c => c.imagem_id) : [])].filter(Boolean)) urls[id] = await urlImagem({ ...kz, sim: true }, id);
+      return { ...i, extra: ex, imagens: urls };
+    }));
+    const cfgItens = lerConfig(await contaDa(env, orgId));
+    return json({ itens: lista, catalogo: (catalogo?.results || []).map(c => ({ ...c, itens: porCat.get(c.id) || [] })),
+      inicio: { imagem_id: Number(cfgItens.imagem_inicio) || 0, imagem: Number(cfgItens.imagem_inicio) ? await urlImagem({ ...kz, sim: true }, cfgItens.imagem_inicio) : "" } });
   }
   if (r === "itens" && metodo === "POST") {
     const negado = precisa("AGENTE"); if (negado) return negado;
@@ -696,11 +808,35 @@ export async function rotasZap(request, env, k, orgId, papel, resto) {
     const pai = Number(corpo.pai_id) || 0;
     if (pai) { const p = await env.DB.prepare("SELECT tipo FROM plt_zap_itens WHERE id=? AND org_id=?").bind(pai, orgId).first(); if (!p || p.tipo !== "MENU") return json({ erro: "A opção só pode ficar dentro de um submenu." }, 400); }
     if (Number(corpo.id) && pai === Number(corpo.id)) return json({ erro: "Uma opção não pode ficar dentro dela mesma." }, 400);
+    let extra = null;
+    if (corpo.extra !== undefined) {
+      const { extra: limpo, erro: errExtra } = await limparExtra(env, orgId, corpo.extra);
+      if (errExtra) return json({ erro: errExtra }, 400);
+      extra = JSON.stringify(limpo);
+    }
     const campos = [pai, tipo, titulo, k.txt(corpo.descricao, 72), k.txt(corpo.texto, 3000), k.txt(corpo.palavras, 500), Number(corpo.ordem) || 0, corpo.ativo === false ? 0 : 1, corpo.exibicao === "NUMERADO" ? "NUMERADO" : "AUTO"];
     let id = Number(corpo.id) || 0;
-    if (id) { const x = await env.DB.prepare("UPDATE plt_zap_itens SET pai_id=?, tipo=?, titulo=?, descricao=?, texto=?, palavras=?, ordem=?, ativo=?, exibicao=? WHERE id=? AND org_id=?").bind(...campos, id, orgId).run(); if (!x.meta.changes) return json({ erro: "Opção não encontrada." }, 404); }
-    else id = (await env.DB.prepare("INSERT INTO plt_zap_itens(pai_id,tipo,titulo,descricao,texto,palavras,ordem,ativo,exibicao,org_id) VALUES(?,?,?,?,?,?,?,?,?,?) RETURNING id").bind(...campos, orgId).first())?.id;
+    if (id) { const x = await env.DB.prepare("UPDATE plt_zap_itens SET pai_id=?, tipo=?, titulo=?, descricao=?, texto=?, palavras=?, ordem=?, ativo=?, exibicao=?, extra=COALESCE(?, extra) WHERE id=? AND org_id=?").bind(...campos, extra, id, orgId).run(); if (!x.meta.changes) return json({ erro: "Opção não encontrada." }, 404); }
+    else id = (await env.DB.prepare("INSERT INTO plt_zap_itens(pai_id,tipo,titulo,descricao,texto,palavras,ordem,ativo,exibicao,extra,org_id) VALUES(?,?,?,?,?,?,?,?,?,?,?) RETURNING id").bind(...campos, extra, orgId).first())?.id;
     return json({ ok: true, id });
+  }
+  // Reordenar os botões de um bloco (a ordem em que o cliente vê).
+  if (r === "itens/ordem" && metodo === "POST") {
+    const negado = precisa("AGENTE"); if (negado) return negado;
+    const { corpo, erro } = await ler(); if (erro) return erro;
+    const ids = (Array.isArray(corpo.ids) ? corpo.ids : []).map(Number).filter(Boolean).slice(0, 200);
+    if (ids.length) await env.DB.batch(ids.map((id, n) => env.DB.prepare("UPDATE plt_zap_itens SET ordem=? WHERE id=? AND org_id=?").bind(n + 1, id, orgId)));
+    return json({ ok: true });
+  }
+  // Imagem do fluxo (foto do produto, banner, mapa…): já chega reduzida pelo navegador.
+  if (r === "midia" && metodo === "POST") {
+    const negado = precisa("AGENTE"); if (negado) return negado;
+    const { corpo, erro } = await ler(1600000); if (erro) return erro;
+    const m2 = String(corpo.dados || "").match(/^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/);
+    if (!m2) return json({ erro: "Envie uma foto (JPG, PNG ou WEBP)." }, 400);
+    if (m2[2].length > 1500000) return json({ erro: "A foto é grande demais. Use uma de até 1 MB." }, 413);
+    const n = await env.DB.prepare("INSERT INTO plt_mk_midias(org_id,mime,dados,prompt,criado_ms) VALUES(?,?,?,?,?) RETURNING id").bind(orgId, m2[1], m2[2], "chatbot", agora).first();
+    return json({ ok: true, id: n.id, url: await urlImagem({ env, k, sim: true }, n.id) });
   }
   if ((m = r.match(/^itens\/(\d{1,12})\/excluir$/)) && metodo === "POST") {
     const negado = precisa("AGENTE"); if (negado) return negado;

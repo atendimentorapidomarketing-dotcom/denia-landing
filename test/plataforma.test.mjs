@@ -1678,6 +1678,82 @@ test("Chatbot — cliente manda várias mensagens seguidas: uma resposta só (me
   assert.match(entradas.at(-1), /MENSAGEM NOVA DO CLIENTE: "obrigado"/);
 });
 
+test("Fluxo de botões (como no Botpress) — submenus, lojas em cartões, imagem, link, carrossel e aviso de NOVO CLIENTE no Telegram", async () => {
+  const { p, inf } = await duasEmpresasComChatbot();
+  const z = (c, op) => p.req(`/api/orgs/${inf}/zap/${c}`, { quem: "admin", ...(op || {}) });
+  const post = (c, corpo) => z(c, { metodo: "POST", corpo });
+  await z("conta/telegram", { metodo: "POST", corpo: { telegram_token: "123456:" + "A".repeat(30), telegram_chat: "-100123456" } });
+  const foto = "data:image/jpeg;base64," + Buffer.from("JPEGDATA-foto").toString("base64");
+  const midia = await post("midia", { dados: foto });
+  assert.equal(midia.status, 200, JSON.stringify(midia.dados));
+  assert.match(midia.dados.url, /^\/m\/\d+-[A-Za-z0-9_-]{32}\.jpg$/);
+  assert.equal((await post("midia", { dados: "data:text/html;base64,AAAA" })).status, 400);
+  await post("config", { boas_vindas: "Olá! Bem-vindo ao Shopping Infomix 😊", imagem_inicio: midia.dados.id });
+  const servicos = (await post("itens", { tipo: "MENU", titulo: "🔧 Serviços", texto: "Você selecionou serviços. Qual aparelho?", pai_id: 0 })).dados.id;
+  const produtos = (await post("itens", { tipo: "MENU", titulo: "🛍️ Produtos", texto: "O que você procura?", pai_id: 0 })).dados.id;
+  const info = (await post("itens", { tipo: "RESPOSTA", titulo: "ℹ️ Informações", texto: "Aberto de seg a sáb, 10h às 22h.", pai_id: 0,
+    extra: { imagem_id: midia.dados.id, link_texto: "📍 Como chegar", link_url: "https://maps.google.com/?q=infomix",
+      cartoes: [{ titulo: "Promoção de capinhas", texto: "Leve 2, pague 1", imagem_id: midia.dados.id, link_texto: "Ver no Instagram", link_url: "https://instagram.com/infomix" }] } })).dados.id;
+  assert.equal((await post("itens", { tipo: "RESPOSTA", titulo: "Ruim", pai_id: 0, extra: { link_texto: "Site", link_url: "javascript:alert(1)" } })).status, 400, "link precisa ser https");
+  const celular = (await post("itens", { tipo: "MENU", titulo: "📱 Celular", texto: "Qual conserto?", pai_id: servicos })).dados.id;
+  const tela = (await post("itens", { tipo: "LISTA", titulo: "Troca de tela", texto: "Lojas que trocam a tela:", pai_id: celular, extra: { estilo: "CARTOES" } })).dados.id;
+  const info2 = (await post("itens", { tipo: "LISTA", titulo: "💻 Informática", pai_id: produtos })).dados.id;
+  await post("catalogo", { nome: "Cell Center", whatsapp: "21988887777", local: "Loja 12", itens: [tela, info2] });
+  await post("catalogo", { nome: "Tech Fix", whatsapp: "21977776666", local: "Sala 3", descricao: "Troca de tela na hora", itens: [tela] });
+  const ord = await post("itens/ordem", { ids: [produtos, servicos, info] });
+  assert.equal(ord.status, 200);
+  const lista = (await z("itens")).dados;
+  assert.equal(lista.itens.find(i => i.id === info).extra.cartoes.length, 1);
+  assert.match(lista.itens.find(i => i.id === info).imagens[midia.dados.id], /^\/m\//, "a prévia recebe o endereço da imagem");
+  assert.equal(lista.inicio.imagem_id, midia.dados.id);
+
+  const CLI = "5521979862792";
+  await webhookZap(p, "111111111111", { from: CLI, type: "text", text: { body: "oi" } });
+  let e = enviadosPara(p, CLI).at(-1);
+  assert.equal(e.corpo.interactive.type, "button");
+  assert.equal(e.corpo.interactive.header.type, "image", "menu inicial com a imagem no topo");
+  assert.deepEqual(e.corpo.interactive.action.buttons.map(b => b.reply.title), ["🛍️ Produtos", "🔧 Serviços", "ℹ️ Informações"], "ordem escolhida no construtor");
+  await clicar(p, "111111111111", CLI, "z:i:" + servicos);
+  await clicar(p, "111111111111", CLI, "z:i:" + celular);
+  const antes = enviadosPara(p, CLI).length;
+  await clicar(p, "111111111111", CLI, "z:i:" + tela);
+  const novas = enviadosPara(p, CLI).slice(antes);
+  assert.equal(novas[0].corpo.text.body, "*Troca de tela*\nLojas que trocam a tela:");
+  const cartoes = novas.filter(x => x.corpo.interactive?.type === "cta_url");
+  assert.equal(cartoes.length, 2, "uma loja por cartão");
+  assert.equal(cartoes[0].corpo.interactive.action.parameters.url, "https://wa.me/5521988887777");
+  assert.match(cartoes[1].corpo.interactive.body.text, /\*Tech Fix\*\nSala 3\nTroca de tela na hora/);
+  const lead = p.engine.telegram.at(-1);
+  assert.match(lead, /^🔔 NOVO CLIENTE!\n\n👤 Nome: Marcos\n📱 WhatsApp: 5521979862792\n💬 Pedido: 🔧 Serviços > 📱 Celular > Troca de tela\n/);
+  assert.match(lead, /🕒 Horário: \d{2}\/\d{2}\/\d{4}, \d{2}:\d{2}\n\n#infomix #leads$/);
+  assert.doesNotMatch(lead, /Responda esta mensagem/);
+  // Resposta com imagem + botão de link + carrossel.
+  const n0 = enviadosPara(p, CLI).length;
+  await clicar(p, "111111111111", CLI, "z:i:" + info);
+  const r = enviadosPara(p, CLI).slice(n0);
+  assert.equal(r[0].corpo.interactive.type, "cta_url");
+  assert.equal(r[0].corpo.interactive.header.type, "image");
+  assert.match(r[0].corpo.interactive.header.image.link, /^https?:\/\/[^/]+\/m\/\d+-/, "imagem com endereço completo para o WhatsApp buscar");
+  assert.equal(r[0].corpo.interactive.action.parameters.display_text, "📍 Como chegar");
+  assert.match(r[1].corpo.interactive.body.text, /\*Promoção de capinhas\*\nLeve 2, pague 1/);
+  assert.equal(r.at(-1).corpo.interactive.type, "button", "depois vem Menu inicial / Voltar / Finalizar");
+  // Etiquetas próprias e aviso desligado por opção.
+  await post("config", { lead_titulo: "🔔 Cliente novo", lead_tags: "infomix, vendas" });
+  await post("itens", { id: info2, tipo: "LISTA", titulo: "💻 Informática", pai_id: produtos, extra: { lead: false } });
+  const tg = p.engine.telegram.length;
+  await clicar(p, "111111111111", CLI, "z:i:" + info2);
+  assert.equal(p.engine.telegram.length, tg, "opção com aviso desligado não manda para o Telegram");
+  await clicar(p, "111111111111", CLI, "z:i:" + tela);
+  assert.equal(p.engine.telegram.length, tg, "o mesmo pedido em menos de 1 hora não repete o aviso");
+  const CLI2 = "5521911112222";
+  await clicar(p, "111111111111", CLI2, "z:i:" + tela);
+  assert.match(p.engine.telegram.at(-1), /^🔔 Cliente novo\n[\s\S]*#infomix #vendas$/);
+  // Imagem de outra empresa não pode ser usada.
+  const outra = await p.req(`/api/orgs/1/zap/midia`, { metodo: "POST", quem: "admin", corpo: { dados: foto } });
+  await post("itens", { id: info, tipo: "RESPOSTA", titulo: "ℹ️ Informações", texto: "x", pai_id: 0, extra: { imagem_id: outra.dados.id } });
+  assert.equal((await z("itens")).dados.itens.find(i => i.id === info).extra.imagem_id, undefined);
+});
+
 test("IA completa — qualquer empresa: conversa como gente, lembra do cliente, não mistura empresas e chama a equipe", async () => {
   const { p, inf } = await duasEmpresasComChatbot();
   await p.req("/api/orgs/1/ia/chave", { metodo: "POST", quem: "admin", corpo: { chave: "sk-proj-" + "d".repeat(40) } });
