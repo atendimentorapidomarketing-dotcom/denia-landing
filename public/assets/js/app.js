@@ -2086,8 +2086,16 @@
     }
     let bot;
     try { bot = JSON.parse(texto); } catch { throw new Error("O arquivo do Botpress está corrompido."); }
+    // O bot e o grupo do aviso "NOVO CLIENTE" ficam só aqui no navegador, para ligar os avisos se a pessoa quiser.
+    let telegram = null;
+    for (const f of bot.flows || []) for (const n of f.nodes || []) for (const i of n.instructions || []) {
+      const c = String((i && i.type === "action" && i.code) || "");
+      if (telegram || !/NOVO CLIENTE/.test(c)) continue;
+      const token = (c.match(/["'`](\d{5,15}:[A-Za-z0-9_-]{20,60})["'`]/) || [])[1], chat = (c.match(/CHAT[A-Z_]*\s*=\s*["'`](-?\d{3,20}|@[A-Za-z0-9_]{4,40})["'`]/) || [])[1];
+      if (token && chat) telegram = { token, chat };
+    }
     const limpar = i => i && i.type === "action" ? { type: "action", hashtags: ((String(i.code || "").match(/\n(#[\wÀ-ÿ]+(?:[ \t]+#[\wÀ-ÿ]+)*)\s*`/) || [])[1] || ""), titulo: /NOVO CLIENTE/.test(String(i.code || "")) ? "🔔 NOVO CLIENTE!" : "" } : i;
-    return { flows: (bot.flows || []).map(f => ({ name: f.name, startNode: f.startNode, nodes: (f.nodes || []).map(n => ({ id: n.id, name: n.name, type: n.type, defaultTransition: n.defaultTransition, instructions: (n.instructions || []).map(limpar) })) })) };
+    return { bot: { flows: (bot.flows || []).map(f => ({ name: f.name, startNode: f.startNode, nodes: (f.nodes || []).map(n => ({ id: n.id, name: n.name, type: n.type, defaultTransition: n.defaultTransition, instructions: (n.instructions || []).map(limpar) })) })) }, telegram };
   }
   // ----- Construtor do fluxo (estilo Botpress, mais simples): cada bloco é um cartão com a mensagem e
   // os botões. Tocar num botão abre o próximo cartão ao lado. À direita, a prévia como no WhatsApp.
@@ -2466,7 +2474,12 @@
         try {
           const r = await zap("roteiro", { metodo: "POST", corpo: { roteiro: caixa.value, substituir: substituir.checked, previa } });
           if (previa) { resultado.append(h("p", { class: "fx-ok", text: `✓ Tudo certo: ${r.botoes} botões e ${r.lojas} indicações de lojas. Marque “Substituir o fluxo atual” e toque em Aplicar.` })); return; }
-          aviso(`Fluxo montado: ${r.botoes} botões${r.lojas_novas ? `, ${r.lojas_novas} lojas novas` : ""}.`, "ok");
+          let tgMsg = "";
+          if (tgBotpress && ligarTg.checked) {
+            try { const t = await zap("conta/telegram", { metodo: "POST", corpo: { telegram_token: tgBotpress.token, telegram_chat: tgBotpress.chat } }); tgMsg = t.aviso ? " " + t.aviso : " Avisos do Telegram ligados (mandamos uma mensagem de teste no grupo)."; }
+            catch (e2) { tgMsg = " Não consegui ligar o Telegram: " + e2.message; }
+          }
+          aviso(`Fluxo montado: ${r.botoes} botões${r.lojas_novas ? `, ${r.lojas_novas} lojas novas` : ""}.${tgMsg}`, tgMsg.startsWith(" Não") ? "erro" : "ok");
           fechar(); caminho = []; foco = 0; sessao.gravar(chaveCaminho, caminho);
           [d, cfgR] = await Promise.all([zap("itens"), zap("config")]); cfg = cfgR.config || cfg; desenhar(true);
         } catch (e) {
@@ -2474,17 +2487,23 @@
           resultado.append(h("p", { class: "fx-erro", text: e.message }), erros.length ? h("ul", { class: "fx-erros" }, erros.map(x => h("li", { text: x }))) : null);
         }
       };
+      let tgBotpress = null;
+      const ligarTg = h("input", { type: "checkbox" });
+      const caixaTg = h("label", { class: "guia-cat oculto" }, ligarTg, "📲 Mandar os avisos de NOVO CLIENTE para o mesmo grupo do Telegram que o Botpress usava (mesmo bot)");
       // Importar do Botpress: lê o .bpz aqui no navegador e manda só o fluxo (sem o código das ações, que tem tokens).
       const arquivoBp = h("input", { type: "file", accept: ".bpz,.zip,.json,application/zip,application/json", class: "oculto" });
       arquivoBp.addEventListener("change", async () => {
         const f = arquivoBp.files[0]; if (!f) return;
         resultado.replaceChildren(h("p", { class: "fx-nota", text: "Lendo o arquivo do Botpress…" }));
         try {
-          const bot = await lerArquivoBotpress(f);
+          const { bot, telegram } = await lerArquivoBotpress(f);
           const r = await zap("botpress", { metodo: "POST", corpo: { bot } });
           caixa.value = r.roteiro;
           substituir.checked = true;
-          resultado.replaceChildren(h("p", { class: "fx-ok", text: "✓ Fluxo do Botpress convertido, na mesma ordem e com os mesmos textos. Confira abaixo e toque em Aplicar roteiro." }));
+          tgBotpress = telegram;
+          ligarTg.checked = Boolean(telegram);
+          caixaTg.classList.toggle("oculto", !telegram);
+          resultado.replaceChildren(h("p", { class: "fx-ok", text: "✓ Fluxo do Botpress convertido, na mesma ordem e com os mesmos textos." + (telegram ? " Os avisos vão para o mesmo grupo do Telegram." : "") + " Toque em Aplicar roteiro." }));
         } catch (e) { resultado.replaceChildren(h("p", { class: "fx-erro", text: e.message })); }
         arquivoBp.value = "";
       });
@@ -2511,6 +2530,7 @@ Botão com botões dentro = abre outro menu.
 Botão só com texto = resposta.` })),
         caixa,
         h("label", { class: "guia-cat" }, substituir, "Substituir o fluxo atual (os botões de agora são trocados; as lojas ficam guardadas)"),
+        caixaTg,
         resultado,
         podeEditar ? h("div", { class: "acoes" }, botao("Conferir", () => enviar(true), "btn-secundario"), botao("Aplicar roteiro", async () => {
           if (substituir.checked && !(await modal({ titulo: "Trocar o fluxo?", conteudo: "Os botões de agora serão trocados pelos do roteiro. Dica: antes, copie o roteiro atual para guardar.", confirmar: "Trocar" }))) return;
