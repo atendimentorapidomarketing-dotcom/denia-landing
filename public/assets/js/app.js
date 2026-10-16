@@ -2507,7 +2507,9 @@
         } catch (e) { resultado.replaceChildren(h("p", { class: "fx-erro", text: e.message })); }
         arquivoBp.value = "";
       });
-      const fechar = gaveta("Roteiro do fluxo (texto)", [
+      const nomeEmpresa = (estado.org && estado.org.nome) || "esta empresa";
+      const fechar = gaveta("Roteiro do fluxo — " + nomeEmpresa, [
+        h("p", { class: "fx-empresa" }, "🏢 O fluxo será gravado na empresa ", h("strong", { text: nomeEmpresa }), ". Para outra empresa, feche e troque no quadro EMPRESA (canto superior esquerdo)."),
         podeEditar ? h("div", { class: "fx-botpress" }, h("div", {}, h("strong", { text: "Vem do Botpress?" }), h("p", { class: "fx-nota", text: "No Botpress: Bot → Exportar (arquivo .bpz). Escolha o arquivo aqui e a DENIA monta o mesmo fluxo." })),
           botao("📥 Importar do Botpress", () => arquivoBp.click(), "btn-primario btn-pequeno"), arquivoBp) : null,
         h("p", { class: "sub", text: "O fluxo inteiro em texto, como num documento. Copie para guardar, ou cole um roteiro para montar todos os botões de uma vez." }),
@@ -2533,7 +2535,7 @@ Botão só com texto = resposta.` })),
         caixaTg,
         resultado,
         podeEditar ? h("div", { class: "acoes" }, botao("Conferir", () => enviar(true), "btn-secundario"), botao("Aplicar roteiro", async () => {
-          if (substituir.checked && !(await modal({ titulo: "Trocar o fluxo?", conteudo: "Os botões de agora serão trocados pelos do roteiro. Dica: antes, copie o roteiro atual para guardar.", confirmar: "Trocar" }))) return;
+          if (!(await modal({ titulo: `Gravar o fluxo em “${nomeEmpresa}”?`, conteudo: `O fluxo vai para a empresa ${nomeEmpresa}${substituir.checked ? " e os botões que ela tem agora serão trocados" : ""}${tgBotpress && ligarTg.checked ? ". Os avisos de NOVO CLIENTE desta empresa passam a ir para o grupo do Telegram do Botpress" : ""}. É esta a empresa certa?`, confirmar: "Sim, gravar aqui" }))) return;
           return enviar(false);
         }, "btn-primario"), botao("Copiar", () => copiar(caixa.value), "btn-secundario")) : botao("Copiar", () => copiar(caixa.value), "btn-secundario")]);
     };
@@ -2548,7 +2550,7 @@ Botão só com texto = resposta.` })),
           botao("📋 Colar roteiro", roteiro, "btn-secundario btn-pequeno"),
           botao("✨ Criar com a IA", () => criarComIA(false), "btn-secundario btn-pequeno"))) : null,
       h("section", { class: "cartao vidro fx-quadro" },
-        h("div", { class: "fx-barra" }, h("div", {}, h("h3", { style: "margin:0", text: "Fluxo do WhatsApp" }), h("p", { class: "sub", style: "margin:2px 0 0", text: "Toque num botão para abrir o próximo cartão. Tudo salva sozinho." })),
+        h("div", { class: "fx-barra" }, h("div", {}, h("h3", { style: "margin:0" }, "Fluxo do WhatsApp · ", h("span", { class: "fx-empresa-nome", text: (estado.org && estado.org.nome) || "" })), h("p", { class: "sub", style: "margin:2px 0 0", text: "Toque num botão para abrir o próximo cartão. Tudo salva sozinho." })),
           h("div", { class: "acoes" }, statusSalvo, verPrevia, botao("📋 Roteiro", roteiro, "btn-secundario btn-pequeno"), botao("🔔 Avisos no Telegram", avisos, "btn-secundario btn-pequeno"), h("a", { class: "btn btn-primario btn-pequeno", href: "#/chatbot/testar" }, "▶ Testar"),
             podeEditar && d.itens.length ? botao("✨ Refazer com a IA", () => criarComIA(true), "btn-secundario btn-pequeno") : null)),
         trilha, h("div", { class: "fx-palco-grade" }, palco)));
