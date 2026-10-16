@@ -819,3 +819,18 @@ tr.linha-alerta td { background: rgba(239, 68, 68, 0.07); }
 .remocao-tp.remocao-media { border-color: rgba(250, 204, 21, 0.5); background: rgba(250, 204, 21, 0.06); }
 .texto-pedido { white-space: pre-wrap; padding: 10px; border-radius: 10px; background: var(--painel-forte); font-size: 14px; margin: 4px 0; }
 @media (max-width: 720px) { .inv-linha .entrada-pequena { flex: 1 1 80px; } }
+/* Plataformas de cada imóvel e calendário geral */
+.selos-plat { display: flex; flex-wrap: wrap; gap: 6px; }
+.plat-selo { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 600; padding: 3px 9px 3px 4px; border-radius: 999px; border: 1px solid var(--borda); background: var(--painel); }
+.plat-selo.plat-erro { border-color: rgba(239, 68, 68, 0.55); }
+.cal-nav { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.cal-nav strong { min-width: 150px; text-align: center; }
+.cal-geral-imovel { display: grid; gap: 8px; text-align: left; font: inherit; color: inherit; cursor: pointer; }
+.cal-geral-imovel:hover { border-color: var(--borda-forte); }
+.cal-geral-foto { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 12px; display: grid; place-items: center; font-size: 34px; background: var(--painel-forte); }
+.cal-geral-dias { display: grid; grid-template-columns: repeat(14, 1fr); gap: 2px; }
+.cal-geral-dia { height: 26px; border-radius: 4px; background: rgba(148, 163, 214, 0.1); display: grid; place-items: center; }
+.cal-geral-dia small { font-size: 9.5px; color: var(--texto-3); }
+.cal-geral-dia.fechado { background: repeating-linear-gradient(45deg, rgba(148,163,214,.15), rgba(148,163,214,.15) 3px, transparent 3px, transparent 6px); }
+.cal-geral-dia[class*="canal-fundo"] small { color: #fff; }
+.cal-geral-dia.canal-fundo-airbnb { background: var(--c-airbnb); } .cal-geral-dia.canal-fundo-booking { background: var(--c-booking); } .cal-geral-dia.canal-fundo-vrbo { background: var(--c-vrbo); } .cal-geral-dia.canal-fundo-direto { background: var(--c-direto); } .cal-geral-dia.canal-fundo-bloqueio, .cal-geral-dia.canal-fundo-outro { background: var(--c-bloqueio); }
