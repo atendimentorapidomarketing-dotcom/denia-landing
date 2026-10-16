@@ -2640,7 +2640,7 @@
       const [a, b] = sel.a <= iso ? [sel.a, iso] : [iso, sel.a];
       meses.querySelectorAll(".cal-d").forEach(x => x.classList.toggle("dia-sel", x.dataset.d >= a && x.dataset.d <= b));
       sel.a = null; mostrarSel(null);
-      editarPeriodo({ id: im.id, nome: im.nome, moeda: im.moeda, ajustes: im.ajustes }, a, b);
+      editarPeriodo({ id: im.id, nome: im.nome, moeda: im.moeda, ajustes: im.ajustes, conectado: Boolean(im.conectado_channex) }, a, b);
     }
     await carregarMais();
     while (vivo() && carregados < mesesVer) await carregarMais();
@@ -2692,19 +2692,37 @@
       dica, h("div", { class: "cal-tp-caixa" }, tabela),
       h("div", { class: "legenda-tp" }, ["airbnb", "booking", "vrbo", "direto"].map(seloCanal), h("span", { class: "canal canal-bloqueio" }, h("b", { text: "✕" }), "Bloqueado/fechado"), h("span", { class: "sub", text: "Preço em destaque = preço especial do dia" }))));
   }
+  // Sem a conexão oficial, o preço muda só na DENIA: mostra o que aplicar em cada plataforma (com o ajuste de cada uma).
+  function aplicarNasPlataformas(im, de, ate, preco, minimo) {
+    const aj = im.ajustes || {};
+    const valor = c => Math.round(Number(preco) * (1 + (Number(aj[c]) || 0) / 100));
+    const LINK = { airbnb: ["https://www.airbnb.com.br/multicalendar", "Abrir o calendário do Airbnb"], booking: ["https://admin.booking.com", "Abrir o Extranet do Booking"], vrbo: ["https://www.vrbo.com/pt-br/p/calendar", "Abrir o calendário do Vrbo"] };
+    gaveta("Aplicar nas plataformas", [
+      h("p", { class: "nota nota-alerta", text: "Este imóvel está ligado só pelo link do calendário: as plataformas não aceitam preço por esse link. Salvei na DENIA — agora aplique o mesmo valor em cada plataforma (leva 1 minuto)." }),
+      h("p", {}, h("strong", { text: `${dataCompleta(de)} a ${dataCompleta(ate)}` }), minimo ? h("span", { class: "sub", text: ` · mínimo ${minimo} noite(s)` }) : null),
+      ["airbnb", "booking", "vrbo"].map(c => h("div", { class: "linha-tp" }, seloCanal(c), preco ? h("strong", { text: dinheiro(valor(c), im.moeda || "BRL") }) : h("span", { class: "sub", text: "sem preço novo" }), preco ? botao("Copiar valor", () => copiar(String(valor(c))), "btn-secundario btn-pequeno") : null,
+        h("a", { class: "btn btn-secundario btn-pequeno", href: LINK[c][0], target: "_blank", rel: "noopener" }, LINK[c][1]))),
+      h("details", { class: "detalhes" }, h("summary", { text: "Como mudar no Airbnb" }), h("ol", { class: "lista-simples" }, h("li", { text: "Abra o calendário do Airbnb (botão acima) ou o app → Calendário." }), h("li", { text: "Escolha o anúncio e selecione os mesmos dias." }), h("li", { text: "Toque em Preço por noite, cole o valor e salve." }))),
+      h("p", { class: "sub", text: "Para mudar preços sozinha nas plataformas, a DENIA precisa da conexão oficial (Conexões). Dica: se não usar a conexão oficial, ajuste o preço base direto no Airbnb e use a DENIA para calcular e lembrar." })]);
+  }
   function editarPeriodo(im, de, ate) {
     const preco = h("input", { class: "entrada", type: "number", min: "0", step: "1", placeholder: "Deixe vazio para manter" });
     const minimo = h("input", { class: "entrada", type: "number", min: "1", max: "60", placeholder: "Ex.: 2" });
     const fechar = h("input", { type: "checkbox" });
     const aj = im.ajustes || {};
     const fim = gaveta(`${im.nome}: ${dataCompleta(de)} a ${dataCompleta(ate)}`, [
+      !im.conectado ? h("p", { class: "nota", text: "Este imóvel não tem a conexão oficial: o preço muda na DENIA e eu mostro o valor para você aplicar no Airbnb, Booking e Vrbo. Bloqueios e reservas vão sozinhos pelo calendário." }) : null,
       campo(`Preço por noite (${im.moeda || "BRL"})`, preco, `Nas plataformas: Airbnb ${aj.airbnb >= 0 ? "+" : ""}${aj.airbnb || 0}%, Booking ${aj.booking >= 0 ? "+" : ""}${aj.booking || 0}%, Vrbo ${aj.vrbo >= 0 ? "+" : ""}${aj.vrbo || 0}% (ajuste em Imóveis).`),
       campo("Mínimo de noites", minimo), h("label", { class: "guia-cat" }, fechar, "Fechar estas datas (ninguém consegue reservar)"),
-      h("div", { class: "acoes" }, botao("Salvar e enviar às plataformas", async () => {
-        try { const r = await tp("precos", { metodo: "POST", corpo: { imovel_id: im.id, de, ate, preco: Number(preco.value) || undefined, minimo: Number(minimo.value) || undefined, fechado: fechar.checked } }); aviso(r.plataformas && r.plataformas.enviado ? "Salvo e enviado ao Airbnb, Booking e Vrbo." : "Salvo. (Com a conexão oficial, vai direto para as plataformas.)", "ok"); fim(); navegar(); }
-        catch (e) { aviso(e.message, "erro"); }
+      h("div", { class: "acoes" }, botao(im.conectado ? "Salvar e enviar às plataformas" : "Salvar", async () => {
+        try {
+          const r = await tp("precos", { metodo: "POST", corpo: { imovel_id: im.id, de, ate, preco: Number(preco.value) || undefined, minimo: Number(minimo.value) || undefined, fechado: fechar.checked } });
+          fim();
+          if (r.plataformas && r.plataformas.enviado) { aviso("Salvo e enviado ao Airbnb, Booking e Vrbo.", "ok"); navegar(); }
+          else { aviso(fechar.checked ? "Datas fechadas: vão para as plataformas pelo calendário em até 1 hora (o Airbnb lê o calendário de tempos em tempos)." : "Salvo na DENIA.", "ok"); navegar(); if (Number(preco.value) || Number(minimo.value)) aplicarNasPlataformas(im, de, ate, Number(preco.value), Number(minimo.value)); }
+        } catch (e) { aviso(e.message, "erro"); }
       }, "btn-primario"), botao("Voltar ao preço normal", async () => { await tp("precos", { metodo: "POST", corpo: { imovel_id: im.id, de, ate, limpar: true } }); fim(); navegar(); }, "btn-secundario"),
-        botao("Bloquear (reserva própria)", async () => { try { await tp("reservas", { metodo: "POST", corpo: { imovel_id: im.id, inicio: de, fim: somaDiasISO(ate, 1), tipo: "BLOQUEIO" } }); aviso("Datas bloqueadas em todas as plataformas.", "ok"); fim(); navegar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario"))]);
+        botao("Bloquear (reserva própria)", async () => { try { await tp("reservas", { metodo: "POST", corpo: { imovel_id: im.id, inicio: de, fim: somaDiasISO(ate, 1), tipo: "BLOQUEIO" } }); aviso(im.conectado ? "Datas bloqueadas em todas as plataformas." : "Datas bloqueadas: vão para as plataformas pelo calendário (o Airbnb atualiza em até algumas horas).", "ok"); fim(); navegar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario"))]);
   }
   function abrirReservaTp(r) {
     const risco = typeof r.risco === "string" ? (() => { try { return JSON.parse(r.risco); } catch { return null; } })() : r.risco;
