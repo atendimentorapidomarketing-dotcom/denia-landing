@@ -1901,6 +1901,40 @@ test("Importar do Botpress — mesma ordem, mesmos textos, mensagens separadas, 
   assert.deepEqual(enviadosPara(p, CLI).slice(antes).map(x => x.corpo.text.body), ["Site: https://teste.test/", "Foi um prazer atendê-lo(a)!"], "encerramento em dois balões");
 });
 
+test("Importar do Typebot — balões, botões, setas, lojas e rodapé viram o mesmo fluxo", async () => {
+  const { p, inf } = await duasEmpresasComChatbot();
+  const z = (c, op) => p.req(`/api/orgs/${inf}/zap/${c}`, { quem: "admin", ...(op || {}) });
+  const bal = (id, t) => ({ id, type: "text", content: { richText: [{ type: "p", children: [{ text: t }] }] } });
+  const bot = (id, itens) => ({ id, type: "choice input", items: itens.map(([i, t, e]) => ({ id: i, content: t, outgoingEdgeId: e })) });
+  const fim = n => bot("f" + n, [["fi1" + n, "Menu Principal", "eMenu" + n], ["fi2" + n, "Menu Anterior", "eAnt" + n], ["fi3" + n, "Finalizar", "eFim" + n]]);
+  const typebot = { version: "6", events: [{ id: "ev", type: "start", outgoingEdgeId: "e0" }],
+    groups: [
+      { id: "g1", title: "Início", blocks: [bal("b1", "Olá! Bem-vindo ao Shopping Teste."), bal("b2", "Escolha abaixo:"), bot("c1", [["i1", "Serviços", "e1"], ["i2", "Informações", "e2"]])] },
+      { id: "g2", title: "Serviços", blocks: [bal("b3", "Qual serviço?"), bot("c2", [["i3", "Celular", "e3"]])] },
+      { id: "g3", title: "Celular", blocks: [bal("b4", "Estes são os contatos:"), bal("b5", "Loja A - Celulares"), { id: "b5b", type: "text", content: { richText: [{ type: "p", children: [{ type: "a", url: "https://tinyurl.com/tb-cel", children: [{ text: "https://tinyurl.com/tb-cel" }] }] }] } }, bal("b6", "Posso ajudar com algo mais?"), fim(1)] },
+      { id: "g4", title: "Info", blocks: [bal("b7", "Rua Teste, 1."), bal("b8", "Posso ajudar com algo mais?"), fim(2)] },
+      { id: "g5", title: "Fim", blocks: [bal("b9", "Foi um prazer!")] }],
+    edges: [{ id: "e0", from: { eventId: "ev" }, to: { groupId: "g1" } }, { id: "e1", from: { blockId: "c1", itemId: "i1" }, to: { groupId: "g2" } }, { id: "e2", from: { blockId: "c1", itemId: "i2" }, to: { groupId: "g4" } },
+      { id: "e3", from: { blockId: "c2", itemId: "i3" }, to: { groupId: "g3" } },
+      ...[1, 2].flatMap(n => [{ id: "eMenu" + n, to: { groupId: "g1" } }, { id: "eAnt" + n, to: { groupId: "g1" } }, { id: "eFim" + n, to: { groupId: "g5" } }])] };
+  const conv = await z("botpress", { metodo: "POST", corpo: { typebot } });
+  assert.equal(conv.status, 200, JSON.stringify(conv.dados));
+  const rot = conv.dados.roteiro;
+  assert.match(rot, /BOAS-VINDAS: Olá! Bem-vindo ao Shopping Teste\.\nMENU: Escolha abaixo:/);
+  assert.match(rot, /DEPOIS DE CADA RESPOSTA: Posso ajudar com algo mais\?/);
+  assert.match(rot, /ENCERRAMENTO: Foi um prazer!/);
+  assert.match(rot, /> Serviços\nQual serviço\?\n\n>> Celular\nEstes são os contatos:\nLoja A - Celulares \| https:\/\/tinyurl\.com\/tb-cel/);
+  assert.match(rot, /> Informações \[sem aviso\]\nRua Teste, 1\.\n/);
+  assert.doesNotMatch(rot, /Rua Teste, 1\.\n---\nPosso ajudar/, "a pergunta do fim não entra na resposta");
+  assert.equal((await z("roteiro", { metodo: "POST", corpo: { roteiro: rot } })).status, 200);
+  const CLI = "5521944441111";
+  await webhookZap(p, "111111111111", { from: CLI, type: "text", text: { body: "oi" } });
+  const e = enviadosPara(p, CLI);
+  assert.equal(e.at(-2).corpo.text.body, "Olá! Bem-vindo ao Shopping Teste.");
+  assert.deepEqual(e.at(-1).corpo.interactive.action.buttons.map(b => b.reply.title), ["Serviços", "Informações"]);
+  assert.equal((await z("botpress", { metodo: "POST", corpo: { typebot: { groups: [] } } })).status, 400);
+});
+
 test("IA completa — qualquer empresa: conversa como gente, lembra do cliente, não mistura empresas e chama a equipe", async () => {
   const { p, inf } = await duasEmpresasComChatbot();
   await p.req("/api/orgs/1/ia/chave", { metodo: "POST", quem: "admin", corpo: { chave: "sk-proj-" + "d".repeat(40) } });
