@@ -1100,7 +1100,7 @@ async function executarTemporada(a, contexto, txt) {
     else { if (a.voltar_ao_base) corpo.limpar = true; else { if (Number(a.preco) > 0) corpo.preco = Number(a.preco); if (Number(a.minimo) > 0) corpo.minimo = Number(a.minimo); } }
     const r = await contexto.tp("POST", "precos", corpo);
     if (falhou(r)) return R(false, falhou(r));
-    const env2 = r.dados.plataformas?.enviado ? " Já enviado para as plataformas conectadas." : "";
+    const env2 = r.dados.plataformas?.enviado ? " Já enviado para as plataformas conectadas." : corpo.preco || corpo.minimo ? " Atenção: este imóvel não tem a conexão oficial, então o preço mudou só na DENIA — aplique o mesmo valor no Airbnb, Booking e Vrbo." : " As datas vão para as plataformas pelo calendário.";
     return R(true, tipo === "tp_disponibilidade" ? `${im.nome}: ${corpo.fechado ? "fechado" : "aberto"} de ${de} a ${ate}.${env2}` : corpo.limpar ? `${im.nome}: de ${de} a ${ate} voltou ao preço normal.${env2}` : `${im.nome}: ${corpo.preco ? "diária de " + corpo.preco : ""}${corpo.minimo ? " mínimo de " + corpo.minimo + " noites" : ""} de ${de} a ${ate}.${env2}`);
   }
   if (tipo === "tp_config") {

@@ -534,7 +534,7 @@ export async function rotasTemporada(request, env, k, orgId, papel, resto) {
     ]);
     const e = new Map((esp?.results || []).map(x => [x.imovel_id + "|" + x.data, x]));
     const dias = []; for (let d = de; d <= ate; d = somaDias(d, 1)) dias.push(d);
-    return json({ de, ate, dias, imoveis: ims.map(im => ({ id: im.id, nome: im.nome, moeda: im.moeda, ajustes: json_(im.ajustes, {}), janela_ate: fimDaJanela(im, agora), precos: dias.map(d => { const x = e.get(im.id + "|" + d), fora = fimDaJanela(im, agora) && d > fimDaJanela(im, agora); return { data: d, preco: precoDoDia(im, d, x), minimo: x?.minimo || im.minimo_noites || 1, fechado: Boolean(x?.fechado) || Boolean(fora), fora_janela: Boolean(fora), especial: Boolean(x?.preco) }; }) })), reservas: res?.results || [], canais: CANAIS });
+    return json({ de, ate, dias, imoveis: ims.map(im => ({ id: im.id, nome: im.nome, moeda: im.moeda, ajustes: json_(im.ajustes, {}), conectado: Boolean(im.channex_property) && channexLigado(env), janela_ate: fimDaJanela(im, agora), precos: dias.map(d => { const x = e.get(im.id + "|" + d), fora = fimDaJanela(im, agora) && d > fimDaJanela(im, agora); return { data: d, preco: precoDoDia(im, d, x), minimo: x?.minimo || im.minimo_noites || 1, fechado: Boolean(x?.fechado) || Boolean(fora), fora_janela: Boolean(fora), especial: Boolean(x?.preco) }; }) })), reservas: res?.results || [], canais: CANAIS });
   }
   if (r === "precos" && metodo === "POST") {
     const negado = precisa("AGENTE"); if (negado) return negado;
