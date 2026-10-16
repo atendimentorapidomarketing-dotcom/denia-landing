@@ -947,3 +947,10 @@ input.fx-titulo:focus { outline: none; border-color: var(--azul); background: rg
   .fx-salvo { min-width: 0; }
 }
 .msg-com-imagem img, .msg-imagem { display: block; width: 100%; max-width: 260px; max-height: 180px; object-fit: cover; border-radius: 10px; margin-bottom: 6px; }
+.fx-roteiro { min-height: 340px; font: 13.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; }
+.fx-ajuda { border: 1px solid var(--borda); border-radius: 12px; padding: 8px 12px; }
+.fx-ajuda summary { cursor: pointer; font-weight: 600; }
+.fx-ajuda pre { margin: 8px 0 2px; font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; color: var(--texto-2); }
+.fx-ok { margin: 0; color: #86efac; font-size: 14px; }
+.fx-erro { margin: 0; color: #fca5a5; font-weight: 600; font-size: 14px; }
+.fx-erros { margin: 6px 0 0; padding-left: 18px; color: #fecaca; font-size: 13px; display: grid; gap: 3px; }

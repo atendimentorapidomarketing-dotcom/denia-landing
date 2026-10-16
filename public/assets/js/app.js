@@ -2073,7 +2073,7 @@
     return partes.map(p => /^\*[^*\n]+\*$/.test(p) ? h("b", { text: p.slice(1, -1) }) : p);
   }
   async function abaZapMenu(area, vivo) {
-    let d, cfgR, tg;
+    let d, cfgR, tg; // eslint: reatribuídos ao aplicar um roteiro
     [d, cfgR, tg] = await Promise.all([zap("itens"), zap("config"), zap("telegram").catch(() => ({}))]);
     if (!vivo()) return;
     let cfg = cfgR.config || {};
@@ -2213,13 +2213,22 @@
       const exib = item ? item.exibicao || "AUTO" : cfg.exibicao_inicio || "AUTO";
       const vis = irmaos.filter(i => visivel(i)).length;
       const comoVe = exib === "NUMERADO" ? "Texto numerado" : vis <= 3 ? "Botões" : vis <= 10 ? "Lista" : "Lista com “Mais opções”";
+      let saud = null, livre = null;
+      if (!item) {
+        saud = auto(h("textarea", { class: "entrada fx-texto", id: "fx-saud", maxlength: "1000", placeholder: "Ex.: Olá! Bem-vindo ao Atendimento Digital do Shopping Infomix 😊 (opcional)", value: cfg.saudacao || "" }), "0:saudacao", v => salvarConfig({ saudacao: v }));
+        saud.addEventListener("input", () => { cfg.saudacao = saud.value; desenharPrevia(); });
+        livre = h("select", { class: "entrada", disabled: !podeEditar }, [["INICIO", "mostrar as boas-vindas e os botões (como no Botpress)"], ["BUSCAR", "procurar pelo que ele escreveu e, se não achar, mostrar os botões"]].map(([v, n]) => h("option", { value: v, selected: (cfg.texto_livre || "BUSCAR") === v, text: n })));
+        livre.addEventListener("change", () => salvarConfig({ texto_livre: livre.value }));
+      }
       return h("section", { class: "fx-col" + (foco === nivel ? " foco" : ""), onfocusin: () => { if (foco !== nivel) { foco = nivel; marcarFoco(); } }, onclick: () => { if (foco !== nivel) { foco = nivel; marcarFoco(); } } },
         cabecaColuna(item ? "📂" : "🏠", item ? item.titulo : "Início", item, nivel),
-        h("label", { class: "fx-rot", for: "fx-m-" + paiId, text: item ? "Mensagem deste menu" : "Primeira mensagem (quando o cliente manda oi)" }), Object.assign(msg, { id: "fx-m-" + paiId }),
+        item ? null : [h("label", { class: "fx-rot", for: "fx-saud", text: "Boas-vindas (mensagem separada, enviada antes)" }), saud],
+        h("label", { class: "fx-rot", for: "fx-m-" + paiId, text: item ? "Mensagem deste menu" : "Mensagem com os botões" }), Object.assign(msg, { id: "fx-m-" + paiId }),
         seletorFoto(img, async id => item ? salvarItem(item, { extra: { imagem_id: id || undefined } }) : (await salvarConfig({ imagem_inicio: id || "" }), recarregar()), "🖼️ Imagem no topo (opcional)"),
         h("div", { class: "fx-rot fx-rot-linha" }, h("span", { text: "Botões" }), h("small", { text: "Cliente vê: " + comoVe })),
         h("div", { class: "fx-botoes" }, irmaos.length ? irmaos.map(i => linhaBotao(i, nivel, irmaos)) : h("p", { class: "fx-vazio", text: "Nenhum botão ainda. Adicione o primeiro 👇" })),
         adicionarBotao(paiId, nivel, irmaos.length),
+        livre ? h("label", { class: "fx-exib" }, "Quando o cliente escrever qualquer coisa:", livre) : null,
         podeEditar ? h("label", { class: "fx-exib" }, "Com muitas opções, mostrar como ", (() => { const s = h("select", { class: "entrada" }, [["AUTO", "botões / lista (automático)"], ["NUMERADO", "texto numerado (sem limite)"]].map(([v, n]) => h("option", { value: v, selected: exib === v, text: n }))); s.addEventListener("change", () => item ? salvarItem(item, { exibicao: s.value }) : salvarConfig({ exibicao_inicio: s.value }).then(desenhar)); return s; })()) : null);
     }
     function interruptorLead(item) {
@@ -2235,7 +2244,7 @@
       const alternar = async (c, ligar) => {
         const itens = new Set(c.itens || []); ligar ? itens.add(item.id) : itens.delete(item.id);
         marcar("Salvando…");
-        try { await zap("catalogo", { metodo: "POST", corpo: { id: c.id, nome: c.nome, whatsapp: c.whatsapp || "", telefone: c.telefone || "", local: c.local || "", descricao: c.descricao || "", destaque: Boolean(c.destaque), ativo: c.ativo !== 0, itens: [...itens] } }); marcar("Salvo ✓"); await recarregar(); }
+        try { await zap("catalogo", { metodo: "POST", corpo: { id: c.id, nome: c.nome, whatsapp: c.whatsapp || "", telefone: c.telefone || "", local: c.local || "", descricao: c.descricao || "", link: c.link || "", destaque: Boolean(c.destaque), ativo: c.ativo !== 0, itens: [...itens] } }); marcar("Salvo ✓"); await recarregar(); }
         catch (e) { marcar(""); aviso(e.message, "erro"); }
       };
       const desenharLojas = () => {
@@ -2243,15 +2252,16 @@
         const todas = d.catalogo.filter(c => ligadas.has(c.id) || (q && [c.nome, c.local, c.descricao].join(" ").toLowerCase().includes(q)));
         lista.replaceChildren(...(todas.length ? todas.map(c => h("label", { class: "fx-loja" + (ligadas.has(c.id) ? " ligada" : "") },
           h("input", { type: "checkbox", checked: ligadas.has(c.id), disabled: !podeEditar, onchange: e => alternar(c, e.target.checked) }),
-          h("span", {}, h("strong", { text: c.nome }), h("small", { text: [c.local, c.whatsapp || c.telefone].filter(Boolean).join(" · ") || "sem WhatsApp" })))) :
+          h("span", {}, h("strong", { text: [c.local, c.nome].filter(Boolean).join(" - ") }), h("small", { text: c.link || c.whatsapp || c.telefone || "sem link nem WhatsApp" })))) :
           [h("p", { class: "fx-vazio", text: d.catalogo.length ? "Nenhuma loja ligada ainda. Busque acima ou cadastre uma nova." : "Nenhuma loja cadastrada. Cadastre aqui embaixo ou importe a planilha em Contatos e lojas." })]));
       };
       busca.addEventListener("input", desenharLojas); desenharLojas();
       const nova = () => {
-        const nome = h("input", { class: "entrada", maxlength: "80", placeholder: "Nome da loja" }), wz = h("input", { class: "entrada", maxlength: "30", inputmode: "tel", placeholder: "WhatsApp (21) 98888-7777" }), local = h("input", { class: "entrada", maxlength: "80", placeholder: "Local (ex.: Loja 12, 1º piso)" });
-        const fechar = gaveta("Nova loja em “" + item.titulo + "”", [campo("Nome", nome), campo("WhatsApp", wz, "O cliente recebe o link para chamar direto."), campo("Local", local),
+        const nome = h("input", { class: "entrada", maxlength: "80", placeholder: "Nome da loja" }), wz = h("input", { class: "entrada", maxlength: "30", inputmode: "tel", placeholder: "WhatsApp (21) 98888-7777" }), local = h("input", { class: "entrada", maxlength: "80", placeholder: "Local (ex.: Loja 12)" });
+        const lk = h("input", { class: "entrada", type: "url", maxlength: "600", placeholder: "https://tinyurl.com/minha-loja (opcional)" });
+        const fechar = gaveta("Nova loja em “" + item.titulo + "”", [campo("Nome", nome), campo("Local", local), campo("Link (opcional)", lk, "O link próprio da loja, com a mensagem pronta. Sem link, usamos o WhatsApp abaixo."), campo("WhatsApp", wz, "O cliente recebe o link para chamar direto."),
           h("div", { class: "acoes" }, botao("Salvar loja", async () => {
-            try { await zap("catalogo", { metodo: "POST", corpo: { nome: nome.value, whatsapp: wz.value, local: local.value, ativo: true, itens: [item.id] } }); fechar(); aviso("Loja ligada a este botão.", "ok"); await recarregar(); }
+            try { await zap("catalogo", { metodo: "POST", corpo: { nome: nome.value, whatsapp: wz.value, local: local.value, link: lk.value.trim(), ativo: true, itens: [item.id] } }); fechar(); aviso("Loja ligada a este botão.", "ok"); await recarregar(); }
             catch (e) { aviso(e.message, "erro"); }
           }, "btn-primario"))]);
         nome.focus();
@@ -2266,7 +2276,7 @@
         podeEditar ? busca : null, lista,
         podeEditar ? h("div", { class: "acoes" }, botao("+ Nova loja", nova, "btn-secundario btn-pequeno"), h("a", { class: "btn btn-secundario btn-pequeno", href: "#/chatbot/contatos" }, "Importar planilha")) : null,
         h("p", { class: "fx-rot", text: "Como mostrar" }), estilo,
-        h("p", { class: "fx-nota", text: ex.estilo === "CARTOES" ? "Até 4 lojas, cada uma num cartão com o botão “Chamar no WhatsApp”. Com mais de 4, vira lista em texto." : "Todas as lojas numa mensagem, com o link do WhatsApp de cada uma." }),
+        h("p", { class: "fx-nota", text: ex.estilo === "CARTOES" ? "Até 4 lojas, cada uma num cartão com o botão “Chamar no WhatsApp”. Com mais de 4, vira lista em texto." : "Todas as lojas numa mensagem só, com o link de cada uma (clicável)." }),
         interruptorLead(item));
     }
     function colunaResposta(item, nivel) {
@@ -2322,8 +2332,8 @@
 
     // ----- Prévia do WhatsApp
     const previa = h("aside", { class: "fx-previa", "aria-label": "Prévia no WhatsApp" });
-    const rodapePrevia = item => h("div", { class: "fx-wa-bolha" }, "Posso te ajudar com mais alguma coisa?",
-      h("div", { class: "fx-wa-botoes" }, ["🏠 Menu inicial", ...(item && item.pai_id ? ["⬅️ Voltar"] : []), "✅ Finalizar"].map(t => h("span", { text: t }))));
+    const rodapePrevia = item => h("div", { class: "fx-wa-bolha" }, cfg.rodape_pergunta || "Posso te ajudar com mais alguma coisa?",
+      h("div", { class: "fx-wa-botoes" }, [cfg.rotulo_menu || "🏠 Menu inicial", ...(item && item.pai_id ? [cfg.rotulo_voltar || "⬅️ Voltar"] : []), cfg.rotulo_fim || "✅ Finalizar"].map(t => h("span", { text: t }))));
     function bolha(texto, imagem, botoesLista, link) {
       return h("div", { class: "fx-wa-bolha" }, imagem ? h("img", { src: imagem, alt: "" }) : null, h("div", { class: "fx-wa-texto" }, textoZap(texto)),
         link ? h("div", { class: "fx-wa-link", text: "↗ " + link }) : null,
@@ -2338,16 +2348,17 @@
         const texto = item ? item.texto || `${item.titulo}: escolha uma opção.` : cfg.boas_vindas || "";
         const img = item ? (item.extra || {}).imagem_id && (item.imagens || {})[item.extra.imagem_id] : d.inicio && d.inicio.imagem;
         const exib = item ? item.exibicao : cfg.exibicao_inicio;
+        if (!item && cfg.saudacao) msgs.push(bolha(cfg.saudacao));
         if (exib === "NUMERADO") msgs.push(bolha(texto + "\n\n" + filhos.map((f, n) => `*${n + 1}* · ${f.titulo}`).join("\n"), img));
         else if (filhos.length <= 3) msgs.push(bolha(texto, img, filhos.map(f => f.titulo)));
-        else msgs.push(bolha(texto + "\n\nToque em \"Ver opções\" e escolha.", img, ["☰ Ver opções"]), h("div", { class: "fx-wa-lista" }, filhos.slice(0, 9).map(f => h("span", { text: f.titulo })), filhos.length > 9 ? h("span", { text: "➡️ Mais opções" }) : null));
+        else { const n = filhos.length <= 10 ? 10 : 9; msgs.push(bolha(texto + "\n\nToque em \"Ver opções\" e escolha.", img, ["☰ Ver opções"]), h("div", { class: "fx-wa-lista" }, filhos.slice(0, n).map(f => h("span", { text: f.titulo })), filhos.length > n ? h("span", { text: "➡️ Mais opções" }) : null)); }
         if (!filhos.length) msgs.push(h("p", { class: "fx-wa-aviso", text: "Ainda não há botões visíveis neste menu." }));
       } else if (item.tipo === "LISTA") {
         const lojas = lojasDe(item.id).filter(c => c.ativo);
         const ex = item.extra || {};
         if (!lojas.length) msgs.push(h("p", { class: "fx-wa-aviso", text: "Ligue pelo menos uma loja: sem lojas, este botão não aparece para o cliente." }));
         else if (ex.estilo === "CARTOES" && lojas.length <= 4) { msgs.push(bolha(`*${item.titulo}*${item.texto ? "\n" + item.texto : ""}`)); lojas.forEach(c => msgs.push(bolha(`*${c.nome}*\n${[c.local, c.descricao].filter(Boolean).join("\n")}`, null, null, "💬 Chamar no WhatsApp"))); }
-        else msgs.push(bolha(`*${item.titulo}*${item.texto ? "\n" + item.texto : ""}\n\n` + lojas.map(c => `• *${c.nome}*${c.local ? " — " + c.local : ""}\n  📲 wa.me/…`).join("\n\n")));
+        else msgs.push(bolha(`${item.texto || `*${item.titulo}*`}\n\n` + lojas.map(c => `${[c.local, c.nome].filter(Boolean).join(" - ")}\n${c.link || (c.whatsapp ? "https://wa.me/…" : "")}`).join("\n\n") + (cfg.rodape_lista ? "\n\n" + cfg.rodape_lista : "")));
         if (lojas.length) msgs.push(rodapePrevia(item));
       } else if (item.tipo === "RESPOSTA") {
         const ex = item.extra || {};
@@ -2414,6 +2425,52 @@
     };
 
     let comecar = null;
+    const roteiro = async () => {
+      let atual = "";
+      try { atual = (await zap("roteiro")).roteiro; } catch (e) { aviso(e.message, "erro"); }
+      const caixa = h("textarea", { class: "entrada fx-roteiro", spellcheck: "false", "aria-label": "Roteiro do fluxo", style: "min-height:55vh" }); caixa.value = atual;
+      const substituir = h("input", { type: "checkbox" });
+      const resultado = h("div", { class: "fx-roteiro-res", "aria-live": "polite" });
+      const enviar = async previa => {
+        resultado.replaceChildren();
+        try {
+          const r = await zap("roteiro", { metodo: "POST", corpo: { roteiro: caixa.value, substituir: substituir.checked, previa } });
+          if (previa) { resultado.append(h("p", { class: "fx-ok", text: `✓ Tudo certo: ${r.botoes} botões e ${r.lojas} indicações de lojas. Marque “Substituir o fluxo atual” e toque em Aplicar.` })); return; }
+          aviso(`Fluxo montado: ${r.botoes} botões${r.lojas_novas ? `, ${r.lojas_novas} lojas novas` : ""}.`, "ok");
+          fechar(); caminho = []; foco = 0; sessao.gravar(chaveCaminho, caminho);
+          [d, cfgR] = await Promise.all([zap("itens"), zap("config")]); cfg = cfgR.config || cfg; desenhar(true);
+        } catch (e) {
+          const erros = (e.dados && e.dados.erros) || [];
+          resultado.append(h("p", { class: "fx-erro", text: e.message }), erros.length ? h("ul", { class: "fx-erros" }, erros.map(x => h("li", { text: x }))) : null);
+        }
+      };
+      const fechar = gaveta("Roteiro do fluxo (texto)", [
+        h("p", { class: "sub", text: "O fluxo inteiro em texto, como num documento. Copie para guardar, ou cole um roteiro para montar todos os botões de uma vez." }),
+        h("details", { class: "fx-ajuda" }, h("summary", { text: "Como escrever" }), h("pre", { text:
+`BOAS-VINDAS: primeira mensagem (vai sozinha)
+MENU: mensagem com os botões do começo
+
+> Produtos                 ← botão do começo
+Qual tipo de produto?      ← mensagem dele
+>> Celular                 ← botão dentro de Produtos
+Estes são os contatos…
+Loja A - Loja dos Celulares | https://tinyurl.com/loja-celulares
+Loja B - Cell Center | 21 98888-7777
+
+> Falar com alguém [atendente]
+Vou chamar a equipe.
+
+Botão com lojas embaixo = mostra as lojas.
+Botão com botões dentro = abre outro menu.
+Botão só com texto = resposta.` })),
+        caixa,
+        h("label", { class: "guia-cat" }, substituir, "Substituir o fluxo atual (os botões de agora são trocados; as lojas ficam guardadas)"),
+        resultado,
+        podeEditar ? h("div", { class: "acoes" }, botao("Conferir", () => enviar(true), "btn-secundario"), botao("Aplicar roteiro", async () => {
+          if (substituir.checked && !(await modal({ titulo: "Trocar o fluxo?", conteudo: "Os botões de agora serão trocados pelos do roteiro. Dica: antes, copie o roteiro atual para guardar.", confirmar: "Trocar" }))) return;
+          return enviar(false);
+        }, "btn-primario"), botao("Copiar", () => copiar(caixa.value), "btn-secundario")) : botao("Copiar", () => copiar(caixa.value), "btn-secundario")]);
+    };
     const verPrevia = h("button", { type: "button", class: "btn btn-secundario btn-pequeno fx-ver-previa", onclick: () => palco.classList.toggle("mostrar-previa") }, "👁 Prévia");
     trocar(area,
       comecar = !d.itens.length && podeEditar ? h("section", { class: "cartao vidro fx-comecar" },
@@ -2421,10 +2478,11 @@
         h("div", { class: "acoes" },
           botao("🛍️ Modelo Shopping", async () => { try { await zap("modelo", { metodo: "POST", corpo: { tipo: "shopping" } }); await recarregar(); aviso("Modelo criado. Ajuste do seu jeito.", "ok"); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno"),
           botao("🔧 Modelo Serviços", async () => { try { await zap("modelo", { metodo: "POST", corpo: { tipo: "servicos" } }); await recarregar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno"),
+          botao("📋 Colar roteiro", roteiro, "btn-secundario btn-pequeno"),
           botao("✨ Criar com a IA", () => criarComIA(false), "btn-secundario btn-pequeno"))) : null,
       h("section", { class: "cartao vidro fx-quadro" },
         h("div", { class: "fx-barra" }, h("div", {}, h("h3", { style: "margin:0", text: "Fluxo do WhatsApp" }), h("p", { class: "sub", style: "margin:2px 0 0", text: "Toque num botão para abrir o próximo cartão. Tudo salva sozinho." })),
-          h("div", { class: "acoes" }, statusSalvo, verPrevia, botao("🔔 Avisos no Telegram", avisos, "btn-secundario btn-pequeno"), h("a", { class: "btn btn-primario btn-pequeno", href: "#/chatbot/testar" }, "▶ Testar"),
+          h("div", { class: "acoes" }, statusSalvo, verPrevia, botao("📋 Roteiro", roteiro, "btn-secundario btn-pequeno"), botao("🔔 Avisos no Telegram", avisos, "btn-secundario btn-pequeno"), h("a", { class: "btn btn-primario btn-pequeno", href: "#/chatbot/testar" }, "▶ Testar"),
             podeEditar && d.itens.length ? botao("✨ Refazer com a IA", () => criarComIA(true), "btn-secundario btn-pequeno") : null)),
         trilha, h("div", { class: "fx-palco-grade" }, palco)));
     palco.replaceChildren(colunas, previa);
@@ -2444,16 +2502,17 @@
       const nome = h("input", { class: "entrada", value: c.nome, maxlength: "80" }), zapI = h("input", { class: "entrada", value: c.whatsapp || "", maxlength: "30", inputmode: "tel", placeholder: "(21) 98888-7777" });
       const tel = h("input", { class: "entrada", value: c.telefone || "", maxlength: "30", inputmode: "tel" }), local = h("input", { class: "entrada", value: c.local || "", maxlength: "80", placeholder: "Ex.: Loja 12, 1º piso" });
       const desc = h("textarea", { class: "entrada", maxlength: "300", style: "min-height:70px" }); desc.value = c.descricao || "";
+      const lk = h("input", { class: "entrada", type: "url", maxlength: "600", value: c.link || "", placeholder: "https://tinyurl.com/minha-loja" });
       const destaque = h("input", { type: "checkbox", checked: Boolean(c.destaque) }), ativo = h("input", { type: "checkbox", checked: c.ativo !== 0 });
       const marcadas = new Set(c.itens || []);
       const grupos = new Map(); for (const l of listas) { const k = nomeItem.get(l.pai_id) || "Menu inicial"; if (!grupos.has(k)) grupos.set(k, []); grupos.get(k).push(l); }
       const fechar = gaveta(c.id ? "Editar contato" : "Novo contato", [
-        campo("Nome", nome), campo("WhatsApp", zapI, "O cliente recebe o link para chamar direto."), campo("Telefone fixo (opcional)", tel), campo("Local / endereço", local), campo("Descrição", desc),
+        campo("Nome", nome), campo("Link próprio (opcional)", lk, "Ex.: um tinyurl com mensagem pronta. Se tiver, é ele que o cliente recebe."), campo("WhatsApp", zapI, "Sem link próprio, o cliente recebe o link do WhatsApp."), campo("Telefone fixo (opcional)", tel), campo("Local / endereço", local), campo("Descrição", desc),
         h("label", { class: "guia-cat" }, destaque, "Destaque (aparece primeiro)"), h("label", { class: "guia-cat" }, ativo, "Aparece para os clientes"),
         listas.length ? [...grupos].map(([g, ls]) => h("fieldset", { class: "guia-cats" }, h("legend", { text: g }), ls.map(l => h("label", { class: "guia-cat" }, h("input", { type: "checkbox", checked: marcadas.has(l.id), onchange: e => { e.target.checked ? marcadas.add(l.id) : marcadas.delete(l.id); } }), l.titulo))))
           : h("p", { class: "nota", text: "Crie no Menu uma opção do tipo \"Lista de contatos/lojas\" para ligar este contato a ela." }),
         h("div", { class: "acoes" }, botao("Salvar", async () => {
-          try { await zap("catalogo", { metodo: "POST", corpo: { id: c.id, nome: nome.value, whatsapp: zapI.value, telefone: tel.value, local: local.value, descricao: desc.value, destaque: destaque.checked, ativo: ativo.checked, itens: [...marcadas] } }); aviso("Contato salvo.", "ok"); fechar(); recarregar(); }
+          try { await zap("catalogo", { metodo: "POST", corpo: { id: c.id, nome: nome.value, whatsapp: zapI.value, telefone: tel.value, local: local.value, descricao: desc.value, link: lk.value.trim(), destaque: destaque.checked, ativo: ativo.checked, itens: [...marcadas] } }); aviso("Contato salvo.", "ok"); fechar(); recarregar(); }
           catch (e) { aviso(e.message, "erro"); }
         }, "btn-primario"))]);
     };
