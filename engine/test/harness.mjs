@@ -3,6 +3,8 @@ import { DatabaseSync } from "node:sqlite";
 import { createHmac } from "node:crypto";
 
 let contadorModulo = 0;
+// DENIA_BANCO_TESTE=servidor roda os mesmos testes no banco do servidor Node (Hostinger) em vez do imitador do D1.
+const SERVIDOR = process.env.DENIA_BANCO_TESTE === "servidor" ? await import("../../servidor/banco.mjs") : null;
 
 class Stmt {
   constructor(h, sql, args = []) { this.h = h; this.sql = sql; this.args = args; }
@@ -18,14 +20,21 @@ class Stmt {
   }
 }
 export class D1Fake {
-  constructor() { this.db = new DatabaseSync(":memory:"); this.falhar = false; }
+  constructor() { this.real = SERVIDOR ? new SERVIDOR.BancoD1(":memory:") : null; this.db = this.real ? this.real.db : new DatabaseSync(":memory:"); this.falhar = false; }
   checar() { if (this.falhar) throw new Error("D1_ERROR: account exceeded the free-tier daily row-read limit"); }
-  prepare(sql) { return new Stmt(this, sql); }
-  async batch(sts) { return Promise.all(sts.map(s => s.run())); }
+  prepare(sql) { if (this.real) { this.checar(); return this.real.prepare(sql); } return new Stmt(this, sql); }
+  async batch(sts) { if (this.real) { this.checar(); return this.real.batch(sts); } return Promise.all(sts.map(s => s.run())); }
+  async exec(sql) { this.checar(); return this.real ? this.real.exec(sql) : (this.db.exec(sql), { count: 1 }); }
   q(sql, ...a) { return this.db.prepare(sql).all(...a).map(r => ({ ...r })); }
 }
 export class KVFake {
-  constructor(relogio = () => Date.now()) { this.m = new Map(); this.puts = 0; this.relogio = relogio; }
+  constructor(relogio = () => Date.now()) {
+    this.m = new Map(); this.puts = 0; this.relogio = relogio;
+    if (SERVIDOR) {
+      const kv = new SERVIDOR.MemoriaKV(":memory:", () => this.relogio());
+      Object.assign(this, { get: (...a) => kv.get(...a), put: (...a) => { this.puts++; return kv.put(...a); }, delete: (...a) => kv.delete(...a), list: (...a) => kv.list(...a) });
+    }
+  }
   async get(k) { const e = this.m.get(k); if (!e) return null; if (e.ate && this.relogio() > e.ate) { this.m.delete(k); return null; } return e.v; }
   async put(k, v, op = {}) { this.puts++; this.m.set(k, { v: String(v), ate: op.expirationTtl ? this.relogio() + op.expirationTtl * 1000 : 0 }); }
   async delete(k) { this.m.delete(k); }
