@@ -24,17 +24,17 @@ import { apiMarketing, apiAssistente, analisarAvaliacoesPendentes, relatoriosDaS
 import { retornoMeta, servirMidiaPublica, publicarPendentes } from "./meta.js";
 import { retornoGoogle, sincronizarGooglePendentes } from "./google.js";
 import { comOrgUso, comRecurso, descarregarUso } from "./uso.js";
-import { DDL_TEMPORADA, rotasTemporada, icalPublico, webhookChannex, sincronizarTemporada, desligarInadimplentes } from "./temporada.js";
+import { DDL_TEMPORADA, ALTERS_TEMPORADA, rotasTemporada, icalPublico, webhookChannex, sincronizarTemporada, desligarInadimplentes, lembrarEstoque, limpezaPublica } from "./temporada.js";
 import { openaiBruto } from "./marketing.js";
 import { DDL_ZAP, webhookZap, rotasZap, webhookTelegram, segredoTelegram, tokenTelegramPlataforma, processarCampanhas } from "./zap.js";
 import { lerPlanos, acessoDa, recursoDaRota, planoMinimo, rotasPlano, webhookAsaas, lembretesDePlano, TESTE_DIAS, STATUS as STATUS_PLANO, PLANOS_PADRAO, RECURSOS } from "./planos.js";
 
-const VERSAO = "3.2.0";
+const VERSAO = "3.3.0";
 // Versão dos Termos de uso e da Política de privacidade aceitas no cadastro.
 const VERSAO_TERMOS = "2026-10-16";
 // WhatsApp da Central de Atendimento (botão flutuante do site).
 const WHATSAPP_CENTRAL = "5521975469162";
-const SCHEMA = "2.8.0";
+const SCHEMA = "2.9.0";
 const COOKIE = "__Host-denia_sessao";
 const SESSAO_MS = 8 * 60 * 60 * 1000;
 const MAX_TENTATIVAS = 5;
@@ -192,6 +192,7 @@ async function garantirSchema(env) {
     await env.DB.prepare("ALTER TABLE plt_zap_contatos ADD COLUMN memoria TEXT").run().catch(() => { });
     await env.DB.prepare("ALTER TABLE plt_zap_contas ADD COLUMN telegram_nome TEXT").run().catch(() => { });
     await env.DB.prepare("ALTER TABLE plt_zap_contatos ADD COLUMN ultimo_menu INTEGER").run().catch(() => { });
+    for (const a of ALTERS_TEMPORADA) await env.DB.prepare(a).run().catch(() => { });
     for (const col of ["optout INTEGER NOT NULL DEFAULT 0", "etiquetas TEXT"]) await env.DB.prepare("ALTER TABLE plt_zap_contatos ADD COLUMN " + col).run().catch(() => { });
     for (const col of ["teste_ate INTEGER", "pago_ate INTEGER", "ciclo TEXT", "cobranca_cliente TEXT", "assinatura_id TEXT", "assinatura_plano TEXT"])
       await env.DB.prepare("ALTER TABLE plt_organizacoes ADD COLUMN " + col).run().catch(() => { });
@@ -810,6 +811,22 @@ async function contextoAssistente(env, orgId) {
     const prox = (await env.DB.prepare("SELECT p.id, p.data, p.hora, p.titulo, p.status, p.canais, m.nome marca FROM plt_mk_posts p JOIN plt_mk_marcas m ON m.id=p.marca_id WHERE p.org_id=? AND p.status IN ('AGUARDANDO','APROVADO','RASCUNHO') ORDER BY p.data, p.hora LIMIT 25").bind(orgId).all())?.results || [];
     if (prox.length) linhas.push("PRÓXIMOS POSTS: " + prox.map(x => `#${x.id} ${x.marca} ${x.data || "sem data"} ${x.hora || ""} "${x.titulo || ""}" [${x.status}] ${x.canais}`).join("; ") + ".");
   } catch { /* tabelas ainda não criadas */ }
+  try {
+    const ims = (await env.DB.prepare("SELECT id, nome, cidade, preco_base, preco_fds, minimo_noites, taxa_limpeza, desconto_semanal, desconto_mensal, moeda FROM plt_tp_imoveis WHERE org_id=? AND ativo=1 ORDER BY nome LIMIT 40").bind(orgId).all())?.results || [];
+    if (ims.length) {
+      const hoje = new Date(Date.now() - 3 * 3600000).toISOString().slice(0, 10);
+      const [res, baixos, notas] = await Promise.all([
+        env.DB.prepare("SELECT r.imovel_id, r.hospede, r.inicio, r.fim, r.canal, r.valor FROM plt_tp_reservas r WHERE r.org_id=? AND r.status='CONFIRMADA' AND r.tipo='RESERVA' AND r.fim >= ? ORDER BY r.inicio LIMIT 30").bind(orgId, hoje).all(),
+        env.DB.prepare("SELECT e.imovel_id, e.item, e.quantidade, e.unidade FROM plt_tp_estoque e WHERE e.org_id=? AND e.quantidade <= e.minimo AND e.minimo > 0 LIMIT 40").bind(orgId).all(),
+        env.DB.prepare("SELECT imovel_id, texto, prioridade FROM plt_tp_notas WHERE org_id=? AND status<>'FEITA' ORDER BY id DESC LIMIT 30").bind(orgId).all()
+      ]);
+      const nome = id => (ims.find(i => i.id === id) || {}).nome || "imóvel";
+      linhas.push("LOCAÇÃO POR TEMPORADA — IMÓVEIS: " + ims.map(i => `${i.nome}${i.cidade ? " (" + i.cidade + ")" : ""}: diária ${i.moeda} ${i.preco_base ?? "?"}, fim de semana ${i.preco_fds ?? "igual"}, mínimo ${i.minimo_noites || 1} noite(s), limpeza ${i.taxa_limpeza ?? 0}, desconto semanal ${i.desconto_semanal || 0}%, mensal ${i.desconto_mensal || 0}%`).join("; ") + ".");
+      if (res?.results?.length) linhas.push("PRÓXIMAS RESERVAS: " + res.results.map(r => `${nome(r.imovel_id)}: ${r.hospede || "hóspede"} ${r.inicio} a ${r.fim} (${r.canal}${r.valor ? ", " + r.valor : ""})`).join("; ") + ".");
+      if (baixos?.results?.length) linhas.push("ESTOQUE ACABANDO: " + baixos.results.map(b => `${nome(b.imovel_id)}: ${b.item} (${b.quantidade} ${b.unidade || ""})`).join("; ") + ".");
+      if (notas?.results?.length) linhas.push("MELHORIAS ABERTAS: " + notas.results.map(n => `${nome(n.imovel_id)}: ${n.texto.slice(0, 80)} [${n.prioridade}]`).join("; ") + ".");
+    }
+  } catch { /* módulo de temporada ainda sem tabelas */ }
   linhas.push(`Data de hoje: ${new Date().toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" })}.`);
   return { empresa: o?.nome || "empresa", dados: linhas.join("\n") };
 }
@@ -879,11 +896,13 @@ async function apiOrg(request, env, sessao, orgId, resto) {
     const interno = (base) => async (metodo, caminho, corpo) => {
       const req = new Request(new URL(`/api/orgs/${orgId}/${base}/${caminho}`, request.url), { method: metodo, headers: { "content-type": "application/json", origin: new URL(request.url).origin }, body: metodo === "POST" ? JSON.stringify(corpo || {}) : undefined });
       const rota = caminho.split("?")[0];
-      const r = base === "mk" ? await apiMarketing(req, await comIA(env, orgId), kit, orgId, papel, rota) : await proxyEngine(req, env, sessao, orgId, papel, rota);
+      const r = base === "mk" ? await apiMarketing(req, await comIA(env, orgId), kit, orgId, papel, rota)
+        : base === "tp" ? await apiOrg(req, env, sessao, orgId, "tp/" + rota)
+          : await proxyEngine(req, env, sessao, orgId, papel, rota);
       return { status: r.status, dados: await r.json().catch(() => ({})) };
     };
     const ctx = ["assistente/conversa", "assistente/ao-vivo", "assistente/contexto"].includes(resto) ? await contextoAssistente(env, orgId) : { empresa: "", dados: "" };
-    return apiAssistente(request, comRecurso(await comIA(env, orgId), "assistente"), kit, orgId, papel, resto, { ...ctx, mk: interno("mk"), engine: interno("engine") });
+    return apiAssistente(request, comRecurso(await comIA(env, orgId), "assistente"), kit, orgId, papel, resto, { ...ctx, mk: interno("mk"), engine: interno("engine"), tp: interno("tp") });
   }
 
   if (resto === "membros" && metodo === "GET") {
@@ -1169,6 +1188,7 @@ async function rotear(request, env, ctx) {
   if (caminho === "/webhook/whatsapp") { await garantirSchema(env); return webhookZap(request, env, await kitZap(env), ctx); }
   if (caminho === "/webhook/telegram" && request.method === "POST") { await garantirSchema(env); return webhookTelegram(request, env, await kitZap(env)); }
   if (caminho === "/webhook/channex" && request.method === "POST") { await garantirSchema(env); return webhookChannex(request, env, await kitZap(env)); }
+  if (caminho.startsWith("/tp/limpeza/") && ["GET", "POST"].includes(request.method)) { await garantirSchema(env); return comSeguranca((await limpezaPublica(request, env, await kitZap(env))) || new Response("Não encontrado.", { status: 404 }), request); }
   if (caminho.startsWith("/tp/ical/") && request.method === "GET") { await garantirSchema(env); return (await icalPublico(env, caminho)) || new Response("Não encontrado.", { status: 404 }); }
   if (caminho === "/webhook/asaas" && request.method === "POST") { await garantirSchema(env); return webhookAsaas(request, env, kitBase(env)); }
   if (!["GET", "HEAD"].includes(request.method)) return new Response("Método não permitido.", { status: 405 });
@@ -1251,6 +1271,7 @@ export default {
       await limparBanco(env).catch(e => console.error("limpeza", e?.message));
       await sincronizarTemporada(env, await kitZap(env)).catch(e => console.error("temporada", e?.message));
       await processarCampanhas(env, await kitZap(env)).catch(e => console.error("campanhas", e?.message));
+      await lembrarEstoque(env, await kitZap(env)).catch(e => console.error("estoque", e?.message));
       if (await aCada(env, "temporada_inadimplentes", 20 * 3600000)) {
         const { planos } = await lerPlanos(env);
         await desligarInadimplentes(env, { ...(await kitZap(env)), avisar: async (o, texto) => { for (const para of await responsaveisDa(env, o)) await enviarEmail(env, para, "DENIA — conexão com as plataformas pausada", texto); } },
