@@ -7,7 +7,7 @@
 //     (CHANNEX_STAGING=1 para testes). O anfitrião liga cada plataforma com o login dela, pela tela do Channex.
 // A IA responde os hóspedes com o treinamento de cada imóvel e o jeito de escrever do anfitrião.
 
-import { openaiResposta } from "./marketing.js";
+import { openaiResposta, openaiBruto } from "./marketing.js";
 
 export const DDL_TEMPORADA = [
   `CREATE TABLE IF NOT EXISTS plt_tp_imoveis (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, nome TEXT NOT NULL, endereco TEXT, cidade TEXT, capacidade INTEGER, quartos INTEGER, banheiros INTEGER, checkin TEXT, checkout TEXT, moeda TEXT NOT NULL DEFAULT 'BRL', preco_base REAL, preco_fds REAL, minimo_noites INTEGER, taxa_limpeza REAL, ajustes TEXT, treinamento TEXT, anuncio TEXT, ia_modo TEXT NOT NULL DEFAULT 'SUGERIR', ical_token TEXT, channex_property TEXT, channex_room TEXT, channex_rates TEXT, ativo INTEGER NOT NULL DEFAULT 1, criado_ms INTEGER NOT NULL)`,
@@ -28,13 +28,22 @@ export const DDL_TEMPORADA = [
   `CREATE TABLE IF NOT EXISTS plt_tp_estoque_mov (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, imovel_id INTEGER NOT NULL, item_id INTEGER NOT NULL, antes REAL, depois REAL, origem TEXT, limpeza_id INTEGER, autor TEXT, ms INTEGER NOT NULL)`,
   `CREATE INDEX IF NOT EXISTS idx_tp_est_mov ON plt_tp_estoque_mov(org_id, imovel_id, ms)`,
   `CREATE TABLE IF NOT EXISTS plt_tp_fotos (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, imovel_id INTEGER NOT NULL, mime TEXT NOT NULL, dados TEXT NOT NULL, legenda TEXT, ordem INTEGER NOT NULL DEFAULT 0, criado_ms INTEGER NOT NULL)`,
-  `CREATE INDEX IF NOT EXISTS idx_tp_fotos ON plt_tp_fotos(org_id, imovel_id, ordem)`
+  `CREATE INDEX IF NOT EXISTS idx_tp_fotos ON plt_tp_fotos(org_id, imovel_id, ordem)`,
+  `CREATE TABLE IF NOT EXISTS plt_tp_comodos (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, imovel_id INTEGER NOT NULL, nome TEXT NOT NULL, tipo TEXT, ordem INTEGER NOT NULL DEFAULT 0)`,
+  `CREATE INDEX IF NOT EXISTS idx_tp_comodos ON plt_tp_comodos(org_id, imovel_id, ordem)`,
+  `CREATE TABLE IF NOT EXISTS plt_tp_inventario (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, imovel_id INTEGER NOT NULL, comodo_id INTEGER NOT NULL, item TEXT NOT NULL, icone TEXT, quantidade INTEGER NOT NULL DEFAULT 1, estado TEXT NOT NULL DEFAULT 'OK', valor REAL, obs TEXT, atualizado_ms INTEGER, atualizado_por TEXT)`,
+  `CREATE INDEX IF NOT EXISTS idx_tp_inv ON plt_tp_inventario(org_id, imovel_id, comodo_id)`,
+  `CREATE TABLE IF NOT EXISTS plt_tp_checklist (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, imovel_id INTEGER NOT NULL, comodo_id INTEGER, tarefa TEXT NOT NULL, icone TEXT, ordem INTEGER NOT NULL DEFAULT 0)`,
+  `CREATE INDEX IF NOT EXISTS idx_tp_check ON plt_tp_checklist(org_id, imovel_id, comodo_id)`,
+  `CREATE TABLE IF NOT EXISTS plt_tp_avaliacoes (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, imovel_id INTEGER, reserva_id INTEGER, canal TEXT, externo_id TEXT UNIQUE, autor TEXT, nota REAL, nota_max REAL, texto TEXT, data TEXT, resposta TEXT, resposta_sugerida TEXT, status TEXT NOT NULL DEFAULT 'PENDENTE', analise TEXT, criado_ms INTEGER NOT NULL, respondida_ms INTEGER)`,
+  `CREATE INDEX IF NOT EXISTS idx_tp_aval ON plt_tp_avaliacoes(org_id, status)`
 ];
 // Colunas novas (bancos criados antes desta versão).
 export const ALTERS_TEMPORADA = [
   ...["desconto_semanal REAL", "desconto_mensal REAL", "hospedes_incluidos INTEGER", "taxa_hospede_extra REAL", "taxa_pet REAL", "maximo_noites INTEGER", "antecedencia_dias INTEGER", "comodidades TEXT", "precos_modo TEXT", "janela_meses INTEGER"].map(c => "ALTER TABLE plt_tp_imoveis ADD COLUMN " + c),
   ...["taxa_limpeza REAL", "taxas REAL", "codigo TEXT"].map(c => "ALTER TABLE plt_tp_reservas ADD COLUMN " + c),
-  ...["estoque_ok_ms INTEGER", "aviso_ms INTEGER", "obs TEXT"].map(c => "ALTER TABLE plt_tp_limpezas ADD COLUMN " + c)
+  ...["estoque_ok_ms INTEGER", "aviso_ms INTEGER", "obs TEXT", "inicio_ms INTEGER", "fim_ms INTEGER", "resumo TEXT", "data_saida TEXT"].map(c => "ALTER TABLE plt_tp_limpezas ADD COLUMN " + c),
+  "ALTER TABLE plt_tp_fotos ADD COLUMN limpeza_id INTEGER", "ALTER TABLE plt_tp_fotos ADD COLUMN transcricao TEXT"
 ];
 // Comodidades (as mesmas categorias que Airbnb e Booking usam), para marcar no imóvel e a IA usar nas respostas.
 export const COMODIDADES = {
@@ -389,6 +398,8 @@ export async function rotasTemporada(request, env, k, orgId, papel, resto) {
   const publico = im => ({ ...im, ajustes: json_(im.ajustes, {}), treinamento: json_(im.treinamento, {}), anuncio: json_(im.anuncio, {}), comodidades: json_(im.comodidades, []), channex_rates: undefined, conectado_channex: Boolean(im.channex_property),
     ical_url: im.ical_token ? new URL(`/tp/ical/${im.ical_token}.ics`, request.url).toString() : null });
   let m;
+  const org = await rotasOrganizacao(request, env, k, orgId, r, { json, ler, precisa, imovel, agora, q });
+  if (org) return org;
   const extra = await rotasTemporadaExtra(request, env, k, orgId, r, { json, ler, precisa, imovel, agora, q });
   if (extra) return extra;
 
@@ -781,19 +792,20 @@ async function linksLimpeza(env, k, base, id) { return `${String(base || "").rep
 // Grava a contagem do estoque (do painel, da voz ou do link da limpeza) com o histórico.
 async function gravarEstoque(env, orgId, imovelId, itens, { origem, autor, limpezaId, agora }) {
   const atuais = new Map((((await env.DB.prepare("SELECT * FROM plt_tp_estoque WHERE org_id=? AND imovel_id=?").bind(orgId, imovelId).all())?.results) || []).map(x => [x.id, x]));
-  const st = [];
+  const st = [], usados = [];
   for (const it of itens) {
     const a = atuais.get(Number(it.id));
     if (!a) continue;
     const q2 = Math.max(0, Math.min(100000, Number(it.quantidade)));
     if (!Number.isFinite(q2)) continue;
     st.push(env.DB.prepare("UPDATE plt_tp_estoque SET quantidade=?, atualizado_ms=?, atualizado_por=? WHERE id=?").bind(q2, agora, autor || origem, a.id));
+    if (q2 !== Number(a.quantidade)) usados.push({ item: a.item, antes: Number(a.quantidade), depois: q2, unidade: a.unidade || "" });
     if (q2 !== Number(a.quantidade)) st.push(env.DB.prepare("INSERT INTO plt_tp_estoque_mov(org_id,imovel_id,item_id,antes,depois,origem,limpeza_id,autor,ms) VALUES(?,?,?,?,?,?,?,?,?)").bind(orgId, imovelId, a.id, a.quantidade, q2, origem, limpezaId || null, autor || null, agora));
   }
   if (limpezaId) st.push(env.DB.prepare("UPDATE plt_tp_limpezas SET estoque_ok_ms=? WHERE id=? AND org_id=?").bind(agora, limpezaId, orgId));
   for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
   const baixos = (((await env.DB.prepare("SELECT item, quantidade, minimo, unidade FROM plt_tp_estoque WHERE org_id=? AND imovel_id=? AND quantidade <= minimo AND minimo > 0 ORDER BY item").bind(orgId, imovelId).all())?.results) || []);
-  return { atualizados: itens.length, baixos };
+  return { atualizados: itens.length, baixos, usados };
 }
 
 // Cron (de hora em hora): depois de cada check-out, pede a conferência do estoque (link sem login para quem limpa)
@@ -815,50 +827,17 @@ export async function lembrarEstoque(env, k) {
   if (agora - ult < 55 * 60000) return 0;
   await env.DB.prepare("INSERT OR REPLACE INTO plt_meta(chave,valor) VALUES('tp_estoque_ms',?)").bind(String(agora)).run();
   const pend = (((await env.DB.prepare(`SELECT l.id, l.org_id, l.imovel_id, l.data, l.responsavel, i.nome FROM plt_tp_limpezas l JOIN plt_tp_imoveis i ON i.id=l.imovel_id
-    WHERE l.data <= ? AND l.data >= ? AND l.status<>'CANCELADA' AND l.estoque_ok_ms IS NULL AND l.aviso_ms IS NULL AND EXISTS (SELECT 1 FROM plt_tp_estoque e WHERE e.imovel_id=l.imovel_id) LIMIT 40`).bind(hoje, somaDias(hoje, -3)).all().catch(() => null))?.results) || []);
+    WHERE l.data <= ? AND l.data >= ? AND l.status<>'CANCELADA' AND l.estoque_ok_ms IS NULL AND l.fim_ms IS NULL AND l.aviso_ms IS NULL AND (EXISTS (SELECT 1 FROM plt_tp_estoque e WHERE e.imovel_id=l.imovel_id) OR EXISTS (SELECT 1 FROM plt_tp_comodos c WHERE c.imovel_id=l.imovel_id)) LIMIT 40`).bind(hoje, somaDias(hoje, -3)).all().catch(() => null))?.results) || []);
   let n = 0;
   for (const l of pend) {
     const baixos = (((await env.DB.prepare("SELECT item, quantidade, unidade FROM plt_tp_estoque WHERE imovel_id=? AND quantidade <= minimo AND minimo > 0").bind(l.imovel_id).all())?.results) || []);
     const link = await linksLimpeza(env, k, k.base, l.id);
-    if (k.alertarEmail) await k.alertarEmail(l.org_id, `DENIA — check-out em ${l.nome}: confira o estoque`, `Hoje teve check-out em ${l.nome} (${l.data.split("-").reverse().join("/")}).\n\nQuem fez a limpeza pode conferir o estoque pelo celular, sem login, neste link:\n${link}\n\n${baixos.length ? "Já está acabando: " + baixos.map(b => `${b.item} (${b.quantidade} ${b.unidade || ""})`).join(", ") + "." : ""}\n\nNo painel: Locação por temporada → Estoque.`).catch(() => { });
+    const brief = textoBriefing(await briefingLimpeza(env, { ...l, data: l.data }, agora));
+    if (k.alertarEmail) await k.alertarEmail(l.org_id, `DENIA — limpeza de hoje em ${l.nome}: confira o estoque`, `Limpeza de ${l.nome} marcada para ${l.data.split("-").reverse().join("/")}.\n\n${brief || (baixos.length ? "Já está acabando: " + baixos.map(b => `${b.item} (${b.quantidade} ${b.unidade || ""})`).join(", ") + "." : "")}\n\nMande este link para quem vai limpar (abre no celular, sem login, com o checklist de cada cômodo, o inventário e o estoque):\n${link}\n\nNo painel: Locação por temporada → Limpezas.`).catch(() => { });
     await env.DB.prepare("UPDATE plt_tp_limpezas SET aviso_ms=? WHERE id=?").bind(agora, l.id).run();
     n++;
   }
   return n;
-}
-
-// Página pública da limpeza (/tp/limpeza/<id>-<token>): marca a limpeza como feita, conta o estoque e anota problemas.
-export async function limpezaPublica(request, env, k) {
-  const url = new URL(request.url);
-  const m = url.pathname.match(/^\/tp\/limpeza\/(\d{1,12})-([A-Za-z0-9]{32})$/);
-  if (!m) return null;
-  const id = Number(m[1]);
-  if (m[2] !== await tokenLimpeza(env, k, id)) return new Response("Link inválido.", { status: 404 });
-  const l = await env.DB.prepare("SELECT l.*, i.nome, i.org_id FROM plt_tp_limpezas l JOIN plt_tp_imoveis i ON i.id=l.imovel_id WHERE l.id=?").bind(id).first();
-  if (!l) return new Response("Link inválido.", { status: 404 });
-  const esc = t => String(t ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
-  const pagina = corpo => new Response(`<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>Limpeza — ${esc(l.nome)}</title><link rel="stylesheet" href="/assets/css/base.css"><link rel="stylesheet" href="/assets/css/limpeza.css"></head><body class="limpeza-pub"><main>${corpo}</main></body></html>`, { headers: { "content-type": "text/html; charset=UTF-8", "cache-control": "no-store" } });
-  const agora = k.agora(env);
-  if (request.method === "POST") {
-    const f = await request.formData().catch(() => null);
-    if (!f) return pagina("<h1>Não deu certo</h1><p>Tente de novo.</p>");
-    const itens = [...f.entries()].filter(([n2]) => /^q_\d+$/.test(n2)).map(([n2, v]) => ({ id: Number(n2.slice(2)), quantidade: String(v).trim() === "" ? NaN : Number(String(v).replace(",", ".")) })).filter(x => Number.isFinite(x.quantidade));
-    const quem = cortar(f.get("quem"), 60) || "Limpeza";
-    const r = await gravarEstoque(env, l.org_id, l.imovel_id, itens, { origem: "CHECKOUT", autor: quem, limpezaId: id, agora });
-    const obs = cortar(f.get("obs"), 1500);
-    await env.DB.prepare("UPDATE plt_tp_limpezas SET status=CASE WHEN ?='1' THEN 'FEITA' ELSE status END, responsavel=COALESCE(NULLIF(?, ''), responsavel), obs=COALESCE(NULLIF(?, ''), obs) WHERE id=?").bind(f.get("feita") ? "1" : "0", quem === "Limpeza" ? "" : quem, obs, id).run();
-    if ((r.baixos.length || obs) && k.alertarEmail) await k.alertarEmail(l.org_id, `DENIA — ${l.nome}: ${r.baixos.length ? "comprar reposição" : "observação da limpeza"}`, `${quem} conferiu o estoque de ${l.nome}.${r.baixos.length ? "\n\nAcabando: " + r.baixos.map(b => `${b.item} (${b.quantidade} ${b.unidade || ""})`).join(", ") + "." : ""}${obs ? "\n\nObservação: " + obs : ""}`).catch(() => { });
-    if (obs) await env.DB.prepare("INSERT INTO plt_tp_notas(org_id,imovel_id,texto,categoria,prioridade,status,autor,criado_ms) VALUES(?,?,?,'Limpeza','MEDIA','ABERTA',?,?)").bind(l.org_id, l.imovel_id, obs, quem, agora).run();
-    return pagina(`<h1>Obrigado!</h1><p>Estoque de <strong>${esc(l.nome)}</strong> atualizado.</p>${r.baixos.length ? `<p class="aviso">Acabando: ${r.baixos.map(b => esc(`${b.item} (${b.quantidade} ${b.unidade || ""})`)).join(", ")}. O anfitrião já foi avisado.</p>` : ""}${obs ? "<p>Sua observação foi enviada ao anfitrião.</p>" : ""}`);
-  }
-  const itens = (((await env.DB.prepare("SELECT * FROM plt_tp_estoque WHERE imovel_id=? ORDER BY categoria, item").bind(l.imovel_id).all())?.results) || []);
-  let cat = "";
-  const linhas = itens.map(it => { const cab = it.categoria !== cat ? `<h2>${esc(it.categoria || "Itens")}</h2>` : ""; cat = it.categoria; return `${cab}<label class="item${it.quantidade <= it.minimo && it.minimo > 0 ? " baixo" : ""}"><span>${esc(it.item)}<small>tinha ${esc(it.quantidade)} ${esc(it.unidade || "")} · mínimo ${esc(it.minimo)}</small></span><input name="q_${it.id}" type="number" inputmode="decimal" min="0" step="any" placeholder="${esc(it.quantidade)}"></label>`; }).join("");
-  return pagina(`<h1>${esc(l.nome)}</h1><p>Check-out de ${esc(l.data.split("-").reverse().join("/"))}. Conte o que sobrou de cada item (deixe em branco o que não mudou).</p>
-    <form method="post"><label class="campo">Seu nome<input name="quem" maxlength="60" value="${esc(l.responsavel || "")}"></label>${linhas || "<p>Nenhum item de estoque cadastrado neste imóvel.</p>"}
-    <label class="campo">Algum problema ou algo a melhorar? (opcional)<textarea name="obs" maxlength="1500" placeholder="Ex.: chuveiro pingando, faltou lâmpada na sala"></textarea></label>
-    <label class="check"><input type="checkbox" name="feita" value="1" checked> Limpeza concluída</label>
-    <button type="submit">Enviar</button></form>${l.estoque_ok_ms ? `<p class="sub">Já conferido em ${new Date(l.estoque_ok_ms).toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" })}. Enviar de novo atualiza.</p>` : ""}`);
 }
 
 // Planilha de reservas exportada do Airbnb/Booking/Vrbo: preenche valor, limpeza, hóspede e código das reservas que vieram pelo calendário.
@@ -1000,7 +979,7 @@ async function rotasTemporadaExtra(request, env, k, orgId, r, { json, ler, preci
 
   // Fotos do imóvel (guardadas reduzidas na DENIA; a IA e a análise do anúncio usam).
   if ((m = r.match(/^imoveis\/(\d{1,12})\/fotos$/)) && metodo === "GET") {
-    const l = (((await env.DB.prepare("SELECT id, legenda, ordem, criado_ms FROM plt_tp_fotos WHERE org_id=? AND imovel_id=? ORDER BY ordem, id").bind(orgId, Number(m[1])).all())?.results) || []);
+    const l = (((await env.DB.prepare("SELECT id, legenda, ordem, criado_ms FROM plt_tp_fotos WHERE org_id=? AND imovel_id=? AND limpeza_id IS NULL AND mime LIKE 'image/%' ORDER BY ordem, id").bind(orgId, Number(m[1])).all())?.results) || []);
     return json({ fotos: l });
   }
   if ((m = r.match(/^imoveis\/(\d{1,12})\/fotos$/)) && metodo === "POST") {
@@ -1043,6 +1022,387 @@ ${corpo.pergunta ? "Pergunta do anfitrião: " + cortar(corpo.pergunta, 500) + "\
       const texto = (d.output || []).flatMap(o => o.content || []).filter(c => c.type === "output_text").map(c => c.text).join("\n").trim() || d.output_text || "";
       return json({ resultado: texto || "Não encontrei dados confiáveis agora." });
     } catch (e) { return json({ erro: e.message }, 502); }
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Organização do imóvel: cômodos, inventário (o que tem em cada cômodo) e checklist de limpeza.
+// Página de quem limpa: simples, com ícones, botões grandes, áudio e foto (sem precisar escrever).
+// ---------------------------------------------------------------------------
+export const MODELOS_COMODO = {
+  sala: { nome: "Sala", icone: "🛋️", itens: [["Sofá", "🛋️", 1], ["Almofadas", "🟫", 4], ["TV", "📺", 1], ["Controle remoto", "🎮", 2], ["Mesa de centro", "🪑", 1], ["Tapete", "🟥", 1], ["Cortina", "🪟", 1], ["Luminária", "💡", 1]],
+    tarefas: [["Aspirar o sofá e as almofadas", "🛋️"], ["Olhar debaixo do sofá e das almofadas", "🔦"], ["Conferir os controles e as pilhas", "🎮"], ["Tirar o pó dos móveis e da TV", "🧹"], ["Limpar vidros e janelas", "🪟"], ["Varrer e passar pano no chão", "🧽"]] },
+  cozinha: { nome: "Cozinha", icone: "🍳", itens: [["Geladeira", "🧊", 1], ["Fogão", "🔥", 1], ["Micro-ondas", "📦", 1], ["Cafeteira", "☕", 1], ["Liquidificador", "🥤", 1], ["Panelas", "🍲", 4], ["Frigideira", "🍳", 1], ["Pratos", "🍽️", 8], ["Copos", "🥛", 8], ["Talheres (jogos)", "🍴", 8], ["Xícaras", "☕", 6], ["Tábua de corte", "🔪", 1], ["Abridor de garrafa", "🍾", 1]],
+    tarefas: [["Esvaziar e limpar a geladeira", "🧊"], ["Jogar fora comida esquecida", "🗑️"], ["Lavar e guardar a louça", "🍽️"], ["Limpar fogão e micro-ondas por dentro", "🔥"], ["Limpar dentro dos armários", "🚪"], ["Conferir pratos, copos e talheres", "🍴"], ["Tirar o lixo e colocar saco novo", "🗑️"], ["Limpar pia e bancada", "🚰"]] },
+  quarto: { nome: "Quarto", icone: "🛏️", itens: [["Cama", "🛏️", 1], ["Travesseiros", "🛌", 2], ["Edredom/cobertor", "🟦", 1], ["Abajur", "💡", 1], ["Cabides", "🧥", 10], ["Controle do ar-condicionado", "❄️", 1], ["Cortina/blackout", "🪟", 1]],
+    tarefas: [["Trocar roupa de cama e fronhas", "🛏️"], ["Olhar debaixo da cama", "🔦"], ["Olhar dentro do guarda-roupa e gavetas", "🚪"], ["Conferir os cabides", "🧥"], ["Testar o ar-condicionado e o controle", "❄️"], ["Tirar o pó e varrer", "🧹"]] },
+  banheiro: { nome: "Banheiro", icone: "🚿", itens: [["Toalhas de banho", "🛁", 2], ["Toalhas de rosto", "🧻", 2], ["Tapete de banheiro", "🟩", 1], ["Secador de cabelo", "💨", 1], ["Lixeira", "🗑️", 1], ["Espelho", "🪞", 1]],
+    tarefas: [["Dar descarga e conferir se não vaza", "🚽"], ["Lavar vaso, pia e box", "🧽"], ["Conferir o chuveiro (água quente)", "🚿"], ["Limpar o espelho", "🪞"], ["Repor papel higiênico e sabonete", "🧻"], ["Trocar toalhas e tapete", "🛁"], ["Tirar o lixo", "🗑️"], ["Tirar cabelos do ralo", "🌀"]] },
+  varanda: { nome: "Varanda", icone: "🌅", itens: [["Cadeiras", "🪑", 2], ["Mesa", "🟫", 1], ["Rede", "🏖️", 1], ["Churrasqueira", "🍖", 1]],
+    tarefas: [["Varrer e passar pano", "🧹"], ["Limpar a mesa e as cadeiras", "🪑"], ["Conferir a churrasqueira", "🍖"], ["Recolher lixo e bitucas", "🗑️"]] },
+  servico: { nome: "Área de serviço", icone: "🧺", itens: [["Máquina de lavar", "🫧", 1], ["Ferro de passar", "♨️", 1], ["Tábua de passar", "🟫", 1], ["Vassoura", "🧹", 1], ["Rodo", "🧽", 1], ["Balde", "🪣", 1], ["Varal", "🧺", 1]],
+    tarefas: [["Lavar a roupa de cama e as toalhas", "🫧"], ["Limpar o filtro da máquina", "🧽"], ["Guardar os produtos de limpeza", "🧴"]] },
+  entrada: { nome: "Entrada", icone: "🚪", itens: [["Chaves", "🔑", 2], ["Controle do portão", "📟", 1], ["Tapete de entrada", "🟫", 1]],
+    tarefas: [["Conferir as chaves e o controle do portão", "🔑"], ["Testar a fechadura (e a senha, se tiver)", "🔐"], ["Fechar janelas e desligar luzes e ar ao sair", "💡"]] }
+};
+const ESTADOS_INV = ["OK", "QUEBRADO", "SUMIU"];
+
+async function organizacaoDe(env, orgId, imovelId) {
+  const [c, i, t] = await env.DB.batch([
+    env.DB.prepare("SELECT * FROM plt_tp_comodos WHERE org_id=? AND imovel_id=? ORDER BY ordem, id").bind(orgId, imovelId),
+    env.DB.prepare("SELECT * FROM plt_tp_inventario WHERE org_id=? AND imovel_id=? ORDER BY comodo_id, id").bind(orgId, imovelId),
+    env.DB.prepare("SELECT * FROM plt_tp_checklist WHERE org_id=? AND imovel_id=? ORDER BY comodo_id, ordem, id").bind(orgId, imovelId)
+  ]);
+  const comodos = (c?.results || []).map(x => ({ ...x, icone: (MODELOS_COMODO[x.tipo] || {}).icone || "🏠", itens: (i?.results || []).filter(y => y.comodo_id === x.id), tarefas: (t?.results || []).filter(y => y.comodo_id === x.id) }));
+  return { comodos, gerais: (t?.results || []).filter(y => !y.comodo_id) };
+}
+async function criarComodo(env, orgId, imovelId, tipo, nome, comModelo = true, ordem = 0) {
+  const mod = MODELOS_COMODO[tipo] || { nome: "Cômodo", itens: [], tarefas: [] };
+  const id = (await env.DB.prepare("INSERT INTO plt_tp_comodos(org_id,imovel_id,nome,tipo,ordem) VALUES(?,?,?,?,?) RETURNING id").bind(orgId, imovelId, cortar(nome || mod.nome, 60), MODELOS_COMODO[tipo] ? tipo : "outro", ordem).first()).id;
+  if (comModelo) await env.DB.batch([
+    ...mod.itens.map(([item, icone, q]) => env.DB.prepare("INSERT INTO plt_tp_inventario(org_id,imovel_id,comodo_id,item,icone,quantidade,estado) VALUES(?,?,?,?,?,?,'OK')").bind(orgId, imovelId, id, item, icone, q)),
+    ...mod.tarefas.map(([tarefa, icone], n) => env.DB.prepare("INSERT INTO plt_tp_checklist(org_id,imovel_id,comodo_id,tarefa,icone,ordem) VALUES(?,?,?,?,?,?)").bind(orgId, imovelId, id, tarefa, icone, n))
+  ].filter(Boolean));
+  return id;
+}
+
+// O que levar e o que conferir na limpeza: estoque no mínimo, o que faltou ou quebrou da última vez,
+// pendências abertas do imóvel e quando chega o próximo hóspede.
+export async function briefingLimpeza(env, l, agoraMs) {
+  const [baixos, quebrados, ultima, pend, prox] = await env.DB.batch([
+    env.DB.prepare("SELECT item, quantidade, minimo, unidade FROM plt_tp_estoque WHERE imovel_id=? AND minimo > 0 AND quantidade <= minimo ORDER BY item").bind(l.imovel_id),
+    env.DB.prepare("SELECT i.item, i.icone, i.estado, c.nome comodo FROM plt_tp_inventario i JOIN plt_tp_comodos c ON c.id=i.comodo_id WHERE i.imovel_id=? AND i.estado<>'OK' ORDER BY c.ordem").bind(l.imovel_id),
+    env.DB.prepare("SELECT id, data, responsavel, resumo FROM plt_tp_limpezas WHERE imovel_id=? AND id<>? AND fim_ms IS NOT NULL ORDER BY fim_ms DESC LIMIT 1").bind(l.imovel_id, l.id),
+    env.DB.prepare("SELECT texto, prioridade FROM plt_tp_notas WHERE imovel_id=? AND status<>'FEITA' ORDER BY CASE prioridade WHEN 'ALTA' THEN 0 WHEN 'MEDIA' THEN 1 ELSE 2 END, id DESC LIMIT 6").bind(l.imovel_id),
+    env.DB.prepare("SELECT inicio, hospede, hospedes FROM plt_tp_reservas WHERE imovel_id=? AND status='CONFIRMADA' AND tipo='RESERVA' AND inicio >= ? ORDER BY inicio LIMIT 1").bind(l.imovel_id, l.data)
+  ]);
+  const levar = (baixos?.results || []).map(b => ({ item: b.item, tem: b.quantidade, levar: Math.max(1, Math.ceil(Number(b.minimo) * 2 - Number(b.quantidade))), unidade: b.unidade || "" }));
+  const ult = ultima?.results?.[0];
+  const faltouUltima = ult ? (json_(ult.resumo, {}).faltou || []) : [];
+  const p = prox?.results?.[0] || null;
+  return { levar, quebrados: quebrados?.results || [], faltou_ultima: faltouUltima, ultima: ult ? { data: ult.data, responsavel: ult.responsavel } : null, pendencias: pend?.results || [],
+    proximo: p ? { ...p, mesmo_dia: p.inicio === l.data, dias: noites(l.data, p.inicio) } : null, hoje: iso(agoraMs - 3 * 3600000) };
+}
+const textoBriefing = b => [
+  b.proximo ? (b.proximo.mesmo_dia ? `⚠️ Hóspede novo chega HOJE (${b.proximo.hospede || "hóspede"}${b.proximo.hospedes ? ", " + b.proximo.hospedes + " pessoas" : ""}).` : `Próximo hóspede: ${b.proximo.inicio.split("-").reverse().join("/")}.`) : "",
+  b.levar.length ? "Levar: " + b.levar.map(x => `${x.item} (${x.levar} ${x.unidade})`).join(", ") + "." : "",
+  b.faltou_ultima.length ? "Faltou da última vez: " + b.faltou_ultima.join(", ") + "." : "",
+  b.quebrados.length ? "Quebrado ou sumido: " + b.quebrados.map(x => `${x.item} (${x.comodo})`).join(", ") + "." : "",
+  b.pendencias.length ? "Pendências: " + b.pendencias.map(x => x.texto).join("; ") + "." : ""
+].filter(Boolean).join("\n");
+
+// Página de quem limpa: /tp/limpeza/<id>-<token> (a tela), /dados (o que conferir) e /comecar, /enviar.
+export async function limpezaPublica(request, env, k) {
+  const url = new URL(request.url);
+  const m = url.pathname.match(/^\/tp\/limpeza\/(\d{1,12})-([A-Za-z0-9]{32})(\/dados|\/comecar|\/enviar)?$/);
+  if (!m) return null;
+  const id = Number(m[1]);
+  if (m[2] !== await tokenLimpeza(env, k, id)) return new Response("Link inválido.", { status: 404 });
+  const l = await env.DB.prepare("SELECT l.*, i.nome, i.org_id, i.checkin, i.checkout FROM plt_tp_limpezas l JOIN plt_tp_imoveis i ON i.id=l.imovel_id WHERE l.id=?").bind(id).first();
+  if (!l) return new Response("Link inválido.", { status: 404 });
+  const agora = k.agora(env);
+  const js = (d, status = 200) => new Response(JSON.stringify(d), { status, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } });
+  if (!m[3] && request.method === "GET") {
+    const esc = t => String(t ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+    return new Response(`<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="robots" content="noindex"><meta name="theme-color" content="#070b16"><title>Limpeza — ${esc(l.nome)}</title><link rel="stylesheet" href="/assets/css/limpeza.css"></head><body class="limpeza-pub"><main id="app" data-base="${esc(url.pathname)}"><p class="carregando">Carregando…</p></main><script src="/assets/js/limpeza.js" defer></script></body></html>`, { headers: { "content-type": "text/html; charset=UTF-8", "cache-control": "no-store" } });
+  }
+  if (m[3] === "/dados" && request.method === "GET") {
+    const [org, est, cfg] = await Promise.all([organizacaoDe(env, l.org_id, l.imovel_id), env.DB.prepare("SELECT id, item, categoria, quantidade, minimo, unidade FROM plt_tp_estoque WHERE imovel_id=? ORDER BY categoria, item").bind(l.imovel_id).all(),
+      env.DB.prepare("SELECT valor FROM plt_meta WHERE chave=?").bind("tp_config_" + l.org_id).first()]);
+    const equipe = (json_(cfg?.valor, {}).equipe || []).map(x => x.nome).filter(Boolean);
+    return js({ imovel: l.nome, data: l.data, responsavel: l.responsavel || "", status: l.status, iniciada: Boolean(l.inicio_ms), concluida: Boolean(l.fim_ms), equipe, briefing: await briefingLimpeza(env, l, agora),
+      comodos: org.comodos.map(c => ({ id: c.id, nome: c.nome, icone: c.icone, tarefas: c.tarefas.map(t => ({ id: t.id, tarefa: t.tarefa, icone: t.icone || "✔️" })), itens: c.itens.map(i => ({ id: i.id, item: i.item, icone: i.icone || "📦", quantidade: i.quantidade, estado: i.estado })) })),
+      gerais: org.gerais.map(t => ({ id: t.id, tarefa: t.tarefa, icone: t.icone || "✔️" })), estoque: (est?.results || []) });
+  }
+  if (request.method !== "POST") return new Response("Método não permitido.", { status: 405 });
+  const bruto = await request.text();
+  if (bruto.length > 6_000_000) return js({ erro: "Envio grande demais. Mande menos fotos." }, 413);
+  let c; try { c = JSON.parse(bruto || "{}"); } catch { return js({ erro: "Pedido inválido." }, 400); }
+  const quem = cortar(c.quem, 60) || l.responsavel || "Limpeza";
+  if (m[3] === "/comecar") {
+    await env.DB.prepare("UPDATE plt_tp_limpezas SET inicio_ms=COALESCE(inicio_ms,?), responsavel=? WHERE id=?").bind(agora, quem, id).run();
+    return js({ ok: true });
+  }
+  // /enviar: tudo de uma vez no fim (checklist, inventário, estoque, áudio e fotos).
+  const org = await organizacaoDe(env, l.org_id, l.imovel_id);
+  const tarefas = [...org.comodos.flatMap(x => x.tarefas), ...org.gerais];
+  const feitas = tarefas.filter(t => c.checklist && c.checklist[t.id]).map(t => t.id);
+  const itensInv = org.comodos.flatMap(x => x.itens.map(i => ({ ...i, comodo: x.nome })));
+  const problemas = [];
+  const st = [];
+  for (const it of itensInv) {
+    const novo = ESTADOS_INV.includes(c.inventario?.[it.id]) ? c.inventario[it.id] : null;
+    if (!novo || novo === it.estado) continue;
+    st.push(env.DB.prepare("UPDATE plt_tp_inventario SET estado=?, atualizado_ms=?, atualizado_por=? WHERE id=?").bind(novo, agora, quem, it.id));
+    if (novo !== "OK") problemas.push(`${it.item} (${it.comodo}): ${novo === "SUMIU" ? "sumiu" : "quebrado"}`);
+  }
+  for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
+  const estoqueItens = Object.entries(c.estoque || {}).map(([sid, q]) => ({ id: Number(sid), quantidade: Number(q) })).filter(x => Number.isFinite(x.quantidade));
+  const r = await gravarEstoque(env, l.org_id, l.imovel_id, estoqueItens, { origem: "CHECKOUT", autor: quem, limpezaId: id, agora });
+  const faltou = [...(Array.isArray(c.faltou) ? c.faltou.map(x => cortar(x, 60)).filter(Boolean) : []), ...r.baixos.filter(b => Number(b.quantidade) <= 0).map(b => b.item)];
+  // Mídias: fotos (problemas) e áudio (o que a pessoa quis dizer), guardados na limpeza.
+  let transcricao = "";
+  const fotos = (Array.isArray(c.fotos) ? c.fotos : []).slice(0, 6);
+  for (const f of fotos) { const d = String(f || "").match(/^data:(image\/(jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/); if (d && d[3].length < 1_400_000) await env.DB.prepare("INSERT INTO plt_tp_fotos(org_id,imovel_id,mime,dados,legenda,ordem,criado_ms,limpeza_id) VALUES(?,?,?,?,?,0,?,?)").bind(l.org_id, l.imovel_id, d[1], d[3], `Limpeza ${l.data} — ${quem}`, agora, id).run(); }
+  const au = String(c.audio || "").match(/^data:(audio\/[a-z0-9.+-]+)(?:;[^,]*)?;base64,([A-Za-z0-9+/=]+)$/i);
+  if (au && au[2].length < 2_800_000) {
+    try {
+      const envIA = k.comIA ? await k.comIA(env, l.org_id) : env;
+      if (envIA.OPENAI_API_KEY) {
+        const bin = Uint8Array.from(atob(au[2]), ch => ch.charCodeAt(0));
+        const f = new FormData();
+        f.append("file", new Blob([bin], { type: au[1] }), "recado." + (/mp4|m4a|aac/.test(au[1]) ? "mp4" : /ogg/.test(au[1]) ? "ogg" : "webm"));
+        f.append("model", String(env.OPENAI_TRANSCRIPTION_MODEL || "gpt-4o-mini-transcribe")); f.append("language", "pt");
+        transcricao = cortar((await openaiBruto(envIA, "audio/transcriptions", f, { timeout: 45000 }))?.text, 2000);
+      }
+    } catch (e) { console.warn("transcrição limpeza", e?.message); }
+    await env.DB.prepare("INSERT INTO plt_tp_fotos(org_id,imovel_id,mime,dados,legenda,ordem,criado_ms,limpeza_id,transcricao) VALUES(?,?,?,?,?,0,?,?,?)").bind(l.org_id, l.imovel_id, au[1].toLowerCase(), au[2], `Recado de ${quem}`, agora, id, transcricao || null).run();
+  }
+  const obs = [cortar(c.obs, 1500), transcricao ? `Recado (áudio): ${transcricao}` : "", ...problemas].filter(Boolean).join("\n");
+  const resumo = { checklist_feitas: feitas.length, checklist_total: tarefas.length, nao_feitas: tarefas.filter(t => !feitas.includes(t.id)).map(t => t.tarefa), problemas, faltou, usados: r.usados || [], fotos: fotos.length, audio: Boolean(au), transcricao };
+  await env.DB.prepare("UPDATE plt_tp_limpezas SET status='FEITA', responsavel=?, inicio_ms=COALESCE(inicio_ms,?), fim_ms=?, estoque_ok_ms=?, resumo=?, obs=COALESCE(NULLIF(?,''),obs) WHERE id=?").bind(quem, agora, agora, agora, JSON.stringify(resumo), obs, id).run();
+  if (problemas.length || cortar(c.obs, 1500) || transcricao) await env.DB.prepare("INSERT INTO plt_tp_notas(org_id,imovel_id,texto,categoria,prioridade,status,autor,criado_ms) VALUES(?,?,?,'Limpeza',?,'ABERTA',?,?)").bind(l.org_id, l.imovel_id, obs, problemas.length ? "ALTA" : "MEDIA", quem, agora).run();
+  if ((r.baixos.length || problemas.length || obs) && k.alertarEmail) await k.alertarEmail(l.org_id, `DENIA — limpeza de ${l.nome} concluída${problemas.length ? " (com problemas)" : ""}`,
+    `${quem} terminou a limpeza de ${l.nome}. Checklist: ${feitas.length} de ${tarefas.length}.${r.baixos.length ? "\n\nComprar: " + r.baixos.map(b => `${b.item} (${b.quantidade} ${b.unidade || ""})`).join(", ") + "." : ""}${problemas.length ? "\n\nProblemas: " + problemas.join("; ") + "." : ""}${obs && !problemas.length ? "\n\n" + obs : ""}`).catch(() => { });
+  return js({ ok: true, baixos: r.baixos, problemas, faltou });
+}
+
+// ----- Avaliações dos hóspedes (Airbnb, Booking, Vrbo): 5 estrelas a DENIA responde sozinha; abaixo disso ela
+// estuda o caso (reserva, mensagens, limpeza, regras) e diz se há argumento para pedir a remoção, com o texto pronto.
+const INSTRUCOES_AVALIACAO_TP = `Você é especialista sênior em locação por temporada (superanfitrião no Airbnb, parceiro preferencial no Booking.com e Vrbo) e em gestão de reputação. Analise UMA avaliação de hóspede com todo o contexto (reserva, mensagens, limpeza, regras da casa e treinamento do imóvel).
+Responda em JSON:
+{"sentimento":"OTIMA|POSITIVA|NEUTRA|NEGATIVA|GRAVE","resumo":"o que o hóspede disse, em 1-2 frases, no idioma do anfitrião",
+"traducao":"a avaliação traduzida para o idioma do anfitrião",
+"resposta":"resposta pública, no idioma em que o hóspede escreveu: agradecida, profissional, curta, sem discutir, sem expor dados do hóspede, mostrando o que foi corrigido quando houver crítica",
+"resposta_traducao":"a mesma resposta no idioma do anfitrião",
+"remocao":{"chance":"ALTA|MEDIA|BAIXA|NENHUMA","argumentos":["fatos concretos do contexto que sustentam o pedido"],"regra":"qual regra da plataforma a avaliação pode violar","texto_pedido":"mensagem pronta, educada e objetiva, para o anfitrião enviar ao suporte pedindo a remoção, citando a regra e os fatos","passos":["onde clicar/como pedir na plataforma"]},
+"pontos_de_melhoria":["o que o anfitrião pode melhorar no imóvel/processo, se a crítica for justa"],"precisa_anfitriao":true}
+REGRAS DE REMOÇÃO (resuma com honestidade; as plataformas decidem):
+- Airbnb (Política de Avaliações): pode remover avaliação que seja retaliação ou coerção (ameaça de avaliação ruim para conseguir algo), irrelevante (não fala da estadia), com conteúdo discriminatório, ofensivo, com dados pessoais, de quem não se hospedou, ou de hóspede que violou regras graves (festa não autorizada, fumo, mais pessoas que o permitido, removido da reserva). Crítica honesta, mesmo dura, normalmente NÃO é removida.
+- Booking.com: remove comentários que violam as diretrizes (linguagem ofensiva, dados pessoais, conteúdo irrelevante, discriminação, ameaças, fraude); o anfitrião pode contestar pelo Extranet → Avaliações → Reportar.
+- Vrbo: pode remover avaliações com conteúdo impróprio, de quem não se hospedou ou que violam as políticas; o anfitrião pede pelo suporte.
+- Nunca invente fatos. Se não houver argumento, diga "NENHUMA" e foque em uma boa resposta pública e no que melhorar.`;
+const notaEm5 = (nota, max) => { const n = Number(nota), mx = Number(max) || 5; return Number.isFinite(n) ? Math.round((n / mx) * 50) / 10 : null; };
+async function analisarAvaliacaoTp(env, k, orgId, av) {
+  const envIA = await k.comIA(env, orgId);
+  if (!envIA.OPENAI_API_KEY) throw new Error("A IA da plataforma ainda não está ligada.");
+  const im = av.imovel_id ? await env.DB.prepare("SELECT * FROM plt_tp_imoveis WHERE id=?").bind(av.imovel_id).first() : null;
+  const res = av.reserva_id ? await env.DB.prepare("SELECT * FROM plt_tp_reservas WHERE id=?").bind(av.reserva_id).first() : null;
+  const msgs = res ? (((await env.DB.prepare("SELECT direcao, texto FROM plt_tp_msgs WHERE reserva_id=? ORDER BY id DESC LIMIT 30").bind(res.id).all())?.results) || []).reverse() : [];
+  const limp = res ? await env.DB.prepare("SELECT data, responsavel, resumo, obs FROM plt_tp_limpezas WHERE reserva_id=? OR (imovel_id=? AND data<=? AND fim_ms IS NOT NULL) ORDER BY data DESC LIMIT 1").bind(res.id, res.imovel_id, res.inicio).first() : null;
+  const cfg = json_((await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave=?").bind("tp_config_" + orgId).first().catch(() => null))?.valor, {});
+  const entrada = `IDIOMA DO ANFITRIÃO: ${cfg.idioma || "português do Brasil"}
+PLATAFORMA: ${CANAIS[av.canal] || av.canal || "?"} · NOTA: ${av.nota}/${av.nota_max || 5} (${notaEm5(av.nota, av.nota_max)} de 5)
+IMÓVEL: ${im ? `${im.nome}${im.cidade ? " — " + im.cidade : ""}\n${textoTreino(im)}` : "(não identificado)"}
+${res ? `RESERVA: ${res.hospede || "hóspede"} · ${res.inicio} a ${res.fim} · ${res.hospedes || "?"} pessoas` : "RESERVA: não identificada"}
+${msgs.length ? "MENSAGENS DA ESTADIA:\n" + msgs.map(x => `${x.direcao === "E" ? "HÓSPEDE" : "ANFITRIÃO"}: ${cortar(x.texto, 400)}`).join("\n") : ""}
+${limp ? `LIMPEZA ANTES DA ESTADIA: ${limp.data} por ${limp.responsavel || "?"}; ${(() => { const r = json_(limp.resumo, {}); return r.checklist_total ? `checklist ${r.checklist_feitas}/${r.checklist_total}` : ""; })()} ${cortar(limp.obs, 300)}` : ""}
+AVALIAÇÃO DE ${av.autor || "hóspede"}:\n"${cortar(av.texto, 4000)}"`;
+  return openaiResposta(envIA, { modelo: cfg.modelo || "gpt-5-mini", esforco: "low", maxTokens: 1800, instrucoes: INSTRUCOES_AVALIACAO_TP, entrada, recurso: "temporada/avaliacoes" });
+}
+async function publicarRespostaAvaliacao(env, av, texto) {
+  if (!(channexLigado(env) && /^cx:/.test(av.externo_id || ""))) return false;
+  await cx(env, "POST", `/reviews/${av.externo_id.slice(3)}/reply`, { reply: { reply: cortar(texto, 2000) } });
+  return true;
+}
+// Analisa as pendentes; as de 5 estrelas (no automático) já saem respondidas.
+export async function cuidarAvaliacoesTp(env, k, orgId, limite = 5) {
+  const cfg = json_((await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave=?").bind("tp_config_" + orgId).first().catch(() => null))?.valor, {});
+  const auto = cfg.avaliacoes_auto !== "DESLIGADO";
+  const l = (((await env.DB.prepare("SELECT * FROM plt_tp_avaliacoes WHERE org_id=? AND status='PENDENTE' ORDER BY id LIMIT ?").bind(orgId, limite).all())?.results) || []);
+  let respondidas = 0, chamar = 0;
+  for (const av of l) {
+    let a;
+    try { a = await analisarAvaliacaoTp(env, k, orgId, av); } catch (e) { console.warn("avaliação tp", e?.message); break; }
+    const cinco = notaEm5(av.nota, av.nota_max) >= 5 && ["OTIMA", "POSITIVA"].includes(a.sentimento);
+    let status = cinco ? "RASCUNHO" : "PRECISA_VOCE", resp = null;
+    if (cinco && auto && a.resposta) {
+      try { if (await publicarRespostaAvaliacao(env, av, a.resposta)) { status = "RESPONDIDA"; resp = a.resposta; respondidas++; } } catch (e) { console.warn("resposta avaliação", e?.message); }
+    }
+    await env.DB.prepare("UPDATE plt_tp_avaliacoes SET analise=?, resposta_sugerida=?, resposta=COALESCE(?,resposta), status=?, respondida_ms=CASE WHEN ?='RESPONDIDA' THEN ? ELSE respondida_ms END WHERE id=?").bind(JSON.stringify(a), cortar(a.resposta, 2000), resp, status, status, k.agora(env), av.id).run();
+    if (status === "PRECISA_VOCE") {
+      chamar++;
+      if (k.alertarEmail) await k.alertarEmail(orgId, `DENIA — avaliação ${notaEm5(av.nota, av.nota_max)}★ de ${av.autor || "hóspede"} precisa de você`, `${CANAIS[av.canal] || av.canal}: "${cortar(av.texto, 600)}"\n\nChance de remoção: ${a.remocao?.chance || "—"}.${(a.remocao?.argumentos || []).length ? "\nArgumentos: " + a.remocao.argumentos.join("; ") : ""}\n\nA resposta sugerida e o texto para pedir a remoção estão em Locação por temporada → Avaliações.`).catch(() => { });
+    }
+  }
+  return { analisadas: l.length, respondidas, chamar };
+}
+async function sincronizarAvaliacoesTp(env, k) {
+  if (!channexLigado(env)) return 0;
+  const ims = (((await env.DB.prepare("SELECT id, org_id, channex_property FROM plt_tp_imoveis WHERE ativo=1 AND channex_property IS NOT NULL LIMIT 100").all().catch(() => null))?.results) || []);
+  let n = 0;
+  for (const im of ims) {
+    const d = await cx(env, "GET", `/reviews?filter[property_id]=${encodeURIComponent(im.channex_property)}&pagination[limit]=50`).catch(() => null);
+    for (const rv of d?.data || []) {
+      const a = rv.attributes || {};
+      const res = a.booking_id ? await env.DB.prepare("SELECT id FROM plt_tp_reservas WHERE org_id=? AND externo_id=?").bind(im.org_id, "cx:" + a.booking_id).first() : null;
+      const ota = String(a.ota || a.ota_name || "");
+      const canal = /airbnb/i.test(ota) ? "airbnb" : /booking/i.test(ota) ? "booking" : /vrbo|expedia|homeaway/i.test(ota) ? "vrbo" : "outro";
+      const max = canal === "booking" ? 10 : 5;
+      const ins = await env.DB.prepare("INSERT OR IGNORE INTO plt_tp_avaliacoes(org_id,imovel_id,reserva_id,canal,externo_id,autor,nota,nota_max,texto,data,status,criado_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)")
+        .bind(im.org_id, im.id, res?.id || null, canal, "cx:" + rv.id, cortar(a.guest_name || a.reviewer_name || "Hóspede", 80), Number(a.overall_score ?? a.score ?? 0) || null, max, cortar([a.content, a.public_review, a.positive, a.negative].filter(Boolean).join("\n"), 6000), String(a.received_at || a.inserted_at || "").slice(0, 10) || null, a.reply ? "RESPONDIDA" : "PENDENTE", k.agora(env)).run();
+      if (Number(ins?.meta?.changes)) n++;
+    }
+  }
+  return n;
+}
+export async function avaliacoesDoCron(env, k) {
+  const ult = Number((await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave='tp_aval_ms'").first().catch(() => null))?.valor || 0);
+  if (k.agora(env) - ult < 55 * 60000) return;
+  await env.DB.prepare("INSERT OR REPLACE INTO plt_meta(chave,valor) VALUES('tp_aval_ms',?)").bind(String(k.agora(env))).run();
+  await sincronizarAvaliacoesTp(env, k).catch(e => console.warn("sync avaliações", e?.message));
+  const orgs = (((await env.DB.prepare("SELECT DISTINCT org_id FROM plt_tp_avaliacoes WHERE status='PENDENTE' LIMIT 20").all().catch(() => null))?.results) || []);
+  for (const o of orgs) await cuidarAvaliacoesTp(env, k, o.org_id).catch(e => console.warn("avaliações", e?.message));
+}
+
+export async function rotasOrganizacao(request, env, k, orgId, r, { json, ler, precisa, imovel, agora, q }) {
+  const metodo = request.method;
+  const autor = k.sessao?.usuario?.nome || k.sessao?.usuario?.email || "Equipe";
+  let m;
+  if (r === "modelos-comodo" && metodo === "GET") return json({ modelos: Object.entries(MODELOS_COMODO).map(([tipo, x]) => ({ tipo, nome: x.nome, icone: x.icone, itens: x.itens.length, tarefas: x.tarefas.length })) });
+  if ((m = r.match(/^imoveis\/(\d{1,12})\/organizacao$/)) && metodo === "GET") {
+    const im = await imovel(m[1]); if (!im) return json({ erro: "Imóvel não encontrado." }, 404);
+    return json({ ...(await organizacaoDe(env, orgId, im.id)), modelos: Object.entries(MODELOS_COMODO).map(([tipo, x]) => ({ tipo, nome: x.nome, icone: x.icone })) });
+  }
+  // Montar em segundos: "1 sala, 2 quartos, 2 banheiros, cozinha…" → cômodos com os itens e o checklist de cada um.
+  if ((m = r.match(/^imoveis\/(\d{1,12})\/organizacao\/modelo$/)) && metodo === "POST") {
+    const negado = precisa("AGENTE"); if (negado) return negado;
+    const { corpo, erro } = await ler(); if (erro) return erro;
+    const im = await imovel(m[1]); if (!im) return json({ erro: "Imóvel não encontrado." }, 404);
+    const qtd = corpo.quantidades || {};
+    let ordem = Number((await env.DB.prepare("SELECT COALESCE(MAX(ordem),0) n FROM plt_tp_comodos WHERE imovel_id=?").bind(im.id).first())?.n || 0), n = 0;
+    for (const tipo of Object.keys(MODELOS_COMODO)) {
+      const k2 = Math.max(0, Math.min(10, Number(qtd[tipo]) || 0));
+      for (let i = 1; i <= k2; i++) { await criarComodo(env, orgId, im.id, tipo, k2 > 1 ? `${MODELOS_COMODO[tipo].nome} ${i}` : MODELOS_COMODO[tipo].nome, true, ++ordem); n++; }
+    }
+    return json({ ok: true, comodos: n });
+  }
+  if ((m = r.match(/^imoveis\/(\d{1,12})\/comodos$/)) && metodo === "POST") {
+    const negado = precisa("AGENTE"); if (negado) return negado;
+    const { corpo, erro } = await ler(); if (erro) return erro;
+    const im = await imovel(m[1]); if (!im) return json({ erro: "Imóvel não encontrado." }, 404);
+    const ordem = Number((await env.DB.prepare("SELECT COALESCE(MAX(ordem),0) n FROM plt_tp_comodos WHERE imovel_id=?").bind(im.id).first())?.n || 0) + 1;
+    return json({ ok: true, id: await criarComodo(env, orgId, im.id, String(corpo.tipo || "outro"), k.txt(corpo.nome, 60), corpo.modelo !== false, ordem) });
+  }
+  if ((m = r.match(/^comodos\/(\d{1,12})(\/excluir)?$/)) && metodo === "POST") {
+    const negado = precisa("AGENTE"); if (negado) return negado;
+    const { corpo, erro } = await ler(); if (erro) return erro;
+    const id = Number(m[1]);
+    if (m[2]) { await env.DB.batch([env.DB.prepare("DELETE FROM plt_tp_inventario WHERE comodo_id=? AND org_id=?").bind(id, orgId), env.DB.prepare("DELETE FROM plt_tp_checklist WHERE comodo_id=? AND org_id=?").bind(id, orgId), env.DB.prepare("DELETE FROM plt_tp_comodos WHERE id=? AND org_id=?").bind(id, orgId)]); return json({ ok: true }); }
+    await env.DB.prepare("UPDATE plt_tp_comodos SET nome=COALESCE(NULLIF(?,''),nome), ordem=COALESCE(?,ordem) WHERE id=? AND org_id=?").bind(k.txt(corpo.nome, 60), Number.isFinite(Number(corpo.ordem)) ? Number(corpo.ordem) : null, id, orgId).run();
+    return json({ ok: true });
+  }
+  if ((r === "inventario" || (m = r.match(/^inventario\/(\d{1,12})$/))) && metodo === "POST") {
+    const negado = precisa("AGENTE"); if (negado) return negado;
+    const { corpo, erro } = await ler(); if (erro) return erro;
+    const estado = ESTADOS_INV.includes(corpo.estado) ? corpo.estado : null;
+    if (m) {
+      await env.DB.prepare("UPDATE plt_tp_inventario SET item=COALESCE(NULLIF(?,''),item), quantidade=COALESCE(?,quantidade), estado=COALESCE(?,estado), valor=COALESCE(?,valor), obs=COALESCE(?,obs), icone=COALESCE(NULLIF(?,''),icone), atualizado_ms=?, atualizado_por=? WHERE id=? AND org_id=?")
+        .bind(k.txt(corpo.item, 80), corpo.quantidade !== undefined && corpo.quantidade !== "" ? Math.max(0, Math.round(Number(corpo.quantidade) || 0)) : null, estado, corpo.valor !== undefined && corpo.valor !== "" ? Number(corpo.valor) || 0 : null, corpo.obs !== undefined ? k.txt(corpo.obs, 300) : null, k.txt(corpo.icone, 8), agora, autor, Number(m[1]), orgId).run();
+      return json({ ok: true });
+    }
+    const c = await env.DB.prepare("SELECT imovel_id FROM plt_tp_comodos WHERE id=? AND org_id=?").bind(Number(corpo.comodo_id), orgId).first();
+    if (!c) return json({ erro: "Escolha o cômodo." }, 400);
+    const item = k.txt(corpo.item, 80); if (!item) return json({ erro: "Escreva o item." }, 400);
+    const id = (await env.DB.prepare("INSERT INTO plt_tp_inventario(org_id,imovel_id,comodo_id,item,icone,quantidade,estado,valor,obs,atualizado_ms,atualizado_por) VALUES(?,?,?,?,?,?,?,?,?,?,?) RETURNING id")
+      .bind(orgId, c.imovel_id, Number(corpo.comodo_id), item, k.txt(corpo.icone, 8) || "📦", Math.max(0, Math.round(Number(corpo.quantidade) || 1)), estado || "OK", Number(corpo.valor) || null, k.txt(corpo.obs, 300) || null, agora, autor).first()).id;
+    return json({ ok: true, id });
+  }
+  if ((m = r.match(/^inventario\/(\d{1,12})\/excluir$/)) && metodo === "POST") {
+    const negado = precisa("AGENTE"); if (negado) return negado;
+    await env.DB.prepare("DELETE FROM plt_tp_inventario WHERE id=? AND org_id=?").bind(Number(m[1]), orgId).run();
+    return json({ ok: true });
+  }
+  if ((r === "checklist" || (m = r.match(/^checklist\/(\d{1,12})$/))) && metodo === "POST") {
+    const negado = precisa("AGENTE"); if (negado) return negado;
+    const { corpo, erro } = await ler(); if (erro) return erro;
+    if (m) { await env.DB.prepare("UPDATE plt_tp_checklist SET tarefa=COALESCE(NULLIF(?,''),tarefa), icone=COALESCE(NULLIF(?,''),icone) WHERE id=? AND org_id=?").bind(k.txt(corpo.tarefa, 120), k.txt(corpo.icone, 8), Number(m[1]), orgId).run(); return json({ ok: true }); }
+    const im = await imovel(corpo.imovel_id); if (!im) return json({ erro: "Escolha o imóvel." }, 400);
+    const tarefa = k.txt(corpo.tarefa, 120); if (!tarefa) return json({ erro: "Escreva a tarefa." }, 400);
+    const com = corpo.comodo_id ? await env.DB.prepare("SELECT id FROM plt_tp_comodos WHERE id=? AND imovel_id=?").bind(Number(corpo.comodo_id), im.id).first() : null;
+    const id = (await env.DB.prepare("INSERT INTO plt_tp_checklist(org_id,imovel_id,comodo_id,tarefa,icone,ordem) VALUES(?,?,?,?,?,99) RETURNING id").bind(orgId, im.id, com?.id || null, tarefa, k.txt(corpo.icone, 8) || "✔️").first()).id;
+    return json({ ok: true, id });
+  }
+  if ((m = r.match(/^checklist\/(\d{1,12})\/excluir$/)) && metodo === "POST") {
+    const negado = precisa("AGENTE"); if (negado) return negado;
+    await env.DB.prepare("DELETE FROM plt_tp_checklist WHERE id=? AND org_id=?").bind(Number(m[1]), orgId).run();
+    return json({ ok: true });
+  }
+  // Equipe de limpeza (os nomes aparecem como botões na tela de quem limpa).
+  if (r === "equipe" && metodo === "GET") return json({ equipe: json_((await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave=?").bind("tp_config_" + orgId).first())?.valor, {}).equipe || [] });
+  if (r === "equipe" && metodo === "POST") {
+    const negado = precisa("ADMIN"); if (negado) return negado;
+    const { corpo, erro } = await ler(); if (erro) return erro;
+    const cfg = json_((await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave=?").bind("tp_config_" + orgId).first())?.valor, {});
+    cfg.equipe = (Array.isArray(corpo.equipe) ? corpo.equipe : []).slice(0, 30).map(x => ({ nome: k.txt(x.nome, 60), telefone: k.txt(x.telefone, 30) })).filter(x => x.nome);
+    await env.DB.prepare("INSERT OR REPLACE INTO plt_meta(chave,valor) VALUES(?,?)").bind("tp_config_" + orgId, JSON.stringify(cfg)).run();
+    return json({ ok: true, equipe: cfg.equipe });
+  }
+  // Uma limpeza: registro completo (quem, quando, quanto tempo, checklist, o que usou, o que faltou, fotos e áudio) e o briefing.
+  if ((m = r.match(/^limpezas\/(\d{1,12})\/detalhe$/)) && metodo === "GET") {
+    const l = await env.DB.prepare("SELECT l.*, i.nome imovel FROM plt_tp_limpezas l JOIN plt_tp_imoveis i ON i.id=l.imovel_id WHERE l.id=? AND l.org_id=?").bind(Number(m[1]), orgId).first();
+    if (!l) return json({ erro: "Limpeza não encontrada." }, 404);
+    const [mov, midias] = await env.DB.batch([
+      env.DB.prepare("SELECT m.antes, m.depois, e.item, e.unidade FROM plt_tp_estoque_mov m JOIN plt_tp_estoque e ON e.id=m.item_id WHERE m.limpeza_id=?").bind(l.id),
+      env.DB.prepare("SELECT id, mime, legenda, transcricao FROM plt_tp_fotos WHERE limpeza_id=? AND org_id=?").bind(l.id, orgId)
+    ]);
+    return json({ limpeza: { ...l, resumo: json_(l.resumo, null) }, usados: (mov?.results || []).map(x => ({ item: x.item, unidade: x.unidade, antes: x.antes, depois: x.depois, usou: Math.max(0, Number(x.antes) - Number(x.depois)), repos: Math.max(0, Number(x.depois) - Number(x.antes)) })),
+      midias: midias?.results || [], briefing: await briefingLimpeza(env, l, agora), link: await linksLimpeza(env, k, new URL(request.url).origin, l.id) });
+  }
+  if (r === "limpezas/agenda" && metodo === "GET") {
+    const l = (((await env.DB.prepare("SELECT l.*, i.nome imovel FROM plt_tp_limpezas l JOIN plt_tp_imoveis i ON i.id=l.imovel_id WHERE l.org_id=? AND l.status<>'CANCELADA' AND l.fim_ms IS NULL AND l.data BETWEEN ? AND ? ORDER BY l.data LIMIT 20").bind(orgId, iso(agora - 3 * DIA), iso(agora + 2 * DIA)).all())?.results) || []);
+    const out = [];
+    for (const x of l) out.push({ id: x.id, imovel: x.imovel, data: x.data, responsavel: x.responsavel, briefing: await briefingLimpeza(env, x, agora) });
+    return json({ limpezas: out });
+  }
+  if ((m = r.match(/^limpezas\/(\d{1,12})\/agendar$/)) && metodo === "POST") {
+    const negado = precisa("AGENTE"); if (negado) return negado;
+    const { corpo, erro } = await ler(); if (erro) return erro;
+    if (!dataOk(corpo.data)) return json({ erro: "Escolha a data da limpeza." }, 400);
+    await env.DB.prepare("UPDATE plt_tp_limpezas SET data_saida=COALESCE(data_saida,data), data=?, aviso_ms=NULL, responsavel=COALESCE(NULLIF(?,''),responsavel) WHERE id=? AND org_id=?").bind(corpo.data, k.txt(corpo.responsavel, 60), Number(m[1]), orgId).run();
+    return json({ ok: true });
+  }
+
+  // Avaliações dos hóspedes.
+  if (r === "avaliacoes" && metodo === "GET") {
+    const l = (((await env.DB.prepare("SELECT a.*, i.nome imovel FROM plt_tp_avaliacoes a LEFT JOIN plt_tp_imoveis i ON i.id=a.imovel_id WHERE a.org_id=? ORDER BY CASE a.status WHEN 'PRECISA_VOCE' THEN 0 WHEN 'PENDENTE' THEN 1 WHEN 'RASCUNHO' THEN 2 ELSE 3 END, a.id DESC LIMIT 300").bind(orgId).all())?.results) || []);
+    const cfg = json_((await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave=?").bind("tp_config_" + orgId).first())?.valor, {});
+    return json({ avaliacoes: l.map(a => ({ ...a, analise: json_(a.analise, null), estrelas: notaEm5(a.nota, a.nota_max) })), auto: cfg.avaliacoes_auto !== "DESLIGADO", channex: channexLigado(env) });
+  }
+  if (r === "avaliacoes" && metodo === "POST") {
+    const negado = precisa("AGENTE"); if (negado) return negado;
+    const { corpo, erro } = await ler(); if (erro) return erro;
+    const texto = k.txt(corpo.texto, 6000); if (!texto) return json({ erro: "Cole o texto da avaliação." }, 400);
+    const im = corpo.imovel_id ? await imovel(corpo.imovel_id) : null;
+    const canal = canalOk(corpo.canal || "airbnb"), max = Number(corpo.nota_max) || (canal === "booking" ? 10 : 5);
+    const res = im && dataOk(corpo.inicio) ? await env.DB.prepare("SELECT id FROM plt_tp_reservas WHERE imovel_id=? AND inicio=? LIMIT 1").bind(im.id, corpo.inicio).first() : null;
+    const id = (await env.DB.prepare("INSERT INTO plt_tp_avaliacoes(org_id,imovel_id,reserva_id,canal,externo_id,autor,nota,nota_max,texto,data,status,criado_ms) VALUES(?,?,?,?,?,?,?,?,?,?,'PENDENTE',?) RETURNING id")
+      .bind(orgId, im?.id || null, res?.id || null, canal, "man:" + crypto.randomUUID(), k.txt(corpo.autor, 80) || "Hóspede", Number(corpo.nota) || null, max, texto, iso(agora), agora).first()).id;
+    await cuidarAvaliacoesTp(env, k, orgId, 1).catch(e => console.warn("analisar", e?.message));
+    const a = await env.DB.prepare("SELECT * FROM plt_tp_avaliacoes WHERE id=?").bind(id).first();
+    return json({ ok: true, id, avaliacao: { ...a, analise: json_(a.analise, null), estrelas: notaEm5(a.nota, a.nota_max) } });
+  }
+  if ((m = r.match(/^avaliacoes\/(\d{1,12})\/(responder|analisar|resolver)$/)) && metodo === "POST") {
+    const negado = precisa("AGENTE"); if (negado) return negado;
+    const { corpo, erro } = await ler(); if (erro) return erro;
+    const av = await env.DB.prepare("SELECT * FROM plt_tp_avaliacoes WHERE id=? AND org_id=?").bind(Number(m[1]), orgId).first();
+    if (!av) return json({ erro: "Avaliação não encontrada." }, 404);
+    if (m[2] === "analisar") { await env.DB.prepare("UPDATE plt_tp_avaliacoes SET status='PENDENTE' WHERE id=?").bind(av.id).run(); await cuidarAvaliacoesTp(env, k, orgId, 50); return json({ ok: true }); }
+    if (m[2] === "resolver") { await env.DB.prepare("UPDATE plt_tp_avaliacoes SET status='RESPONDIDA', respondida_ms=? WHERE id=?").bind(agora, av.id).run(); return json({ ok: true }); }
+    const texto = k.txt(corpo.texto || av.resposta_sugerida, 2000); if (!texto) return json({ erro: "Escreva a resposta." }, 400);
+    let publicada = false;
+    try { publicada = await publicarRespostaAvaliacao(env, av, texto); } catch (e) { return json({ erro: e.message }, 502); }
+    await env.DB.prepare("UPDATE plt_tp_avaliacoes SET resposta=?, status='RESPONDIDA', respondida_ms=? WHERE id=?").bind(texto, agora, av.id).run();
+    return json({ ok: true, publicada });
+  }
+  if (r === "avaliacoes/config" && metodo === "POST") {
+    const negado = precisa("ADMIN"); if (negado) return negado;
+    const { corpo, erro } = await ler(); if (erro) return erro;
+    const cfg = json_((await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave=?").bind("tp_config_" + orgId).first())?.valor, {});
+    cfg.avaliacoes_auto = corpo.auto === false ? "DESLIGADO" : "CINCO";
+    await env.DB.prepare("INSERT OR REPLACE INTO plt_meta(chave,valor) VALUES(?,?)").bind("tp_config_" + orgId, JSON.stringify(cfg)).run();
+    return json({ ok: true });
   }
   return null;
 }
