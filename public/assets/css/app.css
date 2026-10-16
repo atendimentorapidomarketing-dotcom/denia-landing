@@ -637,3 +637,85 @@ details > summary { cursor: pointer; font-weight: 700; }
 @media print { .lateral, .barra-topo, .abas, .filtros-desempenho .acoes .btn, #faixa-plano, #faixa-global { display: none !important; } }
 @media (max-width: 720px) { .cal-tp .cal-tp-nome { min-width: 96px; max-width: 110px; white-space: normal; font-size: 11.5px; padding: 6px 8px; } .cal-tp thead th { min-width: 46px; } .legenda-tp .sub { font-size: 12.5px; } }
 .msg-traducao { display: block; font-weight: 600; }
+
+/* Menu por área: dentro de Temporada o menu é só de Temporada (com volta ao menu principal). */
+body:not(.modo-temporada) #lateral-nav .so-modo-tp { display: none !important; }
+body.modo-temporada #lateral-nav > :not(.so-modo-tp) { display: none !important; }
+#lateral-nav a.voltar-menu { color: var(--texto-2); border: 1px solid var(--borda); margin-bottom: 6px; }
+#lateral-nav a.voltar-menu:hover { color: var(--texto); }
+
+/* Barra de navegação de aplicativo (celular e tablet) */
+.barra-app { display: none; }
+@media (max-width: 960px) {
+  .barra-app { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; position: fixed; left: 0; right: 0; bottom: 0; z-index: 40; padding: 6px 6px calc(6px + env(safe-area-inset-bottom)); background: rgba(5, 8, 16, 0.94); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); border-top: 1px solid var(--borda); }
+  .barra-app-item { display: grid; justify-items: center; gap: 3px; padding: 6px 2px; border: 0; background: none; color: var(--texto-3); font: inherit; font-size: 11px; font-weight: 600; text-decoration: none; border-radius: 12px; cursor: pointer; }
+  .barra-app-item svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  .barra-app-item.ativo { color: var(--texto); background: rgba(79, 140, 255, 0.14); }
+  .barra-app-item.ativo svg { stroke: var(--azul); }
+  .conteudo { padding-bottom: calc(96px + env(safe-area-inset-bottom)); }
+  .denia-orbe { bottom: calc(78px + env(safe-area-inset-bottom)) !important; }
+  .modo-temporada .abas-tp { display: none; }
+  .modo-temporada .pagina-cabeca p { display: none; }
+  .modo-temporada .pagina-cabeca h2 { font-size: 22px; }
+}
+/* No celular, as janelas sobem de baixo, como num app. */
+@media (max-width: 720px) {
+  .gaveta { align-items: flex-end; }
+  .gaveta-caixa { height: 94vh; height: 94dvh; border-left: 0; border-top: 1px solid var(--borda); border-radius: 22px 22px 0 0; animation: subirGaveta 0.25s ease both; }
+  .gaveta-topo { border-radius: 22px 22px 0 0; padding: 14px 18px; }
+  .gaveta-corpo { padding: 16px 16px calc(24px + env(safe-area-inset-bottom)); }
+  .gaveta-topo h2 { font-size: 16.5px; }
+}
+@keyframes subirGaveta { from { transform: translateY(40px); opacity: 0; } to { transform: none; opacity: 1; } }
+.mais-tp { display: grid; gap: 8px; }
+.mais-tp-item { display: flex; align-items: center; gap: 14px; padding: 14px; border: 1px solid var(--borda); border-radius: 16px; color: var(--texto); text-decoration: none; background: rgba(255, 255, 255, 0.02); }
+.mais-tp-item svg { width: 24px; height: 24px; flex: 0 0 24px; fill: none; stroke: var(--azul); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.mais-tp-item span { display: grid; gap: 2px; }
+.mais-tp-item small { color: var(--texto-3); font-size: 13px; }
+
+/* Calendário mês a mês (estilo Airbnb) */
+.cal-mes-topo { display: grid; gap: 10px; position: sticky; top: 0; z-index: 5; padding: 8px 0; background: linear-gradient(var(--bg) 80%, transparent); }
+.cal-mes-acoes { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
+.cal-imoveis { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; scrollbar-width: none; }
+.cal-imoveis::-webkit-scrollbar { display: none; }
+.cal-imovel { display: inline-flex; align-items: center; gap: 8px; flex: 0 0 auto; max-width: 220px; padding: 6px 12px 6px 6px; border: 1px solid var(--borda); border-radius: 999px; background: var(--painel); color: var(--texto-2); font: inherit; font-size: 13.5px; font-weight: 600; cursor: pointer; }
+.cal-imovel span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cal-imovel img, .cal-imovel-ic { width: 30px; height: 30px; border-radius: 50%; object-fit: cover; display: grid; place-items: center; background: rgba(255, 255, 255, 0.06); font-size: 15px; }
+.cal-imovel.ativo { color: var(--texto); border-color: var(--azul); background: rgba(79, 140, 255, 0.14); }
+.cal-meses { display: grid; gap: 16px; }
+.cal-mes { padding: 16px; }
+.cal-mes-titulo { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 12px; margin-bottom: 10px; }
+.cal-mes-titulo h3 { margin: 0; font-size: 18px; }
+.cal-grade { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); row-gap: 4px; }
+.cal-sem { text-align: center; font-size: 11.5px; font-weight: 700; color: var(--texto-3); padding: 4px 0 6px; }
+.cal-d { position: relative; display: grid; align-content: start; justify-items: start; gap: 2px; min-height: 68px; padding: 6px 6px 4px; border: 0; border-radius: 0; background: transparent; color: var(--texto); font: inherit; text-align: left; cursor: pointer; overflow: hidden; border-top: 1px solid var(--borda); }
+.cal-d:hover { background: rgba(79, 140, 255, 0.08); }
+.cal-num { font-size: 14px; font-weight: 700; }
+.cal-valor { font-size: 11.5px; color: var(--texto-3); white-space: nowrap; }
+.cal-d.especial .cal-valor { color: var(--texto); font-weight: 800; }
+.cal-d.passado { opacity: 0.4; }
+.cal-d.hoje .cal-num { display: inline-grid; place-items: center; min-width: 24px; height: 24px; border-radius: 50%; background: var(--texto); color: var(--bg); }
+.cal-d.fechado { background: repeating-linear-gradient(135deg, rgba(100, 116, 139, 0.2) 0 4px, transparent 4px 8px); }
+.cal-d.res { margin: 0; }
+.cal-d.res-ini { border-top-left-radius: 14px; border-bottom-left-radius: 14px; margin-left: 3px; }
+.cal-d.res-fim { border-top-right-radius: 14px; border-bottom-right-radius: 14px; margin-right: 3px; }
+.cal-hosp { position: relative; z-index: 1; font-size: 12px; font-weight: 700; white-space: nowrap; }
+.cal-d.dia-sel { box-shadow: inset 0 0 0 2px var(--azul); background: rgba(79, 140, 255, 0.16); }
+.cal-sentinela { min-height: 40px; }
+.cal-sel { position: sticky; bottom: 12px; z-index: 6; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; padding: 12px 14px; border-radius: 16px; border: 1px solid var(--azul); background: rgba(7, 11, 22, 0.96); box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45); font-size: 14px; }
+@media (max-width: 960px) { .cal-sel { bottom: calc(84px + env(safe-area-inset-bottom)); } }
+@media (max-width: 560px) { .cal-d { min-height: 58px; padding: 5px 3px 3px; } .cal-num { font-size: 13px; } .cal-valor { font-size: 10.5px; } .cal-hosp { font-size: 11px; } .cal-mes { padding: 12px 8px; } }
+
+.cal-d.res.canal-fundo-airbnb { background: color-mix(in srgb, var(--c-airbnb) 48%, transparent); } .cal-d.res.canal-fundo-booking { background: color-mix(in srgb, var(--c-booking) 48%, transparent); }
+.cal-d.res.canal-fundo-vrbo { background: color-mix(in srgb, var(--c-vrbo) 48%, transparent); } .cal-d.res.canal-fundo-direto { background: color-mix(in srgb, var(--c-direto) 40%, transparent); } .cal-d.res.canal-fundo-bloqueio { background: color-mix(in srgb, var(--c-bloqueio) 50%, transparent); }
+@media (max-width: 960px) {
+  .denia-orbe { padding: 0 !important; width: 52px; height: 52px; justify-content: center; font-size: 0 !important; letter-spacing: 0; right: 12px !important; }
+  .denia-orbe span { margin: 0; }
+}
+@media (max-width: 560px) { .cal-dica { display: none; } }
+@media (max-width: 720px) {
+  .abas-chips { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+  .abas-chips::-webkit-scrollbar { display: none; }
+  .abas-chips .aba { flex: 0 0 auto; white-space: nowrap; }
+  .filtros-desempenho { padding: 10px; }
+}

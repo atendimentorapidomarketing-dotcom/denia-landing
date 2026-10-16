@@ -271,6 +271,7 @@
     $("titulo-pagina").replaceChildren(estado.org ? h("span", { class: "migalha", text: estado.org.nome + " / " }) : "", rota.titulo);
     document.title = rota.titulo + " — DENIA";
     fecharMenu();
+    barraApp(nome, param);
     const el = $("conteudo");
     el.replaceChildren();
     if (fecharModal) fecharModal();
@@ -2163,7 +2164,7 @@
   async function paginaTemporada(el, aba, vivo) {
     const atual = ABAS_TP.some(a => a[0] === aba) ? aba : "visao";
     el.appendChild(cabeca("Locação por temporada", "Airbnb, Booking.com e Vrbo num lugar só: calendário único, preços e taxas por plataforma, reservas, mensagens respondidas pela IA, limpezas e relatórios."));
-    el.appendChild(h("div", { class: "abas", role: "tablist" }, ABAS_TP.map(([k, n]) => h("a", { class: "aba" + (k === atual ? " ativo" : ""), href: "#/temporada/" + k, role: "tab" }, n))));
+    el.appendChild(h("div", { class: "abas abas-tp", role: "tablist" }, ABAS_TP.map(([k, n]) => h("a", { class: "aba" + (k === atual ? " ativo" : ""), href: "#/temporada/" + k, role: "tab" }, n))));
     const area = h("div", { class: "grade" }, carregando());
     el.appendChild(area);
     try {
@@ -2203,8 +2204,117 @@
         h("div", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Próximas chegadas" }), (v.proximas || []).length ? h("div", { class: "lista-tp" }, v.proximas.map(r => h("div", { class: "linha-tp" }, seloCanal(r.canal), h("span", {}, h("strong", { text: r.hospede || "Hóspede" }), h("small", { class: "sub", text: ` · ${r.imovel}` })), h("span", { class: "sub", text: `${dmy(r.inicio)} → ${dmy(r.fim)}` })))) : vazio("Nenhuma reserva futura", ""))),
       (v.limpezas || []).length ? h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Limpezas dos próximos 7 dias" }), h("div", { class: "lista-tp" }, v.limpezas.map(l => h("div", { class: "linha-tp" }, h("strong", { text: dmy(l.data) }), h("span", { text: l.imovel }), h("span", { class: "sub", text: l.responsavel || "sem responsável" }))))) : null);
   }
+  // ----- Navegação de aplicativo: o menu muda por área (Temporada tem o seu) e, no celular, uma barra embaixo.
+  const IC = {
+    casa: '<path d="M3 11 12 4l9 7"/><path d="M5 10v10h14V10"/><path d="M10 20v-6h4v6"/>', cal: '<rect x="3" y="4.5" width="18" height="16" rx="3"/><path d="M3 9.5h18M8 2.5v4M16 2.5v4"/>',
+    msg: '<path d="M21 12a8.5 8.5 0 0 1-12.6 7.4L3 21l1.6-5.2A8.5 8.5 0 1 1 21 12z"/>', lista: '<path d="M4 5h16M4 12h16M4 19h10"/>', mais: '<circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/>',
+    painel: '<path d="M3 13h8V3H3zM13 21h8v-8h-8zM3 21h8v-6H3zM13 11h8V3h-8z"/>', robo: '<rect x="4" y="7" width="16" height="12" rx="3"/><path d="M12 3v4M9 12h.01M15 12h.01M9.5 15.5h5"/>', estrela: '<path d="M12 3l2.2 5.3L20 9l-4.4 3.8L17 18.5 12 15.6 7 18.5l1.4-5.7L4 9l5.8-.7z"/>', menu: '<path d="M4 7h16M4 12h16M4 17h16"/>'
+  };
+  const svgIc = d => { const s = document.createElementNS(SVG_NS, "svg"); s.setAttribute("viewBox", "0 0 24 24"); s.setAttribute("aria-hidden", "true"); s.innerHTML = d; return s; };
+  function barraApp(nome, param) {
+    const b = $("barra-app");
+    if (!b) return;
+    const temporada = nome === "temporada";
+    document.body.classList.toggle("modo-temporada", temporada);
+    const aba = param || "visao";
+    const item = (href, ic, rotulo, ativo, extra = {}) => h("a", { href, class: "barra-app-item" + (ativo ? " ativo" : ""), "aria-current": ativo ? "page" : null, ...extra }, svgIc(ic), h("span", { text: rotulo }));
+    const botaoItem = (ic, rotulo, fn, ativo) => h("button", { type: "button", class: "barra-app-item" + (ativo ? " ativo" : ""), onclick: fn }, svgIc(ic), h("span", { text: rotulo }));
+    if (temporada) {
+      const maisAtivo = ["imoveis", "conexoes", "limpezas", "relatorios"].includes(aba);
+      b.replaceChildren(item("#/temporada/visao", IC.casa, "Início", aba === "visao"), item("#/temporada/calendario", IC.cal, "Calendário", aba === "calendario"), item("#/temporada/mensagens", IC.msg, "Mensagens", aba === "mensagens"), item("#/temporada/reservas", IC.lista, "Reservas", aba === "reservas"), botaoItem(IC.mais, "Mais", () => maisTemporada(), maisAtivo));
+    } else {
+      const soChatbot = estado.org && estado.org.chatbot && !estado.org.conectada;
+      const temTp = temRecurso("temporada");
+      b.replaceChildren(item("#/painel", IC.painel, "Painel", nome === "painel"),
+        soChatbot || !estado.org || !estado.org.conectada ? item("#/chatbot", IC.robo, "Chatbot", nome === "chatbot") : item("#/conversas", IC.msg, "Conversas", nome === "conversas"),
+        temTp ? item("#/temporada/visao", IC.casa, "Temporada", false) : item("#/estudio", IC.estrela, "Marketing", nome === "estudio"),
+        temTp ? item("#/estudio", IC.estrela, "Marketing", nome === "estudio") : item("#/whatsapp", IC.msg, "WhatsApp", nome === "whatsapp"),
+        botaoItem(IC.menu, "Menu", () => { $("lateral").classList.add("aberta"); $("veu").classList.add("ativo"); $("abrir-menu").setAttribute("aria-expanded", "true"); }, false));
+    }
+  }
+  function maisTemporada() {
+    const op = (href, ic, t, d) => h("a", { href, class: "mais-tp-item", onclick: () => fechar() }, svgIc(ic), h("span", {}, h("strong", { text: t }), h("small", { text: d })));
+    const fechar = gaveta("Locação por temporada", [h("nav", { class: "mais-tp" },
+      op("#/temporada/imoveis", IC.casa, "Imóveis", "Cadastrar, preços, regras e treinamento da IA"),
+      op("#/temporada/conexoes", '<path d="M9 7H6a4 4 0 0 0 0 8h3M15 7h3a4 4 0 0 1 0 8h-3M8 11h8"/>', "Airbnb · Booking · Vrbo", "Conectar plataformas e idiomas"),
+      op("#/temporada/limpezas", '<path d="M4 20h16M7 20V9l5-5 5 5v11"/>', "Limpezas", "Agenda de limpeza de cada saída"),
+      op("#/temporada/relatorios", '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>', "Relatórios", "Ocupação, receita e por plataforma"),
+      op("#/plano", '<rect x="3" y="5" width="18" height="14" rx="3"/><path d="M3 10h18M7 15h4"/>', "Plano e pagamento", "Assinatura e notas"),
+      op("#/painel", '<path d="M15 18l-6-6 6-6"/>', "Menu principal", "WhatsApp, chatbot, marketing e o resto da DENIA"))]);
+  }
+
+  // ----- Calendário como no Airbnb: um imóvel por vez, mês inteiro, deslizando para ver os próximos meses.
+  const MESES = ["janeiro", "fevereiro", "março", "abril", "maio", "junho", "julho", "agosto", "setembro", "outubro", "novembro", "dezembro"];
   async function tpCalendario(area, vivo) {
-    const f = estado.tpCal = estado.tpCal || { de: isoLocal(new Date()) };
+    const f = estado.tpCal = estado.tpCal || { vista: "mes" };
+    const ims = ((await tp("imoveis")).imoveis || []).filter(i => i.ativo);
+    if (!vivo()) return;
+    if (!ims.length) { trocar(area, h("section", { class: "cartao vidro" }, vazio("Nenhum imóvel ainda", "Adicione seus anúncios colando o link do calendário."), h("div", { class: "acoes", style: "justify-content:center" }, botao("Adicionar imóveis", () => cadastroRapidoTp(), "btn-primario")))); return; }
+    const alternar = h("div", { class: "abas abas-chips" }, [["mes", "Mês"], ["linha", "Todos os imóveis"]].map(([v, n]) => h("button", { type: "button", class: "aba" + (f.vista === v ? " ativo" : ""), onclick: () => { f.vista = v; navegar(); } }, n)));
+    if (f.vista === "linha") { const caixa = h("div", { class: "grade" }); trocar(area, h("div", { class: "cal-mes-topo" }, alternar), caixa); return tpLinhaTempo(caixa, vivo); }
+    if (!ims.some(i => i.id === f.imovel)) f.imovel = ims[0].id;
+    const im = ims.find(i => i.id === f.imovel);
+    const chips = ims.length > 1 ? h("div", { class: "cal-imoveis" }, ims.map(i => h("button", { type: "button", class: "cal-imovel" + (i.id === f.imovel ? " ativo" : ""), onclick: () => { f.imovel = i.id; navegar(); } }, (i.anuncio.fotos || [])[0] ? h("img", { src: i.anuncio.fotos[0], alt: "" }) : h("span", { class: "cal-imovel-ic", text: "🏠" }), h("span", { text: i.nome })))) : null;
+    const meses = h("div", { class: "cal-meses" });
+    const sel = { a: null };
+    const barraSel = h("div", { class: "cal-sel oculto" });
+    const mostrarSel = t => { if (!t) { barraSel.classList.add("oculto"); return; } trocar(barraSel, h("span", { text: t }), botao("Cancelar", () => { sel.a = null; meses.querySelectorAll(".dia-sel").forEach(x => x.classList.remove("dia-sel")); mostrarSel(null); }, "btn-secundario btn-pequeno")); barraSel.classList.remove("oculto"); };
+    trocar(area, h("div", { class: "cal-mes-topo" }, chips, h("div", { class: "cal-mes-acoes" }, alternar, h("span", { class: "sub cal-dica", text: "Toque num dia para mudar preço, mínimo de noites ou bloquear. Toque numa reserva para ver o hóspede." }))), meses, barraSel);
+    const hoje = isoLocal(new Date());
+    let proximo = hoje.slice(0, 7) + "-01", carregados = 0, carregando = false;
+    const sentinela = h("div", { class: "cal-sentinela" }, carregando ? null : "");
+    meses.appendChild(sentinela);
+    async function carregarMais() {
+      if (carregando || carregados >= 18) return;
+      carregando = true; trocar(sentinela, carregando ? h("div", { class: "carregando", text: "Carregando meses…" }) : null);
+      const de = proximo, fimBloco = new Date(Date.UTC(+de.slice(0, 4), +de.slice(5, 7) - 1 + 3, 0)).toISOString().slice(0, 10);
+      let c;
+      try { c = await tp(`calendario?de=${de}&ate=${fimBloco}`); } catch (e) { trocar(sentinela, h("p", { class: "nota nota-alerta", text: e.message })); carregando = false; return; }
+      const dados = c.imoveis.find(x => x.id === im.id);
+      const reservas = c.reservas.filter(r => r.imovel_id === im.id);
+      const porDia = new Map(); for (const r of reservas) for (let d = r.inicio; d < r.fim; d = somaDiasISO(d, 1)) porDia.set(d, r);
+      const preco = new Map((dados ? dados.precos : []).map(p => [p.data, p]));
+      for (let m = 0; m < 3; m++) {
+        const ini = new Date(Date.UTC(+de.slice(0, 4), +de.slice(5, 7) - 1 + m, 1)), ano = ini.getUTCFullYear(), mes = ini.getUTCMonth();
+        const total = new Date(Date.UTC(ano, mes + 1, 0)).getUTCDate();
+        const grade = h("div", { class: "cal-grade" }, ["D", "S", "T", "Q", "Q", "S", "S"].map((x, i) => h("span", { class: "cal-sem", title: SEMANA[i], text: x })));
+        for (let i = 0; i < ini.getUTCDay(); i++) grade.appendChild(h("span", { class: "cal-vazio" }));
+        let ocupadas = 0;
+        for (let d = 1; d <= total; d++) {
+          const iso = `${ano}-${String(mes + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+          const r = porDia.get(iso), p = preco.get(iso), passado = iso < hoje, dow = new Date(iso + "T12:00:00Z").getUTCDay();
+          if (r && r.tipo !== "BLOQUEIO") ocupadas++;
+          const inicioR = r && (r.inicio === iso || dow === 0 || d === 1), fimR = r && (somaDiasISO(iso, 1) === r.fim || dow === 6 || d === total);
+          const cel = h("button", { type: "button", "data-d": iso, class: "cal-d" + (passado ? " passado" : "") + (iso === hoje ? " hoje" : "") + (r ? ` res canal-fundo-${r.tipo === "BLOQUEIO" ? "bloqueio" : r.canal}` : "") + (inicioR ? " res-ini" : "") + (fimR ? " res-fim" : "") + (p && p.fechado ? " fechado" : "") + (p && p.especial ? " especial" : ""),
+            "aria-label": `${d} de ${MESES[mes]}${r ? ` — ${r.tipo === "BLOQUEIO" ? "bloqueado" : (r.hospede || "reservado") + " (" + (CANAL_NOME[r.canal] || r.canal) + ")"}` : p ? ` — ${dinheiro(p.preco, im.moeda || "BRL")}` : ""}`,
+            onclick: () => tocar(iso, r) },
+            h("span", { class: "cal-num", text: String(d) }),
+            r ? (inicioR ? h("span", { class: "cal-hosp", text: r.tipo === "BLOQUEIO" ? "Bloqueado" : `${CANAL_SIGLA[r.canal] || ""} ${(r.hospede || "Reserva").split(" ")[0]}` }) : null)
+              : p ? h("span", { class: "cal-valor", text: p.fechado ? "fechado" : "R$" + numero(Math.round(p.preco)) }) : null);
+          grade.appendChild(cel);
+        }
+        meses.insertBefore(h("section", { class: "cal-mes cartao vidro" }, h("div", { class: "cal-mes-titulo" }, h("h3", { text: `${MESES[mes][0].toUpperCase() + MESES[mes].slice(1)} de ${ano}` }), h("span", { class: "sub", text: `${ocupadas} de ${total} noites reservadas` })), grade), sentinela);
+      }
+      carregados += 3;
+      proximo = new Date(Date.UTC(+de.slice(0, 4), +de.slice(5, 7) - 1 + 3, 1)).toISOString().slice(0, 10);
+      carregando = false; trocar(sentinela, carregados >= 18 ? h("p", { class: "sub", style: "text-align:center", text: "Mostrando 18 meses." }) : null);
+    }
+    function tocar(iso, r) {
+      if (r) { abrirReservaTp({ ...r, imovel: im.nome }); return; }
+      if (!sel.a) { sel.a = iso; meses.querySelector(`[data-d="${iso}"]`)?.classList.add("dia-sel"); mostrarSel(`Início: ${dataCompleta(iso)}. Toque no último dia (ou no mesmo dia).`); return; }
+      const [a, b] = sel.a <= iso ? [sel.a, iso] : [iso, sel.a];
+      meses.querySelectorAll(".cal-d").forEach(x => x.classList.toggle("dia-sel", x.dataset.d >= a && x.dataset.d <= b));
+      sel.a = null; mostrarSel(null);
+      editarPeriodo({ id: im.id, nome: im.nome, moeda: im.moeda, ajustes: im.ajustes }, a, b);
+    }
+    await carregarMais();
+    if (!vivo()) return;
+    const obs = new IntersectionObserver(es => { if (es.some(e => e.isIntersecting)) carregarMais(); }, { rootMargin: "600px" });
+    obs.observe(sentinela);
+  }
+
+  async function tpLinhaTempo(area, vivo) {
+    const f = estado.tpLinha = estado.tpLinha || { de: isoLocal(new Date()) };
     const c = await tp(`calendario?de=${f.de}&ate=${somaDiasISO(f.de, 27)}`);
     if (!vivo()) return;
     if (!c.imoveis.length) { trocar(area, h("section", { class: "cartao vidro" }, vazio("Nenhum imóvel ainda", "Cadastre em Imóveis."), h("div", { class: "acoes", style: "justify-content:center" }, h("a", { class: "btn btn-primario", href: "#/temporada/imoveis" }, "Cadastrar imóvel")))); return; }
