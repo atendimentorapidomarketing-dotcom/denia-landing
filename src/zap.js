@@ -942,7 +942,8 @@ export async function rotasZap(request, env, k, orgId, papel, resto) {
     const { corpo, erro } = await ler(); if (erro) return erro;
     const tt = String(corpo.telegram_token || "").trim(), tc = String(corpo.telegram_chat || "").trim();
     if (!corpo.remover && (!/^\d{5,15}:[A-Za-z0-9_-]{20,60}$/.test(tt) || !/^-?\d{3,20}$|^@[A-Za-z0-9_]{4,40}$/.test(tc))) return json({ erro: "Cole o token do bot (do @BotFather) e o ID do grupo ou da conversa." }, 400);
-    await env.DB.prepare("INSERT INTO plt_zap_contas(org_id,telegram_cifrado,config,atualizado_ms) VALUES(?,?,'{}',?) ON CONFLICT(org_id) DO UPDATE SET telegram_cifrado=excluded.telegram_cifrado, atualizado_ms=excluded.atualizado_ms").bind(orgId, corpo.remover ? null : await k.cifrar(env, JSON.stringify({ token: tt, chat: tc })), agora).run();
+    // Bot próprio (ex.: o mesmo que o Botpress usava): passa a valer no lugar do bot da DENIA.
+    await env.DB.prepare("INSERT INTO plt_zap_contas(org_id,telegram_cifrado,config,atualizado_ms) VALUES(?,?,'{}',?) ON CONFLICT(org_id) DO UPDATE SET telegram_cifrado=excluded.telegram_cifrado, telegram_chat=CASE WHEN excluded.telegram_cifrado IS NULL THEN telegram_chat ELSE NULL END, atualizado_ms=excluded.atualizado_ms").bind(orgId, corpo.remover ? null : await k.cifrar(env, JSON.stringify({ token: tt, chat: tc })), agora).run();
     if (!corpo.remover) {
       const z = { env, k, sim: false, conta: await contaDa(env, orgId) };
       const ok = await telegram(z, "✅ Avisos do chatbot da DENIA ligados neste grupo.");

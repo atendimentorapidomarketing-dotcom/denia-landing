@@ -1857,6 +1857,10 @@ test("Importar do Botpress — mesma ordem, mesmos textos, mensagens separadas, 
     { id: "hor", type: "standard", instructions: [txt("Seg a sex, 9h às 19h."), pergunta("Posso ajudar com algo mais?", fim)] },
     { id: "tchau", type: "standard", instructions: [txt("Site: https://teste.test/"), txt("Foi um prazer atendê-lo(a)!")], defaultTransition: { targetNodeId: "e" } },
     { id: "e", type: "end", instructions: [] }] }] };
+  // O grupo ligado pelo botão da DENIA dá lugar ao bot próprio vindo do Botpress.
+  p.env.DB.db.prepare("UPDATE plt_zap_contas SET telegram_chat='-100999' WHERE org_id=?").run(inf);
+  await z("conta/telegram", { metodo: "POST", corpo: { telegram_token: "654321:" + "B".repeat(30), telegram_chat: "-5000000001" } });
+  assert.equal(p.env.DB.q("SELECT telegram_chat FROM plt_zap_contas WHERE org_id=?", inf)[0].telegram_chat, null);
   const conv = await z("botpress", { metodo: "POST", corpo: { bot } });
   assert.equal(conv.status, 200, JSON.stringify(conv.dados));
   const rot = conv.dados.roteiro;
