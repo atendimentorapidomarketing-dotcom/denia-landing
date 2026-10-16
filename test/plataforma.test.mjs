@@ -1724,8 +1724,8 @@ test("Fluxo de botões (como no Botpress) — submenus, lojas em cartões, image
   assert.equal(cartoes[0].corpo.interactive.action.parameters.url, "https://wa.me/5521988887777");
   assert.match(cartoes[1].corpo.interactive.body.text, /\*Tech Fix\*\nSala 3\nTroca de tela na hora/);
   const lead = p.engine.telegram.at(-1);
-  assert.match(lead, /^🔔 NOVO CLIENTE!\n\n👤 Nome: Marcos\n📱 WhatsApp: 5521979862792\n💬 Pedido: 🔧 Serviços > 📱 Celular > Troca de tela\n/);
-  assert.match(lead, /🕒 Horário: \d{2}\/\d{2}\/\d{4}, \d{2}:\d{2}\n\n#infomix #leads$/);
+  assert.match(lead, /^🔔 NOVO CLIENTE!\n\n👤 \*Nome:\* Marcos\n📱 \*WhatsApp:\* 5521979862792\n💬 \*Pedido:\* 🔧 Serviços > 📱 Celular > Troca de tela\n/);
+  assert.match(lead, /🕒 \*Horário:\* \d{2}\/\d{2}\/\d{4}, \d{2}:\d{2}\n\n#infomix #leads$/);
   assert.doesNotMatch(lead, /Responda esta mensagem/);
   // Resposta com imagem + botão de link + carrossel.
   const n0 = enviadosPara(p, CLI).length;
@@ -1799,7 +1799,7 @@ Vou chamar a equipe.`;
   assert.equal(ok.status, 200, JSON.stringify(ok.dados));
   assert.equal((await z("roteiro", { metodo: "POST", corpo: { roteiro } })).status, 409, "pede confirmação para substituir");
   const cat = (await z("itens")).dados.catalogo;
-  assert.equal(cat.filter(c => c.nome === "Conserta Celular").length, 2, "mesma loja com links diferentes: cada link continua o mesmo");
+  assert.equal(cat.filter(c => c.nome.includes("Conserta Celular")).length, 2, "mesma loja com links diferentes: cada link continua o mesmo");
 
   const CLI = "5521966665555";
   await webhookZap(p, "111111111111", { from: CLI, type: "text", text: { body: "quero consertar meu telefone" } });
@@ -1812,7 +1812,7 @@ Vou chamar a equipe.`;
   await clicar(p, "111111111111", CLI, "z:i:" + id("Produtos"));
   await clicar(p, "111111111111", CLI, "z:i:" + id("Celular"));
   e = enviadosPara(p, CLI);
-  assert.equal(e.at(-2).corpo.text.body, "Estes são os contatos de algumas lojas:\n\nLoja A - Loja dos Celulares\nhttps://tinyurl.com/teste-celulares\n\nLoja 04 - Conserta Celular\nhttps://tinyurl.com/teste-conserta", "todas as lojas numa mensagem, com os links exatos");
+  assert.equal(e.at(-2).corpo.text.body, "Estes são os contatos de algumas lojas:\n\nLoja A - Loja dos Celulares\nhttps://tinyurl.com/teste-celulares\n\nLoja 04- Conserta Celular\nhttps://tinyurl.com/teste-conserta", "todas as lojas numa mensagem, com os nomes e links exatos");
   assert.equal(e.at(-1).corpo.interactive.body.text, "Posso ajudar com algo mais?");
   assert.deepEqual(e.at(-1).corpo.interactive.action.buttons.map(b => b.reply.title), ["Menu Principal", "Menu Anterior", "Finalizar"]);
   await clicar(p, "111111111111", CLI, "z:i:" + id("Informática"));
@@ -1831,6 +1831,70 @@ Vou chamar a equipe.`;
   const de_novo = await z("roteiro", { metodo: "POST", corpo: { roteiro: exp, substituir: true } });
   assert.equal(de_novo.dados.botoes, 15);
   assert.equal(de_novo.dados.lojas_novas, 0, "lojas reaproveitadas pelo link");
+});
+
+test("Importar do Botpress — mesma ordem, mesmos textos, mensagens separadas, rodapé e aviso só onde o Botpress avisava", async () => {
+  const { p, inf } = await duasEmpresasComChatbot();
+  const z = (c, op) => p.req(`/api/orgs/${inf}/zap/${c}`, { quem: "admin", ...(op || {}) });
+  await z("conta/telegram", { metodo: "POST", corpo: { telegram_token: "123456:" + "A".repeat(30), telegram_chat: "-100123456" } });
+  const txt = t => ({ type: "content", content: { type: "text", text: { valueType: "dynamic", dynamicValue: t } } });
+  const ir = d => ({ type: "transition", condition: { payload: "true" }, destination: { node: d } });
+  const pergunta = (q, ops) => ({ type: "capture", question: { dynamicValue: q }, transitions: ops.map(([l, d]) => ({ label: l, condition: { payload: "__CHOICE=" + l }, destination: { node: d } })) });
+  const fim = [["Menu Pincipal", "menu"], ["Menu Anterior", "menu"], ["Finalizar", "tchau"]];
+  const aviso = { type: "action", hashtags: "#shop #leads", titulo: "🔔 NOVO CLIENTE!" };
+  const bot = { flows: [{ name: "Error", nodes: [] }, { name: "Main", startNode: "s", nodes: [
+    { id: "s", type: "start", instructions: [ir("ini")] },
+    { id: "ini", type: "standard", instructions: [txt("Olá! Bem-vindo ao Shopping Teste.")], defaultTransition: { targetNodeId: "menu" } },
+    { id: "menu", type: "standard", instructions: [pergunta("Escolha abaixo que você procura hoje:", [["Serviços", "serv"], ["Produtos", "prod"], ["Informações", "info"]])] },
+    { id: "serv", type: "standard", instructions: [txt("Você selecionou serviços. "), pergunta("Informe o serviço:", [["Celular", "a1"], ["Refrigeração | Lava e Seca", "a2"]])] },
+    { id: "a1", type: "standard", instructions: [aviso], defaultTransition: { targetNodeId: "l1" } },
+    { id: "l1", type: "standard", instructions: [txt("Estes são os contatos:"), txt("Loja A - Celulares \nhttps://tinyurl.com/t-cel"), txt("Loja: 03 - Games\nhttps://tinyurl.com/t-games"), pergunta("Posso ajudar com algo mais?", fim)] },
+    { id: "a2", type: "standard", instructions: [aviso], defaultTransition: { targetNodeId: "l2" } },
+    { id: "l2", type: "standard", instructions: [txt("Estes são os contatos:"), txt("Loja 05 - Frio\nhttps://tinyurl.com/t-frio"), pergunta("Posso ajudar com algo mais?", fim)] },
+    { id: "prod", type: "standard", instructions: [pergunta("Qual tipo de produto?", [["Informática", "a1"], ["Celular", "a1"]])] },
+    { id: "info", type: "standard", instructions: [pergunta("Qual informação Gostaria?", [["Endereço", "end"], ["Horário de funcionamento", "hor"]])] },
+    { id: "end", type: "standard", instructions: [txt("Rua Teste, 1."), pergunta("Posso ajudar com algo mais?", fim)] },
+    { id: "hor", type: "standard", instructions: [txt("Seg a sex, 9h às 19h."), pergunta("Posso ajudar com algo mais?", fim)] },
+    { id: "tchau", type: "standard", instructions: [txt("Site: https://teste.test/"), txt("Foi um prazer atendê-lo(a)!")], defaultTransition: { targetNodeId: "e" } },
+    { id: "e", type: "end", instructions: [] }] }] };
+  const conv = await z("botpress", { metodo: "POST", corpo: { bot } });
+  assert.equal(conv.status, 200, JSON.stringify(conv.dados));
+  const rot = conv.dados.roteiro;
+  assert.match(rot, /\n> Serviços\nVocê selecionou serviços\.\n---\nInforme o serviço:\n\n>> Celular\n/, "mesma ordem e mensagens separadas");
+  assert.match(rot, />> Refrigeração\|Lava e Seca/, "nome encurtado só porque passa de 24 letras");
+  assert.match(rot, />> Endereço \[sem aviso\]/);
+  assert.match(rot, /ETIQUETAS DO AVISO: #shop #leads/);
+  assert.equal((await z("botpress", { metodo: "POST", corpo: { bot: { flows: [] } } })).status, 400);
+  assert.equal((await z("roteiro", { metodo: "POST", corpo: { roteiro: rot } })).status, 200);
+
+  const CLI = "5521955554444";
+  await webhookZap(p, "111111111111", { from: CLI, type: "text", text: { body: "boa tarde" } }, "Henrique");
+  let e = enviadosPara(p, CLI);
+  assert.equal(e.at(-2).corpo.text.body, "Olá! Bem-vindo ao Shopping Teste.");
+  assert.equal(e.at(-1).corpo.interactive.body.text, "Escolha abaixo que você procura hoje:");
+  assert.deepEqual(e.at(-1).corpo.interactive.action.buttons.map(b => b.reply.title), ["Serviços", "Produtos", "Informações"]);
+  const itens = (await z("itens")).dados.itens;
+  const id = (t, pai) => itens.find(i => i.titulo === t && (pai === undefined || i.pai_id === pai)).id;
+  await clicar(p, "111111111111", CLI, "z:i:" + id("Serviços"));
+  e = enviadosPara(p, CLI);
+  assert.equal(e.at(-2).corpo.text.body, "Você selecionou serviços.", "primeiro balão");
+  assert.equal(e.at(-1).corpo.interactive.body.text, "Informe o serviço:", "segundo balão, com os botões");
+  await clicar(p, "111111111111", CLI, "z:i:" + id("Celular", id("Serviços")));
+  e = enviadosPara(p, CLI);
+  assert.equal(e.at(-2).corpo.text.body, "Estes são os contatos:\n\nLoja A - Celulares\nhttps://tinyurl.com/t-cel\n\nLoja: 03 - Games\nhttps://tinyurl.com/t-games");
+  assert.deepEqual(e.at(-1).corpo.interactive.action.buttons.map(b => b.reply.title), ["Menu Principal", "Menu Anterior", "Finalizar"]);
+  assert.equal(p.engine.telegram.at(-1).replace(/\d{2}\/\d{2}\/\d{4}, \d{2}:\d{2}/, "DATA"), "🔔 NOVO CLIENTE!\n\n👤 *Nome:* Marcos\n📱 *WhatsApp:* 5521955554444\n💬 *Pedido:* Serviços > Celular\n🕒 *Horário:* DATA\n\n#shop #leads", "mesmo aviso do Botpress");
+  const nAvisos = p.engine.telegram.length;
+  await clicar(p, "111111111111", CLI, "z:i:" + id("Informações"));
+  e = enviadosPara(p, CLI).at(-1);
+  assert.equal(e.corpo.interactive.type, "list", "\"Horário de funcionamento\" não cabe num botão (20 letras): vira lista e o nome fica inteiro");
+  assert.deepEqual(e.corpo.interactive.action.sections[0].rows.map(r => [r.title, r.description]), [["Endereço", undefined], ["Horário de funcionamento", undefined]]);
+  assert.equal(e.corpo.interactive.body.text, "Qual informação Gostaria?", "lista simples, sem dica extra");
+  await clicar(p, "111111111111", CLI, "z:i:" + id("Endereço"));
+  assert.equal(p.engine.telegram.length, nAvisos, "informação não manda aviso (o Botpress também não mandava)");
+  const antes = enviadosPara(p, CLI).length;
+  await clicar(p, "111111111111", CLI, "z:fim");
+  assert.deepEqual(enviadosPara(p, CLI).slice(antes).map(x => x.corpo.text.body), ["Site: https://teste.test/", "Foi um prazer atendê-lo(a)!"], "encerramento em dois balões");
 });
 
 test("IA completa — qualquer empresa: conversa como gente, lembra do cliente, não mistura empresas e chama a equipe", async () => {

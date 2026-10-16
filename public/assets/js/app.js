@@ -2059,6 +2059,36 @@
       h("p", { text: "Conte com suas palavras como é o negócio e como quer atender. A IA monta o menu, as mensagens, as palavras-chave e o treinamento — e pergunta só o essencial." }),
       campo("Sobre o seu negócio", desc), h("div", { class: "acoes" }, botao("Montar com a IA", () => gerar(), "btn-primario")), area]);
   }
+  // Lê o bot.json de dentro do .bpz (zip) do Botpress e tira o código das ações (onde ficam tokens).
+  async function lerArquivoBotpress(arquivo) {
+    const bytes = new Uint8Array(await arquivo.arrayBuffer());
+    let texto;
+    if (bytes[0] === 0x7b) texto = new TextDecoder().decode(bytes); // já é o JSON
+    else {
+      const dv = new DataView(bytes.buffer);
+      let fimCd = -1;
+      for (let i = bytes.length - 22; i >= Math.max(0, bytes.length - 70000); i--) if (dv.getUint32(i, true) === 0x06054b50) { fimCd = i; break; }
+      if (fimCd < 0) throw new Error("Esse arquivo não parece um .bpz do Botpress.");
+      const total = dv.getUint16(fimCd + 10, true);
+      let p = dv.getUint32(fimCd + 16, true), achado = null;
+      for (let n = 0; n < total; n++) {
+        const metodo = dv.getUint16(p + 10, true), tam = dv.getUint32(p + 20, true), nl = dv.getUint16(p + 28, true), xl = dv.getUint16(p + 30, true), cl = dv.getUint16(p + 32, true), local = dv.getUint32(p + 42, true);
+        const nome = new TextDecoder().decode(bytes.subarray(p + 46, p + 46 + nl));
+        if (/(^|\/)bot\.json$/.test(nome)) { achado = { metodo, tam, local }; break; }
+        p += 46 + nl + xl + cl;
+      }
+      if (!achado) throw new Error("Não achei o bot.json dentro do arquivo do Botpress.");
+      const inicio = achado.local + 30 + dv.getUint16(achado.local + 26, true) + dv.getUint16(achado.local + 28, true);
+      const dados = bytes.subarray(inicio, inicio + achado.tam);
+      if (achado.metodo === 0) texto = new TextDecoder().decode(dados);
+      else if (achado.metodo === 8 && typeof DecompressionStream === "function") texto = await new Response(new Blob([dados]).stream().pipeThrough(new DecompressionStream("deflate-raw"))).text();
+      else throw new Error("Não consegui abrir o arquivo. Atualize o navegador e tente de novo.");
+    }
+    let bot;
+    try { bot = JSON.parse(texto); } catch { throw new Error("O arquivo do Botpress está corrompido."); }
+    const limpar = i => i && i.type === "action" ? { type: "action", hashtags: ((String(i.code || "").match(/\n(#[\wÀ-ÿ]+(?:[ \t]+#[\wÀ-ÿ]+)*)\s*`/) || [])[1] || ""), titulo: /NOVO CLIENTE/.test(String(i.code || "")) ? "🔔 NOVO CLIENTE!" : "" } : i;
+    return { flows: (bot.flows || []).map(f => ({ name: f.name, startNode: f.startNode, nodes: (f.nodes || []).map(n => ({ id: n.id, name: n.name, type: n.type, defaultTransition: n.defaultTransition, instructions: (n.instructions || []).map(limpar) })) })) };
+  }
   // ----- Construtor do fluxo (estilo Botpress, mais simples): cada bloco é um cartão com a mensagem e
   // os botões. Tocar num botão abre o próximo cartão ao lado. À direita, a prévia como no WhatsApp.
   const TIPO_BOTAO = {
@@ -2444,7 +2474,23 @@
           resultado.append(h("p", { class: "fx-erro", text: e.message }), erros.length ? h("ul", { class: "fx-erros" }, erros.map(x => h("li", { text: x }))) : null);
         }
       };
+      // Importar do Botpress: lê o .bpz aqui no navegador e manda só o fluxo (sem o código das ações, que tem tokens).
+      const arquivoBp = h("input", { type: "file", accept: ".bpz,.zip,.json,application/zip,application/json", class: "oculto" });
+      arquivoBp.addEventListener("change", async () => {
+        const f = arquivoBp.files[0]; if (!f) return;
+        resultado.replaceChildren(h("p", { class: "fx-nota", text: "Lendo o arquivo do Botpress…" }));
+        try {
+          const bot = await lerArquivoBotpress(f);
+          const r = await zap("botpress", { metodo: "POST", corpo: { bot } });
+          caixa.value = r.roteiro;
+          substituir.checked = true;
+          resultado.replaceChildren(h("p", { class: "fx-ok", text: "✓ Fluxo do Botpress convertido, na mesma ordem e com os mesmos textos. Confira abaixo e toque em Aplicar roteiro." }));
+        } catch (e) { resultado.replaceChildren(h("p", { class: "fx-erro", text: e.message })); }
+        arquivoBp.value = "";
+      });
       const fechar = gaveta("Roteiro do fluxo (texto)", [
+        podeEditar ? h("div", { class: "fx-botpress" }, h("div", {}, h("strong", { text: "Vem do Botpress?" }), h("p", { class: "fx-nota", text: "No Botpress: Bot → Exportar (arquivo .bpz). Escolha o arquivo aqui e a DENIA monta o mesmo fluxo." })),
+          botao("📥 Importar do Botpress", () => arquivoBp.click(), "btn-primario btn-pequeno"), arquivoBp) : null,
         h("p", { class: "sub", text: "O fluxo inteiro em texto, como num documento. Copie para guardar, ou cole um roteiro para montar todos os botões de uma vez." }),
         h("details", { class: "fx-ajuda" }, h("summary", { text: "Como escrever" }), h("pre", { text:
 `BOAS-VINDAS: primeira mensagem (vai sozinha)
@@ -2478,6 +2524,7 @@ Botão só com texto = resposta.` })),
         h("div", { class: "acoes" },
           botao("🛍️ Modelo Shopping", async () => { try { await zap("modelo", { metodo: "POST", corpo: { tipo: "shopping" } }); await recarregar(); aviso("Modelo criado. Ajuste do seu jeito.", "ok"); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno"),
           botao("🔧 Modelo Serviços", async () => { try { await zap("modelo", { metodo: "POST", corpo: { tipo: "servicos" } }); await recarregar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno"),
+          botao("📥 Importar do Botpress", roteiro, "btn-primario btn-pequeno"),
           botao("📋 Colar roteiro", roteiro, "btn-secundario btn-pequeno"),
           botao("✨ Criar com a IA", () => criarComIA(false), "btn-secundario btn-pequeno"))) : null,
       h("section", { class: "cartao vidro fx-quadro" },
