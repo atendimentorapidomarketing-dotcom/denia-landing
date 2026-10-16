@@ -2579,60 +2579,87 @@
 
   // ----- Calendário como no Airbnb: um imóvel por vez, mês inteiro, deslizando para ver os próximos meses.
   const MESES = ["janeiro", "fevereiro", "março", "abril", "maio", "junho", "julho", "agosto", "setembro", "outubro", "novembro", "dezembro"];
+  // Selo de cada plataforma em que o imóvel está (pelo calendário e/ou pela conexão oficial).
+  function selosPlataformas(im) {
+    const l = im.plataformas || [];
+    if (!l.length) return h("span", { class: "selo selo-alerta" }, h("span", { class: "ponto" }), "Não ligado a nenhuma plataforma");
+    return h("span", { class: "selos-plat" }, l.map(p2 => h("span", { class: "plat-selo plat-" + p2.canal + (p2.ok === false ? " plat-erro" : ""), title: `${CANAL_NOME[p2.canal] || p2.canal}: ${p2.oficial ? "conexão oficial" : "calendário (iCal)"}${p2.ok === false ? " — com erro" : ""}` },
+      h("b", { class: "canal-ic canal-" + p2.canal, text: (CANAL_NOME[p2.canal] || p2.canal)[0] }), h("span", { text: (CANAL_NOME[p2.canal] || p2.canal) + (p2.oficial ? " · oficial" : "") + (p2.ok === false ? " ⚠" : "") }))));
+  }
+  const fotoImovel = im => im.foto_id ? `/api/orgs/${estado.org.id}/tp/fotos/${im.foto_id}` : (im.anuncio && (im.anuncio.fotos || [])[0]) || null;
   async function tpCalendario(area, vivo) {
-    const f = estado.tpCal = estado.tpCal || { vista: "mes" };
+    const f = estado.tpCal = estado.tpCal || {};
     const ims = ((await tp("imoveis")).imoveis || []).filter(i => i.ativo);
     if (!vivo()) return;
     if (!ims.length) { trocar(area, h("section", { class: "cartao vidro" }, vazio("Nenhum imóvel ainda", "Adicione seus anúncios colando o link do calendário."), h("div", { class: "acoes", style: "justify-content:center" }, botao("Adicionar imóveis", () => cadastroRapidoTp(), "btn-primario")))); return; }
-    const alternar = h("div", { class: "abas abas-chips" }, [["mes", "1 mês"], ["m3", "3 meses"], ["m6", "6 meses"], ["m12", "12 meses"], ["linha", "Todos os imóveis"]].map(([v, n]) => h("button", { type: "button", class: "aba" + (f.vista === v ? " ativo" : ""), onclick: () => { f.vista = v; navegar(); } }, n)));
-    const mesesVer = { mes: 3, m3: 3, m6: 6, m12: 12 }[f.vista] || 3;
+    if (!f.vista) f.vista = ims.length > 1 ? "geral" : "mes";
+    const hoje = isoLocal(new Date());
+    const mesHoje = hoje.slice(0, 7) + "-01";
+    if (!f.inicio) f.inicio = mesHoje;
+    const mesesVer = { mes: 1, m3: 3, m6: 6, m12: 12 }[f.vista] || 1;
+    const alternar = h("div", { class: "abas abas-chips" }, [...(ims.length > 1 ? [["geral", "Todos os imóveis"]] : []), ["mes", "1 mês"], ["m3", "3 meses"], ["m6", "6 meses"], ["m12", "12 meses"], ["linha", "Linha do tempo"]].map(([v, n]) => h("button", { type: "button", class: "aba" + (f.vista === v ? " ativo" : ""), onclick: () => { f.vista = v; navegar(); } }, n)));
     if (f.vista === "linha") { const caixa = h("div", { class: "grade" }); trocar(area, h("div", { class: "cal-mes-topo" }, alternar), caixa); return tpLinhaTempo(caixa, vivo); }
+    // Visão geral: todos os imóveis, com as plataformas e os próximos 14 dias; toque para abrir o calendário de um.
+    if (f.vista === "geral") {
+      const dias14 = Array.from({ length: 14 }, (_, i) => somaDiasISO(hoje, i));
+      const c = await tp(`calendario?de=${hoje}&ate=${dias14[13]}`);
+      if (!vivo()) return;
+      trocar(area, h("div", { class: "cal-mes-topo" }, alternar),
+        h("section", { class: "grade grade-3" }, ims.map(im => {
+          const dados = c.imoveis.find(x => x.id === im.id) || { precos: [] };
+          const ocup = new Map(); for (const r of c.reservas.filter(x => x.imovel_id === im.id)) for (let d = r.inicio; d < r.fim; d = somaDiasISO(d, 1)) ocup.set(d, r);
+          const ocupadas = dias14.filter(d => ocup.has(d) && ocup.get(d).tipo !== "BLOQUEIO").length;
+          const foto = fotoImovel(im);
+          return h("button", { type: "button", class: "cartao vidro cal-geral-imovel", onclick: () => { f.imovel = im.id; f.vista = "mes"; f.inicio = mesHoje; navegar(); } },
+            foto ? h("img", { class: "cal-geral-foto", src: foto, alt: "", loading: "lazy" }) : h("div", { class: "cal-geral-foto imovel-tp-sem", text: "🏠" }),
+            h("strong", { text: im.nome }), selosPlataformas(im),
+            h("div", { class: "cal-geral-dias", "aria-label": "Próximos 14 dias" }, dias14.map(d => { const r = ocup.get(d), p2 = (dados.precos || []).find(x => x.data === d); return h("span", { class: "cal-geral-dia" + (r ? ` canal-fundo-${r.tipo === "BLOQUEIO" ? "bloqueio" : r.canal}` : p2 && p2.fechado ? " fechado" : ""), title: `${dataCompleta(d)}${r ? " — " + (r.tipo === "BLOQUEIO" ? "bloqueado" : r.hospede || "reservado") : ""}` }, h("small", { text: d.slice(8) })); })),
+            h("span", { class: "sub", text: `${ocupadas} de 14 noites ocupadas${im.proxima_entrada ? " · próxima entrada " + dataCompleta(im.proxima_entrada) : ""}` }));
+        })));
+      return;
+    }
     if (!ims.some(i => i.id === f.imovel)) f.imovel = ims[0].id;
     const im = ims.find(i => i.id === f.imovel);
-    const chips = ims.length > 1 ? h("div", { class: "cal-imoveis" }, ims.map(i => h("button", { type: "button", class: "cal-imovel" + (i.id === f.imovel ? " ativo" : ""), onclick: () => { f.imovel = i.id; navegar(); } }, (i.anuncio.fotos || [])[0] ? h("img", { src: i.anuncio.fotos[0], alt: "" }) : h("span", { class: "cal-imovel-ic", text: "🏠" }), h("span", { text: i.nome })))) : null;
-    const meses = h("div", { class: "cal-meses" + (mesesVer >= 6 ? " cal-compacto" : f.vista === "m3" ? " cal-tres" : "") });
+    const chips = ims.length > 1 ? h("div", { class: "cal-imoveis" }, ims.map(i => { const fo = fotoImovel(i); return h("button", { type: "button", class: "cal-imovel" + (i.id === f.imovel ? " ativo" : ""), onclick: () => { f.imovel = i.id; navegar(); } }, fo ? h("img", { src: fo, alt: "" }) : h("span", { class: "cal-imovel-ic", text: "🏠" }), h("span", { text: i.nome })); })) : null;
+    const somaMes = (iso2, n) => { const d = new Date(Date.UTC(+iso2.slice(0, 4), +iso2.slice(5, 7) - 1 + n, 1)); return d.toISOString().slice(0, 10); };
+    const fimPeriodo = somaDiasISO(somaMes(f.inicio, mesesVer), -1);
+    const nomeMes = iso2 => { const d = new Date(iso2 + "T12:00:00Z"); return `${MESES[d.getUTCMonth()][0].toUpperCase() + MESES[d.getUTCMonth()].slice(1)} de ${d.getUTCFullYear()}`; };
+    const navMes = h("div", { class: "cal-nav" }, botao("‹", () => { f.inicio = somaMes(f.inicio, -mesesVer); navegar(); }, "btn-secundario btn-pequeno", { "aria-label": "Meses anteriores" }),
+      h("strong", { text: mesesVer === 1 ? nomeMes(f.inicio) : `${nomeMes(f.inicio)} – ${nomeMes(somaMes(f.inicio, mesesVer - 1))}` }),
+      botao("›", () => { f.inicio = somaMes(f.inicio, mesesVer); navegar(); }, "btn-secundario btn-pequeno", { "aria-label": "Próximos meses" }),
+      f.inicio !== mesHoje ? botao("Hoje", () => { f.inicio = mesHoje; navegar(); }, "btn-secundario btn-pequeno") : null);
+    const meses = h("div", { class: "cal-meses" + (mesesVer >= 6 ? " cal-compacto" : mesesVer === 3 ? " cal-tres" : "") }, carregando("Carregando o calendário…"));
     const sel = { a: null };
     const barraSel = h("div", { class: "cal-sel oculto" });
     const mostrarSel = t => { if (!t) { barraSel.classList.add("oculto"); return; } trocar(barraSel, h("span", { text: t }), botao("Cancelar", () => { sel.a = null; meses.querySelectorAll(".dia-sel").forEach(x => x.classList.remove("dia-sel")); mostrarSel(null); }, "btn-secundario btn-pequeno")); barraSel.classList.remove("oculto"); };
-    trocar(area, h("div", { class: "cal-mes-topo" }, chips, h("div", { class: "cal-mes-acoes" }, alternar, h("span", { class: "sub cal-dica", text: "Toque num dia para mudar preço, mínimo de noites ou bloquear. Toque numa reserva para ver o hóspede." }))), meses, barraSel);
-    const hoje = isoLocal(new Date());
-    let proximo = hoje.slice(0, 7) + "-01", carregados = 0, carregando = false;
-    const sentinela = h("div", { class: "cal-sentinela" }, carregando ? null : "");
-    meses.appendChild(sentinela);
-    async function carregarMais() {
-      if (carregando || carregados >= 18) return;
-      carregando = true; trocar(sentinela, carregando ? h("div", { class: "carregando", text: "Carregando meses…" }) : null);
-      const de = proximo, fimBloco = new Date(Date.UTC(+de.slice(0, 4), +de.slice(5, 7) - 1 + 3, 0)).toISOString().slice(0, 10);
-      let c;
-      try { c = await tp(`calendario?de=${de}&ate=${fimBloco}`); } catch (e) { trocar(sentinela, h("p", { class: "nota nota-alerta", text: e.message })); carregando = false; return; }
-      const dados = c.imoveis.find(x => x.id === im.id);
-      const reservas = c.reservas.filter(r => r.imovel_id === im.id);
-      const porDia = new Map(); for (const r of reservas) for (let d = r.inicio; d < r.fim; d = somaDiasISO(d, 1)) porDia.set(d, r);
-      const preco = new Map((dados ? dados.precos : []).map(p => [p.data, p]));
-      for (let m = 0; m < 3; m++) {
-        const ini = new Date(Date.UTC(+de.slice(0, 4), +de.slice(5, 7) - 1 + m, 1)), ano = ini.getUTCFullYear(), mes = ini.getUTCMonth();
-        const total = new Date(Date.UTC(ano, mes + 1, 0)).getUTCDate();
-        const grade = h("div", { class: "cal-grade" }, ["D", "S", "T", "Q", "Q", "S", "S"].map((x, i) => h("span", { class: "cal-sem", title: SEMANA[i], text: x })));
-        for (let i = 0; i < ini.getUTCDay(); i++) grade.appendChild(h("span", { class: "cal-vazio" }));
-        let ocupadas = 0;
-        for (let d = 1; d <= total; d++) {
-          const iso = `${ano}-${String(mes + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
-          const r = porDia.get(iso), p = preco.get(iso), passado = iso < hoje, dow = new Date(iso + "T12:00:00Z").getUTCDay();
-          if (r && r.tipo !== "BLOQUEIO") ocupadas++;
-          const inicioR = r && (r.inicio === iso || dow === 0 || d === 1), fimR = r && (somaDiasISO(iso, 1) === r.fim || dow === 6 || d === total);
-          const cel = h("button", { type: "button", "data-d": iso, class: "cal-d" + (passado ? " passado" : "") + (iso === hoje ? " hoje" : "") + (r ? ` res canal-fundo-${r.tipo === "BLOQUEIO" ? "bloqueio" : r.canal}` : "") + (inicioR ? " res-ini" : "") + (fimR ? " res-fim" : "") + (p && p.fechado ? " fechado" : "") + (p && p.especial ? " especial" : ""),
-            "aria-label": `${d} de ${MESES[mes]}${r ? ` — ${r.tipo === "BLOQUEIO" ? "bloqueado" : (r.hospede || "reservado") + " (" + (CANAL_NOME[r.canal] || r.canal) + ")"}` : p ? ` — ${dinheiro(p.preco, im.moeda || "BRL")}` : ""}`,
-            onclick: () => tocar(iso, r) },
-            h("span", { class: "cal-num", text: String(d) }),
-            r ? (inicioR ? h("span", { class: "cal-hosp", text: r.tipo === "BLOQUEIO" ? "Bloqueado" : `${CANAL_SIGLA[r.canal] || ""} ${(r.hospede || "Reserva").split(" ")[0]}` }) : null)
-              : p ? h("span", { class: "cal-valor", text: p.fora_janela ? "—" : p.fechado ? "fechado" : "R$" + numero(Math.round(p.preco)) }) : null);
-          grade.appendChild(cel);
-        }
-        meses.insertBefore(h("section", { class: "cal-mes cartao vidro" }, h("div", { class: "cal-mes-titulo" }, h("h3", { text: `${MESES[mes][0].toUpperCase() + MESES[mes].slice(1)} de ${ano}` }), h("span", { class: "sub", text: `${ocupadas} de ${total} noites reservadas` })), grade), sentinela);
+    trocar(area, h("div", { class: "cal-mes-topo" }, chips, h("div", { class: "cal-mes-acoes" }, alternar, navMes), h("div", { class: "cal-mes-acoes" }, selosPlataformas(im), h("span", { class: "sub cal-dica", text: "Toque num dia (e depois no último) para mudar preço, mínimo de noites ou bloquear. Toque numa reserva para ver o hóspede." }))), meses, barraSel);
+    // Busca o período em blocos de até 12 meses (o servidor aceita até ~13 meses por pedido).
+    let c;
+    try { c = await tp(`calendario?de=${f.inicio}&ate=${fimPeriodo}`); } catch (e) { trocar(meses, h("p", { class: "nota nota-alerta", text: e.message })); return; }
+    if (!vivo()) return;
+    const dados = c.imoveis.find(x => x.id === im.id);
+    const porDia = new Map(); for (const r of c.reservas.filter(r => r.imovel_id === im.id)) for (let d = r.inicio; d < r.fim; d = somaDiasISO(d, 1)) porDia.set(d, r);
+    const preco = new Map((dados ? dados.precos : []).map(p => [p.data, p]));
+    meses.replaceChildren();
+    for (let mI = 0; mI < mesesVer; mI++) {
+      const ini = new Date(somaMes(f.inicio, mI) + "T12:00:00Z"), ano = ini.getUTCFullYear(), mes = ini.getUTCMonth();
+      const total = new Date(Date.UTC(ano, mes + 1, 0)).getUTCDate();
+      const grade = h("div", { class: "cal-grade" }, ["D", "S", "T", "Q", "Q", "S", "S"].map((x, i) => h("span", { class: "cal-sem", title: SEMANA[i], text: x })));
+      for (let i = 0; i < ini.getUTCDay(); i++) grade.appendChild(h("span", { class: "cal-vazio" }));
+      let ocupadas = 0;
+      for (let d = 1; d <= total; d++) {
+        const iso = `${ano}-${String(mes + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+        const r = porDia.get(iso), p = preco.get(iso), passado = iso < hoje, dow = new Date(iso + "T12:00:00Z").getUTCDay();
+        if (r && r.tipo !== "BLOQUEIO") ocupadas++;
+        const inicioR = r && (r.inicio === iso || dow === 0 || d === 1), fimR = r && (somaDiasISO(iso, 1) === r.fim || dow === 6 || d === total);
+        grade.appendChild(h("button", { type: "button", "data-d": iso, class: "cal-d" + (passado ? " passado" : "") + (iso === hoje ? " hoje" : "") + (r ? ` res canal-fundo-${r.tipo === "BLOQUEIO" ? "bloqueio" : r.canal}` : "") + (inicioR ? " res-ini" : "") + (fimR ? " res-fim" : "") + (p && p.fechado ? " fechado" : "") + (p && p.especial ? " especial" : ""),
+          "aria-label": `${d} de ${MESES[mes]}${r ? ` — ${r.tipo === "BLOQUEIO" ? "bloqueado" : (r.hospede || "reservado") + " (" + (CANAL_NOME[r.canal] || r.canal) + ")"}` : p ? ` — ${dinheiro(p.preco, im.moeda || "BRL")}` : ""}`,
+          onclick: () => tocar(iso, r) },
+          h("span", { class: "cal-num", text: String(d) }),
+          r ? (inicioR ? h("span", { class: "cal-hosp", text: r.tipo === "BLOQUEIO" ? "Bloqueado" : `${CANAL_SIGLA[r.canal] || ""} ${(r.hospede || "Reserva").split(" ")[0]}` }) : null)
+            : p ? h("span", { class: "cal-valor", text: p.fora_janela ? "—" : p.fechado ? "fechado" : "R$" + numero(Math.round(p.preco)) }) : null));
       }
-      carregados += 3;
-      proximo = new Date(Date.UTC(+de.slice(0, 4), +de.slice(5, 7) - 1 + 3, 1)).toISOString().slice(0, 10);
-      carregando = false; trocar(sentinela, carregados >= 18 ? h("p", { class: "sub", style: "text-align:center", text: "Mostrando 18 meses." }) : null);
+      meses.appendChild(h("section", { class: "cal-mes cartao vidro" }, h("div", { class: "cal-mes-titulo" }, h("h3", { text: nomeMes(somaMes(f.inicio, mI)) }), h("span", { class: "sub", text: `${ocupadas} de ${total} noites reservadas` })), grade));
     }
     function tocar(iso, r) {
       if (r) { abrirReservaTp({ ...r, imovel: im.nome }); return; }
@@ -2642,11 +2669,6 @@
       sel.a = null; mostrarSel(null);
       editarPeriodo({ id: im.id, nome: im.nome, moeda: im.moeda, ajustes: im.ajustes, conectado: Boolean(im.conectado_channex) }, a, b);
     }
-    await carregarMais();
-    while (vivo() && carregados < mesesVer) await carregarMais();
-    if (!vivo()) return;
-    const obs = new IntersectionObserver(es => { if (es.some(e => e.isIntersecting)) carregarMais(); }, { rootMargin: "600px" });
-    obs.observe(sentinela);
   }
 
   async function tpLinhaTempo(area, vivo) {
@@ -2805,13 +2827,41 @@
     if (!vivo()) return;
     trocar(area,
       h("div", { class: "acoes" }, pode("AGENTE") ? botao("+ Adicionar imóveis", () => cadastroRapidoTp(), "btn-primario") : null),
+      d.imoveis.some(i => i.ativo && !(i.anuncio && i.anuncio.descricao)) ? h("p", { class: "nota", text: "Para trazer descrição, regras, comodidades e fotos de cada anúncio, toque em \"Importar anúncio\" no imóvel. Leva 1 minuto por anúncio e não tem custo." }) : null,
       !d.imoveis.length && pode("AGENTE") ? h("section", { class: "cartao vidro destaque-ia" }, h("h3", { style: "margin:0", text: "Traga seus anúncios em 1 minuto" }), h("p", { class: "sub", style: "margin:0", text: "Cole o link do calendário de cada anúncio do Airbnb, Booking ou Vrbo. A DENIA cria os imóveis e já traz as reservas. Preços e treinamento você completa depois, se quiser." }), botao("Adicionar imóveis", () => cadastroRapidoTp(), "btn-primario")) : null,
       d.imoveis.length ? h("section", { class: "grade grade-3" }, d.imoveis.filter(i => i.ativo).map(im => h("article", { class: "cartao vidro imovel-tp" },
-        (im.anuncio.fotos || [])[0] ? h("img", { class: "imovel-tp-foto", src: im.anuncio.fotos[0], alt: "", loading: "lazy" }) : h("div", { class: "imovel-tp-foto imovel-tp-sem", text: "🏠" }),
+        fotoImovel(im) ? h("img", { class: "imovel-tp-foto", src: fotoImovel(im), alt: "", loading: "lazy" }) : h("div", { class: "imovel-tp-foto imovel-tp-sem", text: "🏠" }),
         h("h3", { style: "margin:0", text: im.nome }), h("p", { class: "sub", style: "margin:0", text: [im.cidade, im.capacidade ? im.capacidade + " pessoas" : "", im.quartos ? im.quartos + " quartos" : ""].filter(Boolean).join(" · ") || "—" }),
         h("p", { style: "margin:0" }, h("strong", { text: im.preco_base ? dinheiro(im.preco_base, im.moeda) : "sem preço" }), h("span", { class: "sub", text: im.preco_fds ? ` · fim de semana ${dinheiro(im.preco_fds, im.moeda)}` : "" })),
-        h("p", { style: "margin:0" }, im.conectado_channex ? selo("Conexão oficial", "ok") : im.calendarios ? selo(`${im.calendarios} calendário(s)`, "info") : selo("Sem plataforma", "alerta"), " ", selo(im.ia_modo === "AUTO" ? "IA responde sozinha" : "IA sugere, você aprova", "info")),
-        h("div", { class: "acoes" }, botao("Editar", () => editarImovelTp(im, d), "btn-secundario btn-pequeno"))))) : h("section", { class: "cartao vidro" }, vazio("Nenhum imóvel", "Cadastre o primeiro para conectar as plataformas.")));
+        selosPlataformas(im),
+        h("p", { style: "margin:0" }, selo(im.ia_modo === "AUTO" ? "IA responde sozinha" : "IA sugere, você aprova", "info"), " ", im.ocupado_hoje ? selo("Ocupado hoje", "ok") : selo("Livre hoje", "info")),
+        !(im.anuncio && im.anuncio.descricao) ? h("p", { class: "sub", style: "margin:0", text: "Falta trazer o anúncio (descrição, regras, comodidades e fotos)." }) : null,
+        h("div", { class: "acoes" }, botao("Editar", () => editarImovelTp(im, d), "btn-secundario btn-pequeno"), botao("Importar anúncio", () => importarAnuncioTp(im), im.anuncio && im.anuncio.descricao ? "btn-secundario btn-pequeno" : "btn-primario btn-pequeno"),
+          h("a", { class: "btn btn-secundario btn-pequeno", href: "#/temporada/calendario", onclick: () => { estado.tpCal = { ...(estado.tpCal || {}), imovel: im.id, vista: "mes", inicio: null }; } }, "Calendário"))))) : h("section", { class: "cartao vidro" }, vazio("Nenhum imóvel", "Cadastre o primeiro para conectar as plataformas.")));
+  }
+  // Trazer o anúncio sem custo: a pessoa copia a página do anúncio e cola; a IA separa título, descrição, regras,
+  // comodidades, capacidade e horários. As fotos sobem do celular ou do computador.
+  function importarAnuncioTp(im) {
+    const texto = h("textarea", { class: "entrada", style: "min-height:200px", placeholder: "Cole aqui TODO o texto da página do anúncio (pode vir junto menu, botões… a DENIA separa)." });
+    const res = h("div", {}), fotos = h("div", { class: "grade" });
+    const fechar = gaveta(`Importar anúncio — ${im.nome}`, [
+      h("p", { class: "sub", text: "Sem custo e sem dar a sua senha: você copia a página do anúncio e a DENIA organiza tudo (título, descrição, regras da casa, comodidades, quartos, camas, check-in e check-out). A IA passa a usar isso para responder os hóspedes." }),
+      h("details", { class: "detalhes", open: true }, h("summary", { text: "Como copiar o anúncio" }), h("ol", { class: "lista-simples" },
+        h("li", { text: "No computador: abra o anúncio no Airbnb (ou Booking/Vrbo), clique em \"Mostrar mais\" na descrição, nas regras e em \"Mostrar todas as comodidades\"." }),
+        h("li", { text: "Aperte Ctrl+A (selecionar tudo) e Ctrl+C (copiar). No Mac: Cmd+A e Cmd+C." }),
+        h("li", { text: "Cole aqui embaixo (Ctrl+V) e toque em Importar. No celular: abra o anúncio no navegador, segure o texto, \"Selecionar tudo\" e Copiar." }))),
+      texto,
+      h("div", { class: "acoes" }, botao("Importar", async (_e, b) => {
+        b.textContent = "Lendo o anúncio…";
+        try {
+          const r = await tp(`imoveis/${im.id}/anuncio/colar`, { metodo: "POST", corpo: { texto: texto.value } });
+          trocar(res, h("p", { class: "nota", text: `Pronto: "${r.titulo || im.nome}" — ${r.comodidades} comodidade(s), ${r.campos.length ? "treinamento: " + r.campos.join(", ") : "sem regras no texto"}${r.quartos ? `, ${r.quartos} quarto(s)` : ""}${r.capacidade ? `, ${r.capacidade} hóspedes` : ""}. Confira em Editar.` }));
+          aviso("Anúncio importado.", "ok");
+        } catch (e) { aviso(e.message, "erro"); } finally { b.textContent = "Importar"; }
+      }, "btn-primario")), res,
+      h("h4", { text: "Fotos" }), h("p", { class: "sub", text: "Selecione as fotos do anúncio no celular ou no computador (pode várias de uma vez). As plataformas não deixam outros programas baixar nem enviar fotos dos anúncios: elas ficam na DENIA para a análise do anúncio e para a IA." }), fotos]);
+    fotosTp(fotos, im);
+    return fechar;
   }
   // Cadastro rápido: só os links dos calendários (o nome é opcional). Vários imóveis de uma vez.
   function cadastroRapidoTp() {

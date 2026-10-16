@@ -2307,3 +2307,21 @@ test("Temporada — avaliações dos hóspedes: 5 estrelas responde sozinha; aba
   const man = (await p.req("/api/orgs/1/tp/avaliacoes", { metodo: "POST", quem: "admin", corpo: { imovel_id: id, canal: "airbnb", nota: 3, autor: "Rui", texto: "Barulho na rua." } })).dados;
   assert.equal(man.avaliacao.status, "PRECISA_VOCE");
 });
+
+test("Temporada — importar anúncio colando a página: título, descrição, regras e comodidades; cartão mostra as plataformas", async () => {
+  const p = await criarPlataforma();
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  await p.req("/api/orgs/1/ia/chave", { metodo: "POST", quem: "admin", corpo: { chave: "sk-proj-" + "f".repeat(40) } });
+  p.web = { "https://www.airbnb.com.br/calendar/ical/123.ics?s=x": "BEGIN:VCALENDAR\nEND:VCALENDAR" };
+  const r0 = (await p.req("/api/orgs/1/tp/imoveis/rapido", { metodo: "POST", quem: "admin", corpo: { imoveis: [{ nome: "Apê Samba Vila Isabel", links: ["https://www.airbnb.com.br/calendar/ical/123.ics?s=x"] }] } })).dados;
+  const id = r0.imoveis[0].id;
+  p.openai = () => ({ output_text: JSON.stringify({ titulo: "Apê Samba Vila Isabel! Próx UERJ", descricao: "Apartamento aconchegante…", capacidade: 7, quartos: 2, banheiros: 1, checkin: "14:00", checkout: "11:00", regras: "Proibido festas. Sem pets.", comodidades: ["Wi-Fi", "Ar-condicionado", "Piscina olímpica"], camas: "1 casal e 3 solteiro" }) });
+  const r = (await p.req(`/api/orgs/1/tp/imoveis/${id}/anuncio/colar`, { metodo: "POST", quem: "admin", corpo: { texto: "Apê Samba Vila Isabel! ".repeat(10) + "Mostrar mais… Comodidades: Wi-Fi, Ar-condicionado. Regras: proibido festas." } })).dados;
+  assert.equal(r.comodidades, 2, "só comodidades da lista oficial");
+  const im = (await p.req(`/api/orgs/1/tp/imoveis/${id}`, { quem: "admin" })).dados.imovel;
+  assert.equal(im.anuncio.titulo, "Apê Samba Vila Isabel! Próx UERJ"); assert.equal(im.capacidade, 7); assert.equal(im.checkin, "14:00");
+  assert.match(im.treinamento.regras, /Proibido festas/); assert.match(im.treinamento.estrutura, /1 casal e 3 solteiro/);
+  const lista = (await p.req("/api/orgs/1/tp/imoveis", { quem: "admin" })).dados.imoveis;
+  assert.deepEqual(lista[0].plataformas.map(x => x.canal), ["airbnb"]);
+  assert.equal((await p.req(`/api/orgs/1/tp/imoveis/${id}/anuncio/colar`, { metodo: "POST", quem: "admin", corpo: { texto: "curto" } })).status, 400);
+});

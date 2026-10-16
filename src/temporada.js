@@ -395,7 +395,9 @@ export async function rotasTemporada(request, env, k, orgId, papel, resto) {
   const ler = async (lim = 60000) => { const { corpo, erro } = await lerCorpo(request, lim); return erro ? { erro } : { corpo }; };
   const precisa = n => pode(papel, n) ? null : json({ erro: "Seu perfil não pode fazer isso." }, 403);
   const imovel = async id => env.DB.prepare("SELECT * FROM plt_tp_imoveis WHERE id=? AND org_id=?").bind(Number(id), orgId).first();
-  const publico = im => ({ ...im, ajustes: json_(im.ajustes, {}), treinamento: json_(im.treinamento, {}), anuncio: json_(im.anuncio, {}), comodidades: json_(im.comodidades, []), channex_rates: undefined, conectado_channex: Boolean(im.channex_property),
+  // Em quais plataformas o imóvel está: pelo calendário (iCal) de cada uma e/ou pela conexão oficial.
+  const plataformasDe = im => { const m2 = {}; for (const x of String(im.canais_cal || "").split(",").filter(Boolean)) { const [c, st] = x.split(":"); m2[c] = { canal: c, via: "calendario", ok: m2[c]?.ok || st === "ok" }; } if (im.channex_property) for (const c of ["airbnb", "booking", "vrbo"]) m2[c] = { ...(m2[c] || { canal: c, ok: true }), oficial: true }; return Object.values(m2); };
+  const publico = im => ({ ...im, plataformas: plataformasDe(im), ajustes: json_(im.ajustes, {}), treinamento: json_(im.treinamento, {}), anuncio: json_(im.anuncio, {}), comodidades: json_(im.comodidades, []), channex_rates: undefined, conectado_channex: Boolean(im.channex_property),
     ical_url: im.ical_token ? new URL(`/tp/ical/${im.ical_token}.ics`, request.url).toString() : null });
   let m;
   const org = await rotasOrganizacao(request, env, k, orgId, r, { json, ler, precisa, imovel, agora, q });
@@ -415,7 +417,11 @@ export async function rotasTemporada(request, env, k, orgId, papel, resto) {
     return json({ ...s, de, ate, proximas: proximas?.results || [], rascunhos: Number(msgs?.n || 0), limpezas: limp?.results || [], calendarios: cals?.results || [], channex: channexLigado(env) });
   }
   if (r === "imoveis" && metodo === "GET") {
-    const l = (await env.DB.prepare("SELECT i.*, (SELECT COUNT(*) FROM plt_tp_calendarios c WHERE c.imovel_id=i.id) calendarios FROM plt_tp_imoveis i WHERE i.org_id=? ORDER BY i.ativo DESC, i.nome").bind(orgId).all())?.results || [];
+    const l = (await env.DB.prepare(`SELECT i.*, (SELECT COUNT(*) FROM plt_tp_calendarios c WHERE c.imovel_id=i.id) calendarios, (SELECT GROUP_CONCAT(c.canal || ':' || CASE WHEN c.erro IS NULL THEN 'ok' ELSE 'erro' END, ',') FROM plt_tp_calendarios c WHERE c.imovel_id=i.id) canais_cal,
+      (SELECT id FROM plt_tp_fotos f WHERE f.imovel_id=i.id AND f.limpeza_id IS NULL AND f.mime LIKE 'image/%' ORDER BY f.ordem, f.id LIMIT 1) foto_id,
+      (SELECT COUNT(*) FROM plt_tp_reservas r WHERE r.imovel_id=i.id AND r.status='CONFIRMADA' AND r.inicio <= ? AND r.fim > ?) ocupado_hoje,
+      (SELECT MIN(r.inicio) FROM plt_tp_reservas r WHERE r.imovel_id=i.id AND r.status='CONFIRMADA' AND r.tipo='RESERVA' AND r.inicio >= ?) proxima_entrada
+      FROM plt_tp_imoveis i WHERE i.org_id=? ORDER BY i.ativo DESC, i.nome`).bind(iso(agora), iso(agora), iso(agora), orgId).all())?.results || [];
     return json({ imoveis: l.map(publico), canais: CANAIS, campos_treino: CAMPOS_TREINO_IMOVEL, channex: channexLigado(env) });
   }
   if ((r === "imoveis" || (m = r.match(/^imoveis\/(\d{1,12})$/))) && metodo === "POST") {
@@ -649,6 +655,38 @@ export async function rotasTemporada(request, env, k, orgId, papel, resto) {
     } catch (e) { return json({ erro: e.message }, 502); }
   }
   // Anúncio: a IA avalia título, descrição e fotos e sugere melhorias.
+  // Importar o anúncio colando o texto da página (título, descrição, regras, comodidades…): a IA organiza tudo.
+  if ((m = r.match(/^imoveis\/(\d{1,12})\/anuncio\/colar$/)) && metodo === "POST") {
+    const negado = precisa("AGENTE"); if (negado) return negado;
+    const { corpo, erro } = await ler(120000); if (erro) return erro;
+    const im = await imovel(m[1]); if (!im) return json({ erro: "Imóvel não encontrado." }, 404);
+    const texto = String(corpo.texto || "").trim().slice(0, 60000);
+    if (texto.length < 80) return json({ erro: "Cole o texto do anúncio (abra o anúncio, selecione tudo e copie)." }, 400);
+    const envIA = await k.comIA(env, orgId);
+    if (!envIA.OPENAI_API_KEY) return json({ erro: "A IA da plataforma ainda não está ligada." }, 503);
+    const lista = Object.values(COMODIDADES).flat();
+    let x;
+    try {
+      x = await openaiResposta(envIA, { modelo: "gpt-5-mini", esforco: "low", maxTokens: 4000, recurso: "temporada/anuncio",
+        instrucoes: `Você recebe o texto copiado da página de um anúncio de temporada (Airbnb, Booking ou Vrbo), com menus e lixo da página misturados. Extraia SÓ o que é do anúncio, sem inventar. Responda em JSON:
+{"titulo":"","descricao":"descrição completa do espaço","cidade":"","capacidade":0,"quartos":0,"banheiros":0,"camas":"ex.: 1 cama de casal e 2 de solteiro","checkin":"HH:MM","checkout":"HH:MM","regras":"regras da casa (festas, pets, fumo, silêncio, visitas)","estrutura":"o espaço, camas e o que tem","estacionamento":"","arredores":"localização e o que tem perto","wifi":"só se o texto disser","perguntas":"perguntas frequentes que o texto responde","comodidades":["use EXATAMENTE nomes desta lista quando houver equivalente: ${lista.join(", ")}"]}
+Campos que não aparecem no texto: deixe vazio ("" ou 0). Nunca coloque preço, nome ou contato de hóspedes.`,
+        entrada: texto });
+    } catch (e) { return json({ erro: e.message }, 502); }
+    const tr = json_(im.treinamento, {}), an = json_(im.anuncio, {});
+    const junta = (a, b) => { a = String(a || "").trim(); b = String(b || "").trim(); return !b ? a : !a ? b : a.includes(b.slice(0, 60)) ? a : a + "\n\n" + b; };
+    for (const c of ["regras", "estrutura", "estacionamento", "arredores", "wifi", "perguntas"]) if (x[c]) tr[c] = cortar(junta(tr[c], x[c]), 4000);
+    if (x.checkin || x.checkout) tr.checkin = cortar(junta(tr.checkin, [x.checkin ? "Check-in a partir das " + x.checkin : "", x.checkout ? "Check-out até " + x.checkout : ""].filter(Boolean).join(". ")), 4000);
+    if (x.camas) tr.estrutura = cortar(junta(tr.estrutura, "Camas: " + x.camas), 4000);
+    const novoAn = { ...an, titulo: cortar(x.titulo || an.titulo, 120), descricao: cortar(x.descricao || an.descricao, 6000) };
+    const com = [...new Set([...json_(im.comodidades, []), ...(Array.isArray(x.comodidades) ? x.comodidades : []).filter(c => lista.includes(c))])];
+    const n = v => (Number(v) > 0 ? Math.round(Number(v)) : null);
+    const hora = v => (/^\d{2}:\d{2}$/.test(String(v || "")) ? v : null);
+    await env.DB.prepare("UPDATE plt_tp_imoveis SET anuncio=?, treinamento=?, comodidades=?, cidade=COALESCE(NULLIF(cidade,''),?), capacidade=COALESCE(capacidade,?), quartos=COALESCE(quartos,?), banheiros=COALESCE(banheiros,?), checkin=COALESCE(?,checkin), checkout=COALESCE(?,checkout) WHERE id=? AND org_id=?")
+      .bind(JSON.stringify(novoAn), JSON.stringify(tr), JSON.stringify(com), cortar(x.cidade, 80) || null, n(x.capacidade), n(x.quartos), n(x.banheiros), hora(x.checkin), hora(x.checkout), im.id, orgId).run();
+    await auditar(env, request, sessao, orgId, "TEMPORADA", `Importou o anúncio de ${im.nome} (texto colado)`);
+    return json({ ok: true, titulo: novoAn.titulo, comodidades: com.length, campos: ["regras", "estrutura", "estacionamento", "arredores", "wifi", "perguntas"].filter(c => x[c]), capacidade: n(x.capacidade), quartos: n(x.quartos), banheiros: n(x.banheiros) });
+  }
   if ((m = r.match(/^imoveis\/(\d{1,12})\/anuncio\/analisar$/)) && metodo === "POST") {
     const im = await imovel(m[1]); if (!im) return json({ erro: "Imóvel não encontrado." }, 404);
     const an = json_(im.anuncio, {});
