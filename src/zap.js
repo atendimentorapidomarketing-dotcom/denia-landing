@@ -47,6 +47,13 @@ export const ZAP_PADRAO = {
   limite_ia_dia: 300,
   avisar_buscas: true,
   // Aviso de novo cliente no Telegram (quando ele chega numa loja/resposta do fluxo).
+  // Boas-vindas em mensagem separada, antes da mensagem com os botões; e o que fazer com texto livre:
+  // BUSCAR (procura pelas palavras-chave) ou INICIO (qualquer mensagem mostra o começo, como no Botpress).
+  saudacao: "",
+  texto_livre: "BUSCAR",
+  // Depois de cada resposta: a pergunta e os três botões (Menu inicial, Voltar, Finalizar).
+  rodape_pergunta: "Posso te ajudar com mais alguma coisa?",
+  rotulo_menu: "🏠 Menu inicial", rotulo_voltar: "⬅️ Voltar", rotulo_fim: "✅ Finalizar",
   lead_titulo: "🔔 NOVO CLIENTE!",
   lead_tags: "",
   imagem_inicio: ""
@@ -221,17 +228,24 @@ async function mostrarMenu(z, menuId = 0, pagina = 0, prefixo = "") {
   const img = imgId ? await urlImagem(z, imgId) : "";
   if (itens.length <= 3 && pagina === 0) return botoes(z, corpo, itens.map(i => ({ id: "z:i:" + i.id, titulo: i.titulo })), undefined, img);
   if (img) await enviarImagem(z, img, "");
-  const porPagina = 9, ini = pagina * porPagina, parte = itens.slice(ini, ini + porPagina);
+  // Até 10 opções cabem numa lista só (limite do WhatsApp); com mais, 9 por vez + "Mais opções".
+  const cabe = itens.length <= 10 && pagina === 0;
+  const porPagina = cabe ? 10 : 9, ini = pagina * porPagina, parte = itens.slice(ini, ini + porPagina);
   const linhas = parte.map(i => ({ id: "z:i:" + i.id, titulo: i.titulo, descricao: descricaoDe(i, z.cfg, m) }));
   if (ini + porPagina < itens.length) linhas.push({ id: `z:pg:${menuId}:${pagina + 1}`, titulo: "➡️ Mais opções", descricao: "Ver as próximas" });
-  else if (menuId || pagina) linhas.push({ id: "z:inicio", titulo: "🏠 Menu inicial", descricao: "Voltar ao começo" });
-  return lista(z, corpo + (itens.length > porPagina ? `\n\nSão ${itens.length} opções: toque em "Ver opções" (as próximas ficam em "Mais opções") ou escreva o que procura.` : "\n\nToque em \"Ver opções\" e escolha."), pai ? pai.titulo : "Opções", linhas);
+  else if (!cabe && (menuId || pagina)) linhas.push({ id: "z:inicio", titulo: z.cfg.rotulo_menu || "🏠 Menu inicial", descricao: "Voltar ao começo" });
+  return lista(z, corpo + (itens.length > porPagina ? `\n\nSão ${itens.length} opções: toque em "Ver opções" (as próximas ficam em "Mais opções") ou escreva o que procura.` : z.cfg.dica_lista === false ? "" : "\n\nToque em \"Ver opções\" e escolha."), pai ? pai.titulo : "Opções", linhas);
+}
+// Começo da conversa: a boas-vindas (se houver) numa mensagem e o menu com os botões em outra.
+async function mostrarInicio(z) {
+  if (String(z.cfg.saudacao || "").trim()) await enviarTexto(z, z.cfg.saudacao);
+  return mostrarMenu(z);
 }
 async function rodape(z, item) {
-  const lista = [{ id: "z:inicio", titulo: "🏠 Menu inicial" }];
-  if (item && item.pai_id) lista.push({ id: "z:i:" + item.pai_id, titulo: "⬅️ Voltar" });
-  lista.push({ id: "z:fim", titulo: "✅ Finalizar" });
-  return botoes(z, "Posso te ajudar com mais alguma coisa?", lista);
+  const lista = [{ id: "z:inicio", titulo: z.cfg.rotulo_menu || "🏠 Menu inicial" }];
+  if (item && item.pai_id) lista.push({ id: "z:i:" + item.pai_id, titulo: z.cfg.rotulo_voltar || "⬅️ Voltar" });
+  lista.push({ id: "z:fim", titulo: z.cfg.rotulo_fim || "✅ Finalizar" });
+  return botoes(z, z.cfg.rodape_pergunta || "Posso te ajudar com mais alguma coisa?", lista);
 }
 async function registrarBusca(z, item, via, resultados, caminho) {
   const umaHora = z.agora - 3600000;
@@ -275,26 +289,31 @@ async function abrirItem(z, item, via) {
     return registrarBusca(z, item, via, 0, caminho);
   }
   // LISTA: os contatos do catálogo ligados a esta opção.
-  const r = (await z.env.DB.prepare("SELECT c.* FROM plt_zap_catalogo c JOIN plt_zap_cat_itens ci ON ci.catalogo_id=c.id WHERE ci.item_id=? AND c.org_id=? AND c.ativo=1 ORDER BY c.destaque DESC, c.nome LIMIT 25").bind(item.id, z.org).all())?.results || [];
+  const r = (await z.env.DB.prepare("SELECT c.* FROM plt_zap_catalogo c JOIN plt_zap_cat_itens ci ON ci.catalogo_id=c.id WHERE ci.item_id=? AND c.org_id=? AND c.ativo=1 ORDER BY COALESCE(ci.ordem, 999999), c.destaque DESC, c.nome LIMIT 25").bind(item.id, z.org).all())?.results || [];
   if (ex.estilo === "CARTOES" && r.length && r.length <= 4) {
     // Um cartão por loja, com o botão "Chamar no WhatsApp".
     await enviarTexto(z, `*${item.titulo}*${item.texto ? "\n" + item.texto : ""}`, origem);
     for (const c of r) {
-      const zap = linkZap(c.whatsapp || c.telefone);
-      await enviarCartao(z, { titulo: c.nome, texto: [c.local, c.descricao ? cortar(c.descricao, 200) : ""].filter(Boolean).join("\n") || " ", ...(zap ? { link_texto: "💬 Chamar no WhatsApp", link_url: "https://" + zap } : {}) }, origem);
+      const link = linkLoja(c);
+      await enviarCartao(z, { titulo: c.nome, texto: [c.local, c.descricao ? cortar(c.descricao, 200) : ""].filter(Boolean).join("\n") || " ", ...(link ? { link_texto: "💬 Chamar no WhatsApp", link_url: link } : {}) }, origem);
     }
   } else {
     const linhas = r.map(cartaoContato);
-    const texto = r.length ? `*${item.titulo}*${item.texto ? "\n" + item.texto : ""}\n\n${linhas.join("\n\n")}${z.cfg.rodape_lista ? "\n\n" + z.cfg.rodape_lista : ""}` : `No momento não tenho ${z.cfg.rotulo_catalogo} cadastrados para *${item.titulo}*.`;
+    // Todas as lojas numa mensagem só; a mensagem da opção (se houver) vem no topo, no lugar do título.
+    const texto = r.length ? `${item.texto ? item.texto : `*${item.titulo}*`}\n\n${linhas.join("\n\n")}${z.cfg.rodape_lista ? "\n\n" + z.cfg.rodape_lista : ""}` : `No momento não tenho ${z.cfg.rotulo_catalogo} cadastrados para *${item.titulo}*.`;
     await enviarTexto(z, texto, origem);
   }
   await rodape(z, item);
   z.resultados = r.map(c => c.nome).join(", ");
   return registrarBusca(z, item, via, r.length, caminho);
 }
+// Link da loja: o próprio (ex.: tinyurl com mensagem pronta) ou o wa.me do WhatsApp dela.
+function linkLoja(c) { if (c.link) return c.link; const zap = linkZap(c.whatsapp || c.telefone); return zap ? "https://" + zap : ""; }
+// Uma loja por bloco: "Loja 12 - Cell Center" e o link embaixo (clicável no WhatsApp).
 function cartaoContato(c) {
-  const zap = linkZap(c.whatsapp || c.telefone);
-  return `• *${c.nome}*${c.local ? ` — ${c.local}` : ""}${c.descricao ? `\n  ${cortar(c.descricao, 140)}` : ""}${zap ? `\n  📲 ${zap}` : c.telefone ? `\n  📞 ${c.telefone}` : ""}${c.telefone && zap && digitos(c.telefone) !== digitos(c.whatsapp) && c.whatsapp ? `\n  📞 ${c.telefone}` : ""}`;
+  const link = linkLoja(c);
+  return [[c.local, c.nome].filter(Boolean).join(" - "), c.descricao ? cortar(c.descricao, 140) : "", link || (c.telefone ? `📞 ${c.telefone}` : ""),
+    c.telefone && link && !c.link && c.whatsapp && digitos(c.telefone) !== digitos(c.whatsapp) ? `📞 ${c.telefone}` : ""].filter(Boolean).join("\n");
 }
 async function transferir(z, texto) {
   await enviarTexto(z, texto || z.cfg.humano);
@@ -323,11 +342,12 @@ async function responder(z, texto, acao) {
   if ((a = acao.match(/^z:pg:(\d+):(\d+)$/))) return mostrarMenu(z, Number(a[1]), Number(a[2]));
   if ((a = acao.match(/^z:i:(\d+)$/))) { const it = m.porId.get(Number(a[1])); return it ? abrirItem(z, it, "BOTAO") : mostrarMenu(z); }
   const alvo = norm(texto).trim();
+  if (z.modo !== "IA" && z.cfg.texto_livre === "INICIO" && !/^\d{1,3}$/.test(alvo) && !QUER_HUMANO.test(alvo)) return mostrarInicio(z);
   if (!alvo) return mostrarMenu(z, 0, 0, z.cfg.nao_entendi);
   if (QUER_HUMANO.test(alvo)) { const h = m.todos.find(i => i.tipo === "HUMANO"); await transferir(z, h?.texto); return h ? registrarBusca(z, h, "PALAVRA", 0, caminhoDe(m, h)) : null; }
   // IA completa: a conversa é com a IA (os botões continuam funcionando); sem IA disponível, cai no menu.
   if (z.modo === "IA" && !/^\d{1,3}$/.test(alvo)) { if (await atenderComIA(z, texto, m)) return; }
-  if (SAUDACAO.test(alvo) && alvo.length < 30) return mostrarMenu(z);
+  if (SAUDACAO.test(alvo) && alvo.length < 30) return mostrarInicio(z);
   // Número ("1", "12"...): a opção do último menu que a pessoa recebeu; "0" volta ao início.
   if (/^\d{1,3}$/.test(alvo)) {
     if (alvo === "0") return mostrarMenu(z);
@@ -597,6 +617,100 @@ function publicaConta(c, extra) {
 }
 async function linhasDe(env, sql, ...args) { return (await env.DB.prepare(sql).bind(...args).all())?.results || []; }
 
+// ---------------------------------------------------------------------------
+// Roteiro em texto: o fluxo inteiro escrito como num documento (sem programar).
+//   BOAS-VINDAS: primeira mensagem (sozinha)
+//   MENU: mensagem com os botões do começo
+//   > Botão do começo            >> botão dentro dele      >>> e assim por diante
+//   linhas abaixo do botão = a mensagem dele
+//   Nome da loja | https://link   (ou | telefone) = loja (o botão vira "Lojas")
+//   [atendente] no fim do nome    = chama a equipe
+// ---------------------------------------------------------------------------
+const CHAVES_ROTEIRO = { "BOAS-VINDAS": "saudacao", "BOAS VINDAS": "saudacao", "MENU": "boas_vindas", "NÃO ENTENDI": "nao_entendi", "NAO ENTENDI": "nao_entendi", "ATENDENTE": "humano", "ENCERRAMENTO": "encerramento", "RODAPÉ DAS LOJAS": "rodape_lista", "RODAPE DAS LOJAS": "rodape_lista",
+  "DEPOIS DE CADA RESPOSTA": "rodape_pergunta", "BOTÕES DO FIM": "_botoes_fim", "BOTOES DO FIM": "_botoes_fim" };
+export function lerRoteiro(texto) {
+  const linhas = String(texto || "").replace(/\r\n?/g, "\n").split("\n");
+  const cfg = {}, raiz = { filhos: [], nivel: 0 }, pilha = [raiz], erros = [];
+  let alvo = null; // { tipo: "cfg", chave } | { tipo: "no", no }
+  let paragrafo = false; // linha em branco entre duas linhas de texto = parágrafo novo
+  const juntar = (atual, linha) => { const r = atual ? atual + (paragrafo ? "\n\n" : "\n") + linha : linha; paragrafo = false; return r; };
+  linhas.forEach((bruta, n) => {
+    const linha = bruta.trim();
+    const num = n + 1;
+    if (!linha) { paragrafo = true; return; }
+    if (linha.startsWith("#")) return; // comentário
+    const ch = linha.match(/^([^:>|]{3,30}):\s*(.*)$/u);
+    if (ch && CHAVES_ROTEIRO[ch[1].trim().toUpperCase()]) { const chave = CHAVES_ROTEIRO[ch[1].trim().toUpperCase()]; cfg[chave] = ch[2].trim() === "-" ? "" : ch[2].trim(); alvo = { tipo: "cfg", chave }; paragrafo = false; return; }
+    const b = linha.match(/^(>+)\s*(.+)$/);
+    if (b) {
+      const nivel = b[1].length;
+      if (nivel > pilha.length) { erros.push(`Linha ${num}: "${b[1]}" pulou um nível (o botão de cima tem ${pilha.length - 1} ">").`); return; }
+      if (nivel > 8) { erros.push(`Linha ${num}: no máximo 8 níveis.`); return; }
+      let titulo = b[2].trim(), tipo = "";
+      const marca = titulo.match(/\s*\[(atendente|humano|resposta|lojas)\]\s*$/i);
+      if (marca) { tipo = { atendente: "HUMANO", humano: "HUMANO", resposta: "RESPOSTA", lojas: "LISTA" }[marca[1].toLowerCase()]; titulo = titulo.slice(0, marca.index).trim(); }
+      if (titulo.length > 24) erros.push(`Linha ${num}: "${titulo}" tem ${titulo.length} letras; o WhatsApp aceita até 24 no botão (20 aparecem).`);
+      const no = { titulo: titulo.slice(0, 24), tipo, texto: "", lojas: [], filhos: [], nivel, linha: num };
+      pilha.length = nivel; pilha[nivel - 1].filhos.push(no); pilha.push(no);
+      alvo = { tipo: "no", no }; paragrafo = false;
+      return;
+    }
+    const loja = linha.match(/^(.+?)\s*\|\s*(\S.*)$/);
+    if (loja && alvo && alvo.tipo === "no") {
+      const nomeL = loja[1].trim().replace(/^[-•*]\s*/, ""), destino = loja[2].trim();
+      const sep = nomeL.match(/^(.{1,40}?)\s*[-–]\s+(.+)$/);
+      const l = sep ? { local: sep[1].trim(), nome: sep[2].trim() } : { local: "", nome: nomeL };
+      if (/^https:\/\//i.test(destino)) l.link = destino.split(/\s+/)[0];
+      else if (digitos(destino).length >= 10) l.whatsapp = digitos(destino);
+      else { erros.push(`Linha ${num}: depois da "|" vem o link (https://…) ou o WhatsApp da loja.`); return; }
+      alvo.no.lojas.push(l);
+      return;
+    }
+    if (!alvo) { erros.push(`Linha ${num}: comece com "BOAS-VINDAS:", "MENU:" ou um botão "> Nome".`); return; }
+    if (alvo.tipo === "cfg") cfg[alvo.chave] = juntar(cfg[alvo.chave], linha);
+    else alvo.no.texto = juntar(alvo.no.texto, linha);
+  });
+  const limpar = t => String(t || "").replace(/\n{3,}/g, "\n\n").trim();
+  for (const k of Object.keys(cfg)) cfg[k] = limpar(cfg[k]);
+  if (cfg._botoes_fim !== undefined) {
+    const [a, b2, c] = cfg._botoes_fim.split("|").map(x => x.trim());
+    delete cfg._botoes_fim;
+    if (a) cfg.rotulo_menu = a.slice(0, 20); if (b2) cfg.rotulo_voltar = b2.slice(0, 20); if (c) cfg.rotulo_fim = c.slice(0, 20);
+    for (const x of [a, b2, c]) if (x && x.length > 20) erros.push(`"${x}": os botões do fim aceitam até 20 letras.`);
+  }
+  const fechar = no => {
+    no.texto = limpar(no.texto);
+    if (!no.tipo) no.tipo = no.filhos.length ? "MENU" : no.lojas.length ? "LISTA" : "RESPOSTA";
+    if (no.filhos.length && no.tipo !== "MENU") erros.push(`Linha ${no.linha}: "${no.titulo}" tem botões dentro, então não pode ser ${no.tipo === "LISTA" ? "lojas" : "resposta/atendente"}.`);
+    if (no.lojas.length && no.filhos.length) erros.push(`Linha ${no.linha}: "${no.titulo}" tem lojas e botões dentro ao mesmo tempo. Separe em botões diferentes.`);
+    if (no.tipo === "RESPOSTA" && !no.texto) erros.push(`Linha ${no.linha}: "${no.titulo}" não tem mensagem nem lojas embaixo.`);
+    no.filhos.forEach(fechar);
+  };
+  raiz.filhos.forEach(fechar);
+  if (!raiz.filhos.length) erros.push("O roteiro não tem nenhum botão (linhas começando com \">\").");
+  return { cfg, botoes: raiz.filhos, erros };
+}
+export function escreverRoteiro(itens, catalogo, ligacoes, cfg, ordemLig = new Map()) {
+  const out = [];
+  if (cfg.saudacao) out.push("BOAS-VINDAS: " + cfg.saudacao, "");
+  out.push("MENU: " + (cfg.boas_vindas || ""), "");
+  out.push("DEPOIS DE CADA RESPOSTA: " + (cfg.rodape_pergunta || ZAP_PADRAO.rodape_pergunta));
+  out.push(`BOTÕES DO FIM: ${cfg.rotulo_menu || ZAP_PADRAO.rotulo_menu} | ${cfg.rotulo_voltar || ZAP_PADRAO.rotulo_voltar} | ${cfg.rotulo_fim || ZAP_PADRAO.rotulo_fim}`);
+  if (cfg.encerramento) out.push("ENCERRAMENTO: " + cfg.encerramento);
+  out.push("RODAPÉ DAS LOJAS: " + (cfg.rodape_lista || "-"), "");
+  const lojasDo = id => catalogo.filter(c => (ligacoes.get(c.id) || []).includes(id)).sort((a, b) => (ordemLig.get(id + ":" + a.id) ?? 999999) - (ordemLig.get(id + ":" + b.id) ?? 999999));
+  const descer = (pai, nivel) => itens.filter(i => Number(i.pai_id) === pai).sort((a, b) => (a.ordem || 0) - (b.ordem || 0) || a.id - b.id).forEach(i => {
+    const marca = i.tipo === "HUMANO" ? " [atendente]" : i.tipo === "LISTA" && !lojasDo(i.id).length ? " [lojas]" : "";
+    out.push(">".repeat(nivel) + " " + i.titulo + marca);
+    if (i.texto) out.push(i.texto);
+    for (const c of lojasDo(i.id)) out.push(`${[c.local, c.nome].filter(Boolean).join(" - ")} | ${c.link || c.whatsapp || c.telefone || ""}`);
+    out.push("");
+    if (i.tipo === "MENU") descer(i.id, nivel + 1);
+  });
+  descer(0, 1);
+  return out.join("\n").replace(/\n{3,}/g, "\n\n").trim() + "\n";
+}
+
 const URL_OK = u => /^https:\/\/[^\s<>"']{4,600}$/i.test(String(u || "").trim());
 async function midiaDaEmpresa(env, orgId, id) {
   id = Number(id) || 0;
@@ -767,6 +881,9 @@ export async function rotasZap(request, env, k, orgId, papel, resto) {
     }
     if (!["gpt-5-nano", "gpt-5-mini", "gpt-4o-mini", "gpt-4.1-mini"].includes(cfg.modelo_ia)) cfg.modelo_ia = "gpt-5-nano";
     if (cfg.exibicao_inicio !== "NUMERADO") cfg.exibicao_inicio = "AUTO";
+    if (cfg.texto_livre !== "INICIO") cfg.texto_livre = "BUSCAR";
+    for (const [ch, pad] of [["rotulo_menu", "🏠 Menu inicial"], ["rotulo_voltar", "⬅️ Voltar"], ["rotulo_fim", "✅ Finalizar"]]) cfg[ch] = cortar(cfg[ch], 20) || pad;
+    cfg.rodape_pergunta = cortar(cfg.rodape_pergunta, 300) || ZAP_PADRAO.rodape_pergunta;
     if (corpo.imagem_inicio !== undefined) cfg.imagem_inicio = String(corpo.imagem_inicio ?? "");
     cfg.imagem_inicio = String(await midiaDaEmpresa(env, orgId, cfg.imagem_inicio) || "");
     cfg.lead_titulo = cortar(cfg.lead_titulo, 80) || ZAP_PADRAO.lead_titulo;
@@ -820,6 +937,77 @@ export async function rotasZap(request, env, k, orgId, papel, resto) {
     else id = (await env.DB.prepare("INSERT INTO plt_zap_itens(pai_id,tipo,titulo,descricao,texto,palavras,ordem,ativo,exibicao,extra,org_id) VALUES(?,?,?,?,?,?,?,?,?,?,?) RETURNING id").bind(...campos, extra, orgId).first())?.id;
     return json({ ok: true, id });
   }
+  // Roteiro em texto: copiar o fluxo atual ou colar um fluxo inteiro (substitui os botões).
+  if (r === "roteiro" && metodo === "GET") {
+    const c = await contaDa(env, orgId);
+    const [itens, catalogo, lig] = await env.DB.batch([
+      env.DB.prepare("SELECT * FROM plt_zap_itens WHERE org_id=? ORDER BY pai_id, ordem, id").bind(orgId),
+      env.DB.prepare("SELECT * FROM plt_zap_catalogo WHERE org_id=? AND ativo=1 ORDER BY destaque DESC, nome").bind(orgId),
+      env.DB.prepare("SELECT ci.catalogo_id, ci.item_id, ci.ordem FROM plt_zap_cat_itens ci JOIN plt_zap_catalogo c ON c.id=ci.catalogo_id WHERE c.org_id=?").bind(orgId)
+    ]);
+    const ordemLig = new Map((lig?.results || []).map(x => [x.item_id + ":" + x.catalogo_id, x.ordem ?? 999999]));
+    const ligacoes = new Map();
+    for (const x of lig?.results || []) { if (!ligacoes.has(x.catalogo_id)) ligacoes.set(x.catalogo_id, []); ligacoes.get(x.catalogo_id).push(x.item_id); }
+    return json({ roteiro: escreverRoteiro(itens?.results || [], catalogo?.results || [], ligacoes, lerConfig(c), ordemLig) });
+  }
+  if (r === "roteiro" && metodo === "POST") {
+    const negado = precisa("AGENTE"); if (negado) return negado;
+    const { corpo, erro } = await ler(400000); if (erro) return erro;
+    const lido = lerRoteiro(corpo.roteiro);
+    if (lido.erros.length) return json({ erro: "O roteiro tem pontos para corrigir.", erros: lido.erros.slice(0, 30) }, 400);
+    const conta = lido.erros.length ? null : await contaDa(env, orgId);
+    const ja = await env.DB.prepare("SELECT COUNT(*) n FROM plt_zap_itens WHERE org_id=?").bind(orgId).first();
+    if (Number(ja?.n) && !corpo.substituir) return json({ erro: "Já existe um fluxo. Marque \"Substituir o fluxo atual\" para trocar.", codigo: "TEM_FLUXO" }, 409);
+    if (corpo.previa) {
+      const conta2 = n => n.reduce((t, x) => t + 1 + conta2(x.filhos), 0);
+      const lojas = n => n.reduce((t, x) => t + x.lojas.length + lojas(x.filhos), 0);
+      return json({ ok: true, botoes: conta2(lido.botoes), lojas: lojas(lido.botoes), cfg: lido.cfg });
+    }
+    // Troca os botões (as lojas ficam no cadastro e são reaproveitadas pelo link ou pelo nome).
+    await env.DB.batch([
+      env.DB.prepare("DELETE FROM plt_zap_cat_itens WHERE item_id IN (SELECT id FROM plt_zap_itens WHERE org_id=?)").bind(orgId),
+      env.DB.prepare("DELETE FROM plt_zap_itens WHERE org_id=?").bind(orgId)
+    ]);
+    const existentes = await linhasDe(env, "SELECT id, nome, local, link, whatsapp FROM plt_zap_catalogo WHERE org_id=?", orgId);
+    const chaveLoja = l => norm([l.local, l.nome].filter(Boolean).join(" ")).replace(/[^a-z0-9]+/g, " ").trim();
+    const porLink = new Map(existentes.filter(c => c.link).map(c => [c.link, c.id]));
+    const porNome = new Map(existentes.map(c => [chaveLoja(c), c.id]));
+    let nBotoes = 0, nLojas = 0;
+    const ligar = [];
+    const criar = async (lista, pai) => {
+      let ordem = 0;
+      for (const no of lista) {
+        const id = (await env.DB.prepare("INSERT INTO plt_zap_itens(org_id,pai_id,tipo,titulo,texto,palavras,ordem,ativo,exibicao,extra) VALUES(?,?,?,?,?,?,?,1,'AUTO','{}') RETURNING id")
+          .bind(orgId, pai, no.tipo, no.titulo, cortar(no.texto, 3000), "", ++ordem).first()).id;
+        nBotoes++;
+        let posLoja = 0;
+        for (const l of no.lojas) {
+          // Mesmo link = mesma loja. Com link diferente (outra mensagem pronta), fica um contato separado.
+          let cid = l.link ? porLink.get(l.link) : porNome.get(chaveLoja(l));
+          if (!cid) {
+            cid = (await env.DB.prepare("INSERT INTO plt_zap_catalogo(org_id,nome,local,link,whatsapp,destaque,ativo) VALUES(?,?,?,?,?,0,1) RETURNING id").bind(orgId, cortar(l.nome, 80), cortar(l.local, 80), l.link || null, l.whatsapp || null).first()).id;
+            if (l.link) porLink.set(l.link, cid);
+            if (!porNome.has(chaveLoja(l))) porNome.set(chaveLoja(l), cid);
+            nLojas++;
+          } else await env.DB.prepare("UPDATE plt_zap_catalogo SET ativo=1 WHERE id=? AND org_id=?").bind(cid, orgId).run();
+          ligar.push(env.DB.prepare("INSERT OR IGNORE INTO plt_zap_cat_itens(catalogo_id,item_id,ordem) VALUES(?,?,?)").bind(cid, id, ++posLoja));
+          if (ligar.length >= 80) await env.DB.batch(ligar.splice(0));
+        }
+        await criar(no.filhos, id);
+      }
+    };
+    await criar(lido.botoes, 0);
+    if (ligar.length) await env.DB.batch(ligar);
+    if (Object.keys(lido.cfg).length) {
+      const cfg = lerConfig(conta);
+      for (const [ch, v] of Object.entries(lido.cfg)) cfg[ch] = cortar(v, 1000);
+      // Com boas-vindas própria, qualquer mensagem do cliente mostra o começo (como no Botpress).
+      if (lido.cfg.saudacao) cfg.texto_livre = "INICIO";
+      await env.DB.prepare("INSERT INTO plt_zap_contas(org_id,config,modo,ativo,atualizado_ms) VALUES(?,?,'BOTOES',1,?) ON CONFLICT(org_id) DO UPDATE SET config=excluded.config, atualizado_ms=excluded.atualizado_ms").bind(orgId, JSON.stringify(cfg), agora).run();
+    }
+    await auditar(env, request, sessao, orgId, "CHATBOT", `Roteiro aplicado: ${nBotoes} botão(ões), ${nLojas} loja(s) nova(s)`);
+    return json({ ok: true, botoes: nBotoes, lojas_novas: nLojas });
+  }
   // Reordenar os botões de um bloco (a ordem em que o cliente vê).
   if (r === "itens/ordem" && metodo === "POST") {
     const negado = precisa("AGENTE"); if (negado) return negado;
@@ -851,13 +1039,17 @@ export async function rotasZap(request, env, k, orgId, papel, resto) {
     const { corpo, erro } = await ler(); if (erro) return erro;
     const nome = k.txt(corpo.nome, 80);
     if (!nome) return json({ erro: "Dê o nome." }, 400);
-    const campos = [nome, k.txt(corpo.telefone, 30), k.txt(corpo.whatsapp, 30), k.txt(corpo.local, 80), k.txt(corpo.descricao, 300), corpo.destaque ? 1 : 0, corpo.ativo === false ? 0 : 1];
+    const link = String(corpo.link || "").trim();
+    if (link && !URL_OK(link)) return json({ erro: "O link da loja precisa começar com https:// (ex.: https://tinyurl.com/minha-loja)." }, 400);
+    const campos = [nome, k.txt(corpo.telefone, 30), k.txt(corpo.whatsapp, 30), k.txt(corpo.local, 80), k.txt(corpo.descricao, 300), corpo.destaque ? 1 : 0, corpo.ativo === false ? 0 : 1, link.slice(0, 600) || null];
     let id = Number(corpo.id) || 0;
-    if (id) { const x = await env.DB.prepare("UPDATE plt_zap_catalogo SET nome=?, telefone=?, whatsapp=?, local=?, descricao=?, destaque=?, ativo=? WHERE id=? AND org_id=?").bind(...campos, id, orgId).run(); if (!x.meta.changes) return json({ erro: "Não encontrado." }, 404); }
-    else id = (await env.DB.prepare("INSERT INTO plt_zap_catalogo(nome,telefone,whatsapp,local,descricao,destaque,ativo,org_id) VALUES(?,?,?,?,?,?,?,?) RETURNING id").bind(...campos, orgId).first())?.id;
+    if (id) { const x = await env.DB.prepare("UPDATE plt_zap_catalogo SET nome=?, telefone=?, whatsapp=?, local=?, descricao=?, destaque=?, ativo=?, link=? WHERE id=? AND org_id=?").bind(...campos, id, orgId).run(); if (!x.meta.changes) return json({ erro: "Não encontrado." }, 404); }
+    else id = (await env.DB.prepare("INSERT INTO plt_zap_catalogo(nome,telefone,whatsapp,local,descricao,destaque,ativo,link,org_id) VALUES(?,?,?,?,?,?,?,?,?) RETURNING id").bind(...campos, orgId).first())?.id;
     const validos = new Set((await linhasDe(env, "SELECT id FROM plt_zap_itens WHERE org_id=? AND tipo='LISTA'", orgId)).map(x => x.id));
     const itens = [...new Set((Array.isArray(corpo.itens) ? corpo.itens : []).map(Number))].filter(x => validos.has(x)).slice(0, 80);
-    await env.DB.batch([env.DB.prepare("DELETE FROM plt_zap_cat_itens WHERE catalogo_id=?").bind(id), ...itens.map(i => env.DB.prepare("INSERT OR IGNORE INTO plt_zap_cat_itens(catalogo_id,item_id) VALUES(?,?)").bind(id, i))]);
+    // Mantém a posição da loja em cada opção (a ordem em que o cliente vê); novas ligações vão para o fim.
+    const antes = new Map((await linhasDe(env, "SELECT item_id, ordem FROM plt_zap_cat_itens WHERE catalogo_id=?", id)).map(x => [x.item_id, x.ordem]));
+    await env.DB.batch([env.DB.prepare("DELETE FROM plt_zap_cat_itens WHERE catalogo_id=?").bind(id), ...itens.map(i => env.DB.prepare("INSERT OR IGNORE INTO plt_zap_cat_itens(catalogo_id,item_id,ordem) VALUES(?,?,?)").bind(id, i, antes.get(i) ?? null))]);
     return json({ ok: true, id });
   }
   if ((m = r.match(/^catalogo\/(\d{1,12})\/excluir$/)) && metodo === "POST") {
@@ -922,9 +1114,10 @@ export async function rotasZap(request, env, k, orgId, papel, resto) {
         }
       }
       let id = catalogo.get(sem(nome));
-      const dados = [k.txt(l.telefone, 30), k.txt(l.whatsapp, 30), k.txt(l.local, 80), k.txt(l.descricao, 300)];
-      if (id) st.push(env.DB.prepare("UPDATE plt_zap_catalogo SET telefone=COALESCE(NULLIF(?,''),telefone), whatsapp=COALESCE(NULLIF(?,''),whatsapp), local=COALESCE(NULLIF(?,''),local), descricao=COALESCE(NULLIF(?,''),descricao) WHERE id=?").bind(...dados, id));
-      else { id = (await env.DB.prepare("INSERT INTO plt_zap_catalogo(org_id,nome,telefone,whatsapp,local,descricao,destaque,ativo) VALUES(?,?,?,?,?,?,0,1) RETURNING id").bind(orgId, nome, ...dados).first()).id; catalogo.set(sem(nome), id); }
+      const linkL = String(l.link || "").trim();
+      const dados = [k.txt(l.telefone, 30), k.txt(l.whatsapp, 30), k.txt(l.local, 80), k.txt(l.descricao, 300), URL_OK(linkL) ? linkL.slice(0, 600) : ""];
+      if (id) st.push(env.DB.prepare("UPDATE plt_zap_catalogo SET telefone=COALESCE(NULLIF(?,''),telefone), whatsapp=COALESCE(NULLIF(?,''),whatsapp), local=COALESCE(NULLIF(?,''),local), descricao=COALESCE(NULLIF(?,''),descricao), link=COALESCE(NULLIF(?,''),link) WHERE id=?").bind(...dados, id));
+      else { id = (await env.DB.prepare("INSERT INTO plt_zap_catalogo(org_id,nome,telefone,whatsapp,local,descricao,link,destaque,ativo) VALUES(?,?,?,?,?,?,NULLIF(?,''),0,1) RETURNING id").bind(orgId, nome, ...dados).first()).id; catalogo.set(sem(nome), id); }
       for (const i of ids) st.push(env.DB.prepare("INSERT OR IGNORE INTO plt_zap_cat_itens(catalogo_id,item_id) VALUES(?,?)").bind(id, i));
       total++;
       if (st.length >= 80) await env.DB.batch(st.splice(0));

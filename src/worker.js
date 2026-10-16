@@ -29,12 +29,12 @@ import { openaiBruto } from "./marketing.js";
 import { DDL_ZAP, webhookZap, rotasZap, webhookTelegram, segredoTelegram, tokenTelegramPlataforma, processarCampanhas } from "./zap.js";
 import { lerPlanos, acessoDa, recursoDaRota, planoMinimo, rotasPlano, webhookAsaas, lembretesDePlano, TESTE_DIAS, STATUS as STATUS_PLANO, PLANOS_PADRAO, RECURSOS } from "./planos.js";
 
-const VERSAO = "3.5.0";
+const VERSAO = "3.6.0";
 // Versão dos Termos de uso e da Política de privacidade aceitas no cadastro.
 const VERSAO_TERMOS = "2026-10-16";
 // WhatsApp da Central de Atendimento (botão flutuante do site).
 const WHATSAPP_CENTRAL = "5521975469162";
-const SCHEMA = "2.11.0";
+const SCHEMA = "2.12.0";
 const COOKIE = "__Host-denia_sessao";
 const SESSAO_MS = 8 * 60 * 60 * 1000;
 const MAX_TENTATIVAS = 5;
@@ -189,6 +189,8 @@ async function garantirSchema(env) {
     await env.DB.prepare("ALTER TABLE plt_organizacoes ADD COLUMN plano_status TEXT").run().catch(() => { });
     await env.DB.prepare("ALTER TABLE plt_zap_itens ADD COLUMN exibicao TEXT").run().catch(() => { });
     await env.DB.prepare("ALTER TABLE plt_zap_itens ADD COLUMN extra TEXT").run().catch(() => { });
+    await env.DB.prepare("ALTER TABLE plt_zap_catalogo ADD COLUMN link TEXT").run().catch(() => { });
+    await env.DB.prepare("ALTER TABLE plt_zap_cat_itens ADD COLUMN ordem INTEGER").run().catch(() => { });
     await env.DB.prepare("ALTER TABLE plt_zap_contas ADD COLUMN telegram_chat TEXT").run().catch(() => { });
     await env.DB.prepare("ALTER TABLE plt_zap_contatos ADD COLUMN memoria TEXT").run().catch(() => { });
     await env.DB.prepare("ALTER TABLE plt_zap_contas ADD COLUMN telegram_nome TEXT").run().catch(() => { });

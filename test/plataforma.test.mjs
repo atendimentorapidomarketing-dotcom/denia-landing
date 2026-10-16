@@ -1754,6 +1754,85 @@ test("Fluxo de botões (como no Botpress) — submenus, lojas em cartões, image
   assert.equal((await z("itens")).dados.itens.find(i => i.id === info).extra.imagem_id, undefined);
 });
 
+test("Roteiro em texto (vindo do Botpress) — boas-vindas separada, qualquer mensagem mostra o começo, lojas numa mensagem com links próprios", async () => {
+  const { p, inf } = await duasEmpresasComChatbot();
+  const z = (c, op) => p.req(`/api/orgs/${inf}/zap/${c}`, { quem: "admin", ...(op || {}) });
+  const roteiro = `# comentário
+BOAS-VINDAS: Olá! Bem-vindo ao Atendimento Digital do Shopping Teste, o maior hub do bairro.
+MENU: Escolha abaixo o que você procura hoje:
+DEPOIS DE CADA RESPOSTA: Posso ajudar com algo mais?
+BOTÕES DO FIM: Menu Principal | Menu Anterior | Finalizar
+RODAPÉ DAS LOJAS: -
+ENCERRAMENTO: Rua Exemplo, 10.
+Site: https://exemplo.test/
+
+Foi um prazer!
+
+> Produtos
+Qual tipo de produto está buscando?
+
+>> Celular
+Estes são os contatos de algumas lojas:
+Loja A - Loja dos Celulares | https://tinyurl.com/teste-celulares
+Loja 04- Conserta Celular | https://tinyurl.com/teste-conserta
+
+>> Informática
+Estes são os contatos:
+Loja 04 - Conserta Celular | https://tinyurl.com/teste-conserta-2
+Sala 12 Oficina | 21 98888-7777
+
+> Serviços
+Você selecionou serviços.
+
+Informe o serviço:
+${Array.from({ length: 10 }, (_, i) => `>> Serviço ${i + 1}\nLoja ${i} - Oficina ${i} | https://tinyurl.com/oficina-${i}`).join("\n")}
+
+> Falar com alguém [atendente]
+Vou chamar a equipe.`;
+  const ruim = await z("roteiro", { metodo: "POST", corpo: { roteiro: "> A\n>>> B\nx" } });
+  assert.equal(ruim.status, 400);
+  assert.match(ruim.dados.erros.join(" "), /pulou um nível/);
+  const previa = await z("roteiro", { metodo: "POST", corpo: { roteiro, previa: true } });
+  assert.equal(previa.status, 200, JSON.stringify(previa.dados));
+  assert.deepEqual([previa.dados.botoes, previa.dados.lojas], [15, 14]);
+  const ok = await z("roteiro", { metodo: "POST", corpo: { roteiro } });
+  assert.equal(ok.status, 200, JSON.stringify(ok.dados));
+  assert.equal((await z("roteiro", { metodo: "POST", corpo: { roteiro } })).status, 409, "pede confirmação para substituir");
+  const cat = (await z("itens")).dados.catalogo;
+  assert.equal(cat.filter(c => c.nome === "Conserta Celular").length, 2, "mesma loja com links diferentes: cada link continua o mesmo");
+
+  const CLI = "5521966665555";
+  await webhookZap(p, "111111111111", { from: CLI, type: "text", text: { body: "quero consertar meu telefone" } });
+  let e = enviadosPara(p, CLI);
+  assert.equal(e.at(-2).corpo.text.body, "Olá! Bem-vindo ao Atendimento Digital do Shopping Teste, o maior hub do bairro.", "boas-vindas sozinha");
+  assert.equal(e.at(-1).corpo.interactive.body.text, "Escolha abaixo o que você procura hoje:");
+  assert.deepEqual(e.at(-1).corpo.interactive.action.buttons.map(b => b.reply.title), ["Produtos", "Serviços", "Falar com alguém"]);
+  const itens = (await z("itens")).dados.itens;
+  const id = t => itens.find(i => i.titulo === t).id;
+  await clicar(p, "111111111111", CLI, "z:i:" + id("Produtos"));
+  await clicar(p, "111111111111", CLI, "z:i:" + id("Celular"));
+  e = enviadosPara(p, CLI);
+  assert.equal(e.at(-2).corpo.text.body, "Estes são os contatos de algumas lojas:\n\nLoja A - Loja dos Celulares\nhttps://tinyurl.com/teste-celulares\n\nLoja 04 - Conserta Celular\nhttps://tinyurl.com/teste-conserta", "todas as lojas numa mensagem, com os links exatos");
+  assert.equal(e.at(-1).corpo.interactive.body.text, "Posso ajudar com algo mais?");
+  assert.deepEqual(e.at(-1).corpo.interactive.action.buttons.map(b => b.reply.title), ["Menu Principal", "Menu Anterior", "Finalizar"]);
+  await clicar(p, "111111111111", CLI, "z:i:" + id("Informática"));
+  assert.match(enviadosPara(p, CLI).at(-2).corpo.text.body, /Sala 12 Oficina\nhttps:\/\/wa\.me\/5521988887777/);
+  await clicar(p, "111111111111", CLI, "z:i:" + id("Serviços"));
+  e = enviadosPara(p, CLI).at(-1);
+  assert.equal(e.corpo.interactive.type, "list");
+  assert.equal(e.corpo.interactive.action.sections[0].rows.length, 10, "10 opções numa lista só");
+  assert.match(e.corpo.interactive.body.text, /^Você selecionou serviços\.\n\nInforme o serviço:/);
+  await clicar(p, "111111111111", CLI, "z:fim");
+  assert.equal(enviadosPara(p, CLI).at(-1).corpo.text.body, "Rua Exemplo, 10.\nSite: https://exemplo.test/\n\nFoi um prazer!");
+  // Exportar e aplicar de novo dá o mesmo fluxo.
+  const exp = (await z("roteiro")).dados.roteiro;
+  assert.match(exp, /^BOAS-VINDAS: Olá!/);
+  assert.match(exp, />> Celular\nEstes são os contatos de algumas lojas:\nLoja A - Loja dos Celulares \| https:\/\/tinyurl\.com\/teste-celulares/);
+  const de_novo = await z("roteiro", { metodo: "POST", corpo: { roteiro: exp, substituir: true } });
+  assert.equal(de_novo.dados.botoes, 15);
+  assert.equal(de_novo.dados.lojas_novas, 0, "lojas reaproveitadas pelo link");
+});
+
 test("IA completa — qualquer empresa: conversa como gente, lembra do cliente, não mistura empresas e chama a equipe", async () => {
   const { p, inf } = await duasEmpresasComChatbot();
   await p.req("/api/orgs/1/ia/chave", { metodo: "POST", quem: "admin", corpo: { chave: "sk-proj-" + "d".repeat(40) } });
