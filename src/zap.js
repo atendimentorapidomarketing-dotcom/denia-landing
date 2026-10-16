@@ -45,6 +45,8 @@ export const ZAP_PADRAO = {
   nome_atendente: "", ia_tom: "", ia_servicos: "", ia_precos: "", ia_regras: "", ia_exemplos: "",
   modelo_conversa: "gpt-5-mini",
   limite_ia_dia: 300,
+  // Listas "limpas" (como no Botpress): sem a dica "Toque em Ver opções" e sem a descrição automática.
+  lista_simples: false,
   avisar_buscas: true,
   // Aviso de novo cliente no Telegram (quando ele chega numa loja/resposta do fluxo).
   // Boas-vindas em mensagem separada, antes da mensagem com os botões; e o que fazer com texto livre:
@@ -120,6 +122,10 @@ function lista(z, corpo, secao, linhas, origem) {
     `${corpo} [lista: ${linhas.map(l => l.titulo).join(", ")}]`, origem);
 }
 
+// Uma linha com "---" no meio de um texto separa mensagens (cada parte vai num balão, na ordem).
+export function partesMsg(t) { return String(t || "").split(/\n*^\s*-{3,}\s*$\n*/m).map(x => x.trim()).filter(Boolean); }
+async function enviarPartes(z, texto, origem) { for (const p of partesMsg(texto)) await enviarTexto(z, p, origem); }
+
 // Imagens do fluxo: guardadas na DENIA e servidas por um endereço público assinado (o WhatsApp busca por ele).
 async function urlImagem(z, id) {
   id = Number(id);
@@ -155,11 +161,14 @@ async function tgApi(token, metodo, corpo) {
     return await r.json().catch(() => ({ ok: r.ok }));
   } catch { return { ok: false }; }
 }
-async function telegram(z, texto, telCliente, semDica = false) {
+async function telegram(z, texto, telCliente, semDica = false, markdown = false) {
   if (z.sim) return false;
   const d = await destinoTelegram(z.env, z.k, z.conta);
   if (!d) return false;
-  const r = await tgApi(d.token, "sendMessage", { chat_id: d.chat, text: cortar(texto, 3500) + (telCliente && !semDica ? "\n\n↩️ Responda esta mensagem aqui no Telegram e a resposta vai para o cliente no WhatsApp." : ""), disable_web_page_preview: true });
+  const corpo = cortar(texto, 3500) + (telCliente && !semDica ? "\n\n↩️ Responda esta mensagem aqui no Telegram e a resposta vai para o cliente no WhatsApp." : "");
+  let r = await tgApi(d.token, "sendMessage", { chat_id: d.chat, text: corpo, disable_web_page_preview: true, ...(markdown ? { parse_mode: "Markdown" } : {}) });
+  // Se o Telegram recusar a formatação, manda o mesmo aviso sem negrito.
+  if (markdown && !r?.ok) r = await tgApi(d.token, "sendMessage", { chat_id: d.chat, text: corpo.replace(/\\([_*`\[])/g, "$1").replace(/\*/g, ""), disable_web_page_preview: true });
   const id = r?.result?.message_id;
   // Guarda de qual cliente é o aviso, para a equipe responder pelo próprio Telegram.
   if (id && telCliente) await z.env.DB.prepare("INSERT OR REPLACE INTO plt_zap_tg(chat_id,message_id,org_id,telefone,criado_ms) VALUES(?,?,?,?,?)").bind(String(d.chat), id, z.org, telCliente, z.agora).run().catch(() => {});
@@ -200,6 +209,7 @@ async function carregarMenu(z) {
 function caminhoDe(m, item) { const p = []; let i = item, n = 0; while (i && n++ < 8) { p.unshift(i.titulo); i = m.porId.get(i.pai_id); } return p.join(" › "); }
 function descricaoDe(i, cfg, m) {
   if (i.descricao) return i.descricao;
+  if (cfg.lista_simples) return "";
   if (i.tipo === "LISTA") return `${i.total} ${i.total === 1 ? cfg.rotulo_catalogo.replace(/s$/, "") : cfg.rotulo_catalogo}`;
   if (i.tipo === "MENU") { const n = m.filhos(i.id).length; return `${n} opç${n === 1 ? "ão" : "ões"}`; }
   return "";
@@ -212,7 +222,10 @@ async function mostrarMenu(z, menuId = 0, pagina = 0, prefixo = "") {
   const m = await carregarMenu(z);
   const pai = menuId ? m.porId.get(menuId) : null;
   const itens = m.filhos(menuId);
-  const corpo = (prefixo ? prefixo + "\n\n" : "") + (pai ? (pai.texto || `${pai.titulo}: escolha uma opção.`) : z.cfg.boas_vindas);
+  const partes = partesMsg(pai ? (pai.texto || `${pai.titulo}: escolha uma opção.`) : z.cfg.boas_vindas);
+  // As partes antes da última vão em balões separados (só na primeira página).
+  if (pagina === 0) for (const p of partes.slice(0, -1)) await enviarTexto(z, p);
+  const corpo = (prefixo ? prefixo + "\n\n" : "") + (partes.at(-1) || "Escolha uma opção:");
   await lembrarMenu(z, menuId);
   // Texto numerado: sem limite de opções (o WhatsApp só deixa 3 botões ou 10 itens por lista).
   const exibicao = pai ? pai.exibicao : z.cfg.exibicao_inicio;
@@ -226,7 +239,7 @@ async function mostrarMenu(z, menuId = 0, pagina = 0, prefixo = "") {
   }
   const imgId = pagina === 0 ? (pai ? extraDe(pai).imagem_id : Number(z.cfg.imagem_inicio) || 0) : 0;
   const img = imgId ? await urlImagem(z, imgId) : "";
-  if (itens.length <= 3 && pagina === 0) return botoes(z, corpo, itens.map(i => ({ id: "z:i:" + i.id, titulo: i.titulo })), undefined, img);
+  if (itens.length <= 3 && pagina === 0 && itens.every(i => [...i.titulo].length <= 20)) return botoes(z, corpo, itens.map(i => ({ id: "z:i:" + i.id, titulo: i.titulo })), undefined, img);
   if (img) await enviarImagem(z, img, "");
   // Até 10 opções cabem numa lista só (limite do WhatsApp); com mais, 9 por vez + "Mais opções".
   const cabe = itens.length <= 10 && pagina === 0;
@@ -234,11 +247,11 @@ async function mostrarMenu(z, menuId = 0, pagina = 0, prefixo = "") {
   const linhas = parte.map(i => ({ id: "z:i:" + i.id, titulo: i.titulo, descricao: descricaoDe(i, z.cfg, m) }));
   if (ini + porPagina < itens.length) linhas.push({ id: `z:pg:${menuId}:${pagina + 1}`, titulo: "➡️ Mais opções", descricao: "Ver as próximas" });
   else if (!cabe && (menuId || pagina)) linhas.push({ id: "z:inicio", titulo: z.cfg.rotulo_menu || "🏠 Menu inicial", descricao: "Voltar ao começo" });
-  return lista(z, corpo + (itens.length > porPagina ? `\n\nSão ${itens.length} opções: toque em "Ver opções" (as próximas ficam em "Mais opções") ou escreva o que procura.` : z.cfg.dica_lista === false ? "" : "\n\nToque em \"Ver opções\" e escolha."), pai ? pai.titulo : "Opções", linhas);
+  return lista(z, corpo + (itens.length > porPagina ? `\n\nSão ${itens.length} opções: toque em "Ver opções" (as próximas ficam em "Mais opções") ou escreva o que procura.` : z.cfg.lista_simples ? "" : "\n\nToque em \"Ver opções\" e escolha."), pai ? pai.titulo : "Opções", linhas);
 }
 // Começo da conversa: a boas-vindas (se houver) numa mensagem e o menu com os botões em outra.
 async function mostrarInicio(z) {
-  if (String(z.cfg.saudacao || "").trim()) await enviarTexto(z, z.cfg.saudacao);
+  await enviarPartes(z, z.cfg.saudacao);
   return mostrarMenu(z);
 }
 async function rodape(z, item) {
@@ -254,7 +267,7 @@ async function registrarBusca(z, item, via, resultados, caminho) {
     z.env.DB.prepare("INSERT INTO plt_zap_buscas(org_id,telefone,nome,item_id,tipo,titulo,caminho,texto,via,resultados,criado_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?)").bind(z.org, z.tel, z.nome || "", item.id, item.tipo, item.titulo, caminho, cortar(z.texto, 300), via, resultados, z.agora)
   ]);
   if (z.cfg.avisar_buscas && item.tipo !== "HUMANO" && extraDe(item).lead !== false && !(repetida?.results || []).length)
-    await telegram(z, textoLead(z, caminho, via), z.tel, true);
+    await telegram(z, textoLead(z, caminho), z.tel, true, true);
 }
 const semAcento = t => String(t || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 export function tagsLead(cfg, nomeEmpresa) {
@@ -263,14 +276,14 @@ export function tagsLead(cfg, nomeEmpresa) {
   const nome = semAcento(nomeEmpresa).toLowerCase().replace(/\b(shopping|loja|lojas|centro|ltda|me|eireli|s\.?a\.?)\b/g, "").replace(/[^a-z0-9]/g, "");
   return [nome ? "#" + nome.slice(0, 30) : "", "#leads"].filter(Boolean).join(" ");
 }
-export function textoLead(z, caminho, via) {
-  const quando = new Date(z.agora).toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo", day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
+// Markdown do Telegram: o que vem do cliente não pode abrir negrito/itálico por engano.
+const semMarkdown = t => String(t || "").replace(/([_*`\[])/g, "\\$1");
+export function textoLead(z, caminho) {
+  const quando = new Date(z.agora).toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo", hour12: false, day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
   const pedido = String(caminho || "").split(" › ").join(" > ");
   return [z.cfg.lead_titulo || ZAP_PADRAO.lead_titulo, "",
-    `👤 Nome: ${z.nome || "sem nome"}`, `📱 WhatsApp: ${z.tel}`, `💬 Pedido: ${pedido}`,
-    ...(via !== "BOTAO" && z.texto ? [`✍️ Escreveu: "${cortar(z.texto, 160)}"`] : []),
-    ...(z.resultados ? [`🏪 Indicados: ${cortar(z.resultados, 400)}`] : []),
-    `🕒 Horário: ${quando}`, "", tagsLead(z.cfg, z.nomeEmpresa)].join("\n").trim();
+    `👤 *Nome:* ${semMarkdown(z.nome || "Cliente")}`, `📱 *WhatsApp:* ${z.tel}`, `💬 *Pedido:* ${semMarkdown(pedido)}`,
+    `🕒 *Horário:* ${quando}`, "", semMarkdown(tagsLead(z.cfg, z.nomeEmpresa))].join("\n").trim();
 }
 async function abrirItem(z, item, via) {
   const m = await carregarMenu(z);
@@ -281,8 +294,9 @@ async function abrirItem(z, item, via) {
   const ex = extraDe(item);
   if (item.tipo === "RESPOSTA") {
     const temRico = ex.imagem_id || (ex.link_url && ex.link_texto);
-    if (temRico) await enviarCartao(z, { imagem_id: ex.imagem_id, texto: item.texto || item.titulo, link_texto: ex.link_texto, link_url: ex.link_url }, origem);
-    else await enviarTexto(z, item.texto || item.titulo, origem);
+    const partesR = partesMsg(item.texto || item.titulo);
+    if (temRico) { for (const p of partesR.slice(0, -1)) await enviarTexto(z, p, origem); await enviarCartao(z, { imagem_id: ex.imagem_id, texto: partesR.at(-1) || item.titulo, link_texto: ex.link_texto, link_url: ex.link_url }, origem); }
+    else for (const p of partesR) await enviarTexto(z, p, origem);
     // Carrossel: até 4 cartões (imagem + texto + botão), um embaixo do outro.
     for (const c of (Array.isArray(ex.cartoes) ? ex.cartoes : []).slice(0, 4)) await enviarCartao(z, c, origem);
     await rodape(z, item);
@@ -300,7 +314,9 @@ async function abrirItem(z, item, via) {
   } else {
     const linhas = r.map(cartaoContato);
     // Todas as lojas numa mensagem só; a mensagem da opção (se houver) vem no topo, no lugar do título.
-    const texto = r.length ? `${item.texto ? item.texto : `*${item.titulo}*`}\n\n${linhas.join("\n\n")}${z.cfg.rodape_lista ? "\n\n" + z.cfg.rodape_lista : ""}` : `No momento não tenho ${z.cfg.rotulo_catalogo} cadastrados para *${item.titulo}*.`;
+    const partesL = partesMsg(item.texto);
+    if (r.length) for (const p of partesL.slice(0, -1)) await enviarTexto(z, p, origem);
+    const texto = r.length ? `${partesL.length ? partesL.at(-1) : `*${item.titulo}*`}\n\n${linhas.join("\n\n")}${z.cfg.rodape_lista ? "\n\n" + z.cfg.rodape_lista : ""}` : `No momento não tenho ${z.cfg.rotulo_catalogo} cadastrados para *${item.titulo}*.`;
     await enviarTexto(z, texto, origem);
   }
   await rodape(z, item);
@@ -337,7 +353,7 @@ async function responder(z, texto, acao) {
   z.texto = texto;
   const m = await carregarMenu(z);
   if (acao === "z:inicio") return mostrarMenu(z);
-  if (acao === "z:fim") return enviarTexto(z, z.cfg.encerramento + (z.cfg.rede_url ? `\n\nSiga a gente${z.cfg.rede_nome ? " no " + z.cfg.rede_nome : ""}: ${z.cfg.rede_url}` : ""));
+  if (acao === "z:fim") return enviarPartes(z, z.cfg.encerramento + (z.cfg.rede_url ? `\n\nSiga a gente${z.cfg.rede_nome ? " no " + z.cfg.rede_nome : ""}: ${z.cfg.rede_url}` : ""));
   let a;
   if ((a = acao.match(/^z:pg:(\d+):(\d+)$/))) return mostrarMenu(z, Number(a[1]), Number(a[2]));
   if ((a = acao.match(/^z:i:(\d+)$/))) { const it = m.porId.get(Number(a[1])); return it ? abrirItem(z, it, "BOTAO") : mostrarMenu(z); }
@@ -627,7 +643,8 @@ async function linhasDe(env, sql, ...args) { return (await env.DB.prepare(sql).b
 //   [atendente] no fim do nome    = chama a equipe
 // ---------------------------------------------------------------------------
 const CHAVES_ROTEIRO = { "BOAS-VINDAS": "saudacao", "BOAS VINDAS": "saudacao", "MENU": "boas_vindas", "NÃO ENTENDI": "nao_entendi", "NAO ENTENDI": "nao_entendi", "ATENDENTE": "humano", "ENCERRAMENTO": "encerramento", "RODAPÉ DAS LOJAS": "rodape_lista", "RODAPE DAS LOJAS": "rodape_lista",
-  "DEPOIS DE CADA RESPOSTA": "rodape_pergunta", "BOTÕES DO FIM": "_botoes_fim", "BOTOES DO FIM": "_botoes_fim" };
+  "DEPOIS DE CADA RESPOSTA": "rodape_pergunta", "BOTÕES DO FIM": "_botoes_fim", "BOTOES DO FIM": "_botoes_fim",
+  "TÍTULO DO AVISO": "lead_titulo", "TITULO DO AVISO": "lead_titulo", "ETIQUETAS DO AVISO": "lead_tags", "LISTAS SIMPLES": "_lista_simples", "QUALQUER MENSAGEM": "_texto_livre" };
 export function lerRoteiro(texto) {
   const linhas = String(texto || "").replace(/\r\n?/g, "\n").split("\n");
   const cfg = {}, raiz = { filhos: [], nivel: 0 }, pilha = [raiz], erros = [];
@@ -638,7 +655,7 @@ export function lerRoteiro(texto) {
     const linha = bruta.trim();
     const num = n + 1;
     if (!linha) { paragrafo = true; return; }
-    if (linha.startsWith("#")) return; // comentário
+    if (/^#\s/.test(linha)) return; // comentário ("# texto")
     const ch = linha.match(/^([^:>|]{3,30}):\s*(.*)$/u);
     if (ch && CHAVES_ROTEIRO[ch[1].trim().toUpperCase()]) { const chave = CHAVES_ROTEIRO[ch[1].trim().toUpperCase()]; cfg[chave] = ch[2].trim() === "-" ? "" : ch[2].trim(); alvo = { tipo: "cfg", chave }; paragrafo = false; return; }
     const b = linha.match(/^(>+)\s*(.+)$/);
@@ -647,10 +664,14 @@ export function lerRoteiro(texto) {
       if (nivel > pilha.length) { erros.push(`Linha ${num}: "${b[1]}" pulou um nível (o botão de cima tem ${pilha.length - 1} ">").`); return; }
       if (nivel > 8) { erros.push(`Linha ${num}: no máximo 8 níveis.`); return; }
       let titulo = b[2].trim(), tipo = "";
-      const marca = titulo.match(/\s*\[(atendente|humano|resposta|lojas)\]\s*$/i);
-      if (marca) { tipo = { atendente: "HUMANO", humano: "HUMANO", resposta: "RESPOSTA", lojas: "LISTA" }[marca[1].toLowerCase()]; titulo = titulo.slice(0, marca.index).trim(); }
+      let semAviso = false;
+      for (let marca; (marca = titulo.match(/\s*\[(atendente|humano|resposta|lojas|sem aviso)\]\s*$/i));) {
+        const m2 = marca[1].toLowerCase();
+        if (m2 === "sem aviso") semAviso = true; else tipo = { atendente: "HUMANO", humano: "HUMANO", resposta: "RESPOSTA", lojas: "LISTA" }[m2];
+        titulo = titulo.slice(0, marca.index).trim();
+      }
       if (titulo.length > 24) erros.push(`Linha ${num}: "${titulo}" tem ${titulo.length} letras; o WhatsApp aceita até 24 no botão (20 aparecem).`);
-      const no = { titulo: titulo.slice(0, 24), tipo, texto: "", lojas: [], filhos: [], nivel, linha: num };
+      const no = { titulo: titulo.slice(0, 24), tipo, texto: "", lojas: [], filhos: [], nivel, linha: num, semAviso };
       pilha.length = nivel; pilha[nivel - 1].filhos.push(no); pilha.push(no);
       alvo = { tipo: "no", no }; paragrafo = false;
       return;
@@ -658,8 +679,8 @@ export function lerRoteiro(texto) {
     const loja = linha.match(/^(.+?)\s*\|\s*(\S.*)$/);
     if (loja && alvo && alvo.tipo === "no") {
       const nomeL = loja[1].trim().replace(/^[-•*]\s*/, ""), destino = loja[2].trim();
-      const sep = nomeL.match(/^(.{1,40}?)\s*[-–]\s+(.+)$/);
-      const l = sep ? { local: sep[1].trim(), nome: sep[2].trim() } : { local: "", nome: nomeL };
+      // O nome fica exatamente como foi escrito (ex.: "Loja 04- Conserta Celular").
+      const l = { local: "", nome: nomeL };
       if (/^https:\/\//i.test(destino)) l.link = destino.split(/\s+/)[0];
       else if (digitos(destino).length >= 10) l.whatsapp = digitos(destino);
       else { erros.push(`Linha ${num}: depois da "|" vem o link (https://…) ou o WhatsApp da loja.`); return; }
@@ -672,6 +693,8 @@ export function lerRoteiro(texto) {
   });
   const limpar = t => String(t || "").replace(/\n{3,}/g, "\n\n").trim();
   for (const k of Object.keys(cfg)) cfg[k] = limpar(cfg[k]);
+  if (cfg._lista_simples !== undefined) { cfg.lista_simples = /^(sim|s|true|1)$/i.test(cfg._lista_simples); delete cfg._lista_simples; }
+  if (cfg._texto_livre !== undefined) { cfg.texto_livre = /come[cç]o|in[ií]cio/i.test(cfg._texto_livre) ? "INICIO" : "BUSCAR"; delete cfg._texto_livre; }
   if (cfg._botoes_fim !== undefined) {
     const [a, b2, c] = cfg._botoes_fim.split("|").map(x => x.trim());
     delete cfg._botoes_fim;
@@ -697,10 +720,15 @@ export function escreverRoteiro(itens, catalogo, ligacoes, cfg, ordemLig = new M
   out.push("DEPOIS DE CADA RESPOSTA: " + (cfg.rodape_pergunta || ZAP_PADRAO.rodape_pergunta));
   out.push(`BOTÕES DO FIM: ${cfg.rotulo_menu || ZAP_PADRAO.rotulo_menu} | ${cfg.rotulo_voltar || ZAP_PADRAO.rotulo_voltar} | ${cfg.rotulo_fim || ZAP_PADRAO.rotulo_fim}`);
   if (cfg.encerramento) out.push("ENCERRAMENTO: " + cfg.encerramento);
-  out.push("RODAPÉ DAS LOJAS: " + (cfg.rodape_lista || "-"), "");
+  out.push("RODAPÉ DAS LOJAS: " + (cfg.rodape_lista || "-"));
+  out.push("QUALQUER MENSAGEM: " + (cfg.texto_livre === "INICIO" ? "mostra o começo" : "procura pelas palavras"));
+  out.push("LISTAS SIMPLES: " + (cfg.lista_simples ? "sim" : "não"));
+  out.push("TÍTULO DO AVISO: " + (cfg.lead_titulo || ZAP_PADRAO.lead_titulo));
+  if (cfg.lead_tags) out.push("ETIQUETAS DO AVISO: " + cfg.lead_tags);
+  out.push("");
   const lojasDo = id => catalogo.filter(c => (ligacoes.get(c.id) || []).includes(id)).sort((a, b) => (ordemLig.get(id + ":" + a.id) ?? 999999) - (ordemLig.get(id + ":" + b.id) ?? 999999));
   const descer = (pai, nivel) => itens.filter(i => Number(i.pai_id) === pai).sort((a, b) => (a.ordem || 0) - (b.ordem || 0) || a.id - b.id).forEach(i => {
-    const marca = i.tipo === "HUMANO" ? " [atendente]" : i.tipo === "LISTA" && !lojasDo(i.id).length ? " [lojas]" : "";
+    const marca = (i.tipo === "HUMANO" ? " [atendente]" : i.tipo === "LISTA" && !lojasDo(i.id).length ? " [lojas]" : "") + (i.tipo !== "HUMANO" && i.tipo !== "MENU" && extraDe(i).lead === false ? " [sem aviso]" : "");
     out.push(">".repeat(nivel) + " " + i.titulo + marca);
     if (i.texto) out.push(i.texto);
     for (const c of lojasDo(i.id)) out.push(`${[c.local, c.nome].filter(Boolean).join(" - ")} | ${c.link || c.whatsapp || c.telefone || ""}`);
@@ -709,6 +737,80 @@ export function escreverRoteiro(itens, catalogo, ligacoes, cfg, ordemLig = new M
   });
   descer(0, 1);
   return out.join("\n").replace(/\n{3,}/g, "\n\n").trim() + "\n";
+}
+
+// ---------------------------------------------------------------------------
+// Botpress → roteiro: lê o fluxo "Main" exportado (.bpz → bot.json) e escreve o roteiro igual,
+// na mesma ordem, com os mesmos textos. O navegador já tira o código das ações (tokens) antes de enviar.
+// ---------------------------------------------------------------------------
+export function roteiroDoBotpress(bot) {
+  const fluxos = Array.isArray(bot?.flows) ? bot.flows : [];
+  const main = fluxos.find(f => f?.name === "Main") || fluxos.find(f => (f?.nodes || []).some(n => n?.type === "start"));
+  if (!main) throw new Error("Não achei o fluxo principal (Main) no arquivo do Botpress.");
+  const nos = new Map((main.nodes || []).map(n => [n.id, n]));
+  const val = v => typeof v === "string" ? v : String(v?.dynamicValue || v?.staticValue || "");
+  const ins = n => Array.isArray(n?.instructions) ? n.instructions : [];
+  const textos = n => ins(n).filter(i => i.type === "content" && i.content?.type === "text").map(i => val(i.content.text).trim()).filter(Boolean);
+  const captura = n => ins(n).find(i => i.type === "capture");
+  const proximo = n => ins(n).find(i => i.type === "transition")?.destination?.node || n?.defaultTransition?.targetNodeId || null;
+  const VOLTA = /^(menu\s+(principal|pincipal|inicial|anterior)|finalizar|voltar|in[ií]cio)$/i;
+  const opcoes = cap => (cap?.transitions || []).filter(t => t?.destination?.node).map(t => ({ rotulo: String(t.label || t.condition?.payload?.match(/__CHOICE=(.+)$/)?.[1] || "").trim(), destino: t.destination.node }));
+  let rodape = null, tagsAviso = "", tituloAviso = "";
+  // Segue o caminho até um nó que pergunta (ou até o fim), juntando as mensagens e vendo se passou por um aviso.
+  const resolver = id => {
+    const r = { msgs: [], cap: null, aviso: false };
+    for (let passo = 0; id && passo < 12; passo++) {
+      const n = nos.get(id);
+      if (!n || n.type === "end") break;
+      for (const a of ins(n).filter(i => i.type === "action")) { r.aviso = true; if (a.hashtags && !tagsAviso) tagsAviso = a.hashtags; if (a.titulo && !tituloAviso) tituloAviso = a.titulo; }
+      r.msgs.push(...textos(n));
+      r.cap = captura(n);
+      if (r.cap) break;
+      id = proximo(n);
+    }
+    return r;
+  };
+  const ehRodape = cap => { const o = opcoes(cap); return o.length > 0 && o.every(x => VOLTA.test(x.rotulo)); };
+  const nomeBotao = t => { t = String(t).replace(/\s+/g, " ").trim(); if ([...t].length > 24) t = t.replace(/\s*\|\s*/g, "|").replace(/\s*\/\s*/g, "/"); return [...t].slice(0, 24).join("").trim(); };
+  const LOJA = /^([^\n]{1,100}?)\s*\n?\s*(https:\/\/\S+)\s*$/;
+  const linhas = [];
+  let encerramento = "";
+  const escrever = (rot, r, nivel, caminho) => {
+    const o = r.cap && !ehRodape(r.cap) ? opcoes(r.cap) : [];
+    if (r.cap && ehRodape(r.cap) && !rodape) {
+      rodape = { pergunta: val(r.cap.question).trim(), rotulos: opcoes(r.cap).map(x => x.rotulo) };
+      const fim = opcoes(r.cap).find(x => /^finalizar/i.test(x.rotulo));
+      if (fim) encerramento = resolver(fim.destino).msgs.join("\n---\n");
+    }
+    const lojas = [], outros = [];
+    for (const m of r.msgs) { const l = m.match(LOJA); if (!o.length && l && !/\n/.test(l[1].trim())) lojas.push(`${l[1].trim().replace(/[:\s]+$/, "")} | ${l[2]}`); else outros.push(m); }
+    const marca = !o.length && !r.aviso ? " [sem aviso]" : "";
+    linhas.push(">".repeat(nivel) + " " + nomeBotao(rot) + (!o.length && !lojas.length && !outros.length ? " [resposta]" : "") + marca);
+    const corpo = [...outros, ...(o.length ? [val(r.cap.question).trim()] : [])].filter(Boolean);
+    if (corpo.length) linhas.push(corpo.join("\n---\n"));
+    linhas.push(...lojas, "");
+    if (nivel >= 8) return;
+    for (const x of o) { if (caminho.has(x.destino)) continue; escrever(x.rotulo, resolver(x.destino), nivel + 1, new Set([...caminho, x.destino])); }
+  };
+  const inicio = nos.get(main.startNode) || [...nos.values()].find(n => n.type === "start");
+  const raiz = resolver(proximo(inicio));
+  if (!raiz.cap) throw new Error("O fluxo do Botpress não tem um menu com opções depois do início.");
+  for (const x of opcoes(raiz.cap)) escrever(x.rotulo, resolver(x.destino), 1, new Set([x.destino]));
+  const cab = ["# Convertido do Botpress pela DENIA. Uma linha com --- separa mensagens (cada parte vai num balão).",
+    "BOAS-VINDAS: " + (raiz.msgs.join("\n---\n") || "-"),
+    "MENU: " + val(raiz.cap.question).trim(),
+    "QUALQUER MENSAGEM: mostra o começo",
+    "LISTAS SIMPLES: sim",
+    "RODAPÉ DAS LOJAS: -"];
+  if (rodape) {
+    cab.push("DEPOIS DE CADA RESPOSTA: " + rodape.pergunta);
+    const r3 = rodape.rotulos.map(t => t.replace(/pincipal/i, "Principal"));
+    cab.push(`BOTÕES DO FIM: ${r3.find(t => /principal|inicial|in[ií]cio/i.test(t)) || "Menu Principal"} | ${r3.find(t => /anterior|voltar/i.test(t)) || "Menu Anterior"} | ${r3.find(t => /finalizar/i.test(t)) || "Finalizar"}`);
+  }
+  if (encerramento) cab.push("ENCERRAMENTO: " + encerramento);
+  if (tituloAviso) cab.push("TÍTULO DO AVISO: " + tituloAviso);
+  if (tagsAviso) cab.push("ETIQUETAS DO AVISO: " + tagsAviso);
+  return cab.join("\n") + "\n\n" + linhas.join("\n").replace(/\n{3,}/g, "\n\n").trim() + "\n";
 }
 
 const URL_OK = u => /^https:\/\/[^\s<>"']{4,600}$/i.test(String(u || "").trim());
@@ -977,15 +1079,15 @@ export async function rotasZap(request, env, k, orgId, papel, resto) {
     const criar = async (lista, pai) => {
       let ordem = 0;
       for (const no of lista) {
-        const id = (await env.DB.prepare("INSERT INTO plt_zap_itens(org_id,pai_id,tipo,titulo,texto,palavras,ordem,ativo,exibicao,extra) VALUES(?,?,?,?,?,?,?,1,'AUTO','{}') RETURNING id")
-          .bind(orgId, pai, no.tipo, no.titulo, cortar(no.texto, 3000), "", ++ordem).first()).id;
+        const id = (await env.DB.prepare("INSERT INTO plt_zap_itens(org_id,pai_id,tipo,titulo,texto,palavras,ordem,ativo,exibicao,extra) VALUES(?,?,?,?,?,?,?,1,'AUTO',?) RETURNING id")
+          .bind(orgId, pai, no.tipo, no.titulo, cortar(no.texto, 3000), "", ++ordem, JSON.stringify(no.semAviso ? { lead: false } : {})).first()).id;
         nBotoes++;
         let posLoja = 0;
         for (const l of no.lojas) {
           // Mesmo link = mesma loja. Com link diferente (outra mensagem pronta), fica um contato separado.
           let cid = l.link ? porLink.get(l.link) : porNome.get(chaveLoja(l));
           if (!cid) {
-            cid = (await env.DB.prepare("INSERT INTO plt_zap_catalogo(org_id,nome,local,link,whatsapp,destaque,ativo) VALUES(?,?,?,?,?,0,1) RETURNING id").bind(orgId, cortar(l.nome, 80), cortar(l.local, 80), l.link || null, l.whatsapp || null).first()).id;
+            cid = (await env.DB.prepare("INSERT INTO plt_zap_catalogo(org_id,nome,local,link,whatsapp,destaque,ativo) VALUES(?,?,?,?,?,0,1) RETURNING id").bind(orgId, cortar(l.nome, 100), cortar(l.local, 80), l.link || null, l.whatsapp || null).first()).id;
             if (l.link) porLink.set(l.link, cid);
             if (!porNome.has(chaveLoja(l))) porNome.set(chaveLoja(l), cid);
             nLojas++;
@@ -1000,13 +1102,20 @@ export async function rotasZap(request, env, k, orgId, papel, resto) {
     if (ligar.length) await env.DB.batch(ligar);
     if (Object.keys(lido.cfg).length) {
       const cfg = lerConfig(conta);
-      for (const [ch, v] of Object.entries(lido.cfg)) cfg[ch] = cortar(v, 1000);
+      for (const [ch, v] of Object.entries(lido.cfg)) cfg[ch] = typeof v === "string" ? cortar(v, 1500) : v;
       // Com boas-vindas própria, qualquer mensagem do cliente mostra o começo (como no Botpress).
-      if (lido.cfg.saudacao) cfg.texto_livre = "INICIO";
+      if (lido.cfg.saudacao && lido.cfg.texto_livre === undefined) cfg.texto_livre = "INICIO";
       await env.DB.prepare("INSERT INTO plt_zap_contas(org_id,config,modo,ativo,atualizado_ms) VALUES(?,?,'BOTOES',1,?) ON CONFLICT(org_id) DO UPDATE SET config=excluded.config, atualizado_ms=excluded.atualizado_ms").bind(orgId, JSON.stringify(cfg), agora).run();
     }
     await auditar(env, request, sessao, orgId, "CHATBOT", `Roteiro aplicado: ${nBotoes} botão(ões), ${nLojas} loja(s) nova(s)`);
     return json({ ok: true, botoes: nBotoes, lojas_novas: nLojas });
+  }
+  // Arquivo do Botpress (sem o código das ações): devolve o roteiro para conferir e aplicar.
+  if (r === "botpress" && metodo === "POST") {
+    const negado = precisa("AGENTE"); if (negado) return negado;
+    const { corpo, erro } = await ler(3000000); if (erro) return erro;
+    try { return json({ ok: true, roteiro: roteiroDoBotpress(corpo.bot) }); }
+    catch (e) { return json({ erro: e.message || "Não consegui ler o arquivo do Botpress." }, 400); }
   }
   // Reordenar os botões de um bloco (a ordem em que o cliente vê).
   if (r === "itens/ordem" && metodo === "POST") {

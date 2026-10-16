@@ -954,3 +954,5 @@ input.fx-titulo:focus { outline: none; border-color: var(--azul); background: rg
 .fx-ok { margin: 0; color: #86efac; font-size: 14px; }
 .fx-erro { margin: 0; color: #fca5a5; font-weight: 600; font-size: 14px; }
 .fx-erros { margin: 6px 0 0; padding-left: 18px; color: #fecaca; font-size: 13px; display: grid; gap: 3px; }
+.fx-botpress { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 16px; padding: 12px 14px; border-radius: 14px; border: 1px solid rgba(79, 140, 255, 0.45); background: rgba(79, 140, 255, 0.08); }
+.fx-botpress > div { display: grid; gap: 2px; min-width: 0; flex: 1 1 240px; }
