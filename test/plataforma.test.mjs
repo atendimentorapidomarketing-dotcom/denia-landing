@@ -1862,3 +1862,36 @@ test("Temporada — cadastro rápido: só os links dos calendários, vários im�
   const anuncio = await p.req("/api/orgs/1/tp/imoveis/rapido", { metodo: "POST", quem: "admin", corpo: { imoveis: [{ links: ["https://www.airbnb.com.br/rooms/123456"] }] } });
   assert.equal(anuncio.dados.codigo, "LINK_ANUNCIO", "explica que precisa do link do calendário");
 });
+
+test("WhatsApp — conectar pelo Facebook com coexistência: número continua no app e respostas do celular pausam o robô", async () => {
+  const p = await criarPlataforma({ META_APP_ID: "1234567890", META_APP_SECRET: "a".repeat(32), META_WA_CONFIG_ID: "998877" });
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  const nova = await p.req("/api/admin/organizacoes", { metodo: "POST", quem: "admin", corpo: { nome: "Loja Coexistência" } });
+  const org = nova.dados.id;
+  const cfg = await p.req(`/api/orgs/${org}/zap/embedded`, { quem: "admin" });
+  assert.equal(cfg.dados.disponivel, true); assert.equal(cfg.dados.config_id, "998877");
+  p.meta = (url, metodo) => {
+    if (url.includes("oauth/access_token")) return { access_token: "EAAT" + "y".repeat(60) };
+    if (url.includes("/subscribed_apps") || url.includes("/smb_app_data")) return { success: true };
+    if (url.includes("/555666777888?")) return { display_phone_number: "+55 21 99999-0000", verified_name: "Loja" };
+    return {};
+  };
+  const r = await p.req(`/api/orgs/${org}/zap/embedded`, { metodo: "POST", quem: "admin", corpo: { code: "codigo-da-meta", phone_number_id: "555666777888", waba_id: "111222333444", coexistencia: true } });
+  assert.equal(r.status, 200, JSON.stringify(r.dados)); assert.equal(r.dados.numero, "+55 21 99999-0000");
+  const chamadas = p.metaChamadas.map(c => c.url);
+  assert.ok(chamadas.some(u => u.includes("111222333444/subscribed_apps")));
+  assert.ok(chamadas.filter(u => u.includes("555666777888/smb_app_data")).length === 2, "sincroniza contatos e histórico do app");
+  assert.ok(!chamadas.some(u => u.includes("/register")), "na coexistência o número não é registrado de novo");
+  // A equipe respondeu pelo celular (eco): fica na conversa e o robô pausa.
+  p.meta = null;
+  await p.req(`/api/orgs/${org}/zap/modelo`, { metodo: "POST", quem: "admin", corpo: { tipo: "servicos" } });
+  const CLI = "5521944440000";
+  await webhookZap(p, "555666777888", { from: CLI, type: "text", text: { body: "oi" } });
+  assert.equal(enviadosPara(p, CLI).length, 1);
+  await p.req("/webhook/whatsapp", { metodo: "POST", corpo: { entry: [{ changes: [{ field: "smb_message_echoes", value: { metadata: { phone_number_id: "555666777888" }, message_echoes: [{ id: "wamid.eco1", from: "5521999990000", to: CLI, type: "text", text: { body: "Oi! Aqui é a Ana, pelo celular." } }] } }] }] } });
+  const conv = (await p.req(`/api/orgs/${org}/zap/conversas/${CLI}`, { quem: "admin" })).dados;
+  assert.ok(conv.mensagens.some(m => m.origem === "EQUIPE" && /pelo celular/.test(m.texto)));
+  assert.equal(conv.contato.pausado, true);
+  await webhookZap(p, "555666777888", { from: CLI, type: "text", text: { body: "obrigado" } });
+  assert.equal(enviadosPara(p, CLI).length, 1, "robô em pausa enquanto a equipe atende pelo celular");
+});

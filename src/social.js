@@ -74,6 +74,22 @@ async function insightsInstagram(env, conta, token, p) {
     const d = await graph(env, "GET", `${conta.ig_id}/insights`, { metric: "follower_count", period: "day", since: String(seg(a)), until: String(seg(p.fim)), access_token: token });
     for (const m of d.data || []) for (const v of m.values || []) { const dia = String(v.end_time || "").slice(0, 10); if (dia) diario.set(dia, { ...(diario.get(dia) || {}), novos_seguidores: Number(v.value || 0) }); }
   } catch { /* série opcional */ }
+  // Visitas ao perfil e quem começou/deixou de seguir (só as quantidades: a Meta não diz quem).
+  let visitasPerfil = null, comecaram = null, deixaram = null;
+  for (const [a, b] of janelas(p.ini, p.fim)) {
+    try {
+      const d = await graph(env, "GET", `${conta.ig_id}/insights`, { metric: "profile_views", period: "day", metric_type: "total_value", since: String(seg(a)), until: String(seg(b)), access_token: token });
+      visitasPerfil = (visitasPerfil || 0) + Number(d.data?.[0]?.total_value?.value || 0);
+    } catch { /* métrica indisponível para esta conta */ }
+    try {
+      const d = await graph(env, "GET", `${conta.ig_id}/insights`, { metric: "follows_and_unfollows", period: "day", metric_type: "total_value", breakdown: "follow_type", since: String(seg(a)), until: String(seg(b)), access_token: token });
+      for (const r of d.data?.[0]?.total_value?.breakdowns?.[0]?.results || []) {
+        const tipo = String(r.dimension_values?.[0] || "").toUpperCase();
+        if (tipo === "FOLLOWER") comecaram = (comecaram || 0) + Number(r.value || 0);
+        if (tipo === "NON_FOLLOWER") deixaram = (deixaram || 0) + Number(r.value || 0);
+      }
+    } catch { /* métrica indisponível */ }
+  }
   // Público: cidades, países, idade e gênero de quem segue (mínimo de 100 seguidores).
   const publico = {};
   for (const quebra of ["city", "country", "age", "gender"]) {
@@ -83,7 +99,7 @@ async function insightsInstagram(env, conta, token, p) {
     } catch { publico[quebra] = []; }
   }
   return {
-    totais: { alcance: totais.reach, visualizacoes: totais.views, contas_engajadas: totais.accounts_engaged, interacoes: totais.total_interactions, curtidas: totais.likes, comentarios: totais.comments, compartilhamentos: totais.shares, salvamentos: totais.saves, respostas_stories: totais.replies, cliques_link: totais.profile_links_taps, novos_seguidores: [...diario.values()].reduce((t, v) => t + (v.novos_seguidores || 0), 0) },
+    totais: { alcance: totais.reach, visualizacoes: totais.views, contas_engajadas: totais.accounts_engaged, interacoes: totais.total_interactions, curtidas: totais.likes, comentarios: totais.comments, compartilhamentos: totais.shares, salvamentos: totais.saves, respostas_stories: totais.replies, cliques_link: totais.profile_links_taps, novos_seguidores: [...diario.values()].reduce((t, v) => t + (v.novos_seguidores || 0), 0), visitas_perfil: visitasPerfil, comecaram_a_seguir: comecaram, deixaram_de_seguir: deixaram },
     diario: [...diario.entries()].sort().map(([data, v]) => ({ data, alcance: v.alcance || 0, novos_seguidores: v.novos_seguidores || 0 })),
     publico, indisponiveis: [...indisponiveis], seguidores_ultimos_30_dias: true
   };

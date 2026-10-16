@@ -639,8 +639,6 @@ details > summary { cursor: pointer; font-weight: 700; }
 .msg-traducao { display: block; font-weight: 600; }
 
 /* Menu por área: dentro de Temporada o menu é só de Temporada (com volta ao menu principal). */
-body:not(.modo-temporada) #lateral-nav .so-modo-tp { display: none !important; }
-body.modo-temporada #lateral-nav > :not(.so-modo-tp) { display: none !important; }
 #lateral-nav a.voltar-menu { color: var(--texto-2); border: 1px solid var(--borda); margin-bottom: 6px; }
 #lateral-nav a.voltar-menu:hover { color: var(--texto); }
 
@@ -719,3 +717,21 @@ body.modo-temporada #lateral-nav > :not(.so-modo-tp) { display: none !important;
   .abas-chips .aba { flex: 0 0 auto; white-space: nowrap; }
   .filtros-desempenho { padding: 10px; }
 }
+
+/* Menu por canal */
+#lateral-nav .fora { display: none !important; }
+.lateral-titulo-modo { margin: 8px 10px 2px; font-size: 18px; font-weight: 800; color: var(--texto); }
+.lateral-nav a .seta { margin-left: auto; font-style: normal; color: var(--texto-3); font-size: 18px; line-height: 1; }
+.canal-ic { display: inline-grid; place-items: center; width: 19px; height: 19px; flex: 0 0 19px; border-radius: 6px; color: #fff; font-size: 11px; font-style: normal; background: var(--c-bloqueio); }
+.canal-ic.canal-airbnb { background: var(--c-airbnb); } .canal-ic.canal-booking { background: var(--c-booking); } .canal-ic.canal-vrbo { background: var(--c-vrbo); }
+.barra-app-item .canal-ic { width: 22px; height: 22px; font-size: 12px; }
+/* Dentro de um canal, as opções ficam no menu (não em abas na tela). */
+body[data-modo] .conteudo .abas[role="tablist"] { display: none; }
+.plataforma-topo { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+.lista-possivel { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.lista-possivel li { display: flex; gap: 12px; align-items: flex-start; padding: 12px; border: 1px solid var(--borda); border-radius: 14px; }
+.lista-possivel li div { display: grid; gap: 3px; }
+.lista-possivel small { color: var(--texto-3); font-size: 13px; }
+.possivel-selo { flex: 0 0 auto; font-size: 11.5px; font-weight: 700; padding: 3px 9px; border-radius: 999px; white-space: nowrap; }
+.possivel-ok .possivel-selo { background: rgba(34, 197, 94, 0.16); color: #4ade80; } .possivel-conectar .possivel-selo { background: rgba(79, 140, 255, 0.16); color: #7aa7ff; }
+.possivel-breve .possivel-selo { background: rgba(250, 204, 21, 0.14); color: #facc15; } .possivel-nao .possivel-selo { background: rgba(148, 163, 184, 0.16); color: var(--texto-3); }

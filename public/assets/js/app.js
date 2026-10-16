@@ -267,7 +267,6 @@
     }
     estado.paginaViva = null;
     const id = ++estado.render;
-    document.querySelectorAll("#lateral-nav a").forEach(a => a.classList.toggle("ativo", a.dataset.rota === nome && (!a.dataset.aba || a.dataset.aba === (param || "visao"))));
     $("titulo-pagina").replaceChildren(estado.org ? h("span", { class: "migalha", text: estado.org.nome + " / " }) : "", rota.titulo);
     document.title = rota.titulo + " — DENIA";
     fecharMenu();
@@ -1451,6 +1450,8 @@
     document.querySelectorAll("#lateral-nav a[data-so-central]").forEach(a => a.classList.toggle("oculto", guia || ehRevisor()));
     // Empresa só com o chatbot da plataforma (sem a IA completa conectada): esconde o que depende da IA completa.
     const soChatbot = Boolean(estado.org && estado.org.chatbot && !estado.org.conectada);
+    const entraZap = document.querySelector('#lateral-nav [data-entra="whatsapp"]');
+    if (entraZap) entraZap.setAttribute("href", soChatbot || (estado.org && !estado.org.conectada) ? "#/chatbot/visao" : "#/whatsapp/visao");
     document.querySelectorAll("#lateral-nav a[data-motor]").forEach(a => a.classList.toggle("oculto", soChatbot || ehRevisor()));
     if (soChatbot) document.querySelectorAll("#lateral-nav a[data-so-central]").forEach(a => a.classList.add("oculto"));
   }
@@ -1992,8 +1993,41 @@
         catch (e) { aviso(e.message, "erro"); }
       }, "btn-primario"), h("a", { class: "btn btn-secundario", href: "#/chatbot/testar" }, "Testar como cliente")) : null);
   }
+  // Cadastro incorporado da Meta (login do Facebook). Com coexistência, o número continua no app WhatsApp Business.
+  let sdkFacebook = null;
+  function carregarSdkFacebook(appId, versao) {
+    if (sdkFacebook) return sdkFacebook;
+    sdkFacebook = new Promise((ok, falhou) => {
+      window.fbAsyncInit = () => { window.FB.init({ appId, autoLogAppEvents: true, xfbml: false, version: versao || "v21.0" }); ok(window.FB); };
+      const sc = document.createElement("script"); sc.src = "https://connect.facebook.net/pt_BR/sdk.js"; sc.async = true; sc.crossOrigin = "anonymous";
+      sc.onerror = () => { sdkFacebook = null; falhou(new Error("Não consegui abrir o login do Facebook. Confira a internet ou bloqueadores de anúncio.")); };
+      document.head.appendChild(sc);
+    });
+    return sdkFacebook;
+  }
+  async function conectarPeloFacebook(cfg, coexistencia) {
+    let FBx;
+    try { FBx = await carregarSdkFacebook(cfg.app_id, cfg.versao); } catch (e) { aviso(e.message, "erro"); return; }
+    let dados = null;
+    const ouvir = ev => {
+      try { if (!/(^|\.)facebook\.com$/.test(new URL(ev.origin).hostname)) return; const d = typeof ev.data === "string" ? JSON.parse(ev.data) : ev.data; if (d && d.type === "WA_EMBEDDED_SIGNUP" && d.data && d.data.phone_number_id) dados = d.data; } catch { /* outra mensagem */ }
+    };
+    window.addEventListener("message", ouvir);
+    const concluir = async code => {
+      for (let i = 0; i < 25 && !dados; i++) await new Promise(r => setTimeout(r, 200));
+      window.removeEventListener("message", ouvir);
+      if (!code) { aviso("A conexão foi cancelada.", "erro"); return; }
+      if (!dados) { aviso("Não recebi o número escolhido. Tente de novo e vá até o fim da janela do Facebook.", "erro"); return; }
+      try {
+        const r = await zap("embedded", { metodo: "POST", corpo: { code, phone_number_id: dados.phone_number_id, waba_id: dados.waba_id, coexistencia } });
+        await modal({ titulo: "WhatsApp conectado", conteudo: [`Número ${r.numero || ""} ligado à DENIA.`, coexistencia ? "Você continua usando o aplicativo WhatsApp Business no celular. O que você responder por lá aparece aqui, e o robô pausa nessa conversa." : "O número agora funciona pela DENIA.", ...(r.avisos || []).map(x => "Atenção: " + x)], soInformar: true });
+        estado.org.chatbot = true; aplicarModo(); navegar();
+      } catch (e) { aviso(e.message, "erro"); }
+    };
+    FBx.login(resp => { concluir(resp && resp.authResponse && resp.authResponse.code); }, { config_id: cfg.config_id, response_type: "code", override_default_response_type: true, extras: { setup: {}, featureType: coexistencia ? "whatsapp_business_app_onboarding" : "", sessionInfoVersion: "3" } });
+  }
   async function abaZapConexao(area, vivo) {
-    const [c, tg] = await Promise.all([zap("conta"), zap("telegram").catch(() => ({}))]);
+    const [c, tg, emb] = await Promise.all([zap("conta"), zap("telegram").catch(() => ({})), zap("embedded").catch(() => ({}))]);
     if (!vivo()) return;
     const pnid = h("input", { class: "entrada", value: c.phone_number_id || "", inputmode: "numeric", placeholder: "Ex.: 473474732510163" });
     const waba = h("input", { class: "entrada", value: c.waba_id || "", inputmode: "numeric", placeholder: "opcional" });
@@ -2003,8 +2037,12 @@
     const tgChat = h("input", { class: "entrada", placeholder: "-100123456789" });
     const copia = (rot, valor) => h("div", { class: "campo" }, h("label", { text: rot }), h("div", { style: "display:flex;gap:8px" }, h("input", { class: "entrada", value: valor, readOnly: true }), botao("Copiar", () => copiar(valor), "btn-secundario btn-pequeno")));
     trocar(area,
+      h("section", { class: "cartao vidro destaque-ia" }, h("h3", { style: "margin:0", text: "Conectar com o Facebook — o jeito mais fácil" }),
+        h("p", { class: "sub", style: "margin:0", text: "Entre com o Facebook da empresa e escolha o número. Com a coexistência, o MESMO número continua no aplicativo WhatsApp Business do celular: a DENIA atende, e quando você responde pelo celular a mensagem aparece aqui e o robô pausa naquela conversa. O histórico recente e os contatos vêm junto." }),
+        emb.disponivel && pode("ADMIN") ? h("div", { class: "acoes" }, botao("Conectar o número que já uso no WhatsApp Business (coexistência)", () => conectarPeloFacebook(emb, true), "btn-primario"), botao("Conectar um número novo", () => conectarPeloFacebook(emb, false), "btn-secundario"))
+          : h("p", { class: "nota", text: emb.disponivel ? "Somente administradores conectam o número." : "Em ativação: o administrador geral precisa criar no Worker da plataforma o secret META_WA_CONFIG_ID (a configuração de Cadastro incorporado do WhatsApp no app da Meta). Enquanto isso, use a conexão manual abaixo." })),
       h("section", { class: "grade grade-2" },
-        h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "1. Número do WhatsApp (API oficial da Meta)" }),
+        h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "1. Número do WhatsApp — conexão manual (avançado)" }),
           c.conectada ? h("p", {}, selo("Conectado", "ok"), " ", h("strong", { text: c.numero || c.phone_number_id }), c.nome_verificado ? " · " + c.nome_verificado : "", c.ultima_recebida_ms ? h("span", { class: "sub", text: ` · última mensagem ${quandoFrase(c.ultima_recebida_ms)}` }) : h("span", { class: "sub", text: " · ainda não chegou mensagem (confira o passo 2)" })) : h("p", { class: "nota", text: "Em developers.facebook.com → seu app → WhatsApp → Configuração da API: copie o ID do número de telefone. O token permanente se cria em business.facebook.com → Configurações → Usuários do sistema → Gerar token (permissões whatsapp_business_messaging e whatsapp_business_management)." }),
           campo("ID do número de telefone (Phone number ID)", pnid), campo("ID da conta do WhatsApp Business (opcional)", waba), campo("Token de acesso permanente", token), campo("Chave secreta do app (recomendado)", segredo, "Configurações do app → Básico → Chave secreta. Com ela, só mensagens assinadas pela Meta são aceitas."),
           pode("ADMIN") ? h("div", { class: "acoes" }, botao(c.conectada ? "Salvar e testar" : "Conectar", async () => {
@@ -2066,7 +2104,7 @@
   const NOME_STATUS_PLANO = { TESTE: "Teste grátis", ATIVO: "Ativo", ATRASADO: "Pagamento pendente", CANCELADO: "Cancelado (usa até o fim do período)", CORTESIA: "Cortesia — acesso total", BLOQUEADO: "Bloqueado", TESTE_ACABOU: "Teste encerrado" };
   function aplicarPlano() {
     document.querySelectorAll("#lateral-nav a[data-rota]").forEach(a => {
-      const r = RECURSO_DA_ROTA[a.dataset.rota];
+      const r = a.dataset.entra === "whatsapp" ? (temRecurso("chatbot") || temRecurso("ia_completa") ? null : "chatbot") : RECURSO_DA_ROTA[a.dataset.rota];
       const travado = r && !temRecurso(r);
       a.classList.toggle("travado", Boolean(travado));
       a.title = travado ? "Disponível em um plano superior" : "";
@@ -2157,7 +2195,7 @@
   const CANAL_NOME = { airbnb: "Airbnb", booking: "Booking.com", vrbo: "Vrbo", direto: "Reserva direta", outro: "Outro" };
   const CANAL_SIGLA = { airbnb: "A", booking: "B", vrbo: "V", direto: "D", outro: "O" };
   const seloCanal = c => h("span", { class: "canal canal-" + (CANAL_NOME[c] ? c : "outro"), title: CANAL_NOME[c] || c }, h("b", { text: CANAL_SIGLA[c] || "O" }), CANAL_NOME[c] || c);
-  const ABAS_TP = [["visao", "Visão geral"], ["calendario", "Calendário e preços"], ["reservas", "Reservas"], ["mensagens", "Mensagens"], ["imoveis", "Imóveis"], ["conexoes", "Conexões"], ["limpezas", "Limpezas"], ["relatorios", "Relatórios"]];
+  const ABAS_TP = [["visao", "Visão geral"], ["calendario", "Calendário e preços"], ["reservas", "Reservas"], ["mensagens", "Mensagens"], ["imoveis", "Imóveis"], ["airbnb", "Airbnb"], ["booking", "Booking.com"], ["vrbo", "Vrbo"], ["conexoes", "Conexões"], ["limpezas", "Limpezas"], ["relatorios", "Relatórios"]];
   const dmy = s => s ? s.slice(8, 10) + "/" + s.slice(5, 7) : "—";
   const somaDiasISO = (s, n) => new Date(Date.parse(s + "T12:00:00Z") + n * 86400000).toISOString().slice(0, 10);
   const SEMANA = ["dom", "seg", "ter", "qua", "qui", "sex", "sáb"];
@@ -2168,9 +2206,59 @@
     const area = h("div", { class: "grade" }, carregando());
     el.appendChild(area);
     try {
+      if (["airbnb", "booking", "vrbo"].includes(atual)) return await tpPlataforma(area, vivo, atual);
       const fn = { visao: tpVisao, calendario: tpCalendario, reservas: tpReservas, mensagens: tpMensagens, imoveis: tpImoveis, conexoes: tpConexoes, limpezas: tpLimpezas, relatorios: tpRelatorios }[atual];
       await fn(area, vivo);
     } catch (e) { if (vivo()) falha(area, e); }
+  }
+  // Cada plataforma tem as suas regras: comissão, pagamento, cancelamento e proteção ao anfitrião.
+  const INFO_PLATAFORMA = {
+    airbnb: { nome: "Airbnb", link: "https://www.airbnb.com.br/aircover-for-hosts", ajuste: 0,
+      taxa: "Taxa dividida (cerca de 3% do anfitrião + taxa do hóspede) ou taxa única do anfitrião (cerca de 14% a 16%), obrigatória em várias contas que usam software de gestão. Confira em Ganhos → Taxas.",
+      pagamento: "O Airbnb cobra o hóspede e repassa ao anfitrião cerca de 24 h depois do check-in.",
+      protecao: ["AirCover para anfitriões: proteção contra danos causados por hóspedes (com limites e exceções), seguro de responsabilidade civil e verificação de identidade dos hóspedes.", "O pedido de reembolso por danos é feito na Central de Resoluções do Airbnb, normalmente em até 14 dias após o check-out, com fotos e comprovantes.", "Não é um seguro residencial: leia os termos e exceções na página oficial."],
+      regras: ["Política de cancelamento: Flexível, Moderada, Firme, Rígida (e a não reembolsável com desconto).", "Mínimo de noites, antecedência e janela de reservas.", "Proibido pedir pagamento ou contato fora do Airbnb."] },
+    booking: { nome: "Booking.com", link: "https://partner.booking.com/pt-br", ajuste: 18,
+      taxa: "Comissão sobre cada reserva, geralmente entre 13% e 18%, dependendo da região e dos programas (Genius, Destaque). Veja no contrato do Extranet.",
+      pagamento: "O hóspede paga no imóvel ou pelo Booking (Pagamentos pelo Booking.com), conforme a sua configuração; a comissão é cobrada por fatura mensal.",
+      protecao: ["O principal instrumento é o depósito caução contra danos, configurado em Políticas do imóvel no Extranet.", "Em alguns países o Booking oferece um programa de proteção contra danos para casas e apartamentos: confira no Extranet se está disponível para o seu imóvel.", "Danos devem ser reportados pelo Extranet logo após o check-out."],
+      regras: ["Políticas de cancelamento e pagamento antecipado definidas por tarifa.", "Regras da casa (festas, pets, horário de silêncio) aparecem para o hóspede antes de reservar.", "Imposto e taxa de limpeza configurados em Tarifas e disponibilidade."] },
+    vrbo: { nome: "Vrbo", link: "https://www.vrbo.com/pt-br/anunciar-imovel", ajuste: 10,
+      taxa: "Taxa por reserva (comissão + processamento de pagamento, em torno de 8%) ou assinatura anual, conforme o plano escolhido.",
+      pagamento: "O Vrbo cobra o hóspede e repassa ao anfitrião depois do check-in, conforme a configuração de pagamento.",
+      protecao: ["O anfitrião pode exigir depósito caução reembolsável ou oferecer ao hóspede a proteção contra danos ao imóvel contratada na reserva.", "Os pedidos por danos seguem o processo do Vrbo, com prazos e comprovantes.", "Confira as opções disponíveis para o seu imóvel na página oficial."],
+      regras: ["Política de cancelamento: Sem reembolso, Rígida, Firme, Moderada ou Flexível.", "Mínimo de noites e regras da casa visíveis antes da reserva.", "Proibido levar o pagamento para fora do Vrbo."] }
+  };
+  async function tpPlataforma(area, vivo, canal) {
+    const info = INFO_PLATAFORMA[canal];
+    const d = await tp("imoveis");
+    if (!vivo()) return;
+    const ims = d.imoveis.filter(i => i.ativo);
+    const detalhes = await Promise.all(ims.map(i => tp("imoveis/" + i.id).then(x => x.calendarios.filter(c => c.canal === canal)).catch(() => [])));
+    const linhas = ims.map((im, i) => {
+      const cal = detalhes[i][0];
+      const aj = h("input", { class: "entrada entrada-preco", type: "number", min: "-50", max: "100", value: String((im.ajustes || {})[canal] ?? info.ajuste), "aria-label": "Ajuste nesta plataforma (%)" });
+      const precoCanal = im.preco_base ? Math.round(im.preco_base * (1 + (Number(aj.value) || 0) / 100)) : null;
+      const precoEl = h("td", { text: precoCanal ? dinheiro(precoCanal, im.moeda) : "—" });
+      aj.addEventListener("input", () => { precoEl.textContent = im.preco_base ? dinheiro(Math.round(im.preco_base * (1 + (Number(aj.value) || 0) / 100)), im.moeda) : "—"; });
+      return h("tr", {}, h("td", {}, h("strong", { text: im.nome })),
+        h("td", {}, cal ? (cal.erro ? selo("Erro no calendário", "erro") : selo("Calendário ligado", "ok")) : selo("Não ligado", "alerta"), im.conectado_channex ? [" ", selo("Conexão oficial", "ok")] : null),
+        h("td", { text: im.preco_base ? dinheiro(im.preco_base, im.moeda) : "—" }), h("td", {}, aj), precoEl,
+        h("td", {}, pode("AGENTE") ? botao("Salvar", async () => { try { await tp("imoveis/" + im.id, { metodo: "POST", corpo: { ajustes: { ...(im.ajustes || {}), [canal]: Number(aj.value) || 0 } } }); aviso(`Ajuste do ${info.nome} salvo${im.conectado_channex ? " e enviado" : ""}.`, "ok"); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno") : null,
+          cal ? null : botao("Ligar", () => cadastroRapidoTp(), "btn-secundario btn-pequeno")));
+    });
+    const ligados = detalhes.filter(x => x.length).length;
+    trocar(area,
+      h("section", { class: "cartao vidro plataforma-topo" }, h("div", {}, seloCanal(canal), h("h2", { style: "margin:8px 0 4px", text: info.nome }), h("p", { class: "sub", style: "margin:0", text: `${ligados} de ${ims.length} imóvel(is) ligados a esta plataforma.` })),
+        h("div", { class: "acoes" }, botao("Ligar anúncios", () => cadastroRapidoTp(), "btn-primario btn-pequeno"), h("a", { class: "btn btn-secundario btn-pequeno", href: info.link, target: "_blank", rel: "noopener" }, "Página oficial"))),
+      h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: `Anúncios no ${info.nome}` }),
+        h("p", { class: "sub", text: `O preço de cada imóvel é único na DENIA; aqui você define quanto a mais (ou a menos) ele custa no ${info.nome}, para cobrir a comissão. Mudanças no calendário e preços gerais valem para todas as plataformas.` }),
+        ims.length ? h("div", { class: "tabela-caixa" }, h("table", {}, h("thead", {}, h("tr", {}, ["Imóvel", "Situação", "Preço base", "Ajuste (%)", `No ${info.nome}`, ""].map(t => h("th", { text: t })))), h("tbody", {}, linhas))) : vazio("Nenhum imóvel", "")),
+      h("section", { class: "grade grade-2" },
+        h("div", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Taxas e pagamento" }), h("p", { text: info.taxa }), h("p", { class: "sub", text: info.pagamento })),
+        h("div", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Proteção ao anfitrião" }), h("ul", { class: "lista-simples" }, info.protecao.map(x => h("li", { text: "• " + x }))))),
+      h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: `Regras que só existem no ${info.nome}` }), h("ul", { class: "lista-simples" }, info.regras.map(x => h("li", { text: "• " + x }))),
+        h("p", { class: "nota", text: "Valores e regras mudam com o tempo e por país: confira sempre no painel oficial da plataforma. Com a conexão oficial, a DENIA passa a ler e ajustar essas configurações por aqui." })));
   }
   async function tpVisao(area, vivo) {
     const f = estado.tpF = estado.tpF || { dias: -30 };
@@ -2211,26 +2299,56 @@
     painel: '<path d="M3 13h8V3H3zM13 21h8v-8h-8zM3 21h8v-6H3zM13 11h8V3h-8z"/>', robo: '<rect x="4" y="7" width="16" height="12" rx="3"/><path d="M12 3v4M9 12h.01M15 12h.01M9.5 15.5h5"/>', estrela: '<path d="M12 3l2.2 5.3L20 9l-4.4 3.8L17 18.5 12 15.6 7 18.5l1.4-5.7L4 9l5.8-.7z"/>', menu: '<path d="M4 7h16M4 12h16M4 17h16"/>'
   };
   const svgIc = d => { const s = document.createElementNS(SVG_NS, "svg"); s.setAttribute("viewBox", "0 0 24 24"); s.setAttribute("aria-hidden", "true"); s.innerHTML = d; return s; };
+  // Cada canal tem o seu menu: ao entrar no WhatsApp, Instagram, Facebook, Google, Temporada, Marketing ou IA,
+  // o menu lateral (e a barra de baixo, no celular) mostra só o que é daquele canal, com volta ao menu principal.
+  const ROTA_MODO = { whatsapp: "whatsapp", conversas: "whatsapp", atendimentos: "whatsapp", profissionais: "whatsapp", chatbot: "whatsapp", guia: "whatsapp", instagram: "instagram", facebook: "facebook", social: "instagram", google: "google", temporada: "temporada", estudio: "marketing", calendario: "marketing", aprovacoes: "marketing", marcas: "marketing", treinamento: "ia", aprendizados: "ia", clientes: "ia" };
+  const NOME_MODO = { whatsapp: "WhatsApp", instagram: "Instagram", facebook: "Facebook", google: "Google", temporada: "Locação por temporada", marketing: "Marketing e conteúdo", ia: "Inteligência da DENIA" };
+  const ABA_PADRAO = { whatsapp: "visao", instagram: "visao", facebook: "visao", google: "desempenho", chatbot: "visao", temporada: "visao" };
+  function aplicarMenu(nome, param) {
+    const nav = $("lateral-nav");
+    let modo = ROTA_MODO[nome] || null;
+    // Ex.: "Criar posts" dentro do menu do Instagram continua no menu do Instagram.
+    if (estado.modoAtual && modo !== estado.modoAtual && nav.querySelector(`[data-modo-de~="${estado.modoAtual}"][data-rota="${nome}"]`)) modo = estado.modoAtual;
+    estado.modoAtual = modo;
+    if (modo) document.body.dataset.modo = modo; else delete document.body.dataset.modo;
+    document.body.classList.toggle("modo-temporada", modo === "temporada");
+    for (const el of nav.children) { const m = el.dataset.modoDe; el.classList.toggle("fora", modo ? !(m && m.split(" ").includes(modo)) : Boolean(m)); }
+    const t = $("titulo-modo"); if (t) t.textContent = modo ? NOME_MODO[modo] : "";
+    const aba = param || ABA_PADRAO[nome] || "";
+    nav.querySelectorAll("a").forEach(a => a.classList.toggle("ativo", !a.dataset.entra && a.dataset.rota === nome && (!a.dataset.aba || a.dataset.aba === aba)));
+    return modo;
+  }
   function barraApp(nome, param) {
     const b = $("barra-app");
+    const modo = aplicarMenu(nome, param);
     if (!b) return;
-    const temporada = nome === "temporada";
-    document.body.classList.toggle("modo-temporada", temporada);
-    const aba = param || "visao";
-    const item = (href, ic, rotulo, ativo, extra = {}) => h("a", { href, class: "barra-app-item" + (ativo ? " ativo" : ""), "aria-current": ativo ? "page" : null, ...extra }, svgIc(ic), h("span", { text: rotulo }));
+    const nav = $("lateral-nav");
+    const visiveis = [...nav.querySelectorAll("a")].filter(a => !a.classList.contains("fora") && !a.classList.contains("oculto") && !a.dataset.voltar);
+    const item = (a, rotulo) => { const x = h("a", { href: a.getAttribute("href"), class: "barra-app-item" + (a.classList.contains("ativo") ? " ativo" : "") }); const ic = a.querySelector("svg, .canal-ic"); x.append(ic ? ic.cloneNode(true) : svgIc(IC.lista), h("span", { text: rotulo || a.textContent.replace("›", "").trim().split(" (")[0] })); return x; };
     const botaoItem = (ic, rotulo, fn, ativo) => h("button", { type: "button", class: "barra-app-item" + (ativo ? " ativo" : ""), onclick: fn }, svgIc(ic), h("span", { text: rotulo }));
-    if (temporada) {
-      const maisAtivo = ["imoveis", "conexoes", "limpezas", "relatorios"].includes(aba);
-      b.replaceChildren(item("#/temporada/visao", IC.casa, "Início", aba === "visao"), item("#/temporada/calendario", IC.cal, "Calendário", aba === "calendario"), item("#/temporada/mensagens", IC.msg, "Mensagens", aba === "mensagens"), item("#/temporada/reservas", IC.lista, "Reservas", aba === "reservas"), botaoItem(IC.mais, "Mais", () => maisTemporada(), maisAtivo));
+    if (modo) {
+      const primeiros = visiveis.slice(0, 4), resto = visiveis.slice(4);
+      const curto = { "Visão geral e evolução": "Visão", "Mensagens dos hóspedes": "Mensagens", "Calendário e preços": "Calendário", "Desempenho e cliques": "Desempenho", "Estúdio de criação": "Estúdio", "Calendário de posts": "Calendário", "Visão do chatbot": "Visão", "Métricas de atendimento": "Métricas", "Avaliações 1★ (triagem)": "1 estrela", "Imóveis (todos)": "Imóveis", "Conexões e idiomas": "Conexões", "Palavras-chave e buscas": "Palavras", "Relatório semanal": "Relatório", "Posicionamento no Google": "Posição" };
+      b.replaceChildren(...primeiros.map(a => { const t = a.textContent.replace("›", "").trim(); return item(a, curto[t] || t.split(" ")[0]); }), botaoItem(IC.mais, "Mais", () => maisDoModo(modo, resto), resto.some(a => a.classList.contains("ativo"))));
     } else {
-      const soChatbot = estado.org && estado.org.chatbot && !estado.org.conectada;
-      const temTp = temRecurso("temporada");
-      b.replaceChildren(item("#/painel", IC.painel, "Painel", nome === "painel"),
-        soChatbot || !estado.org || !estado.org.conectada ? item("#/chatbot", IC.robo, "Chatbot", nome === "chatbot") : item("#/conversas", IC.msg, "Conversas", nome === "conversas"),
-        temTp ? item("#/temporada/visao", IC.casa, "Temporada", false) : item("#/estudio", IC.estrela, "Marketing", nome === "estudio"),
-        temTp ? item("#/estudio", IC.estrela, "Marketing", nome === "estudio") : item("#/whatsapp", IC.msg, "WhatsApp", nome === "whatsapp"),
-        botaoItem(IC.menu, "Menu", () => { $("lateral").classList.add("aberta"); $("veu").classList.add("ativo"); $("abrir-menu").setAttribute("aria-expanded", "true"); }, false));
+      const entra = m => nav.querySelector(`[data-entra="${m}"]`);
+      const lista = [nav.querySelector('a[data-rota="painel"]'), entra("whatsapp"), temRecurso("temporada") ? entra("temporada") : entra("instagram"), entra("google")].filter(a => a && !a.classList.contains("oculto"));
+      b.replaceChildren(...lista.map(a => item(a, a.textContent.replace("›", "").replace("Locação por temporada", "Temporada").trim())), botaoItem(IC.menu, "Menu", () => { $("lateral").classList.add("aberta"); $("veu").classList.add("ativo"); $("abrir-menu").setAttribute("aria-expanded", "true"); }, false));
     }
+  }
+  function maisDoModo(modo, resto) {
+    const nav = $("lateral-nav");
+    let grupoAtual = "";
+    const blocos = [];
+    for (const el of nav.children) {
+      if (el.classList.contains("fora") || el.classList.contains("oculto")) continue;
+      if (el.classList.contains("lateral-grupo")) { grupoAtual = el.textContent; continue; }
+      if (el.tagName !== "A" || !resto.includes(el)) continue;
+      const ic = el.querySelector("svg, .canal-ic");
+      blocos.push(h("a", { href: el.getAttribute("href"), class: "mais-tp-item", onclick: () => fechar() }, ic ? ic.cloneNode(true) : svgIc(IC.lista), h("span", {}, h("strong", { text: el.textContent.replace("›", "").trim() }), grupoAtual ? h("small", { text: grupoAtual }) : null)));
+    }
+    blocos.push(h("a", { href: "#/painel", class: "mais-tp-item", onclick: () => fechar() }, svgIc('<path d="M15 18l-6-6 6-6"/>'), h("span", {}, h("strong", { text: "Menu principal" }), h("small", { text: "Todos os canais e a administração" }))));
+    const fechar = gaveta(NOME_MODO[modo], [h("nav", { class: "mais-tp" }, blocos)]);
   }
   function maisTemporada() {
     const op = (href, ic, t, d) => h("a", { href, class: "mais-tp-item", onclick: () => fechar() }, svgIc(ic), h("span", {}, h("strong", { text: t }), h("small", { text: d })));
@@ -3249,7 +3367,7 @@
   // ----- Canais Instagram e Facebook
   // ----- Instagram e Facebook: visão geral com números, publicações, comentários, agenda, concorrentes e conexão
   const METRICAS_IG = [["alcance", "Alcance", "Contas diferentes que viram o conteúdo"], ["visualizacoes", "Visualizações", "Vezes que o conteúdo foi visto"], ["contas_engajadas", "Contas engajadas", "Pessoas que interagiram"], ["interacoes", "Interações", "Curtidas, comentários, salvamentos, compartilhamentos e respostas"],
-    ["curtidas", "Curtidas", ""], ["comentarios", "Comentários", ""], ["compartilhamentos", "Compartilhamentos", ""], ["salvamentos", "Salvamentos", "Quem guardou para ver depois"], ["cliques_link", "Cliques no perfil", "Toques no link, telefone, e-mail ou endereço"], ["novos_seguidores", "Novos seguidores", "Nos últimos 30 dias do período (limite da Meta)"]];
+    ["curtidas", "Curtidas", ""], ["comentarios", "Comentários", ""], ["compartilhamentos", "Compartilhamentos", ""], ["salvamentos", "Salvamentos", "Quem guardou para ver depois"], ["cliques_link", "Cliques no perfil", "Toques no link, telefone, e-mail ou endereço"], ["novos_seguidores", "Novos seguidores", "Nos últimos 30 dias do período (limite da Meta)"], ["visitas_perfil", "Visitas ao perfil", "Vezes que abriram o seu perfil"], ["comecaram_a_seguir", "Começaram a seguir", "Quantidade (a Meta não informa quem)"], ["deixaram_de_seguir", "Deixaram de seguir", "Quantidade (a Meta não informa quem)"]];
   const METRICAS_FB = [["visualizacoes", "Visualizações", "Vezes que o conteúdo da página foi visto"], ["alcance", "Alcance", "Pessoas diferentes alcançadas"], ["interacoes", "Interações nas publicações", ""], ["acoes_na_pagina", "Ações na página", "Cliques em ligar, rotas, site e botões"], ["visitas_pagina", "Visitas à página", ""], ["novos_seguidores", "Novos seguidores", ""], ["deixaram_de_seguir", "Deixaram de seguir", ""], ["seguidores", "Seguidores (total)", ""]];
   const NOME_METRICA_MIDIA = { reach: "Alcance", views: "Visualizações", likes: "Curtidas", comments: "Comentários", shares: "Compartilhamentos", saved: "Salvamentos", total_interactions: "Interações", profile_visits: "Visitas ao perfil", follows: "Seguidores ganhos", replies: "Respostas", navigation: "Navegação", ig_reels_avg_watch_time: "Tempo médio assistido (ms)", ig_reels_video_view_total_time: "Tempo total assistido (ms)", post_impressions_unique: "Alcance", post_media_view: "Visualizações", post_clicks: "Cliques" };
   const NOME_TIPO_COMENTARIO = { ELOGIO: ["Elogio", "ok"], DUVIDA: ["Dúvida", "info"], INTERESSE: ["Quer comprar", "ok"], RECLAMACAO: ["Reclamação", "alerta"], SPAM: ["Spam", "alerta"], OFENSIVO: ["Ofensivo", "alerta"], OUTRO: ["Outro", "info"] };
@@ -3482,7 +3600,8 @@
     el.appendChild(cabeca("Google Meu Negócio", "Reputação, posição nas buscas e desempenho de cada perfil, acompanhados semana a semana."));
     if (!lista.length) { semMarcas(el); return; }
     const abas = [["publicacoes", "Posts e imagens"], ["avaliacoes", "Avaliações"], ["triagem", "Triagem 1★"], ["relatorio", "Relatório"], ["palavras", "Palavras-chave"], ["desempenho", "Desempenho"], ["conexao", "Conexão"]];
-    const atual = abas.some(a => a[0] === aba) ? aba : "publicacoes";
+    abas.push(["seo", "Posicionamento"], ["ads", "Google Ads"]);
+    const atual = abas.some(a => a[0] === aba) ? aba : "desempenho";
     const sel = seletorMarca(lista, estado.marcaGoogle || lista[0].id);
     sel.addEventListener("change", () => { estado.marcaGoogle = sel.value; navegar(); });
     el.appendChild(h("div", { class: "pagina-cabeca" }, h("div", { class: "abas", role: "tablist" }, abas.map(([k, n]) => h("a", { class: "aba" + (k === atual ? " ativo" : ""), href: "#/google/" + k, role: "tab" }, n))), h("div", { style: "min-width:220px" }, sel)));
@@ -3495,6 +3614,8 @@
       else if (atual === "triagem") await abaTriagem(area, marcaId);
       else if (atual === "palavras") await abaPalavras(area, marcaId, lista.find(m => String(m.id) === String(marcaId)));
       else if (atual === "desempenho") await abaDesempenho(area, marcaId);
+      else if (atual === "seo") abaGoogleSeo(area, lista.find(m => String(m.id) === String(marcaId)));
+      else if (atual === "ads") abaGoogleAds(area);
       else if (atual === "publicacoes") {
         const [posts, cfg] = await Promise.all([mk(`posts?canal=google&marca=${marcaId}`).then(r => r.posts || []), mk("config").catch(() => null)]);
         estado.marcaCriador = marcaId;
@@ -3514,6 +3635,29 @@
           h("p", { class: "nota nota-alerta", text: "Importante: a DENIA nunca escreve avaliações para o próprio perfil — isso é proibido pelo Google e pode suspender o perfil. Ela pede avaliações aos clientes reais depois de cada atendimento." })));
       }
     } catch (e) { falha(area, e); }
+  }
+  // O que o Google permite (e o que não permite) para um especialista de SEO e anúncios.
+  function cartaoPossivel(titulo, itens) {
+    return h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: titulo }), h("ul", { class: "lista-possivel" }, itens.map(([estadoI, t, d]) => h("li", { class: "possivel-" + estadoI }, h("span", { class: "possivel-selo", text: { ok: "Disponível", conectar: "Após conectar", breve: "Em construção", nao: "O Google não fornece" }[estadoI] }), h("div", {}, h("strong", { text: t }), d ? h("small", { text: d }) : null)))));
+  }
+  function abaGoogleSeo(area, marca) {
+    trocar(area,
+      cartaoPossivel("Posicionamento e Google orgânico", [
+        ["ok", "Buscas que mostraram o seu perfil", "Palavras que as pessoas digitaram e acharam você no Google e no Maps (aba Palavras-chave e buscas)."],
+        ["ok", "Visualizações, cliques no site, ligações e rotas", "Dia a dia, por período, com comparação (aba Desempenho e cliques)."],
+        ["breve", "Posição do site nas buscas (Search Console)", "Cliques, impressões, posição média e páginas que mais aparecem, por palavra. Vem com a conexão do Google Search Console do site."],
+        ["breve", "Concorrentes da região", "Nota, número de avaliações e categorias dos concorrentes próximos, para comparar (usa a API de lugares do Google, que tem custo por consulta)."],
+        ["nao", "Quem clicou (nome, e-mail, telefone)", "O Google só entrega números somados. Nenhuma ferramenta tem acesso a quem clicou — é proteção de privacidade e a LGPD."]
+      ]),
+      h("div", { class: "acoes" }, h("a", { class: "btn btn-secundario", href: "#/google/palavras" }, "Ver palavras-chave"), h("a", { class: "btn btn-secundario", href: "#/google/desempenho" }, "Ver desempenho")));
+  }
+  function abaGoogleAds(area) {
+    trocar(area, cartaoPossivel("Google Ads", [
+      ["breve", "Saldo, gasto do dia e do mês", "Com a conexão da conta do Google Ads (precisa da aprovação da API do Google Ads para a DENIA)."],
+      ["breve", "Campanhas, cliques, custo por clique e conversões", "Por campanha, palavra-chave e período, com alerta de saldo baixo."],
+      ["breve", "Sugestões da IA", "Palavras que gastam sem trazer cliente, horários que convertem mais e textos de anúncio."],
+      ["nao", "Quem clicou no anúncio", "O Google Ads só mostra números somados (e região aproximada), nunca a pessoa."]
+    ]), h("p", { class: "nota", text: "Enquanto a conexão do Google Ads não está ativa, os custos de IA, WhatsApp e Google da DENIA aparecem em Consumo e custos." }));
   }
   // Lê o perfil inteiro no Google, em partes de 1.000, mostrando o andamento.
   async function buscarTodasNoGoogle(marcaId, mostrar) {

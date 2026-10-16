@@ -433,6 +433,18 @@ async function processarWebhook(env, k, d, bruto, assinatura) {
     if (!conta.ativo || conta.org_status !== "ATIVA") continue;
     // Plano: sem teste ou pagamento em dia, as mensagens só ficam registradas (o robô não responde).
     if (!conta.acesso) conta.acesso = acessoDa(conta, k.agora(env), (await lerPlanos(env)).planos);
+    // Coexistência: o que a equipe responde pelo aplicativo WhatsApp Business no celular chega como "eco".
+    // Fica na conversa como resposta da equipe e o robô pausa naquela conversa (quem está atendendo é gente).
+    for (const ec of (v.message_echoes || []).slice(0, 20)) {
+      const tel = digitos(ec.to), wamid = String(ec.id || "");
+      if (!tel || !wamid) continue;
+      const texto = ec.type === "text" ? String(ec.text?.body || "") : `[${ec.type || "mensagem"} enviada pelo celular]`;
+      const ag = k.agora(env);
+      await env.DB.batch([
+        env.DB.prepare("INSERT OR IGNORE INTO plt_zap_msgs(org_id,telefone,direcao,origem,texto,wamid,status,criado_ms) VALUES(?,?,'S','EQUIPE',?,?,'ENVIADA',?)").bind(conta.org_id, tel, cortar(texto, 4000), wamid, ag),
+        env.DB.prepare("INSERT INTO plt_zap_contatos(org_id,telefone,pausado_ate,ultimo_ms) VALUES(?,?,?,?) ON CONFLICT(org_id,telefone) DO UPDATE SET pausado_ate=MAX(pausado_ate, excluded.pausado_ate), ultimo_ms=excluded.ultimo_ms").bind(conta.org_id, tel, ag + PAUSA_HUMANO_MS, ag)
+      ]);
+    }
     const nomes = new Map((v.contacts || []).map(c => [digitos(c.wa_id), String(c?.profile?.name || "").slice(0, 80)]));
     for (const msg of (v.messages || []).slice(0, 10)) await receberMensagem(env, k, conta, msg, nomes.get(digitos(msg.from)) || "");
   }
@@ -536,6 +548,46 @@ export async function rotasZap(request, env, k, orgId, papel, resto) {
       .bind(orgId, pnid, digitos(corpo.waba_id) || null, info.numero, info.nome, await k.cifrar(env, tokenFinal), segredo ? await k.cifrar(env, segredo) : null, tg, agora).run();
     await auditar(env, request, sessao, orgId, "WHATSAPP", `Conectou o WhatsApp do chatbot (${info.numero || pnid})`);
     return json({ ok: true, ...publicaConta(await contaDa(env, orgId), { qualidade: info.qualidade }) });
+  }
+  // Cadastro incorporado da Meta: a pessoa entra com o Facebook e escolhe o número. Com coexistência, o mesmo
+  // número continua funcionando no aplicativo WhatsApp Business do celular.
+  if (r === "embedded" && metodo === "GET") {
+    const ok = Boolean(String(env.META_APP_ID || "").trim() && String(env.META_APP_SECRET || "").trim() && String(env.META_WA_CONFIG_ID || "").trim());
+    return json({ disponivel: ok, app_id: ok ? String(env.META_APP_ID).trim() : null, config_id: ok ? String(env.META_WA_CONFIG_ID).trim() : null, versao: GRAPH.split("/").pop() });
+  }
+  if (r === "embedded" && metodo === "POST") {
+    const negado = precisa("ADMIN"); if (negado) return negado;
+    const { corpo, erro } = await ler(); if (erro) return erro;
+    const code = String(corpo.code || "").trim(), pnid = digitos(corpo.phone_number_id), waba = digitos(corpo.waba_id);
+    if (!code || !/^\d{8,20}$/.test(pnid) || !/^\d{8,20}$/.test(waba)) return json({ erro: "A Meta não devolveu o número escolhido. Tente de novo e conclua todas as etapas da janela do Facebook." }, 400);
+    const outra = await env.DB.prepare("SELECT org_id FROM plt_zap_contas WHERE phone_number_id=? AND org_id<>?").bind(pnid, orgId).first();
+    if (outra) return json({ erro: "Esse número já está conectado em outra empresa da plataforma." }, 409);
+    const chamar = async (m, caminho, params, corpoJ) => {
+      const u = new URL(`${GRAPH}/${caminho}`); for (const [a, b] of Object.entries(params || {})) u.searchParams.set(a, b);
+      const resp = await fetch(u.toString(), { method: m, headers: corpoJ ? { "content-type": "application/json", authorization: `Bearer ${params?.__token || ""}` } : {}, body: corpoJ ? JSON.stringify(corpoJ) : undefined, signal: AbortSignal.timeout(20000) });
+      const d = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(cortar(d?.error?.error_user_msg || d?.error?.message || `HTTP ${resp.status}`, 300));
+      return d;
+    };
+    let token;
+    try { token = (await chamar("GET", "oauth/access_token", { client_id: String(env.META_APP_ID).trim(), client_secret: String(env.META_APP_SECRET).trim(), code })).access_token; }
+    catch (e) { return json({ erro: "A Meta recusou a autorização: " + e.message }, 400); }
+    const avisos = [];
+    const post = async (caminho, corpoJ) => { const u = `${GRAPH}/${caminho}`; const resp = await fetch(u, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify(corpoJ || {}), signal: AbortSignal.timeout(20000) }); const d = await resp.json().catch(() => ({})); if (!resp.ok) throw new Error(cortar(d?.error?.error_user_msg || d?.error?.message || `HTTP ${resp.status}`, 300)); return d; };
+    try { await post(`${waba}/subscribed_apps`); } catch (e) { avisos.push("Assinatura do webhook: " + e.message); }
+    if (corpo.coexistencia) {
+      // Traz os contatos e o histórico das conversas do aplicativo (a Meta permite nas primeiras 24 h).
+      for (const tipo of ["smb_app_state_sync", "history"]) { try { await post(`${pnid}/smb_app_data`, { messaging_product: "whatsapp", sync_type: tipo }); } catch (e) { avisos.push(`Sincronização (${tipo}): ${e.message}`); } }
+    } else {
+      try { await post(`${pnid}/register`, { messaging_product: "whatsapp", pin: String(100000 + Math.floor(Math.random() * 899999)) }); } catch (e) { avisos.push("Registro do número: " + e.message); }
+    }
+    let info = { numero: "", nome: "" };
+    try { info = await conferirNumero(pnid, token); } catch (e) { avisos.push(e.message); }
+    await env.DB.prepare(`INSERT INTO plt_zap_contas(org_id,phone_number_id,waba_id,numero,nome_verificado,token_cifrado,ativo,modo,config,atualizado_ms) VALUES(?,?,?,?,?,?,1,'BOTOES','{}',?)
+      ON CONFLICT(org_id) DO UPDATE SET phone_number_id=excluded.phone_number_id, waba_id=excluded.waba_id, numero=excluded.numero, nome_verificado=excluded.nome_verificado, token_cifrado=excluded.token_cifrado, atualizado_ms=excluded.atualizado_ms`)
+      .bind(orgId, pnid, waba, info.numero, info.nome, await k.cifrar(env, token), agora).run();
+    await auditar(env, request, sessao, orgId, "WHATSAPP", `Conectou o WhatsApp pelo Facebook${corpo.coexistencia ? " (coexistência com o app)" : ""}: ${info.numero || pnid}`);
+    return json({ ok: true, numero: info.numero, avisos });
   }
   if (r === "conta/telegram" && metodo === "POST") {
     const negado = precisa("ADMIN"); if (negado) return negado;
