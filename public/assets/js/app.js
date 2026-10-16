@@ -1668,8 +1668,16 @@
         const r = await eng("guide/test", { metodo: "POST", corpo: { texto, acao } });
         for (const x of r.respostas || []) {
           const it = x.interativo;
+          if (x.imagem) { tela.appendChild(h("div", { class: "msg msg-saida msg-com-imagem" }, h("img", { src: x.imagem, alt: "" }), x.texto.replace(/^\[imagem\]\s*/, ""))); continue; }
           if (!it) { tela.appendChild(balao(x.texto, false)); continue; }
+          const topo = it.header && it.header.type === "image" ? h("img", { src: it.header.image.link, alt: "", class: "msg-imagem" }) : null;
+          if (it.type === "cta_url") {
+            const pr = it.action.parameters || {};
+            tela.appendChild(h("div", { class: "msg msg-saida msg-com-imagem" }, topo, (it.body || {}).text || "", h("div", { class: "guia-botoes" }, h("a", { class: "btn btn-secundario btn-pequeno", href: pr.url, target: "_blank", rel: "noopener" }, "↗ " + pr.display_text))));
+            continue;
+          }
           const caixa = balao((it.body || {}).text || "", false);
+          if (topo) caixa.prepend(topo);
           const opcoes = it.type === "button" ? it.action.buttons.map(b => ({ id: b.reply.id, title: b.reply.title })) : ((it.action.sections || [])[0] || {}).rows || [];
           caixa.appendChild(h("div", { class: "guia-botoes" }, opcoes.map(o => h("button", { type: "button", class: "btn btn-secundario btn-pequeno", title: o.description || "", onclick: () => enviar(o.title, o.id, o.title) }, o.title))));
           tela.appendChild(caixa);
@@ -2051,39 +2059,377 @@
       h("p", { text: "Conte com suas palavras como é o negócio e como quer atender. A IA monta o menu, as mensagens, as palavras-chave e o treinamento — e pergunta só o essencial." }),
       campo("Sobre o seu negócio", desc), h("div", { class: "acoes" }, botao("Montar com a IA", () => gerar(), "btn-primario")), area]);
   }
+  // ----- Construtor do fluxo (estilo Botpress, mais simples): cada bloco é um cartão com a mensagem e
+  // os botões. Tocar num botão abre o próximo cartão ao lado. À direita, a prévia como no WhatsApp.
+  const TIPO_BOTAO = {
+    MENU: { ic: "📂", nome: "Submenu", dica: "Abre mais botões" },
+    LISTA: { ic: "🏪", nome: "Lojas", dica: "Envia o contato das lojas" },
+    RESPOSTA: { ic: "💬", nome: "Resposta", dica: "Texto, imagem, link e carrossel" },
+    HUMANO: { ic: "🙋", nome: "Atendente", dica: "Chama alguém da equipe" }
+  };
+  // *negrito* do WhatsApp na prévia (sem HTML: só nós de texto).
+  function textoZap(t) {
+    const partes = String(t || "").split(/(\*[^*\n]+\*)/g);
+    return partes.map(p => /^\*[^*\n]+\*$/.test(p) ? h("b", { text: p.slice(1, -1) }) : p);
+  }
   async function abaZapMenu(area, vivo) {
-    const d = await zap("itens");
+    let d, cfgR, tg;
+    [d, cfgR, tg] = await Promise.all([zap("itens"), zap("config"), zap("telegram").catch(() => ({}))]);
     if (!vivo()) return;
-    const itens = d.itens || [], cat = d.catalogo || [];
-    const porItem = new Map(); for (const c of cat) for (const i of c.itens || []) porItem.set(i, (porItem.get(i) || 0) + 1);
-    const recarregar = () => navegar();
-    if (!itens.length) {
-      const modelo = (tipo, nome, desc) => h("div", { class: "cartao vidro", style: "display:grid;gap:10px" }, h("h3", { style: "margin:0", text: nome }), h("p", { class: "sub", style: "margin:0", text: desc }),
-        pode("AGENTE") ? botao("Usar este modelo", async () => { try { await zap("modelo", { metodo: "POST", corpo: { tipo } }); aviso("Menu criado. Agora ajuste do seu jeito.", "ok"); recarregar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario btn-pequeno") : null);
-      trocar(area, pode("AGENTE") ? h("section", { class: "cartao vidro destaque-ia" }, h("h3", { style: "margin:0", text: "✨ Deixe a IA montar para você" }), h("p", { class: "sub", style: "margin:0", text: "Conte como é o negócio e a IA monta o menu, as mensagens e o treinamento em segundos." }), botao("Criar com a IA", () => criarComIA(false), "btn-primario")) : null,
-        h("p", { class: "nota", text: "Ou comece por um modelo pronto (você muda tudo depois), ou crie as opções do zero." }),
-        h("section", { class: "grade grade-3" }, modelo("shopping", "🛍️ Shopping / guia de lojas", "Produtos e Serviços → categorias → lojas com o WhatsApp de cada uma. Ideal para importar a planilha de lojas."),
-          modelo("servicos", "🔧 Empresa de serviços", "Nossos serviços, endereço e horário, falar com atendente."), modelo("restaurante", "🍽️ Restaurante / delivery", "Cardápio, delivery, endereço e horário, falar com atendente.")),
-        pode("AGENTE") ? h("div", { class: "acoes" }, botao("Criar do zero", () => editarItem(null, itens, recarregar), "btn-secundario")) : null);
-      return;
+    let cfg = cfgR.config || {};
+    const podeEditar = pode("AGENTE");
+    const chaveCaminho = "fluxo-caminho-" + estado.org.id;
+    let caminho = (sessao.ler(chaveCaminho) || []).filter(id => d.itens.some(i => i.id === id));
+    let foco = 0; // coluna em destaque (prévia)
+    const statusSalvo = h("span", { class: "fx-salvo", "aria-live": "polite" });
+    const marcar = t => { statusSalvo.textContent = t; if (t === "Salvo ✓") setTimeout(() => { if (statusSalvo.textContent === t) statusSalvo.textContent = ""; }, 1800); };
+    const palco = h("div", { class: "fx-palco" });
+
+    const porId = () => new Map(d.itens.map(i => [i.id, i]));
+    const filhosDe = pai => d.itens.filter(i => Number(i.pai_id) === pai).sort((a, b) => (a.ordem || 0) - (b.ordem || 0) || a.id - b.id);
+    const lojasDe = id => d.catalogo.filter(c => (c.itens || []).includes(id));
+    // Mesma regra do robô: lista sem loja e submenu sem nada visível não aparecem para o cliente.
+    const visivel = (i, n = 0) => !i.ativo ? false : i.tipo === "LISTA" ? lojasDe(i.id).some(c => c.ativo) : i.tipo === "MENU" ? n < 8 && filhosDe(i.id).some(f => visivel(f, n + 1)) : true;
+
+    async function recarregar() { d = await zap("itens"); caminho = caminho.filter(id => d.itens.some(i => i.id === id)); desenhar(); }
+    async function salvarItem(item, mudar, refazer = true) {
+      const novo = { ...item, ...mudar, extra: { ...(item.extra || {}), ...(mudar.extra || {}) } };
+      marcar("Salvando…");
+      try {
+        await zap("itens", { metodo: "POST", corpo: { id: novo.id, tipo: novo.tipo, titulo: novo.titulo, pai_id: Number(novo.pai_id) || 0, texto: novo.texto || "", descricao: novo.descricao || "", palavras: novo.palavras || "", ordem: novo.ordem || 0, ativo: novo.ativo !== 0, exibicao: novo.exibicao || "AUTO", extra: novo.extra } });
+        marcar("Salvo ✓");
+        if (refazer) await recarregar(); else { Object.assign(item, novo); desenharPrevia(); }
+      } catch (e) { marcar(""); aviso(e.message, "erro"); }
     }
-    const linha = (i, nivel) => h("div", { class: "zap-no", style: `margin-left:${nivel * 22}px` },
-      h("span", { class: "zap-no-titulo" }, /^\p{Extended_Pictographic}/u.test(i.titulo) ? null : h("span", { text: ICONE_TIPO[i.tipo] + " " }), h("strong", { text: i.titulo }), !i.ativo ? h("small", { text: " (desligada)" }) : null,
-        i.tipo === "MENU" && i.exibicao === "NUMERADO" ? h("small", { class: "sub", text: " · texto numerado" }) : null,
-        h("small", { class: "sub", text: " · " + (i.tipo === "LISTA" ? `${numero(porItem.get(i.id) || 0)} contato(s)${porItem.get(i.id) ? "" : " — não aparece até ter contato"}` : i.tipo === "MENU" ? `${numero(itens.filter(x => x.pai_id === i.id).length)} opção(ões)` : TIPOS_ITEM[i.tipo].split(" (")[0]) })),
-      pode("AGENTE") ? h("span", { class: "acoes" },
-        i.tipo === "MENU" ? botao("+ Opção aqui", () => editarItem({ tipo: "LISTA", titulo: "", pai_id: i.id, ativo: 1 }, itens, recarregar), "btn-secundario btn-pequeno") : null,
-        botao("Editar", () => editarItem(i, itens, recarregar), "btn-secundario btn-pequeno"),
-        botao("Excluir", async () => { if (!(await modal({ titulo: "Excluir a opção?", conteudo: `"${i.titulo}" sai do menu.`, confirmar: "Excluir", perigo: true }))) return; try { await zap(`itens/${i.id}/excluir`, { metodo: "POST", corpo: {} }); recarregar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno")) : null);
-    const arvore = [];
-    const descer = (pai, nivel) => itens.filter(i => Number(i.pai_id) === pai).forEach(i => { arvore.push(linha(i, nivel)); if (i.tipo === "MENU" && nivel < 6) descer(i.id, nivel + 1); });
-    descer(0, 0);
-    const raiz = itens.filter(i => !i.pai_id && i.ativo).length;
+    async function salvarConfig(mudar) {
+      marcar("Salvando…");
+      try { const r = await zap("config", { metodo: "POST", corpo: mudar }); cfg = r.config || { ...cfg, ...mudar }; marcar("Salvo ✓"); desenharPrevia(); }
+      catch (e) { marcar(""); aviso(e.message, "erro"); }
+    }
+    async function enviarFoto(arquivo) {
+      const dados = await reduzirFoto(arquivo, 1280);
+      const r = await zap("midia", { metodo: "POST", corpo: { dados } });
+      return r;
+    }
+    function seletorFoto(atual, aoEscolher, rotulo = "🖼️ Imagem (opcional)") {
+      const entrada = h("input", { type: "file", accept: "image/*", class: "oculto" });
+      entrada.addEventListener("change", async () => {
+        const f = entrada.files[0]; if (!f) return;
+        marcar("Enviando a imagem…");
+        try { const r = await enviarFoto(f); await aoEscolher(r.id, r.url); } catch (e) { marcar(""); aviso(e.message, "erro"); }
+      });
+      if (atual) return h("div", { class: "fx-foto" }, h("img", { src: atual, alt: "" }), podeEditar ? h("div", { class: "fx-foto-acoes" },
+        botao("Trocar", () => entrada.click(), "btn-secundario btn-pequeno"), botao("Tirar", () => aoEscolher(0, ""), "btn-secundario btn-pequeno")) : null, entrada);
+      return podeEditar ? h("div", {}, botao(rotulo, () => entrada.click(), "btn-secundario btn-pequeno fx-foto-add"), entrada) : null;
+    }
+    // Campo que salva sozinho ao sair dele.
+    function auto(el, chave, aoSalvar) {
+      el.dataset.chave = chave;
+      let antes = el.value;
+      el.addEventListener("change", () => { if (el.value !== antes) { antes = el.value; aoSalvar(el.value); } });
+      if (!podeEditar) el.readOnly = true;
+      return el;
+    }
+    function menuMais(item) {
+      return botao("⋯", () => {
+        const fechar = gaveta("Mais opções do botão", [
+          h("p", { class: "sub", text: `${TIPO_BOTAO[item.tipo].ic} ${item.titulo} · ${TIPO_BOTAO[item.tipo].nome}` }),
+          campo("Tipo", (() => { const s = h("select", { class: "entrada" }, Object.entries(TIPO_BOTAO).map(([v, t]) => h("option", { value: v, selected: item.tipo === v, text: `${t.ic} ${t.nome} — ${t.dica}` }))); s.addEventListener("change", async () => {
+            if (item.tipo === "MENU" && filhosDe(item.id).length) { aviso("Este submenu tem botões dentro. Apague ou mova os botões antes de trocar o tipo.", "erro"); s.value = item.tipo; return; }
+            await salvarItem(item, { tipo: s.value }); fechar(); }); return s; })()),
+          campo("Palavras-chave", auto(h("textarea", { class: "entrada", maxlength: "500", style: "min-height:70px", placeholder: "celular, smartphone, iphone", value: item.palavras || "" }), item.id + ":palavras", v => salvarItem(item, { palavras: v }, false)), "Se o cliente escrever em vez de tocar, o robô procura por estas palavras (sem IA)."),
+          campo("Descrição na lista", auto(h("input", { class: "entrada", maxlength: "72", value: item.descricao || "", placeholder: "Aparece embaixo do nome quando vira lista" }), item.id + ":descricao", v => salvarItem(item, { descricao: v }, false))),
+          h("label", { class: "guia-cat" }, h("input", { type: "checkbox", checked: item.ativo !== 0, onchange: e => salvarItem(item, { ativo: e.target.checked ? 1 : 0 }) }), "Aparece para o cliente"),
+          h("div", { class: "acoes" }, botao("Excluir este botão", async () => {
+            if (filhosDe(item.id).length) return aviso("Este submenu tem botões dentro. Apague os de dentro primeiro.", "erro");
+            if (!(await modal({ titulo: "Excluir o botão?", conteudo: `"${item.titulo}" sai do fluxo.`, confirmar: "Excluir", perigo: true }))) return;
+            try { await zap(`itens/${item.id}/excluir`, { metodo: "POST", corpo: {} }); fechar(); caminho = caminho.slice(0, caminho.indexOf(item.id)); await recarregar(); } catch (e) { aviso(e.message, "erro"); }
+          }, "btn-perigo"))]);
+      }, "btn-secundario btn-pequeno fx-mais", { "aria-label": "Mais opções", title: "Mais opções" });
+    }
+    function linhaBotao(i, nivel, irmaos) {
+      const sel = caminho[nivel] === i.id;
+      const n = i.tipo === "MENU" ? filhosDe(i.id).length : i.tipo === "LISTA" ? lojasDe(i.id).length : 0;
+      const sub = i.tipo === "MENU" ? `${n} botão(ões)` : i.tipo === "LISTA" ? `${n} loja(s)` : TIPO_BOTAO[i.tipo].nome;
+      const ok = visivel(i);
+      const motivo = !i.ativo ? "desligado" : i.tipo === "LISTA" ? "sem lojas — ainda não aparece" : i.tipo === "MENU" ? "vazio — ainda não aparece" : "";
+      const pos = irmaos.indexOf(i);
+      const mover = async (e, passo) => {
+        e.stopPropagation();
+        const ids = irmaos.map(x => x.id); const j = pos + passo; if (j < 0 || j >= ids.length) return;
+        [ids[pos], ids[j]] = [ids[j], ids[pos]];
+        try { await zap("itens/ordem", { metodo: "POST", corpo: { ids } }); await recarregar(); } catch (er) { aviso(er.message, "erro"); }
+      };
+      const abrir = () => { caminho = [...caminho.slice(0, nivel), i.id]; foco = nivel + 1; sessao.gravar(chaveCaminho, caminho); desenhar(true); };
+      return h("div", { class: "fx-btn" + (sel ? " sel" : "") + (ok ? "" : " apagado"), role: "button", tabindex: "0", onclick: abrir, onkeydown: e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); abrir(); } } },
+        h("span", { class: "fx-btn-ic", text: TIPO_BOTAO[i.tipo].ic }),
+        h("span", { class: "fx-btn-tx" }, h("strong", { text: i.titulo }), h("small", { text: ok ? sub : "⚠️ " + motivo })),
+        podeEditar ? h("span", { class: "fx-btn-ordem" },
+          h("button", { type: "button", class: "fx-seta-ordem", "aria-label": "Subir", disabled: pos === 0, onclick: e => mover(e, -1) }, "↑"),
+          h("button", { type: "button", class: "fx-seta-ordem", "aria-label": "Descer", disabled: pos === irmaos.length - 1, onclick: e => mover(e, 1) }, "↓")) : null,
+        h("span", { class: "fx-btn-seta", text: "›" }));
+    }
+    function adicionarBotao(paiId, nivel, total) {
+      if (!podeEditar) return null;
+      const caixa = h("div", { class: "fx-add" });
+      const fechado = () => caixa.replaceChildren(h("button", { type: "button", class: "fx-add-abrir", onclick: aberto }, "+ Adicionar botão"));
+      const aberto = () => {
+        let tipo = "MENU";
+        const nome = h("input", { class: "entrada", maxlength: "24", placeholder: "Nome do botão (ex.: 📱 Celular)", "aria-label": "Nome do botão" });
+        const chips = h("div", { class: "fx-tipos", role: "radiogroup", "aria-label": "O que o botão faz" }, Object.entries(TIPO_BOTAO).map(([v, t]) => h("button", { type: "button", class: "fx-tipo" + (v === tipo ? " ativo" : ""), role: "radio", "aria-checked": v === tipo ? "true" : "false", onclick: e => { tipo = v; chips.querySelectorAll(".fx-tipo").forEach(b => { const a = b === e.currentTarget; b.classList.toggle("ativo", a); b.setAttribute("aria-checked", a ? "true" : "false"); }); } },
+          h("span", { text: t.ic }), h("strong", { text: t.nome }), h("small", { text: t.dica }))));
+        const criar = async () => {
+          const titulo = nome.value.trim();
+          if (!titulo) { nome.focus(); return aviso("Dê um nome ao botão.", "erro"); }
+          marcar("Salvando…");
+          try {
+            const r = await zap("itens", { metodo: "POST", corpo: { tipo, titulo, pai_id: paiId, texto: tipo === "MENU" ? "Escolha uma opção:" : "", ordem: total + 1, ativo: true, extra: {} } });
+            marcar("Salvo ✓");
+            caminho = [...caminho.slice(0, nivel), r.id]; foco = nivel + 1; sessao.gravar(chaveCaminho, caminho);
+            await recarregar();
+          } catch (e) { marcar(""); aviso(e.message, "erro"); }
+        };
+        nome.addEventListener("keydown", e => { if (e.key === "Enter") criar(); if (e.key === "Escape") fechado(); });
+        caixa.replaceChildren(h("div", { class: "fx-add-form" }, nome, h("p", { class: "fx-rot", text: "O que acontece quando o cliente toca:" }), chips,
+          h("div", { class: "acoes" }, botao("Adicionar", criar, "btn-primario btn-pequeno"), botao("Cancelar", fechado, "btn-secundario btn-pequeno"))));
+        nome.focus();
+      };
+      fechado();
+      return caixa;
+    }
+    function cabecaColuna(ic, titulo, item, nivel) {
+      const t = item && podeEditar ? auto(h("input", { class: "fx-titulo", maxlength: "24", value: titulo, "aria-label": "Nome do botão" }), item.id + ":titulo", v => { if (!v.trim()) return aviso("O nome não pode ficar vazio.", "erro"); salvarItem(item, { titulo: v.trim() }); }) : h("strong", { class: "fx-titulo", text: titulo });
+      return h("header", { class: "fx-cab" }, h("span", { class: "fx-cab-ic", text: ic }), t, item ? h("span", { class: "fx-cab-tipo", text: TIPO_BOTAO[item.tipo].nome }) : h("span", { class: "fx-cab-tipo", text: "Começo" }), item && podeEditar ? menuMais(item) : null,
+        nivel > 0 ? h("button", { type: "button", class: "fx-fechar", "aria-label": "Fechar este cartão", onclick: () => { caminho = caminho.slice(0, nivel - 1); foco = nivel - 1; sessao.gravar(chaveCaminho, caminho); desenhar(true); } }, "×") : null);
+    }
+    function colunaMenu(item, nivel) {
+      const paiId = item ? item.id : 0;
+      const irmaos = filhosDe(paiId);
+      const texto = item ? item.texto || "" : cfg.boas_vindas || "";
+      const msg = auto(h("textarea", { class: "entrada fx-texto", maxlength: item ? "3000" : "1000", placeholder: item ? "Ex.: Qual aparelho você quer consertar?" : "Ex.: Olá! Bem-vindo ao Shopping Infomix 😊", value: texto }), paiId + ":texto",
+        v => item ? salvarItem(item, { texto: v }, false) : salvarConfig({ boas_vindas: v }));
+      msg.addEventListener("input", () => { if (item) item.texto = msg.value; else cfg.boas_vindas = msg.value; desenharPrevia(); });
+      const img = item ? (item.extra || {}).imagem_id && (item.imagens || {})[item.extra.imagem_id] : d.inicio && d.inicio.imagem;
+      const exib = item ? item.exibicao || "AUTO" : cfg.exibicao_inicio || "AUTO";
+      const vis = irmaos.filter(i => visivel(i)).length;
+      const comoVe = exib === "NUMERADO" ? "Texto numerado" : vis <= 3 ? "Botões" : vis <= 10 ? "Lista" : "Lista com “Mais opções”";
+      return h("section", { class: "fx-col" + (foco === nivel ? " foco" : ""), onfocusin: () => { if (foco !== nivel) { foco = nivel; marcarFoco(); } }, onclick: () => { if (foco !== nivel) { foco = nivel; marcarFoco(); } } },
+        cabecaColuna(item ? "📂" : "🏠", item ? item.titulo : "Início", item, nivel),
+        h("label", { class: "fx-rot", for: "fx-m-" + paiId, text: item ? "Mensagem deste menu" : "Primeira mensagem (quando o cliente manda oi)" }), Object.assign(msg, { id: "fx-m-" + paiId }),
+        seletorFoto(img, async id => item ? salvarItem(item, { extra: { imagem_id: id || undefined } }) : (await salvarConfig({ imagem_inicio: id || "" }), recarregar()), "🖼️ Imagem no topo (opcional)"),
+        h("div", { class: "fx-rot fx-rot-linha" }, h("span", { text: "Botões" }), h("small", { text: "Cliente vê: " + comoVe })),
+        h("div", { class: "fx-botoes" }, irmaos.length ? irmaos.map(i => linhaBotao(i, nivel, irmaos)) : h("p", { class: "fx-vazio", text: "Nenhum botão ainda. Adicione o primeiro 👇" })),
+        adicionarBotao(paiId, nivel, irmaos.length),
+        podeEditar ? h("label", { class: "fx-exib" }, "Com muitas opções, mostrar como ", (() => { const s = h("select", { class: "entrada" }, [["AUTO", "botões / lista (automático)"], ["NUMERADO", "texto numerado (sem limite)"]].map(([v, n]) => h("option", { value: v, selected: exib === v, text: n }))); s.addEventListener("change", () => item ? salvarItem(item, { exibicao: s.value }) : salvarConfig({ exibicao_inicio: s.value }).then(desenhar)); return s; })()) : null);
+    }
+    function interruptorLead(item) {
+      const ex = item.extra || {};
+      return h("label", { class: "fx-lead" }, h("input", { type: "checkbox", checked: ex.lead !== false, disabled: !podeEditar, onchange: e => salvarItem(item, { extra: { lead: e.target.checked ? undefined : false } }, false) }),
+        h("span", {}, h("strong", { text: "🔔 Avisar no Telegram" }), h("small", { text: tg && tg.conectado ? "Manda “NOVO CLIENTE” com nome, número e o que ele escolheu." : "Conecte o Telegram em Conectar número para receber os avisos." })));
+    }
+    function colunaLojas(item, nivel) {
+      const ex = item.extra || {};
+      const ligadas = new Set(lojasDe(item.id).map(c => c.id));
+      const busca = h("input", { class: "entrada", type: "search", placeholder: "Buscar loja para ligar…", "aria-label": "Buscar loja" });
+      const lista = h("div", { class: "fx-lojas" });
+      const alternar = async (c, ligar) => {
+        const itens = new Set(c.itens || []); ligar ? itens.add(item.id) : itens.delete(item.id);
+        marcar("Salvando…");
+        try { await zap("catalogo", { metodo: "POST", corpo: { id: c.id, nome: c.nome, whatsapp: c.whatsapp || "", telefone: c.telefone || "", local: c.local || "", descricao: c.descricao || "", destaque: Boolean(c.destaque), ativo: c.ativo !== 0, itens: [...itens] } }); marcar("Salvo ✓"); await recarregar(); }
+        catch (e) { marcar(""); aviso(e.message, "erro"); }
+      };
+      const desenharLojas = () => {
+        const q = busca.value.trim().toLowerCase();
+        const todas = d.catalogo.filter(c => ligadas.has(c.id) || (q && [c.nome, c.local, c.descricao].join(" ").toLowerCase().includes(q)));
+        lista.replaceChildren(...(todas.length ? todas.map(c => h("label", { class: "fx-loja" + (ligadas.has(c.id) ? " ligada" : "") },
+          h("input", { type: "checkbox", checked: ligadas.has(c.id), disabled: !podeEditar, onchange: e => alternar(c, e.target.checked) }),
+          h("span", {}, h("strong", { text: c.nome }), h("small", { text: [c.local, c.whatsapp || c.telefone].filter(Boolean).join(" · ") || "sem WhatsApp" })))) :
+          [h("p", { class: "fx-vazio", text: d.catalogo.length ? "Nenhuma loja ligada ainda. Busque acima ou cadastre uma nova." : "Nenhuma loja cadastrada. Cadastre aqui embaixo ou importe a planilha em Contatos e lojas." })]));
+      };
+      busca.addEventListener("input", desenharLojas); desenharLojas();
+      const nova = () => {
+        const nome = h("input", { class: "entrada", maxlength: "80", placeholder: "Nome da loja" }), wz = h("input", { class: "entrada", maxlength: "30", inputmode: "tel", placeholder: "WhatsApp (21) 98888-7777" }), local = h("input", { class: "entrada", maxlength: "80", placeholder: "Local (ex.: Loja 12, 1º piso)" });
+        const fechar = gaveta("Nova loja em “" + item.titulo + "”", [campo("Nome", nome), campo("WhatsApp", wz, "O cliente recebe o link para chamar direto."), campo("Local", local),
+          h("div", { class: "acoes" }, botao("Salvar loja", async () => {
+            try { await zap("catalogo", { metodo: "POST", corpo: { nome: nome.value, whatsapp: wz.value, local: local.value, ativo: true, itens: [item.id] } }); fechar(); aviso("Loja ligada a este botão.", "ok"); await recarregar(); }
+            catch (e) { aviso(e.message, "erro"); }
+          }, "btn-primario"))]);
+        nome.focus();
+      };
+      const estilo = h("div", { class: "fx-seg", role: "radiogroup", "aria-label": "Como mostrar as lojas" }, [["", "📝 Lista em texto"], ["CARTOES", "🪪 Cartões com botão"]].map(([v, n]) => h("button", { type: "button", role: "radio", "aria-checked": (ex.estilo || "") === v ? "true" : "false", class: (ex.estilo || "") === v ? "ativo" : "", disabled: !podeEditar, onclick: () => salvarItem(item, { extra: { estilo: v || undefined } }) }, n)));
+      const msg = auto(h("textarea", { class: "entrada fx-texto", maxlength: "3000", placeholder: "Ex.: Estas lojas fazem troca de tela:", value: item.texto || "" }), item.id + ":texto", v => salvarItem(item, { texto: v }, false));
+      msg.addEventListener("input", () => { item.texto = msg.value; desenharPrevia(); });
+      return h("section", { class: "fx-col" + (foco === nivel ? " foco" : ""), onclick: () => { if (foco !== nivel) { foco = nivel; marcarFoco(); } } },
+        cabecaColuna("🏪", item.titulo, item, nivel),
+        h("label", { class: "fx-rot", text: "Mensagem antes das lojas" }), msg,
+        h("div", { class: "fx-rot fx-rot-linha" }, h("span", { text: "Lojas que aparecem" }), h("small", { text: `${ligadas.size} ligada(s)` })),
+        podeEditar ? busca : null, lista,
+        podeEditar ? h("div", { class: "acoes" }, botao("+ Nova loja", nova, "btn-secundario btn-pequeno"), h("a", { class: "btn btn-secundario btn-pequeno", href: "#/chatbot/contatos" }, "Importar planilha")) : null,
+        h("p", { class: "fx-rot", text: "Como mostrar" }), estilo,
+        h("p", { class: "fx-nota", text: ex.estilo === "CARTOES" ? "Até 4 lojas, cada uma num cartão com o botão “Chamar no WhatsApp”. Com mais de 4, vira lista em texto." : "Todas as lojas numa mensagem, com o link do WhatsApp de cada uma." }),
+        interruptorLead(item));
+    }
+    function colunaResposta(item, nivel) {
+      const ex = item.extra || {};
+      const cartoes = (ex.cartoes || []).map(c => ({ ...c }));
+      const salvarCartoes = () => salvarItem(item, { extra: { cartoes } }, true);
+      const msg = auto(h("textarea", { class: "entrada fx-texto", maxlength: "3000", placeholder: "Ex.: Abrimos de segunda a sábado, das 10h às 22h.", value: item.texto || "" }), item.id + ":texto", v => salvarItem(item, { texto: v }, false));
+      msg.addEventListener("input", () => { item.texto = msg.value; desenharPrevia(); });
+      // O botão de link só é salvo com nome e endereço (ou os dois vazios, para tirar).
+      const dicaLink = h("p", { class: "fx-nota" });
+      const salvarLink = () => {
+        const t = lt.value.trim(), u = lu.value.trim();
+        if (!t && !u) { dicaLink.textContent = ""; return salvarItem(item, { extra: { link_texto: undefined, link_url: undefined } }, false); }
+        if (!t || !/^https:\/\/\S{4,}$/i.test(u)) { dicaLink.textContent = !t ? "Falta o nome do botão." : "O endereço precisa começar com https://"; return; }
+        dicaLink.textContent = ""; return salvarItem(item, { extra: { link_texto: t, link_url: u } }, false);
+      };
+      const lt = auto(h("input", { class: "entrada", maxlength: "20", placeholder: "Nome do botão (ex.: 📍 Como chegar)", value: ex.link_texto || "" }), item.id + ":lt", salvarLink);
+      const lu = auto(h("input", { class: "entrada", type: "url", placeholder: "https://…", value: ex.link_url || "" }), item.id + ":lu", salvarLink);
+      const cartaoEd = (c, n) => {
+        const campoC = (chave, el) => auto(el, `${item.id}:c${n}:${chave}`, v => {
+          cartoes[n][chave] = v;
+          const c2 = cartoes[n], t = String(c2.link_texto || "").trim(), u = String(c2.link_url || "").trim();
+          if ((t || u) && (!t || !/^https:\/\/\S{4,}$/i.test(u))) return aviso(!t ? "Falta o nome do botão do cartão." : "O endereço do cartão precisa começar com https://", "info");
+          salvarCartoes();
+        });
+        return h("div", { class: "fx-cartao" },
+          h("div", { class: "fx-rot fx-rot-linha" }, h("span", { text: `Cartão ${n + 1}` }), podeEditar ? h("button", { type: "button", class: "fx-fechar", "aria-label": "Tirar o cartão", onclick: () => { cartoes.splice(n, 1); salvarCartoes(); } }, "×") : null),
+          seletorFoto(c.imagem_id && (item.imagens || {})[c.imagem_id], id => { cartoes[n].imagem_id = id || undefined; return salvarCartoes(); }),
+          campoC("titulo", h("input", { class: "entrada", maxlength: "60", placeholder: "Título (ex.: Promoção de capinhas)", value: c.titulo || "" })),
+          campoC("texto", h("textarea", { class: "entrada", maxlength: "600", style: "min-height:60px", placeholder: "Texto do cartão", value: c.texto || "" })),
+          h("div", { class: "fx-duas" }, campoC("link_texto", h("input", { class: "entrada", maxlength: "20", placeholder: "Botão (opcional)", value: c.link_texto || "" })),
+            campoC("link_url", h("input", { class: "entrada", type: "url", placeholder: "https://…", value: c.link_url || "" }))));
+      };
+      return h("section", { class: "fx-col" + (foco === nivel ? " foco" : ""), onclick: () => { if (foco !== nivel) { foco = nivel; marcarFoco(); } } },
+        cabecaColuna("💬", item.titulo, item, nivel),
+        h("label", { class: "fx-rot", text: "Texto da resposta" }), msg,
+        seletorFoto(ex.imagem_id && (item.imagens || {})[ex.imagem_id], id => salvarItem(item, { extra: { imagem_id: id || undefined } })),
+        h("p", { class: "fx-rot", text: "Botão de link (opcional) — site, Instagram, mapa, cardápio" }), h("div", { class: "fx-duas" }, lt, lu), dicaLink,
+        h("div", { class: "fx-rot fx-rot-linha" }, h("span", { text: "Carrossel" }), h("small", { text: `${cartoes.length} de 4 cartões` })),
+        cartoes.map(cartaoEd),
+        podeEditar && cartoes.length < 4 ? botao("+ Cartão no carrossel", () => { cartoes.push({ titulo: "Novo cartão", texto: "" }); return salvarCartoes(); }, "btn-secundario btn-pequeno") : null,
+        h("p", { class: "fx-nota", text: "Os cartões chegam um embaixo do outro, cada um com a sua imagem e botão. Depois o robô oferece Menu inicial, Voltar e Finalizar." }),
+        interruptorLead(item));
+    }
+    function colunaHumano(item, nivel) {
+      const msg = auto(h("textarea", { class: "entrada fx-texto", maxlength: "3000", placeholder: cfg.humano || "Certo! Vou chamar alguém da equipe…", value: item.texto || "" }), item.id + ":texto", v => salvarItem(item, { texto: v }, false));
+      msg.addEventListener("input", () => { item.texto = msg.value; desenharPrevia(); });
+      return h("section", { class: "fx-col" + (foco === nivel ? " foco" : ""), onclick: () => { if (foco !== nivel) { foco = nivel; marcarFoco(); } } },
+        cabecaColuna("🙋", item.titulo, item, nivel),
+        h("label", { class: "fx-rot", text: "Mensagem para o cliente" }), msg,
+        h("p", { class: "fx-nota", text: "O robô fica em pausa nessa conversa por 12 horas e a equipe é avisada no Telegram (ou por e-mail). A equipe responde pela DENIA ou pelo celular." }));
+    }
+
+    // ----- Prévia do WhatsApp
+    const previa = h("aside", { class: "fx-previa", "aria-label": "Prévia no WhatsApp" });
+    const rodapePrevia = item => h("div", { class: "fx-wa-bolha" }, "Posso te ajudar com mais alguma coisa?",
+      h("div", { class: "fx-wa-botoes" }, ["🏠 Menu inicial", ...(item && item.pai_id ? ["⬅️ Voltar"] : []), "✅ Finalizar"].map(t => h("span", { text: t }))));
+    function bolha(texto, imagem, botoesLista, link) {
+      return h("div", { class: "fx-wa-bolha" }, imagem ? h("img", { src: imagem, alt: "" }) : null, h("div", { class: "fx-wa-texto" }, textoZap(texto)),
+        link ? h("div", { class: "fx-wa-link", text: "↗ " + link }) : null,
+        botoesLista && botoesLista.length ? h("div", { class: "fx-wa-botoes" }, botoesLista.map(t => h("span", { text: t }))) : null);
+    }
+    function desenharPrevia() {
+      const nivel = Math.min(foco, caminho.length);
+      const item = nivel === 0 ? null : porId().get(caminho[nivel - 1]);
+      const msgs = [];
+      if (!item || item.tipo === "MENU") {
+        const filhos = filhosDe(item ? item.id : 0).filter(i => visivel(i));
+        const texto = item ? item.texto || `${item.titulo}: escolha uma opção.` : cfg.boas_vindas || "";
+        const img = item ? (item.extra || {}).imagem_id && (item.imagens || {})[item.extra.imagem_id] : d.inicio && d.inicio.imagem;
+        const exib = item ? item.exibicao : cfg.exibicao_inicio;
+        if (exib === "NUMERADO") msgs.push(bolha(texto + "\n\n" + filhos.map((f, n) => `*${n + 1}* · ${f.titulo}`).join("\n"), img));
+        else if (filhos.length <= 3) msgs.push(bolha(texto, img, filhos.map(f => f.titulo)));
+        else msgs.push(bolha(texto + "\n\nToque em \"Ver opções\" e escolha.", img, ["☰ Ver opções"]), h("div", { class: "fx-wa-lista" }, filhos.slice(0, 9).map(f => h("span", { text: f.titulo })), filhos.length > 9 ? h("span", { text: "➡️ Mais opções" }) : null));
+        if (!filhos.length) msgs.push(h("p", { class: "fx-wa-aviso", text: "Ainda não há botões visíveis neste menu." }));
+      } else if (item.tipo === "LISTA") {
+        const lojas = lojasDe(item.id).filter(c => c.ativo);
+        const ex = item.extra || {};
+        if (!lojas.length) msgs.push(h("p", { class: "fx-wa-aviso", text: "Ligue pelo menos uma loja: sem lojas, este botão não aparece para o cliente." }));
+        else if (ex.estilo === "CARTOES" && lojas.length <= 4) { msgs.push(bolha(`*${item.titulo}*${item.texto ? "\n" + item.texto : ""}`)); lojas.forEach(c => msgs.push(bolha(`*${c.nome}*\n${[c.local, c.descricao].filter(Boolean).join("\n")}`, null, null, "💬 Chamar no WhatsApp"))); }
+        else msgs.push(bolha(`*${item.titulo}*${item.texto ? "\n" + item.texto : ""}\n\n` + lojas.map(c => `• *${c.nome}*${c.local ? " — " + c.local : ""}\n  📲 wa.me/…`).join("\n\n")));
+        if (lojas.length) msgs.push(rodapePrevia(item));
+      } else if (item.tipo === "RESPOSTA") {
+        const ex = item.extra || {};
+        msgs.push(bolha(item.texto || item.titulo, ex.imagem_id && (item.imagens || {})[ex.imagem_id], null, ex.link_url && ex.link_texto ? ex.link_texto : ""));
+        (ex.cartoes || []).forEach(c => msgs.push(bolha([c.titulo ? `*${c.titulo}*` : "", c.texto || ""].filter(Boolean).join("\n"), c.imagem_id && (item.imagens || {})[c.imagem_id], null, c.link_url && c.link_texto ? c.link_texto : "")));
+        msgs.push(rodapePrevia(item));
+      } else msgs.push(bolha(item.texto || cfg.humano || ""));
+      const nomeEmp = (estado.org && estado.org.nome) || "Empresa";
+      previa.replaceChildren(h("div", { class: "fx-tel" },
+        h("div", { class: "fx-tel-topo" }, h("span", { class: "fx-tel-avatar", text: iniciais(nomeEmp) }), h("span", {}, h("strong", { text: nomeEmp }), h("small", { text: "conta comercial" }))),
+        h("div", { class: "fx-tel-conversa" }, h("div", { class: "fx-wa-cliente", text: item ? item.titulo : "oi" }), msgs)),
+        h("p", { class: "fx-nota", style: "text-align:center", text: "Prévia de " + (item ? `“${item.titulo}”` : "Início") + ". Toque num cartão para ver." }));
+    }
+    function marcarFoco() { palco.querySelectorAll(".fx-col").forEach((c, n) => c.classList.toggle("foco", n === foco)); desenharPrevia(); }
+
+    // ----- Desenho
+    const trilha = h("nav", { class: "fx-trilha", "aria-label": "Caminho no fluxo" });
+    const colunas = h("div", { class: "fx-colunas" });
+    function desenhar(rolar) {
+      const ativo = document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.chave : null;
+      const mapa = porId();
+      caminho = caminho.filter((id, n) => { const it = mapa.get(id); return it && Number(it.pai_id) === (n === 0 ? 0 : caminho[n - 1]); });
+      foco = Math.min(foco, caminho.length);
+      const cols = [colunaMenu(null, 0)];
+      caminho.forEach((id, n) => {
+        const it = mapa.get(id);
+        cols.push(it.tipo === "MENU" ? colunaMenu(it, n + 1) : it.tipo === "LISTA" ? colunaLojas(it, n + 1) : it.tipo === "RESPOSTA" ? colunaResposta(it, n + 1) : colunaHumano(it, n + 1));
+      });
+      colunas.replaceChildren(...cols);
+      trilha.replaceChildren(...[["🏠 Início", 0], ...caminho.map((id, n) => [mapa.get(id).titulo, n + 1])].map(([t, n], k, arr) => [
+        h("button", { type: "button", class: "fx-trilha-item" + (n === foco ? " ativo" : ""), onclick: () => { foco = n; marcarFoco(); colunas.children[n] && colunas.children[n].scrollIntoView({ behavior: "smooth", inline: "start", block: "nearest" }); } }, t),
+        k < arr.length - 1 ? h("span", { class: "fx-trilha-sep", text: "›" }) : null]).flat().filter(Boolean));
+      if (comecar) comecar.classList.toggle("oculto", d.itens.length > 0);
+      desenharPrevia();
+      if (ativo) { const el = colunas.querySelector(`[data-chave="${CSS.escape(ativo)}"]`); if (el) el.focus(); }
+      // Traz para a vista o cartão em destaque (só rola a faixa dos cartões, não a página).
+      requestAnimationFrame(() => {
+        const alvo = colunas.children[foco]; if (!alvo) return;
+        const a = alvo.getBoundingClientRect(), c = colunas.getBoundingClientRect();
+        if (a.right > c.right || a.left < c.left) colunas.scrollTo({ left: colunas.scrollLeft + (a.right > c.right ? a.right - c.right + 8 : a.left - c.left - 8), behavior: rolar ? "smooth" : "auto" });
+      });
+    }
+
+    const avisos = () => {
+      const tit = h("input", { class: "entrada", maxlength: "80", value: cfg.lead_titulo || "🔔 NOVO CLIENTE!" });
+      const tags = h("input", { class: "entrada", maxlength: "120", value: cfg.lead_tags || "", placeholder: "Ex.: infomix, leads (vazio = automático)" });
+      const ligado = h("input", { type: "checkbox", checked: cfg.avisar_buscas !== false });
+      const exemplo = h("pre", { class: "fx-tg" });
+      const atualizar = () => {
+        const etiquetas = tags.value.trim() ? tags.value.split(/[\s,]+/).filter(Boolean).map(t => "#" + t.replace(/^#+/, "").normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^A-Za-z0-9_]/g, "")).join(" ")
+          : ["#" + String(estado.org.nome || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/\b(shopping|loja|lojas|centro|ltda|me|eireli)\b/g, "").replace(/[^a-z0-9]/g, "").slice(0, 30), "#leads"].filter(t => t.length > 1).join(" ");
+        const agora = new Date().toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
+        exemplo.textContent = `${tit.value || "🔔 NOVO CLIENTE!"}\n\n👤 Nome: Henrique\n📱 WhatsApp: 5521979862792\n💬 Pedido: Produtos > Informática > Notebook\n🕒 Horário: ${agora}\n\n${etiquetas}`;
+      };
+      tit.addEventListener("input", atualizar); tags.addEventListener("input", atualizar); atualizar();
+      const fechar = gaveta("Avisos no Telegram", [
+        h("p", { class: "sub", text: tg && tg.conectado ? `Os avisos vão para ${tg.grupo || "o grupo conectado"}.` : "O Telegram ainda não está conectado." }),
+        tg && tg.conectado ? null : h("a", { class: "btn btn-secundario btn-pequeno", href: "#/chatbot/conexao" }, "Conectar o Telegram"),
+        h("label", { class: "guia-cat" }, ligado, "Avisar quando o cliente chegar numa loja ou resposta"),
+        campo("Título do aviso", tit), campo("Etiquetas (hashtags)", tags, "Separadas por vírgula. Vazio: o nome da empresa + #leads."),
+        h("p", { class: "fx-rot", text: "Como chega no grupo" }), exemplo,
+        h("p", { class: "fx-nota", text: "Em cada botão de Lojas ou Resposta dá para desligar o aviso. O mesmo pedido do mesmo cliente não repete o aviso dentro de 1 hora." }),
+        podeEditar ? h("div", { class: "acoes" }, botao("Salvar", async () => { await salvarConfig({ avisar_buscas: ligado.checked, lead_titulo: tit.value, lead_tags: tags.value }); fechar(); }, "btn-primario")) : null]);
+    };
+
+    let comecar = null;
+    const verPrevia = h("button", { type: "button", class: "btn btn-secundario btn-pequeno fx-ver-previa", onclick: () => palco.classList.toggle("mostrar-previa") }, "👁 Prévia");
     trocar(area,
-      h("section", { class: "cartao vidro" }, h("div", { class: "cabeca-grafico" }, h("h3", { style: "margin:0", text: "Menu do WhatsApp" }),
-        pode("AGENTE") ? h("div", { class: "acoes" }, botao("+ Nova opção", () => editarItem(null, itens, recarregar), "btn-primario btn-pequeno"), botao("✨ Refazer com a IA", () => criarComIA(true), "btn-secundario btn-pequeno"), h("a", { class: "btn btn-secundario btn-pequeno", href: "#/chatbot/testar" }, "Testar")) : null),
-        h("p", { class: "sub", text: `Com até 3 opções o cliente vê botões; com mais, uma lista (9 por vez + "Mais opções"). O menu inicial tem ${raiz} opção(ões): ${raiz <= 3 ? "aparece em botões" : "aparece em lista"}. Depois de cada resposta o robô oferece Menu inicial, Voltar e Finalizar.` }),
-        h("div", { class: "zap-arvore" }, arvore)));
+      comecar = !d.itens.length && podeEditar ? h("section", { class: "cartao vidro fx-comecar" },
+        h("div", {}, h("h3", { style: "margin:0", text: "Comece seu fluxo" }), h("p", { class: "sub", style: "margin:4px 0 0", text: "Escreva a primeira mensagem e adicione os botões no cartão Início. Ou use um atalho:" })),
+        h("div", { class: "acoes" },
+          botao("🛍️ Modelo Shopping", async () => { try { await zap("modelo", { metodo: "POST", corpo: { tipo: "shopping" } }); await recarregar(); aviso("Modelo criado. Ajuste do seu jeito.", "ok"); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno"),
+          botao("🔧 Modelo Serviços", async () => { try { await zap("modelo", { metodo: "POST", corpo: { tipo: "servicos" } }); await recarregar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno"),
+          botao("✨ Criar com a IA", () => criarComIA(false), "btn-secundario btn-pequeno"))) : null,
+      h("section", { class: "cartao vidro fx-quadro" },
+        h("div", { class: "fx-barra" }, h("div", {}, h("h3", { style: "margin:0", text: "Fluxo do WhatsApp" }), h("p", { class: "sub", style: "margin:2px 0 0", text: "Toque num botão para abrir o próximo cartão. Tudo salva sozinho." })),
+          h("div", { class: "acoes" }, statusSalvo, verPrevia, botao("🔔 Avisos no Telegram", avisos, "btn-secundario btn-pequeno"), h("a", { class: "btn btn-primario btn-pequeno", href: "#/chatbot/testar" }, "▶ Testar"),
+            podeEditar && d.itens.length ? botao("✨ Refazer com a IA", () => criarComIA(true), "btn-secundario btn-pequeno") : null)),
+        trilha, h("div", { class: "fx-palco-grade" }, palco)));
+    palco.replaceChildren(colunas, previa);
+    foco = caminho.length;
+    desenhar(true);
   }
   async function abaZapContatos(area, vivo) {
     const d = await zap("itens");
@@ -2286,8 +2632,16 @@
         historico.push({ cliente: true, texto: rotulo || texto }, ...(r.respostas || []).map(x => ({ cliente: false, texto: x.texto })));
         for (const x of r.respostas || []) {
           const it = x.interativo;
+          if (x.imagem) { tela.appendChild(h("div", { class: "msg msg-saida msg-com-imagem" }, h("img", { src: x.imagem, alt: "" }), x.texto.replace(/^\[imagem\]\s*/, ""))); continue; }
           if (!it) { tela.appendChild(balao(x.texto, false)); continue; }
+          const topo = it.header && it.header.type === "image" ? h("img", { src: it.header.image.link, alt: "", class: "msg-imagem" }) : null;
+          if (it.type === "cta_url") {
+            const pr = it.action.parameters || {};
+            tela.appendChild(h("div", { class: "msg msg-saida msg-com-imagem" }, topo, (it.body || {}).text || "", h("div", { class: "guia-botoes" }, h("a", { class: "btn btn-secundario btn-pequeno", href: pr.url, target: "_blank", rel: "noopener" }, "↗ " + pr.display_text))));
+            continue;
+          }
           const caixa = balao((it.body || {}).text || "", false);
+          if (topo) caixa.prepend(topo);
           const ops = it.type === "button" ? it.action.buttons.map(b => ({ id: b.reply.id, title: b.reply.title })) : ((it.action.sections || [])[0] || {}).rows || [];
           caixa.appendChild(h("div", { class: "guia-botoes" }, ops.map(o => h("button", { type: "button", class: "btn btn-secundario btn-pequeno", title: o.description || "", onclick: () => enviar(o.title, o.id, o.title) }, o.title + (o.description ? ` · ${o.description}` : "")))));
           tela.appendChild(caixa);
