@@ -2157,22 +2157,26 @@ test("Temporada — estoque: lista pronta, check-out pede conferência, link sem
   const mod = await import("../src/worker.js");
   { let t; await mod.default.scheduled({}, p.env, { waitUntil: x => { t = x; } }); await t; }
   const email = p.emails.find(e => /confira o estoque/.test(e.subject));
+  assert.match(email.text, /Levar: Papel|Mande este link/);
   assert.ok(email, "avisou o responsável");
   const link = String(email.text || email.html).match(/https:\/\/plataforma\.test(\/tp\/limpeza\/\d+-[A-Za-z0-9]{32})/)[1];
   assert.equal((await p.req(link.replace(/.$/, "x"))).status, 404, "link adulterado não abre");
   const pag = await p.req(link);
-  assert.equal(pag.status, 200); assert.match(await pag.r.text(), /Papel higiênico/);
-  // Quem limpa responde pelo celular (formulário simples, sem login).
-  const form = new URLSearchParams({ quem: "Dona Maria", ["q_" + papel.id]: "4", obs: "Chuveiro do banheiro pingando", feita: "1" });
-  const env2 = await mod.default.fetch(new Request("https://plataforma.test" + link, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: form }), p.env);
-  assert.match(await env2.text(), /Acabando: Papel higiênico \(4 rolos\)\. O anfitrião já foi avisado/);
-  assert.ok(p.emails.some(e => /comprar reposição/.test(e.subject) && /Chuveiro/.test(e.text)), "anfitrião avisado do que comprar");
+  assert.equal(pag.status, 200); assert.match(await pag.r.text(), /limpeza\.js/);
+  // Quem limpa responde pelo celular (tela simples, sem login).
+  const dados = (await p.req(link + "/dados")).dados;
+  assert.equal(dados.imovel, "Casa Búzios"); assert.ok(dados.estoque.length === 18);
+  assert.ok(dados.briefing.levar.length === 0);
+  const r1 = await mod.default.fetch(new Request("https://plataforma.test" + link + "/enviar", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ quem: "Dona Maria", estoque: { [papel.id]: 4 }, obs: "Chuveiro do banheiro pingando" }) }), p.env);
+  const env2 = await r1.json();
+  assert.deepEqual(env2.baixos.map(b => b.item), ["Papel higiênico"]);
+  assert.ok(p.emails.some(e => /concluída/.test(e.subject) && /Comprar: Papel higiênico/.test(e.text)), "anfitrião avisado do que comprar");
   const depois = (await p.req(`/api/orgs/1/tp/estoque?imovel=${id}`, { quem: "admin" })).dados;
   assert.equal(depois.itens.find(x => x.item === "Papel higiênico").quantidade, 4);
   assert.equal(depois.pendentes.length, 0, "conferência feita");
   assert.equal(depois.movimentos[0].origem, "CHECKOUT"); assert.equal(depois.movimentos[0].autor, "Dona Maria");
   const notas = (await p.req("/api/orgs/1/tp/notas", { quem: "admin" })).dados.notas;
-  assert.equal(notas[0].texto, "Chuveiro do banheiro pingando");
+  assert.match(notas[0].texto, /Chuveiro do banheiro pingando/);
   assert.equal(p.env.DB.q("SELECT status, responsavel FROM plt_tp_limpezas")[0].status, "FEITA");
   // Melhorias: concluir.
   await p.req(`/api/orgs/1/tp/notas/${notas[0].id}`, { metodo: "POST", quem: "admin", corpo: { status: "FEITA", custo: 120 } });
@@ -2228,4 +2232,78 @@ test("DENIA por voz — temporada: muda preço de um período, atualiza estoque,
   assert.match(e.resumo, /Total BRL 4650/, e.resumo);
   const f = (await ex({ tipo: "tp_precos", imovel: "Casa que não existe", de: "2026-12-01", ate: "2026-12-02", preco: 1 })).dados;
   assert.equal(f.ok, false); assert.match(f.resumo, /Não achei o imóvel/);
+});
+
+test("Temporada — inventário por cômodo e checklist: quem limpa toca no nome, confere cada cômodo, e o que sumiu aparece na próxima limpeza", async () => {
+  const p = await criarPlataforma();
+  p.env.__agora = () => Date.parse("2026-10-16T15:00:00Z");
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  const id = (await p.req("/api/orgs/1/tp/imoveis", { metodo: "POST", quem: "admin", corpo: { nome: "Casa Búzios" } })).dados.id;
+  const cr = (await p.req(`/api/orgs/1/tp/imoveis/${id}/organizacao/modelo`, { metodo: "POST", quem: "admin", corpo: { quantidades: { sala: 1, quarto: 2, banheiro: 1, cozinha: 1 } } })).dados;
+  assert.equal(cr.comodos, 5);
+  const org = (await p.req(`/api/orgs/1/tp/imoveis/${id}/organizacao`, { quem: "admin" })).dados;
+  assert.deepEqual(org.comodos.map(c => c.nome), ["Sala", "Cozinha", "Quarto 1", "Quarto 2", "Banheiro"]);
+  const q1 = org.comodos[2], ban = org.comodos[4];
+  assert.ok(q1.tarefas.some(t => /debaixo da cama/.test(t.tarefa)) && ban.tarefas.some(t => /descarga/i.test(t.tarefa)) && org.comodos[1].tarefas.some(t => /dentro dos armários/.test(t.tarefa)));
+  await p.req("/api/orgs/1/tp/equipe", { metodo: "POST", quem: "admin", corpo: { equipe: [{ nome: "Dona Maria" }, { nome: "Joana" }] } });
+  await p.req("/api/orgs/1/tp/reservas", { metodo: "POST", quem: "admin", corpo: { imovel_id: id, inicio: "2026-10-12", fim: "2026-10-16", hospede: "Ana" } });
+  await p.req("/api/orgs/1/tp/reservas", { metodo: "POST", quem: "admin", corpo: { imovel_id: id, inicio: "2026-10-18", fim: "2026-10-20", hospede: "Bruno" } });
+  // A limpeza é remarcada para outro dia (não no dia da saída).
+  const lim = p.env.DB.q("SELECT id FROM plt_tp_limpezas ORDER BY data")[0].id;
+  await p.req(`/api/orgs/1/tp/limpezas/${lim}/agendar`, { metodo: "POST", quem: "admin", corpo: { data: "2026-10-17", responsavel: "Joana" } });
+  assert.deepEqual(p.env.DB.q("SELECT data, data_saida FROM plt_tp_limpezas WHERE id=?", lim)[0], { data: "2026-10-17", data_saida: "2026-10-16" });
+  const det = (await p.req(`/api/orgs/1/tp/limpezas/${lim}/detalhe`, { quem: "admin" })).dados;
+  const link = new URL(det.link).pathname;
+  const dados = (await p.req(link + "/dados")).dados;
+  assert.deepEqual(dados.equipe, ["Dona Maria", "Joana"]);
+  assert.equal(dados.briefing.proximo.inicio, "2026-10-18");
+  const mod = await import("../src/worker.js");
+  const post = (cam, corpo) => mod.default.fetch(new Request("https://plataforma.test" + link + cam, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(corpo) }), p.env).then(r => r.json());
+  await post("/comecar", { quem: "Joana" });
+  const travesseiro = dados.comodos[2].itens.find(i => i.item === "Travesseiros"), toalha = dados.comodos[4].itens.find(i => i.item === "Toalhas de banho");
+  const todas = Object.fromEntries([...dados.comodos.flatMap(c => c.tarefas)].slice(0, 10).map(t => [t.id, true]));
+  const r = await post("/enviar", { quem: "Joana", checklist: todas, inventario: { [travesseiro.id]: "SUMIU", [toalha.id]: "QUEBRADO" }, faltou: ["Toalha de rosto"], fotos: ["data:image/png;base64," + btoa("PNGTESTE")] });
+  assert.deepEqual(r.problemas, ["Travesseiros (Quarto 1): sumiu", "Toalhas de banho (Banheiro): quebrado"]);
+  const reg = (await p.req(`/api/orgs/1/tp/limpezas/${lim}/detalhe`, { quem: "admin" })).dados;
+  assert.equal(reg.limpeza.responsavel, "Joana"); assert.ok(reg.limpeza.inicio_ms && reg.limpeza.fim_ms);
+  assert.equal(reg.limpeza.resumo.checklist_feitas, 10); assert.ok(reg.limpeza.resumo.checklist_total > 10);
+  assert.equal(reg.midias.length, 1);
+  assert.equal(p.env.DB.q("SELECT prioridade FROM plt_tp_notas")[0].prioridade, "ALTA", "sumiço vira melhoria urgente");
+  // A próxima limpeza já sabe o que sumiu e o que faltou da última vez.
+  const prox = p.env.DB.q("SELECT id FROM plt_tp_limpezas WHERE id<>? ORDER BY data", lim)[0].id;
+  const b = (await p.req(`/api/orgs/1/tp/limpezas/${prox}/detalhe`, { quem: "admin" })).dados.briefing;
+  assert.deepEqual(b.quebrados.map(x => x.item).sort(), ["Toalhas de banho", "Travesseiros"]);
+  assert.deepEqual(b.faltou_ultima, ["Toalha de rosto"]);
+  assert.equal(b.ultima.responsavel, "Joana");
+});
+
+test("Temporada — avaliações dos hóspedes: 5 estrelas responde sozinha; abaixo disso estuda e diz se dá para pedir a remoção", async () => {
+  const p = await criarPlataforma({ CHANNEX_API_KEY: "cx_teste", CHANNEX_STAGING: "1" });
+  p.env.__agora = () => Date.parse("2026-10-16T12:00:00Z");
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  await p.req("/api/orgs/1/ia/chave", { metodo: "POST", quem: "admin", corpo: { chave: "sk-proj-" + "f".repeat(40) } });
+  p.channex = (caminho, metodo) => caminho === "/properties" ? { data: { id: "prop-1" } } : caminho === "/room_types" ? { data: { id: "room-1" } } : caminho === "/rate_plans" ? { data: { id: "r1" } } : caminho === "/groups" ? { data: { id: "g" } } : caminho === "/auth/one_time_token" ? { data: { token: "t" } }
+    : caminho.startsWith("/reviews?") ? { data: [{ id: "rv1", attributes: { ota: "AirBNB", guest_name: "Laura", overall_score: 5, content: "Perfect stay, super clean!" } }, { id: "rv2", attributes: { ota: "BookingCom", guest_name: "Marco", overall_score: 4, content: "Host refused my extra guests party. Bad." } }] } : { data: {} };
+  const id = (await p.req("/api/orgs/1/tp/imoveis", { metodo: "POST", quem: "admin", corpo: { nome: "Loft", treinamento: { regras: "Proibido festas. Máximo 4 pessoas." } } })).dados.id;
+  await p.req(`/api/orgs/1/tp/imoveis/${id}/conectar`, { metodo: "POST", quem: "admin", corpo: {} });
+  p.openai = (url, corpo) => {
+    const texto = JSON.stringify(corpo);
+    if (/Perfect stay/.test(texto)) return { output_text: JSON.stringify({ sentimento: "OTIMA", resumo: "Adorou", resposta: "Thank you, Laura!", resposta_traducao: "Obrigado, Laura!", remocao: { chance: "NENHUMA" } }) };
+    return { output_text: JSON.stringify({ sentimento: "NEGATIVA", resumo: "Reclamou que não pôde fazer festa", resposta: "Thank you, Marco. Our house rules...", remocao: { chance: "ALTA", argumentos: ["O hóspede quis fazer festa, proibida nas regras"], regra: "Retaliação após violar regras", texto_pedido: "Olá, suporte...", passos: ["Extranet → Avaliações → Reportar"] } }) };
+  };
+  const mod = await import("../src/worker.js");
+  { let t; await mod.default.scheduled({}, p.env, { waitUntil: x => { t = x; } }); await t; }
+  const l = (await p.req("/api/orgs/1/tp/avaliacoes", { quem: "admin" })).dados.avaliacoes;
+  const laura = l.find(a => a.autor === "Laura"), marco = l.find(a => a.autor === "Marco");
+  assert.equal(laura.status, "RESPONDIDA"); assert.equal(laura.resposta, "Thank you, Laura!");
+  assert.ok(p.channexChamadas.some(c => c.caminho === "/reviews/rv1/reply" && c.corpo.reply.reply === "Thank you, Laura!"));
+  assert.equal(marco.status, "PRECISA_VOCE", "4 de 10 no Booking: não responde sozinha");
+  assert.equal(marco.estrelas, 2); assert.equal(marco.analise.remocao.chance, "ALTA");
+  assert.ok(!p.channexChamadas.some(c => c.caminho === "/reviews/rv2/reply"));
+  // O anfitrião aprova a resposta sugerida.
+  await p.req(`/api/orgs/1/tp/avaliacoes/${marco.id}/responder`, { metodo: "POST", quem: "admin", corpo: { texto: "Obrigado, Marco." } });
+  assert.ok(p.channexChamadas.some(c => c.caminho === "/reviews/rv2/reply"));
+  // Sem a conexão oficial: cola a avaliação e recebe a análise.
+  const man = (await p.req("/api/orgs/1/tp/avaliacoes", { metodo: "POST", quem: "admin", corpo: { imovel_id: id, canal: "airbnb", nota: 3, autor: "Rui", texto: "Barulho na rua." } })).dados;
+  assert.equal(man.avaliacao.status, "PRECISA_VOCE");
 });

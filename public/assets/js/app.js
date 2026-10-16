@@ -2406,7 +2406,7 @@
   const CANAL_NOME = { airbnb: "Airbnb", booking: "Booking.com", vrbo: "Vrbo", direto: "Reserva direta", outro: "Outro" };
   const CANAL_SIGLA = { airbnb: "A", booking: "B", vrbo: "V", direto: "D", outro: "O" };
   const seloCanal = c => h("span", { class: "canal canal-" + (CANAL_NOME[c] ? c : "outro"), title: CANAL_NOME[c] || c }, h("b", { text: CANAL_SIGLA[c] || "O" }), CANAL_NOME[c] || c);
-  const ABAS_TP = [["visao", "Visão geral"], ["calendario", "Calendário e preços"], ["reservas", "Reservas"], ["mensagens", "Mensagens"], ["imoveis", "Imóveis"], ["airbnb", "Airbnb"], ["booking", "Booking.com"], ["vrbo", "Vrbo"], ["conexoes", "Conexões"], ["limpezas", "Limpezas"], ["estoque", "Estoque"], ["melhorias", "Melhorias"], ["relatorios", "Relatórios"]];
+  const ABAS_TP = [["visao", "Visão geral"], ["calendario", "Calendário e preços"], ["reservas", "Reservas"], ["mensagens", "Mensagens"], ["imoveis", "Imóveis"], ["airbnb", "Airbnb"], ["booking", "Booking.com"], ["vrbo", "Vrbo"], ["conexoes", "Conexões"], ["limpezas", "Limpezas"], ["estoque", "Estoque"], ["organizacao", "Inventário e checklist"], ["melhorias", "Melhorias"], ["avaliacoes", "Avaliações"], ["relatorios", "Relatórios"]];
   const dmy = s => s ? s.slice(8, 10) + "/" + s.slice(5, 7) : "—";
   const somaDiasISO = (s, n) => new Date(Date.parse(s + "T12:00:00Z") + n * 86400000).toISOString().slice(0, 10);
   const SEMANA = ["dom", "seg", "ter", "qua", "qui", "sex", "sáb"];
@@ -2418,7 +2418,7 @@
     el.appendChild(area);
     try {
       if (["airbnb", "booking", "vrbo"].includes(atual)) return await tpPlataforma(area, vivo, atual);
-      const fn = { visao: tpVisao, calendario: tpCalendario, reservas: tpReservas, mensagens: tpMensagens, imoveis: tpImoveis, conexoes: tpConexoes, limpezas: tpLimpezas, estoque: tpEstoque, melhorias: tpMelhorias, relatorios: tpRelatorios }[atual];
+      const fn = { visao: tpVisao, calendario: tpCalendario, reservas: tpReservas, mensagens: tpMensagens, imoveis: tpImoveis, conexoes: tpConexoes, limpezas: tpLimpezas, estoque: tpEstoque, organizacao: tpOrganizacao, melhorias: tpMelhorias, avaliacoes: tpAvaliacoes, relatorios: tpRelatorios }[atual];
       await fn(area, vivo);
     } catch (e) { if (vivo()) falha(area, e); }
   }
@@ -2506,7 +2506,7 @@
       h("section", { class: "grade grade-2" },
         h("div", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Receita por plataforma" }), (v.por_canal || []).length ? barras(v.por_canal.map(c => ({ rotulo: `${c.nome} (${c.reservas})`, valor: c.receita })), x => dinheiro(x, "BRL")) : vazio("Sem reservas", "")),
         h("div", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Próximas chegadas" }), (v.proximas || []).length ? h("div", { class: "lista-tp" }, v.proximas.map(r => h("div", { class: "linha-tp" }, seloCanal(r.canal), h("span", {}, h("strong", { text: r.hospede || "Hóspede" }), h("small", { class: "sub", text: ` · ${r.imovel}` })), h("span", { class: "sub", text: `${dmy(r.inicio)} → ${dmy(r.fim)}` })))) : vazio("Nenhuma reserva futura", ""))),
-      (v.limpezas || []).length ? h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Limpezas dos próximos 7 dias" }), h("div", { class: "lista-tp" }, v.limpezas.map(l => h("div", { class: "linha-tp" }, h("strong", { text: dmy(l.data) }), h("span", { text: l.imovel }), h("span", { class: "sub", text: l.responsavel || "sem responsável" }))))) : null);
+      (v.limpezas || []).length ? h("section", { class: "cartao vidro" }, h("div", { class: "cabeca-grafico" }, h("h3", { style: "margin:0", text: "Limpezas dos próximos 7 dias" }), h("a", { class: "btn btn-secundario btn-pequeno", href: "#/temporada/limpezas" }, "O que levar e links")), h("div", { class: "lista-tp" }, v.limpezas.map(l => h("div", { class: "linha-tp" }, h("strong", { text: dmy(l.data) }), h("span", { text: l.imovel }), h("span", { class: "sub", text: l.responsavel || "sem responsável" }))))) : null);
   }
   // ----- Navegação de aplicativo: o menu muda por área (Temporada tem o seu) e, no celular, uma barra embaixo.
   const IC = {
@@ -2544,7 +2544,7 @@
     const botaoItem = (ic, rotulo, fn, ativo) => h("button", { type: "button", class: "barra-app-item" + (ativo ? " ativo" : ""), onclick: fn }, svgIc(ic), h("span", { text: rotulo }));
     if (modo) {
       const primeiros = visiveis.slice(0, 4), resto = visiveis.slice(4);
-      const curto = { "Visão geral e evolução": "Visão", "Mensagens dos hóspedes": "Mensagens", "Calendário e preços": "Calendário", "Desempenho e cliques": "Desempenho", "Estúdio de criação": "Estúdio", "Calendário de posts": "Calendário", "Visão do chatbot": "Visão", "Métricas de atendimento": "Métricas", "Avaliações 1★ (triagem)": "1 estrela", "Imóveis (todos)": "Imóveis", "Conexões e idiomas": "Conexões", "Palavras-chave e buscas": "Palavras", "Relatório semanal": "Relatório", "Posicionamento no Google": "Posição", "Google orgânico (SEO)": "SEO", "Concorrentes no Maps": "Concorrentes", "Clientes e etiquetas": "Clientes", "Modelos de mensagem": "Modelos", "Saúde do número": "Saúde", "Respostas rápidas": "Rápidas", "Perfil comercial": "Perfil", "Melhores horários": "Horários", "Recomendações": "Avaliações", "Melhorias e manutenção": "Melhorias" };
+      const curto = { "Visão geral e evolução": "Visão", "Mensagens dos hóspedes": "Mensagens", "Calendário e preços": "Calendário", "Desempenho e cliques": "Desempenho", "Estúdio de criação": "Estúdio", "Calendário de posts": "Calendário", "Visão do chatbot": "Visão", "Métricas de atendimento": "Métricas", "Avaliações 1★ (triagem)": "1 estrela", "Imóveis (todos)": "Imóveis", "Conexões e idiomas": "Conexões", "Palavras-chave e buscas": "Palavras", "Relatório semanal": "Relatório", "Posicionamento no Google": "Posição", "Google orgânico (SEO)": "SEO", "Concorrentes no Maps": "Concorrentes", "Clientes e etiquetas": "Clientes", "Modelos de mensagem": "Modelos", "Saúde do número": "Saúde", "Respostas rápidas": "Rápidas", "Perfil comercial": "Perfil", "Melhores horários": "Horários", "Recomendações": "Avaliações", "Melhorias e manutenção": "Melhorias", "Inventário e checklist": "Inventário", "Avaliações dos hóspedes": "Avaliações" };
       b.replaceChildren(...primeiros.map(a => { const t = a.textContent.replace("›", "").trim(); return item(a, curto[t] || t.split(" ")[0]); }), botaoItem(IC.mais, "Mais", () => maisDoModo(modo, resto), resto.some(a => a.classList.contains("ativo"))));
     } else {
       const entra = m => nav.querySelector(`[data-entra="${m}"]`);
@@ -3071,6 +3071,147 @@
         h("figcaption", {}, h("input", { class: "entrada entrada-pequena", value: f2.legenda || "", placeholder: "Legenda (ex.: Sala)", onchange: e => tp(`fotos/${f2.id}/editar`, { metodo: "POST", corpo: { legenda: e.target.value } }) }),
           pode("AGENTE") ? botao("✕", async () => { await tp(`fotos/${f2.id}/excluir`, { metodo: "POST", corpo: {} }); fotosTp(caixa, im); }, "btn-secundario btn-pequeno", { "aria-label": "Remover foto" }) : null)))) : h("p", { class: "sub", text: "Nenhuma foto ainda." }));
   }
+  // ----- Organização do imóvel: cômodos, inventário (o que tem em cada um) e checklist de limpeza
+  const ESTADO_INV = { OK: ["OK", "ok"], QUEBRADO: ["Quebrado", "alerta"], SUMIU: ["Sumiu", "erro"] };
+  async function tpOrganizacao(area, vivo) {
+    const ims = ((await tp("imoveis")).imoveis || []).filter(i => i.ativo);
+    if (!vivo()) return;
+    if (!ims.length) { trocar(area, h("section", { class: "cartao vidro" }, vazio("Nenhum imóvel ainda", "Cadastre um imóvel primeiro."))); return; }
+    const f = estado.tpOrg = estado.tpOrg || {};
+    if (!ims.some(i => i.id === f.imovel)) f.imovel = ims[0].id;
+    const im = ims.find(i => i.id === f.imovel);
+    const d = await tp(`imoveis/${im.id}/organizacao`);
+    if (!vivo()) return;
+    const chips = ims.length > 1 ? h("div", { class: "abas abas-chips" }, ims.map(i => h("button", { type: "button", class: "aba" + (i.id === im.id ? " ativo" : ""), onclick: () => { f.imovel = i.id; navegar(); } }, i.nome))) : null;
+    const pode2 = pode("AGENTE");
+    if (!d.comodos.length) {
+      const PADRAO = { sala: 1, quarto: Math.max(1, Number(im.quartos) || 1), banheiro: Math.max(1, Number(im.banheiros) || 1), cozinha: 1, varanda: 0, servico: 1, entrada: 1 };
+      const qtd = {};
+      const linhas = d.modelos.map(mo => { qtd[mo.tipo] = PADRAO[mo.tipo] ?? 0; const n = h("strong", { class: "qtd-org", text: String(qtd[mo.tipo]) });
+        return h("div", { class: "org-linha" }, h("span", { class: "org-ic", text: mo.icone }), h("span", { class: "org-nome", text: mo.nome }),
+          h("div", { class: "passo-org" }, botao("−", () => { qtd[mo.tipo] = Math.max(0, qtd[mo.tipo] - 1); n.textContent = qtd[mo.tipo]; }, "btn-secundario btn-pequeno"), n, botao("+", () => { qtd[mo.tipo] = Math.min(10, qtd[mo.tipo] + 1); n.textContent = qtd[mo.tipo]; }, "btn-secundario btn-pequeno"))); });
+      trocar(area, chips, h("section", { class: "cartao vidro destaque-ia" }, h("h3", { style: "margin-top:0", text: `Montar ${im.nome} em 1 minuto` }),
+        h("p", { class: "sub", text: "Diga quantos cômodos o imóvel tem. A DENIA cria cada um com o inventário (o que costuma ter) e o checklist de limpeza (descarga, debaixo da cama, dentro dos armários…). Depois é só ajustar." }),
+        h("div", { class: "org-lista" }, linhas),
+        pode2 ? h("div", { class: "acoes" }, botao("Criar cômodos com os modelos", async () => { try { const r = await tp(`imoveis/${im.id}/organizacao/modelo`, { metodo: "POST", corpo: { quantidades: qtd } }); aviso(`${r.comodos} cômodo(s) criados.`, "ok"); navegar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario")) : null));
+      return;
+    }
+    const salvarItem = (it, corpo) => tp(`inventario/${it.id}`, { metodo: "POST", corpo }).catch(e => aviso(e.message, "erro"));
+    const cartaoComodo = c => {
+      const novoItem = h("input", { class: "entrada entrada-pequena", placeholder: "+ item (ex.: Ventilador)", maxlength: "80" });
+      const novaTarefa = h("input", { class: "entrada entrada-pequena", placeholder: "+ tarefa (ex.: Limpar o ventilador)", maxlength: "120" });
+      const problemas = c.itens.filter(i => i.estado !== "OK").length;
+      return h("details", { class: "cartao vidro comodo-tp", open: problemas > 0 || d.comodos.length <= 3 },
+        h("summary", {}, h("span", { class: "org-ic", text: c.icone }), h("strong", { text: c.nome }), h("span", { class: "sub", text: ` · ${c.itens.length} itens · ${c.tarefas.length} tarefas` }), problemas ? selo(`${problemas} com problema`, "erro") : null),
+        h("div", { class: "grade grade-2" },
+          h("div", {}, h("h4", { text: "📦 Inventário" }),
+            c.itens.length ? h("div", { class: "lista-inv" }, c.itens.map(it => {
+              const q = h("input", { class: "entrada entrada-pequena", type: "number", min: "0", value: it.quantidade, style: "width:70px", "aria-label": "Quantidade", onchange: e => salvarItem(it, { quantidade: e.target.value }) });
+              const est = h("select", { class: "entrada entrada-pequena", "aria-label": "Estado", onchange: e => { salvarItem(it, { estado: e.target.value }).then(() => navegar()); } }, Object.entries(ESTADO_INV).map(([v, [n]]) => h("option", { value: v, selected: it.estado === v, text: n })));
+              const val = h("input", { class: "entrada entrada-pequena", type: "number", min: "0", step: "0.01", value: it.valor ?? "", placeholder: "R$", style: "width:90px", "aria-label": "Valor do item em reais", onchange: e => salvarItem(it, { valor: e.target.value }) });
+              return h("div", { class: "inv-linha" + (it.estado !== "OK" ? " inv-problema" : "") }, h("span", { class: "org-ic", text: it.icone || "📦" }), h("span", { class: "inv-nome", text: it.item }), q, est, val,
+                pode2 ? botao("✕", async () => { await tp(`inventario/${it.id}/excluir`, { metodo: "POST", corpo: {} }); navegar(); }, "btn-secundario btn-pequeno", { "aria-label": "Remover " + it.item }) : null);
+            })) : h("p", { class: "sub", text: "Nenhum item." }),
+            pode2 ? h("div", { class: "linha-form" }, novoItem, botao("Adicionar", async () => { if (!novoItem.value.trim()) return; await tp("inventario", { metodo: "POST", corpo: { comodo_id: c.id, item: novoItem.value, quantidade: 1 } }); navegar(); }, "btn-secundario btn-pequeno")) : null),
+          h("div", {}, h("h4", { text: "✅ Checklist de limpeza" }),
+            c.tarefas.length ? h("ul", { class: "lista-check" }, c.tarefas.map(t => h("li", {}, h("span", { class: "org-ic", text: t.icone || "✔️" }), h("span", { text: t.tarefa }), pode2 ? botao("✕", async () => { await tp(`checklist/${t.id}/excluir`, { metodo: "POST", corpo: {} }); navegar(); }, "btn-secundario btn-pequeno", { "aria-label": "Remover tarefa" }) : null))) : h("p", { class: "sub", text: "Nenhuma tarefa." }),
+            pode2 ? h("div", { class: "linha-form" }, novaTarefa, botao("Adicionar", async () => { if (!novaTarefa.value.trim()) return; await tp("checklist", { metodo: "POST", corpo: { imovel_id: im.id, comodo_id: c.id, tarefa: novaTarefa.value } }); navegar(); }, "btn-secundario btn-pequeno")) : null)),
+        pode2 ? h("div", { class: "acoes" }, botao("Renomear", async () => { const n = h("input", { class: "entrada", value: c.nome }); if (await modal({ titulo: "Nome do cômodo", conteudo: [n], confirmar: "Salvar" })) { await tp(`comodos/${c.id}`, { metodo: "POST", corpo: { nome: n.value } }); navegar(); } }, "btn-secundario btn-pequeno"),
+          botao("Remover cômodo", async () => { if (await modal({ titulo: `Remover ${c.nome}?`, conteudo: "O inventário e o checklist deste cômodo saem juntos.", confirmar: "Remover", perigo: true })) { await tp(`comodos/${c.id}/excluir`, { metodo: "POST", corpo: {} }); navegar(); } }, "btn-secundario btn-pequeno")) : null);
+    };
+    const tipoNovo = h("select", { class: "entrada entrada-pequena" }, d.modelos.map(mo => h("option", { value: mo.tipo, text: `${mo.icone} ${mo.nome}` })), h("option", { value: "outro", text: "🏠 Outro (vazio)" }));
+    const totalItens = d.comodos.reduce((t, c) => t + c.itens.length, 0), valor = d.comodos.reduce((t, c) => t + c.itens.reduce((s2, i) => s2 + Number(i.valor || 0) * Number(i.quantidade || 1), 0), 0);
+    const probl = d.comodos.flatMap(c => c.itens.filter(i => i.estado !== "OK").map(i => ({ ...i, comodo: c.nome })));
+    trocar(area, chips,
+      h("section", { class: "grade grade-3" }, metrica("Cômodos", numero(d.comodos.length), im.nome), metrica("Itens no inventário", numero(totalItens), valor ? `valor ${dinheiro(valor, im.moeda || "BRL")}` : "preencha os valores para o controle"), metrica("Quebrados ou sumidos", numero(probl.length), probl.slice(0, 3).map(p => p.item).join(", ") || "tudo em ordem")),
+      h("section", { class: "cartao vidro filtros-desempenho" }, h("div", { class: "cabeca-grafico" }, h("p", { class: "sub", style: "margin:0", text: "Quem limpa confere cada cômodo pelo celular: o que está OK, o que quebrou e o que sumiu. Quando algo some ou quebra, aparece aqui e na limpeza seguinte." }),
+        pode2 ? h("div", { class: "acoes" }, tipoNovo, botao("+ Cômodo", async () => { await tp(`imoveis/${im.id}/comodos`, { metodo: "POST", corpo: { tipo: tipoNovo.value } }); navegar(); }, "btn-primario btn-pequeno"),
+          botao("Planilha do inventário", () => baixarCsv(`inventario-${im.nome}.csv`, [["Cômodo", "Item", "Quantidade", "Estado", "Valor"], ...d.comodos.flatMap(c => c.itens.map(i => [c.nome, i.item, i.quantidade, ESTADO_INV[i.estado][0], i.valor ?? ""]))]), "btn-secundario btn-pequeno")) : null)),
+      d.comodos.map(cartaoComodo),
+      h("section", { class: "cartao vidro" }, h("h4", { style: "margin-top:0", text: "🏁 Antes de sair (vale para o imóvel todo)" }),
+        d.gerais.length ? h("ul", { class: "lista-check" }, d.gerais.map(t => h("li", {}, h("span", { class: "org-ic", text: t.icone || "✔️" }), h("span", { text: t.tarefa }), pode2 ? botao("✕", async () => { await tp(`checklist/${t.id}/excluir`, { metodo: "POST", corpo: {} }); navegar(); }, "btn-secundario btn-pequeno") : null))) : h("p", { class: "sub", text: "Ex.: fechar janelas, desligar o ar, deixar a chave no cofre." }),
+        pode2 ? (() => { const t = h("input", { class: "entrada entrada-pequena", placeholder: "+ tarefa final", maxlength: "120" }); return h("div", { class: "linha-form" }, t, botao("Adicionar", async () => { if (!t.value.trim()) return; await tp("checklist", { metodo: "POST", corpo: { imovel_id: im.id, tarefa: t.value, icone: "🏁" } }); navegar(); }, "btn-secundario btn-pequeno")); })() : null));
+  }
+
+  // ----- Limpezas: agenda com o que levar, remarcar, quem limpa (equipe), registro completo de cada uma
+  async function abrirLimpezaTp(id) {
+    const d = await tp(`limpezas/${id}/detalhe`);
+    const l = d.limpeza, r = l.resumo || {}, b = d.briefing || {};
+    const dur = l.inicio_ms && l.fim_ms ? Math.round((l.fim_ms - l.inicio_ms) / 60000) : null;
+    const src = mid => `/api/orgs/${estado.org.id}/tp/fotos/${mid}`;
+    const novaData = h("input", { class: "entrada", type: "date", value: l.data });
+    gaveta(`Limpeza · ${l.imovel}`, [
+      h("p", {}, h("strong", { text: dataCompleta(l.data) }), l.data_saida && l.data_saida !== l.data ? h("span", { class: "sub", text: ` (saída do hóspede: ${dataCompleta(l.data_saida)})` }) : null),
+      l.fim_ms ? h("section", { class: "grade grade-3" }, metrica("Quem limpou", l.responsavel || "—", ""), metrica("Quando", new Date(l.fim_ms).toLocaleString(LOCALE), dur != null ? `levou ${dur} min` : ""), metrica("Checklist", r.checklist_total ? `${r.checklist_feitas} de ${r.checklist_total}` : "—", (r.nao_feitas || []).length ? "faltou: " + r.nao_feitas.slice(0, 3).join(", ") : "tudo feito"))
+        : h("div", {}, h("p", { class: "nota", text: textoBriefingTp(b) || "Nada especial para esta limpeza." }),
+          pode("AGENTE") ? h("div", { class: "linha-form" }, campo("Remarcar para", novaData), botao("Salvar data", async () => { try { await tp(`limpezas/${l.id}/agendar`, { metodo: "POST", corpo: { data: novaData.value } }); aviso("Limpeza remarcada. O aviso sai no novo dia.", "ok"); navegar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno")) : null,
+          h("div", { class: "acoes" }, botao("Copiar link para quem limpa", () => copiar(d.link), "btn-primario btn-pequeno"), h("a", { class: "btn btn-secundario btn-pequeno", href: "https://wa.me/?text=" + encodeURIComponent(`Olá! Limpeza de ${l.imovel} em ${dataCompleta(l.data)}. Abra este link no celular (não precisa de senha): ${d.link}`), target: "_blank", rel: "noopener" }, "Enviar pelo WhatsApp"))),
+      d.usados.length ? h("section", { class: "cartao vidro" }, h("h4", { style: "margin-top:0", text: "🧴 Estoque nesta limpeza" }), h("ul", { class: "lista-simples" }, d.usados.map(u => h("li", { text: `${u.item}: ${u.antes} → ${u.depois} ${u.unidade || ""}${u.usou ? ` (usou ${u.usou})` : u.repos ? ` (repôs ${u.repos})` : ""}` })))) : null,
+      (r.problemas || []).length ? h("p", { class: "nota nota-alerta", text: "💔 " + r.problemas.join("; ") }) : null,
+      (r.faltou || []).length ? h("p", { class: "nota nota-alerta", text: "Faltou: " + r.faltou.join(", ") }) : null,
+      (() => { const t = String(l.obs || "").split("\n").filter(x => x && !(r.problemas || []).includes(x)).join("\n"); return t ? h("p", { style: "white-space:pre-wrap", text: "📝 " + t }) : null; })(),
+      d.midias.length ? h("div", { class: "fotos-tp" }, d.midias.map(mm => /^audio\//.test(mm.mime) ? h("div", { class: "foto-tp", style: "padding:8px" }, h("audio", { controls: true, src: src(mm.id), style: "width:100%" }), mm.transcricao ? h("p", { class: "sub", text: "“" + mm.transcricao + "”" }) : null) : h("figure", { class: "foto-tp" }, h("img", { src: src(mm.id), alt: mm.legenda || "Foto da limpeza", loading: "lazy" })))) : null]);
+  }
+  const textoBriefingTp = b => [
+    b.proximo ? (b.proximo.mesmo_dia ? `⚠️ Hóspede novo chega no mesmo dia.` : `Próximo hóspede: ${dataCompleta(b.proximo.inicio)}.`) : "",
+    (b.levar || []).length ? "Levar: " + b.levar.map(x => `${x.item} (${x.levar} ${x.unidade})`).join(", ") + "." : "",
+    (b.faltou_ultima || []).length ? "Faltou da última vez: " + b.faltou_ultima.join(", ") + "." : "",
+    (b.quebrados || []).length ? "Quebrado/sumido: " + b.quebrados.map(x => `${x.item} (${x.comodo})`).join(", ") + "." : "",
+    (b.pendencias || []).length ? "Pendências: " + b.pendencias.map(x => x.texto).join("; ") + "." : ""].filter(Boolean).join(" ");
+  async function equipeLimpezaTp() {
+    const d = await tp("equipe");
+    const lista = h("div", { class: "grade" });
+    const linha = (x = { nome: "", telefone: "" }) => { const n = h("input", { class: "entrada", value: x.nome, placeholder: "Nome", "data-c": "nome" }), t = h("input", { class: "entrada", value: x.telefone, placeholder: "WhatsApp (opcional)", inputmode: "tel", "data-c": "telefone" }); const l2 = h("div", { class: "linha-form pessoa-limpeza" }, n, t, botao("✕", () => l2.remove(), "btn-secundario btn-pequeno")); return l2; };
+    (d.equipe.length ? d.equipe : [{}]).forEach(x => lista.append(linha(x)));
+    const fechar = gaveta("Equipe de limpeza", [h("p", { class: "sub", text: "Os nomes aparecem como botões grandes na tela de quem limpa: a pessoa só toca no próprio nome." }), lista, botao("+ Pessoa", () => lista.append(linha()), "btn-secundario btn-pequeno"),
+      h("div", { class: "acoes" }, botao("Salvar", async () => { const equipe = [...lista.querySelectorAll(".pessoa-limpeza")].map(x => ({ nome: x.querySelector('[data-c="nome"]').value, telefone: x.querySelector('[data-c="telefone"]').value })); try { await tp("equipe", { metodo: "POST", corpo: { equipe } }); aviso("Equipe salva.", "ok"); fechar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario"))]);
+  }
+
+  // ----- Avaliações dos hóspedes: 5 estrelas respondidas sozinhas; as outras com análise e argumentos de remoção
+  async function tpAvaliacoes(area, vivo) {
+    const [d, li] = await Promise.all([tp("avaliacoes"), tp("imoveis")]);
+    if (!vivo()) return;
+    const ims = (li.imoveis || []).filter(i => i.ativo);
+    const ST = { PRECISA_VOCE: ["Precisa de você", "erro"], PENDENTE: ["Analisando", "info"], RASCUNHO: ["Resposta pronta", "alerta"], RESPONDIDA: ["Respondida", "ok"] };
+    const auto = h("input", { type: "checkbox", checked: d.auto, disabled: !pode("ADMIN"), onchange: async e => { try { await tp("avaliacoes/config", { metodo: "POST", corpo: { auto: e.target.checked } }); aviso(e.target.checked ? "A DENIA responde sozinha as de 5 estrelas." : "Toda resposta espera você.", "ok"); } catch (er) { aviso(er.message, "erro"); } } });
+    const colar = () => {
+      const im = h("select", { class: "entrada" }, h("option", { value: "", text: "Qual imóvel?" }), ims.map(i => h("option", { value: i.id, text: i.nome })));
+      const canal = h("select", { class: "entrada" }, ["airbnb", "booking", "vrbo"].map(c => h("option", { value: c, text: CANAL_NOME[c] })));
+      const nota = h("input", { class: "entrada", type: "number", min: "1", max: "10", step: "0.5", placeholder: "Ex.: 3" }), autor = h("input", { class: "entrada", placeholder: "Nome do hóspede" });
+      const entrada = h("input", { class: "entrada", type: "date" }), texto = h("textarea", { class: "entrada", style: "min-height:140px", placeholder: "Cole aqui o texto da avaliação" });
+      const fechar = gaveta("Analisar uma avaliação", [h("p", { class: "sub", text: "Cole a avaliação (de qualquer plataforma). A DENIA estuda com a reserva, as mensagens, a limpeza e as regras da casa, escreve a resposta e diz se dá para pedir a remoção." }),
+        h("div", { class: "grade grade-2" }, campo("Imóvel", im), campo("Plataforma", canal)), h("div", { class: "grade grade-3" }, campo("Nota", nota, "Booking: de 1 a 10"), campo("Hóspede", autor), campo("Entrada da reserva", entrada, "Para achar a reserva")), campo("Avaliação", texto),
+        h("div", { class: "acoes" }, botao("Analisar", async (_e, b) => { b.textContent = "Analisando…"; try { await tp("avaliacoes", { metodo: "POST", corpo: { imovel_id: Number(im.value) || undefined, canal: canal.value, nota: nota.value, autor: autor.value, inicio: entrada.value, texto: texto.value } }); fechar(); navegar(); } catch (e) { aviso(e.message, "erro"); } finally { b.textContent = "Analisar"; } }, "btn-primario"))]);
+    };
+    const cartao = a => {
+      const x = a.analise || {}, rm = x.remocao || {};
+      const resp = h("textarea", { class: "entrada", style: "min-height:110px" }, a.resposta || a.resposta_sugerida || "");
+      return h("article", { class: "cartao vidro aval-tp" + (a.status === "PRECISA_VOCE" ? " cor-vermelho" : a.status === "RESPONDIDA" ? " cor-verde" : "") },
+        h("div", { class: "caso-linha-topo" }, seloCanal(a.canal), h("strong", { text: a.autor || "Hóspede" }), h("span", { class: "estrelas", text: a.estrelas != null ? "★".repeat(Math.round(a.estrelas)) + "☆".repeat(5 - Math.round(a.estrelas)) + ` ${String(a.estrelas).replace(".", ",")}` : "" }), a.imovel ? h("span", { class: "sub", text: a.imovel }) : null, selo(...(ST[a.status] || [a.status, "info"]))),
+        h("p", { style: "white-space:pre-wrap;margin:8px 0", text: a.texto }),
+        x.traducao && x.traducao !== a.texto ? h("details", { class: "detalhes" }, h("summary", { text: "Tradução" }), h("p", { class: "sub", text: x.traducao })) : null,
+        x.resumo ? h("p", { class: "sub", text: "Resumo: " + x.resumo }) : null,
+        a.status !== "PENDENTE" && (rm.chance || (rm.argumentos || []).length) && a.estrelas < 5 ? h("section", { class: "remocao-tp remocao-" + String(rm.chance || "NENHUMA").toLowerCase() },
+          h("h4", { style: "margin:0" }, "Dá para pedir a remoção? ", selo({ ALTA: "Chance alta", MEDIA: "Chance média", BAIXA: "Chance baixa", NENHUMA: "Sem argumento" }[rm.chance] || "—", { ALTA: "ok", MEDIA: "alerta", BAIXA: "info", NENHUMA: "info" }[rm.chance] || "info")),
+          rm.regra ? h("p", { class: "sub", text: "Regra: " + rm.regra }) : null,
+          (rm.argumentos || []).length ? h("ul", { class: "lista-simples" }, rm.argumentos.map(t => h("li", { text: "• " + t }))) : null,
+          rm.texto_pedido ? h("div", {}, h("p", { class: "sub", text: "Mensagem pronta para o suporte da plataforma:" }), h("p", { class: "texto-pedido", text: rm.texto_pedido }), botao("Copiar pedido de remoção", () => copiar(rm.texto_pedido), "btn-secundario btn-pequeno")) : null,
+          (rm.passos || []).length ? h("ol", { class: "lista-simples" }, rm.passos.map(t => h("li", { text: t }))) : null) : null,
+        (x.pontos_de_melhoria || []).length ? h("details", { class: "detalhes" }, h("summary", { text: "O que melhorar" }), h("ul", { class: "lista-simples" }, x.pontos_de_melhoria.map(t => h("li", { text: "• " + t })))) : null,
+        a.status !== "PENDENTE" ? h("div", {}, h("p", { class: "sub", text: a.status === "RESPONDIDA" ? "Resposta publicada:" : "Resposta sugerida (no idioma do hóspede):" }), resp,
+          x.resposta_traducao && a.status !== "RESPONDIDA" ? h("p", { class: "sub", text: "No seu idioma: " + x.resposta_traducao }) : null,
+          a.status !== "RESPONDIDA" && pode("AGENTE") ? h("div", { class: "acoes" }, botao(d.channex && /^cx:/.test(a.externo_id || "") ? "Publicar resposta" : "Copiar resposta", async () => {
+            if (!(d.channex && /^cx:/.test(a.externo_id || ""))) { await copiar(resp.value); }
+            try { const r = await tp(`avaliacoes/${a.id}/responder`, { metodo: "POST", corpo: { texto: resp.value } }); aviso(r.publicada ? "Resposta publicada na plataforma." : "Copiada. Cole na plataforma — marquei como respondida.", "ok"); navegar(); } catch (e) { aviso(e.message, "erro"); }
+          }, "btn-primario btn-pequeno"), botao("Analisar de novo", async () => { await tp(`avaliacoes/${a.id}/analisar`, { metodo: "POST", corpo: {} }); navegar(); }, "btn-secundario btn-pequeno")) : null) : h("p", { class: "sub", text: "A DENIA está estudando esta avaliação…" }));
+    };
+    const precisa = d.avaliacoes.filter(a => a.status === "PRECISA_VOCE").length;
+    trocar(area,
+      h("section", { class: "cartao vidro filtros-desempenho" }, h("div", { class: "cabeca-grafico" }, h("label", { class: "guia-cat" }, auto, h("strong", { text: "Responder sozinha as avaliações de 5 estrelas" })), pode("AGENTE") ? botao("Colar avaliação para analisar", colar, "btn-primario btn-pequeno") : null),
+        h("p", { class: "sub", style: "margin:0", text: d.channex ? "Pela conexão oficial (Channex), as avaliações chegam sozinhas e a resposta é publicada direto. Abaixo de 5 estrelas a DENIA não responde: estuda o caso, diz se há argumento para pedir a remoção e deixa tudo pronto para você." : "Sem a conexão oficial, cole a avaliação aqui: a DENIA analisa e escreve a resposta para você colar na plataforma." })),
+      precisa ? h("p", { class: "nota nota-alerta", text: `${precisa} avaliação(ões) precisam de você.` }) : null,
+      d.avaliacoes.length ? h("div", { class: "grade" }, d.avaliacoes.map(cartao)) : h("section", { class: "cartao vidro" }, vazio("Nenhuma avaliação ainda", "Quando chegar, aparece aqui com a análise da DENIA.")));
+  }
   async function tpConexoes(area, vivo) {
     const [d, cfg] = await Promise.all([tp("imoveis"), tp("config")]);
     if (!vivo()) return;
@@ -3103,16 +3244,26 @@
         pode("ADMIN") ? botao("Salvar", async () => { await tp("config", { metodo: "POST", corpo: { idioma: idioma.value, idioma_resposta: idiomaResp.value } }); aviso("Salvo.", "ok"); }, "btn-primario btn-pequeno") : null));
   }
   async function tpLimpezas(area, vivo) {
-    const d = await tp("limpezas");
+    const [d, ag] = await Promise.all([tp("limpezas"), tp("limpezas/agenda").catch(() => ({ limpezas: [] }))]);
     if (!vivo()) return;
-    trocar(area, h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Limpezas (criadas sozinhas no dia de cada saída)" }),
-      d.limpezas.length ? h("div", { class: "tabela-caixa" }, h("table", {}, h("thead", {}, h("tr", {}, ["Data", "Imóvel", "Saída de", "Responsável", "Situação", "Estoque"].map(t => h("th", { text: t })))),
-        h("tbody", {}, d.limpezas.map(l => { const resp = h("input", { class: "entrada entrada-pequena", value: l.responsavel || "", placeholder: "Quem limpa", onchange: e => tp("limpezas/" + l.id, { metodo: "POST", corpo: { responsavel: e.target.value } }) });
-          return h("tr", {}, h("td", {}, h("strong", { text: dataCompleta(l.data) })), h("td", { text: l.imovel }), h("td", {}, l.canal ? seloCanal(l.canal) : null, " ", l.hospede || ""), h("td", {}, resp),
-            h("td", {}, botao(l.status === "FEITA" ? "✓ Feita" : "Marcar como feita", async () => { await tp("limpezas/" + l.id, { metodo: "POST", corpo: { status: l.status === "FEITA" ? "PENDENTE" : "FEITA" } }); navegar(); }, l.status === "FEITA" ? "btn-secundario btn-pequeno" : "btn-primario btn-pequeno")),
-            h("td", {}, l.estoque_ok_ms ? selo("Conferido", "ok") : h("div", { class: "acoes" }, l.data <= isoLocal(new Date()) ? selo("Falta conferir", "alerta") : null,
-              botao("Link para quem limpa", async () => { try { const x = await tp(`limpezas/${l.id}/link`); await copiar(x.link); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno")))); })))) : vazio("Nenhuma limpeza nos próximos dias", "")),
-      h("p", { class: "sub", text: "Depois de cada check-out, a DENIA manda por e-mail o link da conferência do estoque. Quem limpa abre no celular (sem login), conta o que sobrou, marca a limpeza como feita e pode relatar problemas — que entram em Melhorias." }));
+    const hoje = isoLocal(new Date());
+    const linha = l => {
+      const r = (() => { try { return JSON.parse(l.resumo || "null"); } catch { return null; } })();
+      return h("div", { class: "caso-linha vidro" + (l.fim_ms ? " cor-verde" : l.data < hoje ? " cor-vermelho" : "") },
+        h("div", { class: "caso-linha-topo" }, h("strong", { text: dataCompleta(l.data) }), h("span", { text: l.imovel }), l.canal ? seloCanal(l.canal) : null, l.hospede ? h("span", { class: "sub", text: "saída de " + l.hospede }) : null,
+          l.fim_ms ? selo(`Feita por ${l.responsavel || "—"}`, "ok") : l.inicio_ms ? selo(`Em andamento (${l.responsavel || "—"})`, "info") : l.data < hoje ? selo("Atrasada", "erro") : selo(l.responsavel ? "Com " + l.responsavel : "Sem responsável", "alerta"),
+          r && r.checklist_total ? h("span", { class: "sub", text: `checklist ${r.checklist_feitas}/${r.checklist_total}` }) : null, r && (r.problemas || []).length ? selo(`${r.problemas.length} problema(s)`, "erro") : null),
+        h("div", { class: "acoes" }, botao(l.fim_ms ? "Ver registro" : "Abrir (link, remarcar, o que levar)", () => abrirLimpezaTp(l.id), "btn-secundario btn-pequeno")));
+    };
+    const futuras = d.limpezas.filter(l => !l.fim_ms), feitas = d.limpezas.filter(l => l.fim_ms).reverse();
+    trocar(area,
+      h("section", { class: "cartao vidro filtros-desempenho" }, h("div", { class: "cabeca-grafico" }, h("p", { class: "sub", style: "margin:0", text: "Cada saída de hóspede cria uma limpeza (dá para remarcar para outro dia). No dia, a DENIA avisa o que levar e manda o link: quem limpa toca no próprio nome, segue cômodo por cômodo e grava um áudio se algo estiver errado." }),
+        pode("ADMIN") ? botao("Equipe de limpeza", () => equipeLimpezaTp(), "btn-secundario btn-pequeno") : null)),
+      ag.limpezas.length ? h("section", { class: "cartao vidro destaque-ia" }, h("h3", { style: "margin-top:0", text: "Hoje e próximos dias: o que levar" }),
+        h("div", { class: "lista-casos" }, ag.limpezas.map(x => h("div", { class: "caso-linha vidro" }, h("div", { class: "caso-linha-topo" }, h("strong", { text: `${dataCompleta(x.data)} · ${x.imovel}` }), x.briefing.proximo && x.briefing.proximo.mesmo_dia ? selo("Hóspede chega no mesmo dia", "erro") : null),
+          h("p", { class: "sub", style: "margin:4px 0", text: textoBriefingTp(x.briefing) || "Nada especial: estoque e inventário em dia." }), h("div", { class: "acoes" }, botao("Abrir", () => abrirLimpezaTp(x.id), "btn-secundario btn-pequeno")))))) : null,
+      h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Próximas limpezas" }), futuras.length ? h("div", { class: "lista-casos" }, futuras.map(linha)) : vazio("Nenhuma limpeza marcada", "")),
+      feitas.length ? h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Feitas (registro)" }), h("div", { class: "lista-casos" }, feitas.map(linha))) : null);
   }
   async function tpRelatorios(area, vivo) {
     const f = estado.tpRel = estado.tpRel || { mes: isoLocal(new Date()).slice(0, 7) };
@@ -3396,7 +3547,7 @@
   function gaveta(titulo, conteudo) {
     const g = $("gaveta");
     $("gaveta-titulo").textContent = titulo;
-    $("gaveta-corpo").replaceChildren(...[].concat(conteudo));
+    $("gaveta-corpo").replaceChildren(...[].concat(conteudo).flat(Infinity).filter(x => x != null && x !== false && x !== ""));
     g.classList.remove("oculto");
     const fim = () => { g.classList.add("oculto"); document.removeEventListener("keydown", tecla); fecharGaveta = null; };
     const tecla = e => { if (e.key === "Escape") fim(); };
@@ -4383,7 +4534,7 @@
     const conectada = Boolean(contaGoogleDa(g, marcaId));
     // Como responder: uma pessoa aprova, ou a DENIA responde sozinha (as boas, ou todas menos as graves).
     const modoAuto = h("select", { class: "entrada", disabled: !pode("ADMIN") },
-      [["DESLIGADO", "Uma pessoa aprova cada resposta"], ["BOAS", "Responder sozinha as de 4 e 5 estrelas"], ["TODAS", "Responder sozinha todas, menos as graves"]].map(([v, n]) => h("option", { value: v, text: n, selected: (cfg.avaliacoes_auto || "DESLIGADO") === v })));
+      [["DESLIGADO", "Uma pessoa aprova cada resposta"], ["CINCO", "Responder sozinha só as de 5 estrelas (as outras a DENIA estuda e te chama)"], ["BOAS", "Responder sozinha as de 4 e 5 estrelas"], ["TODAS", "Responder sozinha todas, menos as graves"]].map(([v, n]) => h("option", { value: v, text: n, selected: (cfg.avaliacoes_auto || "DESLIGADO") === v })));
     modoAuto.addEventListener("change", async () => {
       try { await mk("config/avaliacoes", { metodo: "POST", corpo: { modo: modoAuto.value } }); aviso(modoAuto.value === "DESLIGADO" ? "Pronto: cada resposta espera uma pessoa aprovar." : "Pronto: a DENIA responde sozinha no Google em até 15 minutos. As graves e as suspeitas continuam esperando você.", "ok"); }
       catch (e) { aviso(e.message, "erro"); }
