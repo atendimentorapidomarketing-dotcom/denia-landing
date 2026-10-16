@@ -1199,8 +1199,9 @@ async function rotear(request, env, ctx) {
 function comSeguranca(resposta, request) {
   const h = new Headers(resposta.headers);
   h.set("content-security-policy", [
-    "default-src 'self'", "script-src 'self'", "style-src 'self' https://fonts.googleapis.com",
-    "font-src 'self' https://fonts.gstatic.com", "img-src 'self' data: blob: https://*.cdninstagram.com https://*.fbcdn.net", "media-src 'self' blob:", "connect-src 'self' https://api.openai.com",
+    "default-src 'self'", "script-src 'self' https://connect.facebook.net", "style-src 'self' https://fonts.googleapis.com",
+    "font-src 'self' https://fonts.gstatic.com", "img-src 'self' data: blob: https: ", "media-src 'self' blob:", "connect-src 'self' https://api.openai.com https://*.facebook.com https://graph.facebook.com",
+    "frame-src https://*.facebook.com https://*.fbcdn.net",
     "manifest-src 'self'", "frame-ancestors 'none'", "base-uri 'none'", "form-action 'self'", "object-src 'none'"
   ].join("; "));
   h.set("strict-transport-security", "max-age=31536000; includeSubDomains");
@@ -1208,7 +1209,7 @@ function comSeguranca(resposta, request) {
   h.set("x-frame-options", "DENY");
   h.set("referrer-policy", "strict-origin-when-cross-origin");
   h.set("permissions-policy", "camera=(), microphone=(self), geolocation=(), payment=()");
-  h.set("cross-origin-opener-policy", "same-origin");
+  h.set("cross-origin-opener-policy", "same-origin-allow-popups"); // a janela do Facebook (cadastro do WhatsApp) precisa responder à página
   const caminho = new URL(request.url).pathname;
   // Páginas, scripts, estilos e dicionários: o navegador sempre confere se há versão nova (resposta rápida 304 quando não há).
   if (caminho.startsWith("/assets/i18n/") || caminho.startsWith("/assets/js/") || caminho.startsWith("/assets/css/") || caminho.endsWith(".html") || !caminho.split("/").pop().includes(".")) h.set("cache-control", "no-cache");
