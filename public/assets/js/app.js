@@ -2463,7 +2463,7 @@
     };
 
     let comecar = null;
-    const roteiro = async () => {
+    const roteiro = async (abrirArquivo = false) => {
       let atual = "";
       try { atual = (await zap("roteiro")).roteiro; } catch (e) { aviso(e.message, "erro"); }
       const caixa = h("textarea", { class: "entrada fx-roteiro", spellcheck: "false", "aria-label": "Roteiro do fluxo", style: "min-height:55vh" }); caixa.value = atual;
@@ -2511,7 +2511,7 @@
       const fechar = gaveta("Roteiro do fluxo — " + nomeEmpresa, [
         h("p", { class: "fx-empresa" }, "🏢 O fluxo será gravado na empresa ", h("strong", { text: nomeEmpresa }), ". Para outra empresa, feche e troque no quadro EMPRESA (canto superior esquerdo)."),
         podeEditar ? h("div", { class: "fx-botpress" }, h("div", {}, h("strong", { text: "Vem do Botpress?" }), h("p", { class: "fx-nota", text: "No Botpress: Bot → Exportar (arquivo .bpz). Escolha o arquivo aqui e a DENIA monta o mesmo fluxo." })),
-          botao("📥 Importar do Botpress", () => arquivoBp.click(), "btn-primario btn-pequeno"), arquivoBp) : null,
+          botao("📥 Escolher o arquivo .bpz", () => arquivoBp.click(), "btn-primario btn-pequeno"), arquivoBp) : null,
         h("p", { class: "sub", text: "O fluxo inteiro em texto, como num documento. Copie para guardar, ou cole um roteiro para montar todos os botões de uma vez." }),
         h("details", { class: "fx-ajuda" }, h("summary", { text: "Como escrever" }), h("pre", { text:
 `BOAS-VINDAS: primeira mensagem (vai sozinha)
@@ -2538,6 +2538,7 @@ Botão só com texto = resposta.` })),
           if (!(await modal({ titulo: `Gravar o fluxo em “${nomeEmpresa}”?`, conteudo: `O fluxo vai para a empresa ${nomeEmpresa}${substituir.checked ? " e os botões que ela tem agora serão trocados" : ""}${tgBotpress && ligarTg.checked ? ". Os avisos de NOVO CLIENTE desta empresa passam a ir para o grupo do Telegram do Botpress" : ""}. É esta a empresa certa?`, confirmar: "Sim, gravar aqui" }))) return;
           return enviar(false);
         }, "btn-primario"), botao("Copiar", () => copiar(caixa.value), "btn-secundario")) : botao("Copiar", () => copiar(caixa.value), "btn-secundario")]);
+      if (abrirArquivo && podeEditar) arquivoBp.click();
     };
     const verPrevia = h("button", { type: "button", class: "btn btn-secundario btn-pequeno fx-ver-previa", onclick: () => palco.classList.toggle("mostrar-previa") }, "👁 Prévia");
     trocar(area,
@@ -2546,12 +2547,12 @@ Botão só com texto = resposta.` })),
         h("div", { class: "acoes" },
           botao("🛍️ Modelo Shopping", async () => { try { await zap("modelo", { metodo: "POST", corpo: { tipo: "shopping" } }); await recarregar(); aviso("Modelo criado. Ajuste do seu jeito.", "ok"); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno"),
           botao("🔧 Modelo Serviços", async () => { try { await zap("modelo", { metodo: "POST", corpo: { tipo: "servicos" } }); await recarregar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno"),
-          botao("📥 Importar do Botpress", roteiro, "btn-primario btn-pequeno"),
-          botao("📋 Colar roteiro", roteiro, "btn-secundario btn-pequeno"),
+          botao("📥 Importar do Botpress", () => roteiro(true), "btn-primario btn-pequeno"),
+          botao("📋 Colar roteiro", () => roteiro(false), "btn-secundario btn-pequeno"),
           botao("✨ Criar com a IA", () => criarComIA(false), "btn-secundario btn-pequeno"))) : null,
       h("section", { class: "cartao vidro fx-quadro" },
         h("div", { class: "fx-barra" }, h("div", {}, h("h3", { style: "margin:0" }, "Fluxo do WhatsApp · ", h("span", { class: "fx-empresa-nome", text: (estado.org && estado.org.nome) || "" })), h("p", { class: "sub", style: "margin:2px 0 0", text: "Toque num botão para abrir o próximo cartão. Tudo salva sozinho." })),
-          h("div", { class: "acoes" }, statusSalvo, verPrevia, botao("📋 Roteiro", roteiro, "btn-secundario btn-pequeno"), botao("🔔 Avisos no Telegram", avisos, "btn-secundario btn-pequeno"), h("a", { class: "btn btn-primario btn-pequeno", href: "#/chatbot/testar" }, "▶ Testar"),
+          h("div", { class: "acoes" }, statusSalvo, verPrevia, podeEditar ? botao("📥 Importar do Botpress", () => roteiro(true), "btn-primario btn-pequeno") : null, botao("📋 Roteiro", () => roteiro(false), "btn-secundario btn-pequeno"), botao("🔔 Avisos no Telegram", avisos, "btn-secundario btn-pequeno"), h("a", { class: "btn btn-primario btn-pequeno", href: "#/chatbot/testar" }, "▶ Testar"),
             podeEditar && d.itens.length ? botao("✨ Refazer com a IA", () => criarComIA(true), "btn-secundario btn-pequeno") : null)),
         trilha, h("div", { class: "fx-palco-grade" }, palco)));
     palco.replaceChildren(colunas, previa);
