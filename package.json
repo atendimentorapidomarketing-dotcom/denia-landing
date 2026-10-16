@@ -8,9 +8,15 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "test": "node --no-warnings --test test/*.test.mjs && npm --prefix engine test",
-    "check": "node scripts/verificar.mjs && wrangler deploy --dry-run"
+    "check": "node scripts/verificar.mjs && wrangler deploy --dry-run",
+    "start": "node --disable-warning=ExperimentalWarning server.js",
+    "test:servidor": "DENIA_BANCO_TESTE=servidor npm test"
   },
   "devDependencies": {
     "wrangler": "4.148.0"
+  },
+  "main": "server.js",
+  "engines": {
+    "node": ">=22.13"
   }
 }
