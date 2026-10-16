@@ -2912,6 +2912,22 @@
     const caixaFotos = h("div", { class: "grade" });
     const cotIni = E("", { type: "date" }), cotFim = E("", { type: "date" }), cotPessoas = E("", { type: "number", min: "1", placeholder: "Pessoas" }), cotRes = h("div", {});
     const aj = Object.fromEntries(["airbnb", "booking", "vrbo"].map(c => [c, E((im.ajustes || {})[c] ?? 0, { type: "number", min: "-50", max: "100" })]));
+    const TX0 = { airbnb: 3, booking: 15, vrbo: 8, ...(im.taxas_plataforma || {}) };
+    const tx = Object.fromEntries(["airbnb", "booking", "vrbo"].map(c => [c, E(TX0[c], { type: "number", min: "0", max: "40", step: "0.1" })]));
+    // Quanto você recebe: diária, semana (7 noites) e mês (30 noites), por plataforma, com desconto, limpeza e a comissão de cada uma.
+    const simulacao = h("div", { class: "tabela-caixa" });
+    const simular = () => {
+      const n = v => Number(String(v).replace(",", ".")) || 0;
+      const base = n(f.preco_base.value), fds = n(f.preco_fds.value) || base, limp = n(f.taxa_limpeza.value), ds = n(f.desconto_semanal.value), dm = n(f.desconto_mensal.value);
+      if (!base) { trocar(simulacao, h("p", { class: "sub", style: "padding:10px", text: "Preencha o preço por noite para ver quanto você recebe." })); return; }
+      const moeda = im.moeda || "BRL", $ = v => dinheiro(Math.round(v * 100) / 100, moeda);
+      const estadia = (noites, pct, c) => { const semanas = noites / 7, diarias = (base * 5 + fds * 2) * semanas * (1 + n(aj[c].value) / 100); const total = diarias * (1 - pct / 100) + limp; return { total, recebe: total * (1 - n(tx[c].value) / 100) }; };
+      const linhas = [["1 noite (dia de semana)", 1, 0], ["Semana (7 noites)", 7, ds], ["Mês (30 noites)", 30, dm]];
+      trocar(simulacao, h("table", {}, h("thead", {}, h("tr", {}, h("th", { text: "Estadia" }), ["airbnb", "booking", "vrbo"].map(c => h("th", { text: CANAL_NOME[c] })))),
+        h("tbody", {}, linhas.map(([rot, noites, pct]) => h("tr", {}, h("td", {}, h("strong", { text: rot }), pct ? h("small", { class: "sub", text: ` −${pct}%` }) : null),
+          ["airbnb", "booking", "vrbo"].map(c => { const e = noites === 1 ? (() => { const t = base * (1 + n(aj[c].value) / 100) + limp; return { total: t, recebe: t * (1 - n(tx[c].value) / 100) }; })() : estadia(noites, pct, c); return h("td", {}, h("div", { text: "Anunciado " + $(e.total) }), h("strong", { class: "recebe", text: "Você recebe " + $(e.recebe) })); }))))),
+        h("p", { class: "sub", style: "padding:8px 10px;margin:0", text: `"Anunciado" = diárias + limpeza com o ajuste de cada plataforma (no Airbnb com taxa dividida, o hóspede ainda paga a taxa de serviço dele por cima). "Você recebe" = anunciado menos a comissão que a plataforma desconta de você. Semana e mês usam 5 diárias normais + 2 de fim de semana por semana. Não inclui impostos.` }));
+    };
     const tr = Object.fromEntries(d.campos_treino.map(([c]) => [c, T((im.treinamento || {})[c], 70)]));
     const an = { titulo: E((im.anuncio || {}).titulo, { maxlength: "120" }), descricao: T((im.anuncio || {}).descricao, 160), fotos: T(((im.anuncio || {}).fotos || []).join("\n"), 80) };
     const iaModo = h("select", { class: "entrada" }, [["SUGERIR", "A IA escreve e eu aprovo antes de enviar (recomendado no começo)"], ["AUTO", "A IA responde sozinha (só o que ela sabe; o resto ela me chama)"]].map(([v, n]) => h("option", { value: v, selected: im.ia_modo === v, text: n })));
@@ -2919,7 +2935,7 @@
     const corpo = () => ({ nome: f.nome.value, endereco: f.endereco.value, cidade: f.cidade.value, capacidade: f.capacidade.value, quartos: f.quartos.value, banheiros: f.banheiros.value, checkin: f.checkin.value, checkout: f.checkout.value,
       preco_base: f.preco_base.value, preco_fds: f.preco_fds.value, minimo_noites: f.minimo_noites.value, taxa_limpeza: f.taxa_limpeza.value,
       desconto_semanal: f.desconto_semanal.value, desconto_mensal: f.desconto_mensal.value, maximo_noites: f.maximo_noites.value, hospedes_incluidos: f.hospedes_incluidos.value, taxa_hospede_extra: f.taxa_hospede_extra.value, taxa_pet: f.taxa_pet.value,
-      janela_meses: Number(janela.value), precos_modo: precosModo.value, comodidades: [...comod], ajustes: Object.fromEntries(Object.entries(aj).map(([c, e]) => [c, Number(e.value) || 0])),
+      janela_meses: Number(janela.value), precos_modo: precosModo.value, comodidades: [...comod], taxas_plataforma: Object.fromEntries(Object.entries(tx).map(([c, e]) => [c, Number(e.value) || 0])), ajustes: Object.fromEntries(Object.entries(aj).map(([c, e]) => [c, Number(e.value) || 0])),
       treinamento: Object.fromEntries(Object.entries(tr).map(([c, e]) => [c, e.value])), anuncio: { titulo: an.titulo.value, descricao: an.descricao.value, fotos: an.fotos.value.split(/\s+/).filter(Boolean) }, ia_modo: iaModo.value });
     const secao = (t, ...c) => h("details", { class: "secao-tp", open: t.startsWith("1") }, h("summary", { text: t }), h("div", { class: "grade" }, c));
     const novoCal = { canal: h("select", { class: "entrada" }, ["airbnb", "booking", "vrbo", "outro"].map(c => h("option", { value: c, text: CANAL_NOME[c] }))), url: E("", { placeholder: "https://…ics" }) };
@@ -2930,10 +2946,13 @@
         h("div", { class: "grade grade-3" }, campo("Hóspedes incluídos no preço", f.hospedes_incluidos), campo("Hóspede extra (por noite)", f.taxa_hospede_extra), campo("Taxa de pet", f.taxa_pet)),
         h("div", { class: "grade grade-2" }, campo("Máximo de noites", f.maximo_noites), campo("Janela de reservas (calendário aberto até)", janela, "Como no Airbnb: depois disso as datas ficam fechadas em todas as plataformas e abrem sozinhas dia a dia.")),
         h("p", { class: "sub", text: "Ajuste por plataforma (%): cobre a comissão de cada uma para você receber o mesmo. Ex.: Booking +18% e Vrbo +10%." }), h("div", { class: "grade grade-3" }, campo("Airbnb (%)", aj.airbnb), campo("Booking.com (%)", aj.booking), campo("Vrbo (%)", aj.vrbo)),
+        h("p", { class: "sub", text: "Comissão que cada plataforma desconta de você (%): Airbnb ~3% (taxa dividida) ou ~15% (taxa só do anfitrião); Booking 13% a 18%; Vrbo ~8%. Confira no seu contrato." }),
+        h("div", { class: "grade grade-3" }, campo("Comissão Airbnb (%)", tx.airbnb), campo("Comissão Booking (%)", tx.booking), campo("Comissão Vrbo (%)", tx.vrbo)),
+        h("h4", { style: "margin:6px 0 0", text: "Quanto você recebe" }), simulacao,
         campo("Quem manda nos preços", precosModo, "Escolha \"os preços ficam na plataforma\" se você prefere ajustar o preço geral direto no Airbnb: a DENIA não grava preço noite a noite, só abre e fecha datas e o mínimo de noites."),
         im.id ? h("details", { class: "detalhes" }, h("summary", { text: "Simular quanto fica uma estadia" }), h("div", { class: "grade grade-3" }, campo("Entrada", cotIni), campo("Saída", cotFim), campo("Pessoas", cotPessoas)),
           botao("Calcular", async () => { try { const c = await tp(`cotacao?imovel=${im.id}&inicio=${cotIni.value}&fim=${cotFim.value}&hospedes=${cotPessoas.value || 0}`);
-            trocar(cotRes, h("ul", { class: "lista-simples" }, h("li", { text: `${c.noites} noite(s): ${dinheiro(c.diarias, c.moeda)}` }), c.desconto ? h("li", { text: `Desconto ${c.desconto_pct}%: −${dinheiro(c.desconto, c.moeda)}` }) : null, c.hospede_extra ? h("li", { text: `Hóspede extra: ${dinheiro(c.hospede_extra, c.moeda)}` }) : null, h("li", { text: `Limpeza: ${dinheiro(c.limpeza, c.moeda)}` }), h("li", {}, h("strong", { text: `Total: ${dinheiro(c.total, c.moeda)}` }))),
+            trocar(cotRes, h("ul", { class: "lista-simples" }, h("li", { text: `${c.noites} noite(s): ${dinheiro(c.diarias, c.moeda)}` }), c.desconto ? h("li", { text: `Desconto ${c.desconto_pct}%: −${dinheiro(c.desconto, c.moeda)}` }) : null, c.hospede_extra ? h("li", { text: `Hóspede extra: ${dinheiro(c.hospede_extra, c.moeda)}` }) : null, h("li", { text: `Limpeza: ${dinheiro(c.limpeza, c.moeda)}` }), h("li", {}, h("strong", { text: `Total: ${dinheiro(c.total, c.moeda)}` })), c.taxa_plataforma_pct ? h("li", { text: `Reserva direta: você recebe ${dinheiro(c.voce_recebe, c.moeda)}` }) : null),
               c.ocupado ? h("p", { class: "nota nota-alerta", text: "Essas datas já estão ocupadas." }) : null, c.abaixo_do_minimo ? h("p", { class: "nota nota-alerta", text: `Abaixo do mínimo de ${c.minimo_noites} noites.` }) : null); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno"), cotRes) : null),
       secao("3. Comodidades", caixaComod),
       im.id ? secao("4. Fotos", caixaFotos) : null,
@@ -2958,6 +2977,8 @@
       h("div", { class: "acoes" }, botao("Salvar", async () => { try { const r = await tp(im.id ? "imoveis/" + im.id : "imoveis", { metodo: "POST", corpo: corpo() }); aviso(r.plataformas && r.plataformas.enviado ? "Salvo e enviado às plataformas." : "Imóvel salvo.", "ok"); fechar(); if (!im.id) editarImovelTp({ id: r.id }, d); else navegar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario"),
         im.id && pode("ADMIN") ? botao("Remover imóvel", async () => { if (!(await modal({ titulo: "Remover o imóvel?", conteudo: "Ele sai da DENIA (as plataformas não são afetadas).", confirmar: "Remover", perigo: true }))) return; await tp(`imoveis/${im.id}/excluir`, { metodo: "POST", corpo: {} }); fechar(); navegar(); }, "btn-secundario") : null)]);
     if (im.id) fotosTp(caixaFotos, im);
+    [f.preco_base, f.preco_fds, f.taxa_limpeza, f.desconto_semanal, f.desconto_mensal, ...Object.values(aj), ...Object.values(tx)].forEach(e => e.addEventListener("input", simular));
+    simular();
   }
   function aprenderTp(im, tr) {
     const txt = h("textarea", { class: "entrada", style: "min-height:240px", placeholder: "Cole aqui conversas antigas com hóspedes (do Airbnb, Booking, WhatsApp…). Quanto mais, melhor." });
