@@ -835,3 +835,12 @@ tr.linha-alerta td { background: rgba(239, 68, 68, 0.07); }
 .cal-geral-dia[class*="canal-fundo"] small { color: #fff; }
 .cal-geral-dia.canal-fundo-airbnb { background: var(--c-airbnb); } .cal-geral-dia.canal-fundo-booking { background: var(--c-booking); } .cal-geral-dia.canal-fundo-vrbo { background: var(--c-vrbo); } .cal-geral-dia.canal-fundo-direto { background: var(--c-direto); } .cal-geral-dia.canal-fundo-bloqueio, .cal-geral-dia.canal-fundo-outro { background: var(--c-bloqueio); }
 .recebe { color: #4ade80; font-size: 13.5px; }
+/* "Em breve": conteúdo embaçado por trás e aviso por cima */
+.em-breve { position: relative; min-height: 380px; }
+.em-breve > :not(.em-breve-aviso) { filter: blur(6px) saturate(0.6); opacity: 0.5; pointer-events: none; user-select: none; }
+.em-breve-aviso { position: absolute; inset: 0; z-index: 6; display: flex; justify-content: center; align-items: flex-start; padding: 48px 12px; }
+.em-breve-cartao { max-width: 470px; text-align: center; padding: 26px 22px; display: grid; gap: 10px; justify-items: center; border: 1px solid rgba(79, 140, 255, 0.45); box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45); }
+.em-breve-cartao h3 { margin: 0; font-size: 20px; }
+.em-breve-cartao p { margin: 0; color: var(--texto-2); }
+.em-breve-selo { font-size: 12px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; padding: 5px 12px; border-radius: 999px; color: #fff; background: linear-gradient(135deg, #4f8cff, #8b5cf6); }
+section.em-breve, article.em-breve { min-height: 300px; }

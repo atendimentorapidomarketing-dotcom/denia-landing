@@ -2780,6 +2780,15 @@
         h("tbody", {}, lista.map(r => h("tr", {}, h("td", {}, seloCanal(r.canal)), h("td", {}, h("strong", { text: r.hospede || "Hóspede" }), r.risco && r.risco.nivel !== "baixo" ? h("span", { class: "sub", text: " ⚠ risco " + r.risco.nivel }) : null), h("td", { text: r.imovel }), h("td", { text: dataCompleta(r.inicio) }), h("td", { text: dataCompleta(r.fim) }), h("td", { text: numero(r.noites) }), h("td", {}, r.valor ? dinheiro(r.valor, r.moeda || "BRL") : pode("AGENTE") ? botao("Preencher", () => editarValoresTp(r), "btn-secundario btn-pequeno") : "—"), h("td", { text: r.taxa_limpeza != null ? dinheiro(r.taxa_limpeza, r.moeda || "BRL") : "—" }),
           h("td", {}, r.rascunhos ? selo(`${r.rascunhos} resposta(s) para aprovar`, "alerta") : null), h("td", {}, botao("Abrir", () => abrirReservaTp(r), "btn-secundario btn-pequeno"))))))) : vazio("Nenhuma reserva aqui", "Conecte os calendários em Conexões para as reservas aparecerem sozinhas.")));
   }
+  // "Em breve": a tela aparece embaçada por trás e um aviso por cima, para o que depende da aprovação das plataformas.
+  // O administrador geral vê o botão de configurar (os clientes não).
+  function telaEmBreve(alvo, titulo, texto, configurar) {
+    alvo.classList.add("em-breve");
+    const aviso = h("div", { class: "em-breve-aviso", role: "status" }, h("div", { class: "em-breve-cartao vidro" },
+      h("span", { class: "em-breve-selo", text: "Em breve" }), h("h3", { text: titulo }), h("p", { text: texto }),
+      estado.eu && estado.eu.usuario.super_admin && configurar ? botao("Ver como configurar (só você vê)", () => { alvo.classList.remove("em-breve"); aviso.remove(); configurar(); }, "btn-secundario btn-pequeno") : null));
+    alvo.prepend(aviso);
+  }
   async function tpMensagens(area, vivo) {
     const [d, ims] = await Promise.all([tp("mensagens"), tp("imoveis")]);
     if (!vivo()) return;
@@ -2821,6 +2830,7 @@
         }, "btn-primario")), saida] : h("p", { class: "nota", text: "Cadastre um imóvel primeiro." })));
     grade.append(h("section", { class: "conversas-lista vidro" }, itens), painel);
     if (estado.tpConversa && d.conversas.some(c => c.id === estado.tpConversa)) abrir(estado.tpConversa);
+    if (!d.channex) telaEmBreve(area, "Mensagens dos hóspedes direto do Airbnb, Booking e Vrbo", "Estamos concluindo a conexão oficial com as plataformas. Quando estiver pronta, as mensagens chegam aqui, traduzidas, e a IA responde no chat da própria plataforma.", () => { });
   }
   async function tpImoveis(area, vivo) {
     const d = await tp("imoveis");
@@ -3318,7 +3328,8 @@
       cfg.channex ? (pode("ADMIN") ? h("div", { class: "acoes" },
         botao("Entrar nas plataformas", async () => { try { const r = await tp("channex/conta", { metodo: "POST", corpo: {} }); window.open(r.url, "_blank", "noopener"); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario"),
         botao("Importar meus anúncios", async (_e, b) => { b.textContent = "Importando…"; try { const r = await tp("channex/importar", { metodo: "POST", corpo: {} }); aviso(r.sem_grupo ? "Primeiro toque em Entrar nas plataformas." : `${numero(r.total)} anúncio(s) na conta · ${numero(r.imoveis_novos)} novo(s) · ${numero(r.reservas)} reserva(s) futura(s).`, r.sem_grupo ? "erro" : "ok"); if (!r.sem_grupo) navegar(); } catch (e) { aviso(e.message, "erro"); } finally { b.textContent = "Importar meus anúncios"; } }, "btn-secundario")) : null)
-        : h("p", { class: "nota", text: "A conexão oficial está em ativação na DENIA (parceria com o Channex). Enquanto isso, use o link do calendário de cada anúncio, abaixo — funciona na hora." }));
+        : h("div", { class: "acoes" }, botao("Entrar nas plataformas", null, "btn-primario"), botao("Importar meus anúncios", null, "btn-secundario")));
+    if (!cfg.channex) telaEmBreve(contaInteira, "Conexão oficial com Airbnb, Booking e Vrbo", "Preços, mensagens, avaliações e anúncios sincronizados sozinhos. Estamos concluindo a parceria com as plataformas. Enquanto isso, use o link do calendário de cada anúncio, abaixo — funciona na hora.", () => { });
     trocar(area,
       contaInteira,
       h("section", { class: "grade grade-3" }, ["airbnb", "booking", "vrbo"].map(c => h("article", { class: "cartao vidro conexao-tp" }, h("h3", { style: "margin:0" }, seloCanal(c)),
@@ -4491,12 +4502,11 @@
     const contas = await mk(`google/ads/contas?marca=${marcaId}`).catch(e => ({ erro: e.message, codigo: e.codigo }));
     if (contas.conectada === false) { trocar(area, h("section", { class: "cartao vidro" }, vazio("Conecte o Google desta marca", "O Google Ads usa o mesmo login do Google."), pode("ADMIN") ? h("div", { class: "acoes" }, botao("Conectar Google", () => conectarGoogle(marca), "btn-primario")) : null)); return; }
     if (contas.configurado === false) {
-      trocar(area, h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Ligar o Google Ads na DENIA (uma vez, para todas as empresas)" }),
-        h("ol", { class: "passos" }, h("li", {}, "Em ads.google.com, abra a sua conta gerente (MCC) → Administrador → Central de API e peça o token de desenvolvedor (acesso básico)."),
-          h("li", {}, "No Google Cloud do mesmo projeto do login do Google, ative a Google Ads API."),
-          h("li", {}, "Na Cloudflare → Worker denia-landing → Variables and Secrets, crie o secret GOOGLE_ADS_DEVELOPER_TOKEN com o token. Não mande o token por mensagem."),
-          h("li", {}, "Volte aqui e conecte o Google de novo nesta marca, aceitando o Google Ads.")),
-        h("p", { class: "sub", text: "Enquanto o Google não aprova o acesso básico, o token funciona só com contas de teste." })));
+      const instrucoes = () => trocar(area, h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Ligar o Google Ads na DENIA (uma vez, para todas as empresas)" }),
+        h("ol", { class: "passos" }, h("li", {}, "Em ads.google.com, abra a sua conta gerente (MCC) → Administrador → Central de API e peça o token de desenvolvedor (acesso básico)."), h("li", {}, "No Google Cloud do mesmo projeto do login do Google, ative a Google Ads API."),
+          h("li", {}, "Na Cloudflare → Worker denia-landing → Variables and Secrets, crie o secret GOOGLE_ADS_DEVELOPER_TOKEN com o token."), h("li", {}, "Volte aqui e toque em Ligar o Google Ads.")), h("p", { class: "sub", text: "Enquanto o Google não aprova o acesso básico, o token funciona só com contas de teste." })));
+      trocar(area, h("section", { class: "grade grade-4" }, ["Gasto", "Cliques", "Custo por clique", "Conversões"].map(n => metrica(n, "R$ 0,00", "últimos 30 dias"))), h("section", { class: "cartao vidro", style: "min-height:260px" }, h("h3", { text: "Campanhas" }), vazio("—", "")));
+      telaEmBreve(area, "Google Ads dentro da DENIA", "Gasto, campanhas, termos de pesquisa e recomendações do Google, com pausar, ajustar orçamento e negativar palavras. Estamos concluindo a aprovação do Google.", instrucoes);
       return;
     }
     if (contas.precisa_reconectar || contas.codigo === "RECONECTAR") return pedirReconexao(area, marca, "Para ver e ajustar os anúncios, a DENIA precisa da permissão do Google Ads. Toque abaixo, entre com a conta do Google que acessa o Google Ads e aceite.", "ads");
@@ -4594,6 +4604,7 @@
       porBusca.size ? h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Evolução da posição" }),
         h("div", { class: "tabela-caixa" }, h("table", {}, h("thead", {}, h("tr", {}, h("th", { text: "Busca" }), h("th", { text: "Última" }), h("th", { text: "Antes" }), h("th", { text: "Medições" }))),
           h("tbody", {}, [...porBusca.entries()].map(([b, l]) => h("tr", {}, h("td", { text: b }), h("td", { text: l[0].posicao ? `${l[0].posicao}º (${dataCompleta(l[0].dia)})` : "fora do top 20" }), h("td", { text: l[1] ? (l[1].posicao ? `${l[1].posicao}º (${dataCompleta(l[1].dia)})` : "fora") : "—" }), h("td", { text: numero(l.length) }))))))) : null);
+    if (!d.configurado) telaEmBreve(area, "Concorrentes e posição no Google Maps", "Em que lugar o seu perfil aparece nas buscas da região, quem está na frente, notas e avaliações dos concorrentes. Estamos concluindo a ligação com o Google Maps.", () => { });
   }
   // Lê o perfil inteiro no Google, em partes de 1.000, mostrando o andamento.
   async function buscarTodasNoGoogle(marcaId, mostrar) {
