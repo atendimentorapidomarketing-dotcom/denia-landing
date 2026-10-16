@@ -26,15 +26,15 @@ import { retornoGoogle, sincronizarGooglePendentes } from "./google.js";
 import { comOrgUso, comRecurso, descarregarUso } from "./uso.js";
 import { DDL_TEMPORADA, rotasTemporada, icalPublico, webhookChannex, sincronizarTemporada, desligarInadimplentes } from "./temporada.js";
 import { openaiBruto } from "./marketing.js";
-import { DDL_ZAP, webhookZap, rotasZap, webhookTelegram, segredoTelegram, tokenTelegramPlataforma } from "./zap.js";
+import { DDL_ZAP, webhookZap, rotasZap, webhookTelegram, segredoTelegram, tokenTelegramPlataforma, processarCampanhas } from "./zap.js";
 import { lerPlanos, acessoDa, recursoDaRota, planoMinimo, rotasPlano, webhookAsaas, lembretesDePlano, TESTE_DIAS, STATUS as STATUS_PLANO, PLANOS_PADRAO, RECURSOS } from "./planos.js";
 
-const VERSAO = "3.1.0";
+const VERSAO = "3.2.0";
 // Versão dos Termos de uso e da Política de privacidade aceitas no cadastro.
 const VERSAO_TERMOS = "2026-10-16";
 // WhatsApp da Central de Atendimento (botão flutuante do site).
 const WHATSAPP_CENTRAL = "5521975469162";
-const SCHEMA = "2.7.0";
+const SCHEMA = "2.8.0";
 const COOKIE = "__Host-denia_sessao";
 const SESSAO_MS = 8 * 60 * 60 * 1000;
 const MAX_TENTATIVAS = 5;
@@ -192,6 +192,7 @@ async function garantirSchema(env) {
     await env.DB.prepare("ALTER TABLE plt_zap_contatos ADD COLUMN memoria TEXT").run().catch(() => { });
     await env.DB.prepare("ALTER TABLE plt_zap_contas ADD COLUMN telegram_nome TEXT").run().catch(() => { });
     await env.DB.prepare("ALTER TABLE plt_zap_contatos ADD COLUMN ultimo_menu INTEGER").run().catch(() => { });
+    for (const col of ["optout INTEGER NOT NULL DEFAULT 0", "etiquetas TEXT"]) await env.DB.prepare("ALTER TABLE plt_zap_contatos ADD COLUMN " + col).run().catch(() => { });
     for (const col of ["teste_ate INTEGER", "pago_ate INTEGER", "ciclo TEXT", "cobranca_cliente TEXT", "assinatura_id TEXT", "assinatura_plano TEXT"])
       await env.DB.prepare("ALTER TABLE plt_organizacoes ADD COLUMN " + col).run().catch(() => { });
     // A primeira empresa da plataforma.
@@ -1249,6 +1250,7 @@ export default {
       await vigiarWhatsapp(env).catch(e => console.error("whatsapp", e?.message));
       await limparBanco(env).catch(e => console.error("limpeza", e?.message));
       await sincronizarTemporada(env, await kitZap(env)).catch(e => console.error("temporada", e?.message));
+      await processarCampanhas(env, await kitZap(env)).catch(e => console.error("campanhas", e?.message));
       if (await aCada(env, "temporada_inadimplentes", 20 * 3600000)) {
         const { planos } = await lerPlanos(env);
         await desligarInadimplentes(env, { ...(await kitZap(env)), avisar: async (o, texto) => { for (const para of await responsaveisDa(env, o)) await enviarEmail(env, para, "DENIA — conexão com as plataformas pausada", texto); } },

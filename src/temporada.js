@@ -135,10 +135,61 @@ async function cx(env, metodo, caminho, corpo) {
   if (!r.ok) throw new Error("Channex: " + cortar(JSON.stringify(d?.errors || d?.error || r.status), 300));
   return d;
 }
+// Cada empresa tem o seu grupo no Channex: os imóveis de uma nunca aparecem para outra.
+async function grupoChannex(env, orgId, criar = true) {
+  const chave = "channex_grupo_" + orgId;
+  const atual = (await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave=?").bind(chave).first().catch(() => null))?.valor;
+  if (atual || !criar) return atual || null;
+  const nome = (await env.DB.prepare("SELECT nome FROM plt_organizacoes WHERE id=?").bind(orgId).first().catch(() => null))?.nome || "Empresa";
+  const id = (await cx(env, "POST", "/groups", { group: { title: cortar(`DENIA #${orgId} — ${nome}`, 90) } }))?.data?.id;
+  if (id) await env.DB.prepare("INSERT OR REPLACE INTO plt_meta(chave,valor) VALUES(?,?)").bind(chave, id).run();
+  return id || null;
+}
+const webhookUrlChannex = async (env, k, orgId, base) => new URL(`/webhook/channex?org=${orgId}&t=${(await k.hmac(await k.segredo(env), "channex:" + orgId)).slice(0, 32)}`, base).toString();
+// Reserva do Channex → reserva da DENIA (a mesma regra para o aviso em tempo real e para a importação).
+async function gravarReservaChannex(env, org, im, bookingId, b, agora) {
+  const canal = /airbnb/i.test(b.ota_name || "") ? "airbnb" : /booking/i.test(b.ota_name || "") ? "booking" : /vrbo|homeaway|expedia/i.test(b.ota_name || "") ? "vrbo" : "outro";
+  const cliente = b.customer || {};
+  await env.DB.prepare(`INSERT INTO plt_tp_reservas(org_id,imovel_id,canal,externo_id,tipo,status,hospede,hospedes,inicio,fim,valor,moeda,contato,origem,criado_ms,atualizado_ms) VALUES(?,?,?,?,'RESERVA',?,?,?,?,?,?,?,?,'CHANNEX',?,?)
+    ON CONFLICT(org_id,imovel_id,canal,externo_id) DO UPDATE SET status=excluded.status, hospede=excluded.hospede, hospedes=excluded.hospedes, inicio=excluded.inicio, fim=excluded.fim, valor=excluded.valor, moeda=excluded.moeda, contato=excluded.contato, origem='CHANNEX', atualizado_ms=excluded.atualizado_ms`)
+    .bind(org, im.id, canal, "cx:" + bookingId, b.status === "cancelled" ? "CANCELADA" : "CONFIRMADA", cortar([cliente.name, cliente.surname].filter(Boolean).join(" "), 120) || "Hóspede", Number(b.occupancy?.adults || 0) + Number(b.occupancy?.children || 0) || null, b.arrival_date || iso(agora), b.departure_date || iso(agora + DIA), Number(b.amount || 0) || null, b.currency || im.moeda || "BRL", cortar(cliente.mail || cliente.phone || "", 120), agora, agora).run();
+}
+// Traz para a DENIA todos os imóveis da empresa que estão no Channex (ligados às plataformas) e as reservas futuras.
+export async function importarDoChannex(env, k, orgId, base) {
+  const grupo = await grupoChannex(env, orgId, false);
+  if (!grupo) return { imoveis_novos: 0, reservas: 0, total: 0, sem_grupo: true };
+  const agora = k.agora(env);
+  const props = [];
+  for (let pg = 1; pg <= 5; pg++) {
+    const d = await cx(env, "GET", `/properties?filter[group_id]=${encodeURIComponent(grupo)}&pagination[page]=${pg}&pagination[limit]=100`);
+    props.push(...(d?.data || []));
+    if ((d?.data || []).length < 100) break;
+  }
+  let novos = 0, reservas = 0;
+  const hook = await webhookUrlChannex(env, k, orgId, base);
+  for (const p of props) {
+    const a = p.attributes || {};
+    let im = await env.DB.prepare("SELECT * FROM plt_tp_imoveis WHERE org_id=? AND channex_property=?").bind(orgId, p.id).first();
+    if (!im) {
+      const room = (await cx(env, "GET", `/room_types?filter[property_id]=${encodeURIComponent(p.id)}`).catch(() => null))?.data?.[0];
+      const token = [...crypto.getRandomValues(new Uint8Array(18))].map(b => b.toString(16).padStart(2, "0")).join("");
+      const id = (await env.DB.prepare("INSERT INTO plt_tp_imoveis(org_id,nome,endereco,cidade,capacidade,moeda,ajustes,treinamento,anuncio,ia_modo,ativo,ical_token,checkin,checkout,channex_property,channex_room,channex_rates,criado_ms) VALUES(?,?,?,?,?,?,'{}','{}','{}','SUGERIR',1,?,'15:00','11:00',?,?,'{}',?) RETURNING id")
+        .bind(orgId, cortar(a.title || "Imóvel", 120), cortar(a.address || "", 200) || null, cortar(a.city || "", 80) || null, Number(room?.attributes?.occ_adults || 0) || null, a.currency || "BRL", token, p.id, room?.id || null, agora).first())?.id;
+      im = await env.DB.prepare("SELECT * FROM plt_tp_imoveis WHERE id=?").bind(id).first();
+      novos++;
+      await cx(env, "POST", "/webhooks", { webhook: { property_id: p.id, callback_url: hook, event_mask: "booking,message", is_active: true, send_data: true } }).catch(() => {});
+    }
+    const bs = (await cx(env, "GET", `/bookings?filter[property_id]=${encodeURIComponent(p.id)}&filter[departure_date][gte]=${iso(agora)}&pagination[limit]=100`).catch(() => null))?.data || [];
+    for (const b of bs) { await gravarReservaChannex(env, orgId, im, b.id, b.attributes || {}, agora); reservas++; }
+    if (bs.length) await agendarLimpezas(env, orgId, im.id, agora);
+  }
+  return { imoveis_novos: novos, reservas, total: props.length };
+}
+
 // Cria no Channex o imóvel, a unidade e um plano de preço por plataforma (preço próprio em cada uma).
 async function garantirChannex(env, k, im) {
   let prop = im.channex_property, room = im.channex_room, rates = json_(im.channex_rates, {});
-  if (!prop) prop = (await cx(env, "POST", "/properties", { property: { title: im.nome, currency: im.moeda || "BRL", city: im.cidade || undefined, address: im.endereco || undefined, property_type: "apartment", settings: { allow_availability_autoupdate_on_confirmation: true } } }))?.data?.id;
+  if (!prop) { const grupo = await grupoChannex(env, im.org_id).catch(() => null); prop = (await cx(env, "POST", "/properties", { property: { title: im.nome, currency: im.moeda || "BRL", city: im.cidade || undefined, address: im.endereco || undefined, property_type: "apartment", ...(grupo ? { group_id: grupo } : {}), settings: { allow_availability_autoupdate_on_confirmation: true } } }))?.data?.id; }
   if (!room) room = (await cx(env, "POST", "/room_types", { room_type: { property_id: prop, title: im.nome, count_of_rooms: 1, occ_adults: Number(im.capacidade) || 2, occ_children: 0, occ_infants: 0, default_occupancy: Number(im.capacidade) || 2 } }))?.data?.id;
   for (const canal of ["airbnb", "booking", "vrbo"]) {
     if (rates[canal]) continue;
@@ -170,16 +221,13 @@ export async function webhookChannex(request, env, k) {
   if (!org || url.searchParams.get("t") !== esperado) return new Response("Não autorizado.", { status: 401 });
   let d; try { d = await request.json(); } catch { return new Response("ok"); }
   const ev = String(d?.event || ""), p = d?.payload || {};
-  const im = p.property_id ? await env.DB.prepare("SELECT * FROM plt_tp_imoveis WHERE org_id=? AND channex_property=?").bind(org, p.property_id).first() : null;
+  let im = p.property_id ? await env.DB.prepare("SELECT * FROM plt_tp_imoveis WHERE org_id=? AND channex_property=?").bind(org, p.property_id).first() : null;
+  if (!im && p.property_id && await grupoChannex(env, org, false)) { await importarDoChannex(env, k, org, request.url).catch(e => console.warn("channex importar", e?.message)); im = await env.DB.prepare("SELECT * FROM plt_tp_imoveis WHERE org_id=? AND channex_property=?").bind(org, p.property_id).first(); }
   if (!im) return new Response("ok");
   const agora = k.agora(env);
   if (/^booking/.test(ev) && p.booking_id) {
     const b = (await cx(env, "GET", `/bookings/${p.booking_id}`).catch(() => null))?.data?.attributes || p;
-    const canal = /airbnb/i.test(b.ota_name || "") ? "airbnb" : /booking/i.test(b.ota_name || "") ? "booking" : /vrbo|homeaway|expedia/i.test(b.ota_name || "") ? "vrbo" : "outro";
-    const cliente = b.customer || {};
-    await env.DB.prepare(`INSERT INTO plt_tp_reservas(org_id,imovel_id,canal,externo_id,tipo,status,hospede,hospedes,inicio,fim,valor,moeda,contato,origem,criado_ms,atualizado_ms) VALUES(?,?,?,?,'RESERVA',?,?,?,?,?,?,?,?,'CHANNEX',?,?)
-      ON CONFLICT(org_id,imovel_id,canal,externo_id) DO UPDATE SET status=excluded.status, hospede=excluded.hospede, hospedes=excluded.hospedes, inicio=excluded.inicio, fim=excluded.fim, valor=excluded.valor, moeda=excluded.moeda, contato=excluded.contato, origem='CHANNEX', atualizado_ms=excluded.atualizado_ms`)
-      .bind(org, im.id, canal, "cx:" + p.booking_id, b.status === "cancelled" ? "CANCELADA" : "CONFIRMADA", cortar([cliente.name, cliente.surname].filter(Boolean).join(" "), 120) || "Hóspede", Number(b.occupancy?.adults || 0) + Number(b.occupancy?.children || 0) || null, b.arrival_date || iso(agora), b.departure_date || iso(agora + DIA), Number(b.amount || 0) || null, b.currency || im.moeda || "BRL", cortar(cliente.mail || cliente.phone || "", 120), agora, agora).run();
+    await gravarReservaChannex(env, org, im, p.booking_id, b, agora);
     await agendarLimpezas(env, org, im.id, agora);
     if (p.revision_id) await cx(env, "POST", `/booking_revisions/${p.revision_id}/ack`).catch(() => {});
   }
@@ -573,6 +621,20 @@ export async function rotasTemporada(request, env, k, orgId, papel, resto) {
     const cfg = { idioma: k.txt(corpo.idioma, 60) || "português do Brasil", idioma_resposta: corpo.idioma_resposta === "ANFITRIAO" ? "ANFITRIAO" : "HOSPEDE", modelo: ["gpt-5-mini", "gpt-4.1", "gpt-5-nano"].includes(corpo.modelo) ? corpo.modelo : "gpt-5-mini" };
     await env.DB.prepare("INSERT OR REPLACE INTO plt_meta(chave,valor) VALUES(?,?)").bind("tp_config_" + orgId, JSON.stringify(cfg)).run();
     return json({ ok: true, config: cfg });
+  }
+  // Conta inteira: abre a tela segura do Channex para a empresa entrar no Airbnb/Booking/Vrbo uma vez;
+  // depois, "Importar" traz todos os anúncios ligados (e o aviso do Channex importa sozinho os que chegarem).
+  if ((r === "channex/conta" || r === "channex/importar") && metodo === "POST") {
+    const negado = precisa("ADMIN"); if (negado) return negado;
+    if (!channexLigado(env)) return json({ erro: "A conexão oficial com as plataformas ainda não foi ativada na DENIA. Enquanto isso, use os calendários (iCal).", codigo: "SEM_CHANNEX" }, 503);
+    if (!k.superAdmin && k.acesso && !k.acesso.cortesia && k.acesso.status !== "ATIVO") return json({ erro: "A conexão oficial é liberada depois do primeiro pagamento. No teste grátis, use os calendários (iCal).", codigo: "PLANO_PAGO" }, 402);
+    try {
+      if (r === "channex/importar") return json({ ok: true, ...(await importarDoChannex(env, k, orgId, request.url)) });
+      const grupo = await grupoChannex(env, orgId);
+      const tok = await cx(env, "POST", "/auth/one_time_token", { one_time_token: { group_id: grupo, username: sessao?.usuario?.email || "denia" } });
+      const chave = tok?.data?.token || tok?.data?.attributes?.token;
+      return json({ ok: true, url: `${channexBase(env)}/auth/exchange?oauth_session_key=${encodeURIComponent(chave)}&app_mode=headless&redirect_to=/channels&group_id=${grupo}` });
+    } catch (e) { return json({ erro: e.message }, 502); }
   }
   // Conexão oficial: cria o imóvel no Channex e abre a tela segura para entrar no Airbnb/Booking/Vrbo.
   if ((m = r.match(/^imoveis\/(\d{1,12})\/conectar$/)) && metodo === "POST") {

@@ -10,6 +10,11 @@ import { registrarUso, orgDoUso } from "./uso.js";
 // "state" assinado e de uso único.
 
 const ESCOPO = "https://www.googleapis.com/auth/business.manage";
+const ESCOPO_SC = "https://www.googleapis.com/auth/webmasters"; // Search Console (ler números, enviar sitemap, inspecionar páginas)
+const ESCOPO_ADS = "https://www.googleapis.com/auth/adwords"; // Google Ads (só pedido quando a DENIA tem o token de desenvolvedor)
+// Permissões em etapas: a conexão normal pede só o perfil; o Search Console e o Ads são pedidos quando a pessoa liga cada um
+// (assim a tela do Google nunca mostra aviso por permissão que a empresa não vai usar).
+const escoposPedidos = (env, extra) => [ESCOPO, ...(/sc/.test(extra || "") ? [ESCOPO_SC] : []), ...(/ads/.test(extra || "") && String(env.GOOGLE_ADS_DEVELOPER_TOKEN || "").trim() ? [ESCOPO_ADS] : [])].join(" ");
 const VALIDADE_STATE_MS = 15 * 60000;
 const SINCRONIZAR_A_CADA_MS = 10 * 60000; // avaliações: a cada 10 minutos
 const DESEMPENHO_A_CADA_MS = 6 * 3600000; // desempenho: a cada 6 horas (o Google consolida com dias de atraso)
@@ -21,11 +26,13 @@ const ESTRELAS = { ONE: 1, TWO: 2, THREE: 3, FOUR: 4, FIVE: 5 };
 const IDIOMA_GOOGLE = { "pt-BR": "pt-BR", en: "en", es: "es", de: "de", it: "it", fr: "fr", ja: "ja", hi: "hi" };
 
 const DDL = [
+  `CREATE TABLE IF NOT EXISTS plt_mk_concorrencia (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, marca_id INTEGER NOT NULL, busca TEXT NOT NULL, dia TEXT NOT NULL, posicao INTEGER, total INTEGER, dados TEXT, criado_ms INTEGER NOT NULL, UNIQUE(org_id, marca_id, busca, dia))`,
   `CREATE TABLE IF NOT EXISTS plt_mk_google (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, marca_id INTEGER NOT NULL, conta_nome TEXT NOT NULL, local_nome TEXT NOT NULL, local_titulo TEXT, token_cifrado TEXT NOT NULL, criado_por TEXT, criado_ms INTEGER NOT NULL, atualizado_ms INTEGER NOT NULL, sincronizado_ms INTEGER, UNIQUE(org_id, marca_id))`
 ];
 const ALTERS = ["ALTER TABLE plt_mk_google ADD COLUMN desempenho_ms INTEGER", "ALTER TABLE plt_mk_google ADD COLUMN erro TEXT", "ALTER TABLE plt_mk_google ADD COLUMN maps_uri TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN removida_ms INTEGER",
   "ALTER TABLE plt_mk_avaliacoes ADD COLUMN visto_ms INTEGER", "ALTER TABLE plt_mk_google ADD COLUMN sync_token TEXT", "ALTER TABLE plt_mk_google ADD COLUMN sync_inicio_ms INTEGER",
-  "ALTER TABLE plt_mk_google ADD COLUMN total_google INTEGER", "ALTER TABLE plt_mk_google ADD COLUMN media_google REAL", "ALTER TABLE plt_mk_google ADD COLUMN completo_ms INTEGER"];
+  "ALTER TABLE plt_mk_google ADD COLUMN total_google INTEGER", "ALTER TABLE plt_mk_google ADD COLUMN media_google REAL", "ALTER TABLE plt_mk_google ADD COLUMN completo_ms INTEGER",
+  "ALTER TABLE plt_mk_google ADD COLUMN escopos TEXT", "ALTER TABLE plt_mk_google ADD COLUMN sc_site TEXT", "ALTER TABLE plt_mk_google ADD COLUMN ads_cliente TEXT", "ALTER TABLE plt_mk_google ADD COLUMN ads_gerente TEXT", "ALTER TABLE plt_mk_google ADD COLUMN ads_nome TEXT", "ALTER TABLE plt_mk_google ADD COLUMN ads_moeda TEXT"];
 const prontos = new WeakSet();
 async function garantir(env) {
   if (prontos.has(env.DB)) return;
@@ -48,6 +55,7 @@ const baseDe = request => new URL(request.url).origin;
 // ----- Chamadas à API do Google
 function explicarErro(d, status) {
   const msg = String(d?.error?.message || d?.error_description || d?.error || `HTTP ${status}`);
+  if (/insufficient.*scope|ACCESS_TOKEN_SCOPE_INSUFFICIENT/i.test(msg)) return "Falta permissão nesta conexão do Google. Toque em Ligar (Search Console ou Google Ads) e marque todas as caixas na tela do Google.";
   if (status === 401 || /invalid_grant/i.test(msg)) return "O acesso ao Google desta marca expirou ou foi removido. Conecte de novo em Marcas.";
   if (status === 403 && /disabled|not been used|has not been enabled/i.test(msg)) return "Uma API do Google Perfil da Empresa não está ativada no projeto do Google Cloud. Ative as APIs do Google Business Profile e tente de novo.";
   if (status === 403) return "O Google não deu permissão para esta ação. Confira se a conta usada é proprietária ou administradora do perfil e conecte de novo.";
@@ -61,6 +69,9 @@ function apiGoogleDe(url) {
   if (u.includes("mybusinessbusinessinformation")) return "informacoes";
   if (u.includes("businessprofileperformance")) return "desempenho";
   if (u.includes("oauth2.googleapis.com")) return "login";
+  if (u.includes("webmasters") || u.includes("searchconsole")) return "search_console";
+  if (u.includes("googleads.googleapis.com")) return "ads";
+  if (u.includes("places.googleapis.com")) return "lugares";
   return "avaliacoes";
 }
 function operacaoGoogle(metodo, url) {
@@ -81,7 +92,7 @@ async function chamar(metodo, url, token, corpo) {
   } catch (e) { registrarUso(org, "google", apiGoogleDe(url), operacaoGoogle(metodo, url), { erro: true, ms: Date.now() - inicio }); throw e; }
   registrarUso(org, "google", apiGoogleDe(url), operacaoGoogle(metodo, url), { erro: !r.ok, limitada: r.status === 429, ms: Date.now() - inicio });
   const d = await r.json().catch(() => ({}));
-  if (!r.ok) { const e = new Error(explicarErro(d, r.status)); e.status = r.status; throw e; }
+  if (!r.ok) { const e = new Error(explicarErro(d, r.status)); e.status = r.status; if (/insufficient.*scope|SCOPE_INSUFFICIENT/i.test(JSON.stringify(d))) e.codigo = "RECONECTAR"; throw e; }
   return d;
 }
 async function trocarToken(env, params) {
@@ -140,9 +151,9 @@ export async function rotasGoogle(request, env, k, orgId, papel, resto) {
   const url = new URL(request.url);
 
   if (resto === "google/estado" && metodo === "GET") {
-    const contas = (await env.DB.prepare(`SELECT marca_id, local_titulo, atualizado_ms, sincronizado_ms, erro, total_google, media_google, sync_token IS NOT NULL AS lendo,
+    const contas = (await env.DB.prepare(`SELECT marca_id, local_titulo, atualizado_ms, sincronizado_ms, erro, total_google, media_google, sync_token IS NOT NULL AS lendo, escopos, sc_site, ads_cliente, ads_nome, ads_moeda,
       (SELECT COUNT(*) FROM plt_mk_avaliacoes a WHERE a.org_id=g.org_id AND a.marca_id=g.marca_id AND a.google_id IS NOT NULL AND a.removida_ms IS NULL) AS na_denia FROM plt_mk_google g WHERE org_id=?`).bind(orgId).all())?.results || [];
-    return json({ configurada: googleConfigurada(env), faltando: faltando(env), contas });
+    return json({ configurada: googleConfigurada(env), faltando: faltando(env), contas, ads_configurado: adsConfigurado(env), places_configurado: Boolean(chavePlaces(env)) });
   }
   if (resto === "google/conectar" && metodo === "GET") {
     if (!pode(papel, "ADMIN")) return json({ erro: "Somente administradores conectam contas." }, 403);
@@ -157,7 +168,8 @@ export async function rotasGoogle(request, env, k, orgId, papel, resto) {
     dialogo.searchParams.set("client_id", String(env.GOOGLE_CLIENT_ID).trim());
     dialogo.searchParams.set("redirect_uri", baseDe(request) + "/api/google/retorno");
     dialogo.searchParams.set("response_type", "code");
-    dialogo.searchParams.set("scope", ESCOPO);
+    dialogo.searchParams.set("scope", escoposPedidos(env, String(url.searchParams.get("extra") || "").slice(0, 10)));
+    dialogo.searchParams.set("include_granted_scopes", "true");
     dialogo.searchParams.set("access_type", "offline");
     dialogo.searchParams.set("prompt", "consent select_account");
     dialogo.searchParams.set("state", await assinarState(k, { ...reg, n: nonce }));
@@ -181,6 +193,7 @@ export async function rotasGoogle(request, env, k, orgId, papel, resto) {
       ON CONFLICT(org_id, marca_id) DO UPDATE SET conta_nome=excluded.conta_nome, local_nome=excluded.local_nome, local_titulo=excluded.local_titulo, token_cifrado=excluded.token_cifrado, criado_por=excluded.criado_por, atualizado_ms=excluded.atualizado_ms, sincronizado_ms=NULL`)
       .bind(orgId, reg.m, l.conta, l.local, l.titulo, await k.cifrar(env, reg.refresh), sessao.usuario.email, agora(env), agora(env)).run();
     await env.DB.prepare("UPDATE plt_mk_marcas SET google=COALESCE(NULLIF(google,''),?) WHERE id=? AND org_id=?").bind(l.titulo, reg.m, orgId).run();
+    await env.DB.prepare("UPDATE plt_mk_google SET escopos=? WHERE org_id=? AND marca_id=?").bind(reg.escopos || ESCOPO, orgId, reg.m).run();
     await env.DB.prepare("DELETE FROM plt_meta WHERE chave=?").bind("google_n_" + n).run();
     await auditar(env, request, sessao, orgId, "INTEGRACAO", `Google conectado à marca #${reg.m}: perfil ${l.titulo}`);
     // Já traz as avaliações e o desempenho.
@@ -216,6 +229,8 @@ export async function rotasGoogle(request, env, k, orgId, papel, resto) {
     try { return json({ conectada: true, ...(await desempenhoDoPeriodo(env, k, conta, { dias: q("dias"), de: q("de"), ate: q("ate"), atalho: q("atalho"), comparar: q("comparar") })) }); }
     catch (e) { return json({ conectada: true, erro: e.message }); }
   }
+  const extra = await rotasGoogleExtra(request, env, k, orgId, papel, resto, url);
+  if (extra) return extra;
   return null; // outras rotas google/* ficam no marketing.js (resumo)
 }
 
@@ -245,7 +260,7 @@ export async function retornoGoogle(request, env, k) {
       }
     }
     if (!locais.length) return pagina("Nenhum perfil encontrado", "A conta do Google usada não administra nenhum perfil de empresa. Entre com a conta que é proprietária ou administradora do perfil no Google Meu Negócio.", "/app#/marcas");
-    await env.DB.prepare("INSERT OR REPLACE INTO plt_meta(chave,valor) VALUES(?,?)").bind("google_n_" + st.n, await k.cifrar(env, JSON.stringify({ ...reg, refresh: t.refresh_token, locais, e: k.agora(env) + VALIDADE_STATE_MS }))).run();
+    await env.DB.prepare("INSERT OR REPLACE INTO plt_meta(chave,valor) VALUES(?,?)").bind("google_n_" + st.n, await k.cifrar(env, JSON.stringify({ ...reg, refresh: t.refresh_token, escopos: String(t.scope || ESCOPO).slice(0, 500), locais, e: k.agora(env) + VALIDADE_STATE_MS }))).run();
     return pagina("Quase pronto", "Conta do Google autorizada. Agora escolha, na plataforma, o perfil desta marca.", `/app#/marcas/google-${st.n}`);
   } catch (e) {
     console.error("google retorno", e?.message);
@@ -529,4 +544,356 @@ export async function sincronizarGooglePendentes(env, k) {
     }
   }
   return { sincronizadas: n };
+}
+
+// =============================================================================
+// Search Console (Google orgânico), Google Ads e concorrentes (Google Maps)
+// =============================================================================
+// Search Console: mesmo login do Google (escopo webmasters). Mostra cliques, impressões, CTR e posição média
+//   por palavra, página, país e aparelho; inspeciona páginas (indexada ou não) e envia sitemaps.
+// Google Ads: precisa do secret GOOGLE_ADS_DEVELOPER_TOKEN (o token de desenvolvedor da DENIA, aprovado pelo
+//   Google) e, opcional, GOOGLE_ADS_VERSAO (padrão v25). Lê gasto, campanhas, palavras, termos de pesquisa,
+//   aparelhos e horários; pausa/ativa campanhas, muda orçamento diário, adiciona palavra negativa e aplica
+//   recomendações do Google.
+// Concorrentes: secret GOOGLE_PLACES_API_KEY (Places API New, cobrada por consulta pelo Google).
+const SC_API = "https://www.googleapis.com/webmasters/v3";
+const SC_INSPECAO = "https://searchconsole.googleapis.com/v1/urlInspection/index:inspect";
+const SC_ATRASO = 3; // o Search Console consolida com ~2–3 dias
+const SC_HISTORICO = 485; // 16 meses
+export const adsConfigurado = env => Boolean(String(env.GOOGLE_ADS_DEVELOPER_TOKEN || "").trim());
+const chavePlaces = env => String(env.GOOGLE_PLACES_API_KEY || env.GOOGLE_MAPS_API_KEY || "").trim();
+const versaoAds = env => (/^v\d{2}$/.test(String(env.GOOGLE_ADS_VERSAO || "").trim()) ? String(env.GOOGLE_ADS_VERSAO).trim() : "v25");
+const temEscopo = (conta, e) => !conta.escopos ? e === ESCOPO : String(conta.escopos).split(/\s+/).includes(e);
+const microsParaReal = m => Math.round(Number(m || 0) / 10000) / 100;
+
+function periodoSc(agoraMs, { dias, de, ate } = {}) {
+  const ultimo = diaUTC(isoDia(new Date(agoraMs - SC_ATRASO * DIA_MS)));
+  const primeiro = new Date(ultimo.getTime() - (SC_HISTORICO - 1) * DIA_MS);
+  const valida = x => /^\d{4}-\d{2}-\d{2}$/.test(String(x || ""));
+  let ini, fim;
+  if (valida(de) && valida(ate)) { ini = diaUTC(de); fim = diaUTC(ate); if (ini > fim) [ini, fim] = [fim, ini]; }
+  else { const n = Math.min(SC_HISTORICO, Math.max(1, Math.round(Number(dias) || 28))); fim = ultimo; ini = new Date(ultimo.getTime() - (n - 1) * DIA_MS); }
+  if (fim > ultimo) fim = ultimo;
+  if (ini < primeiro) ini = primeiro;
+  return { ini, fim, dias: Math.round((fim - ini) / DIA_MS) + 1, primeiro, ultimo };
+}
+
+async function consultaSc(token, site, ini, fim, dimensoes, limite, filtros) {
+  const corpo = { startDate: isoDia(ini), endDate: isoDia(fim), dimensions: dimensoes, rowLimit: limite, dataState: "final" };
+  if (filtros) corpo.dimensionFilterGroups = [{ filters: filtros }];
+  const d = await chamar("POST", `${SC_API}/sites/${encodeURIComponent(site)}/searchAnalytics/query`, token, corpo);
+  return (d.rows || []).map(r => ({ chave: r.keys || [], cliques: r.clicks || 0, impressoes: r.impressions || 0, ctr: Math.round((r.ctr || 0) * 10000) / 100, posicao: Math.round((r.position || 0) * 10) / 10 }));
+}
+const somaSc = linhas => {
+  const t = linhas.reduce((a, l) => ({ cliques: a.cliques + l.cliques, impressoes: a.impressoes + l.impressoes, pos: a.pos + l.posicao * l.impressoes }), { cliques: 0, impressoes: 0, pos: 0 });
+  return { cliques: t.cliques, impressoes: t.impressoes, ctr: t.impressoes ? Math.round((t.cliques / t.impressoes) * 10000) / 100 : 0, posicao: t.impressoes ? Math.round((t.pos / t.impressoes) * 10) / 10 : 0 };
+};
+// Palavras com muitas impressões e posição 4–20 ou CTR baixo: onde um ajuste de título/conteúdo traz mais cliques.
+function oportunidadesSc(palavras) {
+  const ctrEsperado = p => (p <= 1.5 ? 28 : p <= 3 ? 15 : p <= 5 ? 8 : p <= 10 ? 3 : 1);
+  return palavras.filter(p => p.impressoes >= 30).map(p => {
+    let motivo = null;
+    if (p.posicao > 3 && p.posicao <= 10) motivo = "Quase no topo: subir 1–3 posições pode multiplicar os cliques.";
+    else if (p.posicao > 10 && p.posicao <= 20) motivo = "Na 2ª página: um conteúdo melhor para esta busca leva para a 1ª.";
+    else if (p.ctr < ctrEsperado(p.posicao) / 2) motivo = "Aparece bem, mas poucos clicam: melhore o título e a descrição da página.";
+    return motivo ? { ...p, motivo, ganho: Math.max(0, Math.round(p.impressoes * (ctrEsperado(Math.max(1, p.posicao - 3)) - p.ctr) / 100)) } : null;
+  }).filter(Boolean).sort((a, b) => b.ganho - a.ganho).slice(0, 25);
+}
+
+export async function searchConsole(env, k, conta, pedido = {}) {
+  if (!conta.sc_site) return { conectado: false, motivo: "SEM_SITE" };
+  const token = await tokenDa(env, k, conta);
+  const per = periodoSc(k.agora(env), pedido);
+  const cFim = new Date(per.ini.getTime() - DIA_MS), cIni = new Date(cFim.getTime() - (per.dias - 1) * DIA_MS);
+  const site = conta.sc_site;
+  const [diario, palavras, paginas, paises, aparelhos, aparencia, antes, sitemaps] = await Promise.all([
+    consultaSc(token, site, per.ini, per.fim, ["date"], 500),
+    consultaSc(token, site, per.ini, per.fim, ["query"], 1000),
+    consultaSc(token, site, per.ini, per.fim, ["page"], 250),
+    consultaSc(token, site, per.ini, per.fim, ["country"], 50),
+    consultaSc(token, site, per.ini, per.fim, ["device"], 5),
+    consultaSc(token, site, per.ini, per.fim, ["searchAppearance"], 20).catch(() => []),
+    cIni >= per.primeiro ? consultaSc(token, site, cIni, cFim, ["date"], 500).catch(() => null) : null,
+    chamar("GET", `${SC_API}/sites/${encodeURIComponent(site)}/sitemaps`, token).then(d => d.sitemap || []).catch(() => [])
+  ]);
+  const pl = palavras.map(p => ({ ...p, palavra: p.chave[0] }));
+  return {
+    conectado: true, site, de: isoDia(per.ini), ate: isoDia(per.fim), dias: per.dias, primeiro_dia: isoDia(per.primeiro), ultimo_dia: isoDia(per.ultimo),
+    totais: somaSc(diario), comparacao: antes ? { de: isoDia(cIni), ate: isoDia(cFim), totais: somaSc(antes), diario: antes.map(d => ({ data: d.chave[0], ...d, chave: undefined })) } : null,
+    diario: diario.map(d => ({ data: d.chave[0], cliques: d.cliques, impressoes: d.impressoes, ctr: d.ctr, posicao: d.posicao })),
+    palavras: pl, paginas: paginas.map(p => ({ ...p, pagina: p.chave[0] })), paises: paises.map(p => ({ ...p, pais: p.chave[0] })),
+    aparelhos: aparelhos.map(p => ({ ...p, aparelho: p.chave[0] })), aparencia: aparencia.map(p => ({ ...p, tipo: p.chave[0] })),
+    oportunidades: oportunidadesSc(pl),
+    sitemaps: sitemaps.map(m => ({ caminho: m.path, enviado: m.lastSubmitted || null, lido: m.lastDownloaded || null, pendente: Boolean(m.isPending), erros: Number(m.errors || 0), avisos: Number(m.warnings || 0), urls: (m.contents || []).reduce((s, c) => s + Number(c.submitted || 0), 0) }))
+  };
+}
+
+// ----- Google Ads
+async function chamarAds(env, token, metodo, caminho, corpo, gerente) {
+  const inicio = Date.now(), org = orgDoToken.get(token) || 0;
+  const r = await fetch(`https://googleads.googleapis.com/${versaoAds(env)}/${caminho}`, {
+    method: metodo, signal: AbortSignal.timeout(30000),
+    headers: { authorization: "Bearer " + token, "developer-token": String(env.GOOGLE_ADS_DEVELOPER_TOKEN || "").trim(), ...(gerente ? { "login-customer-id": String(gerente) } : {}), ...(corpo ? { "content-type": "application/json" } : {}) },
+    body: corpo ? JSON.stringify(corpo) : undefined
+  });
+  registrarUso(org, "google", "ads", `${metodo} ${caminho.split("/").pop().split(":").pop()}`.slice(0, 50), { erro: !r.ok, limitada: r.status === 429, ms: Date.now() - inicio });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    const det = JSON.stringify(d);
+    let msg = (d?.error?.details?.[0]?.errors?.[0]?.message) || d?.error?.message || `HTTP ${r.status}`;
+    if (/DEVELOPER_TOKEN_NOT_APPROVED|only approved for use with test accounts/i.test(det)) msg = "O token de desenvolvedor da DENIA ainda está em modo de teste no Google Ads: só funciona com contas de teste até o Google aprovar o acesso básico.";
+    else if (/USER_PERMISSION_DENIED/i.test(det)) msg = "A conta do Google usada não tem acesso a esta conta do Google Ads (ou falta escolher a conta gerente/MCC).";
+    else if (/SCOPE_INSUFFICIENT|insufficient.*scope/i.test(det)) msg = "Falta a permissão do Google Ads nesta conexão. Toque em Ligar o Google Ads e marque a caixa do Google Ads.";
+    else if (r.status === 404 && /version|not found/i.test(det)) msg = `A versão ${versaoAds(env)} da API do Google Ads não está disponível. Ajuste o secret GOOGLE_ADS_VERSAO para a versão atual.`;
+    const e = new Error("Google Ads: " + String(msg).slice(0, 300)); e.status = r.status; throw e;
+  }
+  return d;
+}
+async function gaql(env, token, cliente, gerente, consulta) {
+  const d = await chamarAds(env, token, "POST", `customers/${cliente}/googleAds:search`, { query: consulta }, gerente);
+  return d.results || [];
+}
+const entre = (ini, fim) => `segments.date BETWEEN '${isoDia(ini)}' AND '${isoDia(fim)}'`;
+const metricasAds = m => {
+  const custo = microsParaReal(m?.costMicros), cliques = Number(m?.clicks || 0), imp = Number(m?.impressions || 0), conv = Math.round(Number(m?.conversions || 0) * 100) / 100;
+  return { custo, cliques, impressoes: imp, conversoes: conv, valor_conversoes: Math.round(Number(m?.conversionsValue || 0) * 100) / 100,
+    ctr: imp ? Math.round((cliques / imp) * 10000) / 100 : 0, cpc: cliques ? Math.round((custo / cliques) * 100) / 100 : 0, custo_conversao: conv ? Math.round((custo / conv) * 100) / 100 : 0 };
+};
+export async function contasAds(env, k, conta) {
+  const token = await tokenDa(env, k, conta);
+  const d = await chamarAds(env, token, "GET", "customers:listAccessibleCustomers");
+  const ids = (d.resourceNames || []).map(n => n.split("/")[1]).slice(0, 25);
+  const lista = [];
+  for (const id of ids) {
+    const r = await gaql(env, token, id, null, "SELECT customer.id, customer.descriptive_name, customer.currency_code, customer.manager, customer.test_account FROM customer LIMIT 1").catch(e => ({ erro: e.message }));
+    if (r.erro) { lista.push({ id, nome: `Conta ${id}`, erro: r.erro }); continue; }
+    const c = r[0]?.customer || {};
+    lista.push({ id, nome: c.descriptiveName || `Conta ${id}`, moeda: c.currencyCode || "", gerente: Boolean(c.manager), teste: Boolean(c.testAccount) });
+    // Conta gerente (MCC): lista as contas de anúncio debaixo dela.
+    if (c.manager) {
+      const filhos = await gaql(env, token, id, id, "SELECT customer_client.id, customer_client.descriptive_name, customer_client.currency_code, customer_client.manager FROM customer_client WHERE customer_client.level <= 2").catch(() => []);
+      for (const f of filhos) { const cc = f.customerClient || {}; if (!cc.manager && String(cc.id) !== id) lista.push({ id: String(cc.id), nome: cc.descriptiveName || `Conta ${cc.id}`, moeda: cc.currencyCode || "", gerente: false, via: id }); }
+    }
+  }
+  return lista;
+}
+export async function relatorioAds(env, k, conta, pedido = {}) {
+  if (!conta.ads_cliente) return { conectado: false };
+  const token = await tokenDa(env, k, conta);
+  const cli = conta.ads_cliente, ger = conta.ads_gerente || null;
+  const per = periodoSc(k.agora(env) + (SC_ATRASO - 0) * DIA_MS, pedido); // Ads tem números de hoje
+  const cFim = new Date(per.ini.getTime() - DIA_MS), cIni = new Date(cFim.getTime() - (per.dias - 1) * DIA_MS);
+  const W = entre(per.ini, per.fim);
+  const q = c => gaql(env, token, cli, ger, c);
+  const [conta0, diario, antes, campanhas, palavras, termos, aparelhos, horas, recomendacoes, orcamentoConta, hoje] = await Promise.all([
+    q("SELECT customer.descriptive_name, customer.currency_code, customer.optimization_score, customer.time_zone FROM customer LIMIT 1"),
+    q(`SELECT segments.date, metrics.cost_micros, metrics.clicks, metrics.impressions, metrics.conversions, metrics.conversions_value FROM customer WHERE ${W}`),
+    q(`SELECT metrics.cost_micros, metrics.clicks, metrics.impressions, metrics.conversions, metrics.conversions_value FROM customer WHERE ${entre(cIni, cFim)}`).catch(() => []),
+    q(`SELECT campaign.id, campaign.name, campaign.status, campaign.advertising_channel_type, campaign.bidding_strategy_type, campaign_budget.resource_name, campaign_budget.amount_micros, metrics.cost_micros, metrics.clicks, metrics.impressions, metrics.conversions, metrics.conversions_value, metrics.search_impression_share FROM campaign WHERE ${W} AND campaign.status != 'REMOVED' ORDER BY metrics.cost_micros DESC LIMIT 200`),
+    q(`SELECT ad_group_criterion.criterion_id, ad_group_criterion.keyword.text, ad_group_criterion.keyword.match_type, ad_group_criterion.quality_info.quality_score, ad_group.name, campaign.id, campaign.name, metrics.cost_micros, metrics.clicks, metrics.impressions, metrics.conversions FROM keyword_view WHERE ${W} ORDER BY metrics.cost_micros DESC LIMIT 300`).catch(() => []),
+    q(`SELECT search_term_view.search_term, search_term_view.status, campaign.id, campaign.name, metrics.cost_micros, metrics.clicks, metrics.impressions, metrics.conversions FROM search_term_view WHERE ${W} ORDER BY metrics.cost_micros DESC LIMIT 300`).catch(() => []),
+    q(`SELECT segments.device, metrics.cost_micros, metrics.clicks, metrics.impressions, metrics.conversions FROM customer WHERE ${W}`).catch(() => []),
+    q(`SELECT segments.day_of_week, segments.hour, metrics.clicks, metrics.conversions, metrics.cost_micros FROM customer WHERE ${W}`).catch(() => []),
+    q("SELECT recommendation.resource_name, recommendation.type, recommendation.campaign, recommendation.impact FROM recommendation LIMIT 50").catch(() => []),
+    q("SELECT account_budget.status, account_budget.approved_spending_limit_micros, account_budget.adjusted_spending_limit_micros, account_budget.amount_served_micros, account_budget.approved_end_date_time FROM account_budget WHERE account_budget.status = 'APPROVED' LIMIT 5").catch(() => []),
+    q("SELECT metrics.cost_micros, metrics.clicks FROM customer WHERE segments.date DURING TODAY").catch(() => [])
+  ]);
+  const c0 = conta0[0]?.customer || {};
+  const somaM = linhas => metricasAds(linhas.reduce((a, l) => { const m = l.metrics || {}; for (const k2 of ["costMicros", "clicks", "impressions", "conversions", "conversionsValue"]) a[k2] = Number(a[k2] || 0) + Number(m[k2] || 0); return a; }, {}));
+  const DIAS_SEM = ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"];
+  const mapaHoras = Array.from({ length: 7 }, () => Array(24).fill(0)), mapaConv = Array.from({ length: 7 }, () => Array(24).fill(0));
+  for (const l of horas) { const d = (DIAS_SEM.indexOf(l.segments?.dayOfWeek) + 1) % 7, hr = Number(l.segments?.hour || 0); if (d >= 0) { mapaHoras[d][hr] += Number(l.metrics?.clicks || 0); mapaConv[d][hr] += Number(l.metrics?.conversions || 0); } }
+  const saldo = orcamentoConta.map(l => l.accountBudget || {}).map(b => {
+    const limite = Number(b.adjustedSpendingLimitMicros || b.approvedSpendingLimitMicros || 0), gasto = Number(b.amountServedMicros || 0);
+    return limite ? { limite: microsParaReal(limite), gasto: microsParaReal(gasto), restante: microsParaReal(limite - gasto), fim: b.approvedEndDateTime || null } : null;
+  }).filter(Boolean)[0] || null;
+  const NOME_REC = { KEYWORD: "Adicionar palavras-chave", CAMPAIGN_BUDGET: "Aumentar o orçamento (campanha limitada)", TEXT_AD: "Adicionar anúncio", TARGET_CPA_OPT_IN: "Usar CPA desejado", MAXIMIZE_CONVERSIONS_OPT_IN: "Maximizar conversões", MAXIMIZE_CLICKS_OPT_IN: "Maximizar cliques", RESPONSIVE_SEARCH_AD: "Adicionar anúncio responsivo", SITELINK_ASSET: "Adicionar sitelinks", CALLOUT_ASSET: "Adicionar frases de destaque", CALL_ASSET: "Adicionar telefone", KEYWORD_MATCH_TYPE: "Ampliar correspondência", SEARCH_PARTNERS_OPT_IN: "Ativar parceiros de pesquisa", USE_BROAD_MATCH_KEYWORD: "Usar correspondência ampla", RESPONSIVE_SEARCH_AD_IMPROVE_AD_STRENGTH: "Melhorar a força do anúncio", REMOVE_REDUNDANT_KEYWORDS: "Remover palavras repetidas", IMPROVE_PERFORMANCE_MAX_AD_STRENGTH: "Melhorar a força do Performance Max" };
+  return {
+    conectado: true, cliente: cli, nome: c0.descriptiveName || conta.ads_nome || cli, moeda: c0.currencyCode || conta.ads_moeda || "BRL", pontuacao: c0.optimizationScore != null ? Math.round(c0.optimizationScore * 1000) / 10 : null,
+    de: isoDia(per.ini), ate: isoDia(per.fim), dias: per.dias, totais: somaM(diario), anterior: antes.length ? { de: isoDia(cIni), ate: isoDia(cFim), totais: somaM(antes) } : null,
+    hoje: somaM(hoje), saldo,
+    diario: diario.map(l => ({ data: l.segments?.date, ...metricasAds(l.metrics) })).sort((a, b) => (a.data < b.data ? -1 : 1)),
+    campanhas: campanhas.map(l => ({ id: String(l.campaign?.id), nome: l.campaign?.name, status: l.campaign?.status, tipo: l.campaign?.advertisingChannelType, lance: l.campaign?.biddingStrategyType, orcamento: l.campaignBudget?.resourceName || null, orcamento_dia: microsParaReal(l.campaignBudget?.amountMicros), parcela_impressoes: l.metrics?.searchImpressionShare != null ? Math.round(l.metrics.searchImpressionShare * 1000) / 10 : null, ...metricasAds(l.metrics) })),
+    palavras: palavras.map(l => ({ texto: l.adGroupCriterion?.keyword?.text, tipo: l.adGroupCriterion?.keyword?.matchType, qualidade: l.adGroupCriterion?.qualityInfo?.qualityScore ?? null, grupo: l.adGroup?.name, campanha: l.campaign?.name, campanha_id: String(l.campaign?.id || ""), ...metricasAds(l.metrics) })),
+    termos: termos.map(l => ({ termo: l.searchTermView?.searchTerm, status: l.searchTermView?.status, campanha: l.campaign?.name, campanha_id: String(l.campaign?.id || ""), ...metricasAds(l.metrics) })),
+    aparelhos: aparelhos.map(l => ({ aparelho: l.segments?.device, ...metricasAds(l.metrics) })).filter(a => a.impressoes),
+    horarios: mapaHoras, horarios_conversoes: mapaConv,
+    recomendacoes: recomendacoes.map(l => l.recommendation || {}).map(r => ({ id: r.resourceName, tipo: r.type, nome: NOME_REC[r.type] || String(r.type || "").toLowerCase().replace(/_/g, " "), campanha: r.campaign || null,
+      ganho_cliques: r.impact ? Math.round(Number(r.impact.potentialMetrics?.clicks || 0) - Number(r.impact.baseMetrics?.clicks || 0)) : null, ganho_conversoes: r.impact ? Math.round((Number(r.impact.potentialMetrics?.conversions || 0) - Number(r.impact.baseMetrics?.conversions || 0)) * 10) / 10 : null }))
+  };
+}
+async function alterarAds(env, k, conta, acao, c) {
+  const invalido = m => Object.assign(new Error(m), { status: 400 });
+  const token = await tokenDa(env, k, conta);
+  const cli = conta.ads_cliente, ger = conta.ads_gerente || null;
+  const idOk = v => /^\d{1,20}$/.test(String(v || ""));
+  if (acao === "campanha") {
+    if (!idOk(c.campanha_id) || !["ENABLED", "PAUSED"].includes(c.status)) throw invalido("Campanha ou situação inválida.");
+    return chamarAds(env, token, "POST", `customers/${cli}/campaigns:mutate`, { operations: [{ update: { resourceName: `customers/${cli}/campaigns/${c.campanha_id}`, status: c.status }, updateMask: "status" }] }, ger);
+  }
+  if (acao === "orcamento") {
+    const valor = Number(c.valor);
+    if (!new RegExp(`^customers/${cli}/campaignBudgets/\\d+$`).test(String(c.orcamento || "")) || !(valor >= 1 && valor <= 1e6)) throw invalido("Orçamento inválido.");
+    return chamarAds(env, token, "POST", `customers/${cli}/campaignBudgets:mutate`, { operations: [{ update: { resourceName: c.orcamento, amountMicros: String(Math.round(valor * 100) * 10000) }, updateMask: "amount_micros" }] }, ger);
+  }
+  if (acao === "negativa") {
+    const termo = String(c.termo || "").trim().slice(0, 80);
+    if (!idOk(c.campanha_id) || !termo) throw invalido("Escolha o termo e a campanha.");
+    return chamarAds(env, token, "POST", `customers/${cli}/campaignCriteria:mutate`, { operations: [{ create: { campaign: `customers/${cli}/campaigns/${c.campanha_id}`, negative: true, keyword: { text: termo, matchType: c.correspondencia === "PHRASE" ? "PHRASE" : "EXACT" } } }] }, ger);
+  }
+  if (acao === "recomendacao") {
+    if (!new RegExp(`^customers/${cli}/recommendations/[\\w~-]+$`).test(String(c.id || ""))) throw invalido("Recomendação inválida.");
+    const caminho = c.descartar ? "recommendations:dismiss" : "recommendations:apply";
+    return chamarAds(env, token, "POST", `customers/${cli}/${caminho}`, { operations: [{ resourceName: c.id }] }, ger);
+  }
+  throw invalido("Ação desconhecida.");
+}
+
+// ----- Concorrentes (Google Maps): quem aparece para uma busca, em que posição o seu perfil está, nota e avaliações.
+const normal = t => String(t || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+export async function buscarConcorrentes(env, k, conta, busca) {
+  const chave = chavePlaces(env);
+  if (!chave) { const e = new Error("A pesquisa de concorrentes ainda não foi ligada: falta o secret GOOGLE_PLACES_API_KEY (Places API do Google) no Worker denia-landing."); e.status = 503; throw e; }
+  const inicio = Date.now();
+  const r = await fetch("https://places.googleapis.com/v1/places:searchText", {
+    method: "POST", signal: AbortSignal.timeout(20000),
+    headers: { "content-type": "application/json", "X-Goog-Api-Key": chave, "X-Goog-FieldMask": "places.id,places.displayName,places.rating,places.userRatingCount,places.formattedAddress,places.primaryTypeDisplayName,places.websiteUri,places.googleMapsUri,places.businessStatus,places.nationalPhoneNumber,places.priceLevel" },
+    body: JSON.stringify({ textQuery: busca, languageCode: "pt-BR", regionCode: "BR", pageSize: 20 })
+  });
+  registrarUso(conta.org_id, "google", "lugares", "searchText", { erro: !r.ok, limitada: r.status === 429, ms: Date.now() - inicio });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) { const e = new Error("Google Maps: " + String(d?.error?.message || `HTTP ${r.status}`).slice(0, 200)); e.status = 502; throw e; }
+  const meu = normal(conta.local_titulo);
+  const lugares = (d.places || []).map((p, i) => ({ posicao: i + 1, nome: p.displayName?.text || "", nota: p.rating ?? null, avaliacoes: p.userRatingCount || 0, endereco: p.formattedAddress || "", categoria: p.primaryTypeDisplayName?.text || "", site: p.websiteUri || "", mapa: p.googleMapsUri || "", telefone: p.nationalPhoneNumber || "", aberto: p.businessStatus !== "CLOSED_PERMANENTLY" }))
+    .map(p => ({ ...p, voce: Boolean(meu) && (normal(p.nome) === meu || (meu.length > 5 && normal(p.nome).includes(meu))) }));
+  const minha = lugares.find(p => p.voce);
+  const dia = isoDia(new Date(k.agora(env)));
+  await env.DB.prepare(`INSERT INTO plt_mk_concorrencia(org_id,marca_id,busca,dia,posicao,total,dados,criado_ms) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(org_id,marca_id,busca,dia) DO UPDATE SET posicao=excluded.posicao, total=excluded.total, dados=excluded.dados, criado_ms=excluded.criado_ms`)
+    .bind(conta.org_id, conta.marca_id, busca.slice(0, 120), dia, minha ? minha.posicao : null, lugares.length, JSON.stringify(lugares.slice(0, 20)), k.agora(env)).run();
+  const outros = lugares.filter(p => !p.voce && p.nota != null);
+  const media = outros.length ? Math.round((outros.reduce((s, p) => s + p.nota, 0) / outros.length) * 10) / 10 : null;
+  return { busca, dia, posicao: minha ? minha.posicao : null, lugares, media_nota: media, media_avaliacoes: outros.length ? Math.round(outros.reduce((s, p) => s + p.avaliacoes, 0) / outros.length) : null };
+}
+
+async function rotasGoogleExtra(request, env, k, orgId, papel, resto, url) {
+  const { json, pode } = k;
+  const metodo = request.method;
+  const marcaDe = async () => contaGoogleDe(env, orgId, Number(url.searchParams.get("marca")));
+  const erroJson = e => json({ erro: e.message, codigo: e.codigo || (/Falta (a )?permissão/.test(e.message) ? "RECONECTAR" : undefined) }, e.status && e.status < 500 && e.status !== 401 ? e.status : 502);
+  const corpoDe = async () => { const { corpo, erro } = await k.lerCorpo(request, 4000); if (erro) throw Object.assign(new Error("Pedido inválido."), { status: 400 }); return corpo; };
+
+  // Search Console
+  if (resto === "google/sc/sites" && metodo === "GET") {
+    const conta = await marcaDe();
+    if (!conta) return json({ conectada: false });
+    if (!temEscopo(conta, ESCOPO_SC)) return json({ conectada: true, precisa_reconectar: true, sites: [] });
+    try {
+      const token = await tokenDa(env, k, conta);
+      const d = await chamar("GET", `${SC_API}/sites`, token);
+      return json({ conectada: true, atual: conta.sc_site || null, sites: (d.siteEntry || []).filter(s => s.permissionLevel !== "siteUnverifiedUser").map(s => ({ site: s.siteUrl, permissao: s.permissionLevel })) });
+    } catch (e) { return erroJson(e); }
+  }
+  if (resto === "google/sc/site" && metodo === "POST") {
+    if (!pode(papel, "ADMIN")) return json({ erro: "Somente administradores." }, 403);
+    const c = await corpoDe().catch(e => e);
+    if (c instanceof Error) return json({ erro: c.message }, 400);
+    const site = String(c.site || "").trim().slice(0, 300);
+    if (site && !/^(https?:\/\/|sc-domain:)/.test(site)) return json({ erro: "Escolha uma propriedade do Search Console." }, 400);
+    await env.DB.prepare("UPDATE plt_mk_google SET sc_site=? WHERE org_id=? AND marca_id=?").bind(site || null, orgId, Number(c.marca_id)).run();
+    return json({ ok: true });
+  }
+  if (resto === "google/sc" && metodo === "GET") {
+    const conta = await marcaDe();
+    if (!conta) return json({ conectada: false });
+    if (!temEscopo(conta, ESCOPO_SC)) return json({ conectada: true, precisa_reconectar: true });
+    try { return json({ conectada: true, ...(await searchConsole(env, k, conta, { dias: url.searchParams.get("dias"), de: url.searchParams.get("de"), ate: url.searchParams.get("ate") })) }); }
+    catch (e) { return erroJson(e); }
+  }
+  if (resto === "google/sc/inspecionar" && metodo === "POST") {
+    if (!pode(papel, "AGENTE")) return json({ erro: "Seu perfil não tem permissão para esta ação." }, 403);
+    const c = await corpoDe().catch(e => e);
+    if (c instanceof Error) return json({ erro: c.message }, 400);
+    const conta = await contaGoogleDe(env, orgId, Number(c.marca_id));
+    if (!conta?.sc_site) return json({ erro: "Escolha o site do Search Console primeiro." }, 409);
+    const pagina = String(c.url || "").trim().slice(0, 800);
+    if (!/^https?:\/\//.test(pagina)) return json({ erro: "Cole o endereço completo da página (https://...)." }, 400);
+    try {
+      const token = await tokenDa(env, k, conta);
+      const d = await chamar("POST", SC_INSPECAO, token, { inspectionUrl: pagina, siteUrl: conta.sc_site, languageCode: "pt-BR" });
+      const i = d.inspectionResult || {}, x = i.indexStatusResult || {};
+      return json({ url: pagina, veredito: x.verdict || null, cobertura: x.coverageState || null, indexacao: x.indexingState || null, rastreio: x.lastCrawlTime || null, robots: x.robotsTxtState || null, busca: x.pageFetchState || null,
+        canonica_google: x.googleCanonical || null, canonica_site: x.userCanonical || null, celular: i.mobileUsabilityResult?.verdict || null, ricos: (i.richResultsResult?.detectedItems || []).map(r => r.richResultType), link: i.inspectionResultLink || null });
+    } catch (e) { return erroJson(e); }
+  }
+  if (resto === "google/sc/sitemap" && metodo === "POST") {
+    if (!pode(papel, "ADMIN")) return json({ erro: "Somente administradores." }, 403);
+    const c = await corpoDe().catch(e => e);
+    if (c instanceof Error) return json({ erro: c.message }, 400);
+    const conta = await contaGoogleDe(env, orgId, Number(c.marca_id));
+    if (!conta?.sc_site) return json({ erro: "Escolha o site do Search Console primeiro." }, 409);
+    const mapa = String(c.url || "").trim().slice(0, 500);
+    if (!/^https?:\/\/\S+$/.test(mapa)) return json({ erro: "Cole o endereço do sitemap (ex.: https://seusite.com.br/sitemap.xml)." }, 400);
+    try { const token = await tokenDa(env, k, conta); await chamar("PUT", `${SC_API}/sites/${encodeURIComponent(conta.sc_site)}/sitemaps/${encodeURIComponent(mapa)}`, token); return json({ ok: true }); }
+    catch (e) { return erroJson(e); }
+  }
+
+  // Google Ads
+  if (resto === "google/ads/contas" && metodo === "GET") {
+    const conta = await marcaDe();
+    if (!conta) return json({ conectada: false });
+    if (!adsConfigurado(env)) return json({ conectada: true, configurado: false, contas: [] });
+    if (!temEscopo(conta, ESCOPO_ADS)) return json({ conectada: true, configurado: true, precisa_reconectar: true, contas: [] });
+    try { return json({ conectada: true, configurado: true, atual: conta.ads_cliente || null, contas: await contasAds(env, k, conta) }); }
+    catch (e) { return erroJson(e); }
+  }
+  if (resto === "google/ads/conta" && metodo === "POST") {
+    if (!pode(papel, "ADMIN")) return json({ erro: "Somente administradores." }, 403);
+    const c = await corpoDe().catch(e => e);
+    if (c instanceof Error) return json({ erro: c.message }, 400);
+    const id = String(c.cliente || "").replace(/-/g, ""), via = String(c.gerente || "").replace(/-/g, "");
+    if (id && !/^\d{6,12}$/.test(id) || via && !/^\d{6,12}$/.test(via)) return json({ erro: "Conta do Google Ads inválida." }, 400);
+    await env.DB.prepare("UPDATE plt_mk_google SET ads_cliente=?, ads_gerente=?, ads_nome=?, ads_moeda=? WHERE org_id=? AND marca_id=?").bind(id || null, via || null, k.txt(c.nome, 120) || null, k.txt(c.moeda, 3) || null, orgId, Number(c.marca_id)).run();
+    return json({ ok: true });
+  }
+  if (resto === "google/ads" && metodo === "GET") {
+    const conta = await marcaDe();
+    if (!conta) return json({ conectada: false });
+    if (!adsConfigurado(env)) return json({ conectada: true, configurado: false });
+    if (!temEscopo(conta, ESCOPO_ADS)) return json({ conectada: true, configurado: true, precisa_reconectar: true });
+    try { return json({ conectada: true, configurado: true, ...(await relatorioAds(env, k, conta, { dias: url.searchParams.get("dias"), de: url.searchParams.get("de"), ate: url.searchParams.get("ate") })) }); }
+    catch (e) { return erroJson(e); }
+  }
+  if (resto.startsWith("google/ads/") && ["campanha", "orcamento", "negativa", "recomendacao"].includes(resto.slice(11)) && metodo === "POST") {
+    if (!pode(papel, "ADMIN")) return json({ erro: "Somente administradores mexem nos anúncios." }, 403);
+    const c = await corpoDe().catch(e => e);
+    if (c instanceof Error) return json({ erro: c.message }, 400);
+    const conta = await contaGoogleDe(env, orgId, Number(c.marca_id));
+    if (!conta?.ads_cliente) return json({ erro: "Escolha a conta do Google Ads primeiro." }, 409);
+    try {
+      await alterarAds(env, k, conta, resto.slice(11), c);
+      await k.auditar(env, request, k.sessao, orgId, "INTEGRACAO", `Google Ads (${conta.ads_cliente}): ${resto.slice(11)} ${JSON.stringify({ ...c, marca_id: undefined }).slice(0, 200)}`);
+      return json({ ok: true });
+    } catch (e) { return json({ erro: e.message }, e.status && e.status < 500 ? 400 : 502); }
+  }
+
+  // Concorrentes
+  if (resto === "google/concorrentes" && metodo === "GET") {
+    const conta = await marcaDe();
+    if (!conta) return json({ conectada: false });
+    const hist = (await env.DB.prepare("SELECT busca, dia, posicao, total FROM plt_mk_concorrencia WHERE org_id=? AND marca_id=? ORDER BY dia DESC LIMIT 400").bind(orgId, conta.marca_id).all())?.results || [];
+    const ultimo = await env.DB.prepare("SELECT busca, dia, posicao, dados FROM plt_mk_concorrencia WHERE org_id=? AND marca_id=? ORDER BY criado_ms DESC LIMIT 1").bind(orgId, conta.marca_id).first();
+    return json({ conectada: true, configurado: Boolean(chavePlaces(env)), perfil: conta.local_titulo, historico: hist, ultimo: ultimo ? { busca: ultimo.busca, dia: ultimo.dia, posicao: ultimo.posicao, lugares: JSON.parse(ultimo.dados || "[]") } : null });
+  }
+  if (resto === "google/concorrentes" && metodo === "POST") {
+    if (!pode(papel, "AGENTE")) return json({ erro: "Seu perfil não tem permissão para esta ação." }, 403);
+    const c = await corpoDe().catch(e => e);
+    if (c instanceof Error) return json({ erro: c.message }, 400);
+    const conta = await contaGoogleDe(env, orgId, Number(c.marca_id));
+    if (!conta) return json({ erro: "Conecte o Google desta marca primeiro." }, 409);
+    const busca = String(c.busca || "").trim().slice(0, 120);
+    if (busca.length < 3) return json({ erro: "Escreva a busca, com a cidade (ex.: oficina mecânica em Niterói)." }, 400);
+    try { return json(await buscarConcorrentes(env, k, conta, busca)); }
+    catch (e) { return json({ erro: e.message }, e.status || 502); }
+  }
+  return null;
 }
