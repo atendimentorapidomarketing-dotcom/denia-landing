@@ -1027,7 +1027,8 @@ function marcaPorNome(marcasOrg, nome, obrigatoria = true) {
   if (!m && obrigatoria) throw new Error(marcasOrg.length ? `Não encontrei a marca "${nome || ""}". Diga qual: ${marcasOrg.map(x => x.nome).join(", ")}.` : "Cadastre uma marca primeiro, em Marketing → Marcas.");
   return m;
 }
-const TIPOS_ACAO = ["criar_semana", "criar_post", "aprovar_posts", "publicar_post", "treinar", "pausar_ia", "google_resumo", "atualizar_google", "responder_avaliacoes", "relatorio_google"];
+const ACOES_TP = ["tp_resumo", "tp_precos", "tp_config", "tp_disponibilidade", "tp_estoque", "tp_nota", "tp_cotacao", "tp_mercado"];
+const TIPOS_ACAO = ["criar_semana", "criar_post", "aprovar_posts", "publicar_post", "treinar", "pausar_ia", "google_resumo", "atualizar_google", "responder_avaliacoes", "relatorio_google", ...ACOES_TP];
 const ACOES_GOOGLE = ["google_resumo", "atualizar_google", "responder_avaliacoes", "relatorio_google"];
 // Deixa a ação pronta para a tela executar: marca resolvida, campos conferidos.
 function prepararAcao(a, marcasOrg, txt) {
@@ -1053,12 +1054,99 @@ function prepararAcao(a, marcasOrg, txt) {
   if (tipo === "pausar_ia") p.pausar = a.pausar !== false;
   if (ACOES_GOOGLE.includes(tipo)) { const m = marcaPorNome(marcasOrg, a.marca); Object.assign(p, { marca: m.nome, marca_id: m.id }); }
   if (tipo === "responder_avaliacoes") p.publicar = a.publicar === true;
+  if (ACOES_TP.includes(tipo)) Object.assign(p, Object.fromEntries(Object.entries(a || {}).filter(([k2]) => k2 !== "tipo").map(([k2, v]) => [k2, typeof v === "string" ? txt(v, 1500) : v])));
   return p;
+}
+// Locação por temporada pela voz: preços, disponibilidade, estoque, melhorias, cotação e pesquisa de mercado.
+async function executarTemporada(a, contexto, txt) {
+  const tipo = a.tipo;
+  const falhou = r => r.status >= 400 ? (r.dados?.erro || "Não foi possível fazer agora.") : "";
+  const lista = await contexto.tp("GET", "imoveis");
+  if (falhou(lista)) return { tipo, ok: false, resumo: falhou(lista) };
+  const ims = (lista.dados.imoveis || []).filter(i => i.ativo);
+  const norm = t => String(t || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+  const acharIm = (nome, obrig = true) => {
+    if (!nome && ims.length === 1) return ims[0];
+    const n = norm(nome);
+    const im = ims.find(i => norm(i.nome) === n) || ims.find(i => n && norm(i.nome).includes(n)) || ims.find(i => n && n.includes(norm(i.nome)));
+    if (!im && obrig) throw new Error(ims.length ? `Não achei o imóvel "${nome || ""}". Imóveis: ${ims.map(i => i.nome).join(", ")}.` : "Ainda não há imóveis cadastrados em Locação por temporada.");
+    return im;
+  };
+  const dia = s2 => /^\d{4}-\d{2}-\d{2}$/.test(String(s2 || "")) ? s2 : null;
+  const R = (ok, resumo, abrir = "#/temporada/calendario") => ({ tipo, ok, resumo, abrir });
+  if (tipo === "tp_resumo") {
+    const im = a.imovel ? acharIm(a.imovel) : null;
+    const v = await contexto.tp("GET", `visao${im ? "?imovel=" + im.id : ""}`);
+    if (falhou(v)) return R(false, falhou(v));
+    const est = await contexto.tp("GET", `estoque${im ? "?imovel=" + im.id : ""}`);
+    const baixos = (est.dados?.itens || []).filter(x => x.minimo > 0 && x.quantidade <= x.minimo);
+    const d = v.dados;
+    return R(true, `${im ? im.nome : `${d.imoveis} imóvel(is)`}: ocupação de ${d.ocupacao ?? "—"}% nos últimos 30 dias, receita ${d.receita}, diária média ${d.diaria_media ?? "—"}. Próximas entradas: ${(d.proximas || []).slice(0, 5).map(r => `${r.imovel} ${r.inicio} (${r.hospede || "hóspede"})`).join("; ") || "nenhuma"}. ${baixos.length ? "Estoque acabando: " + baixos.slice(0, 8).map(b => `${b.imovel} — ${b.item}`).join(", ") + "." : "Estoque em dia."} ${d.rascunhos ? d.rascunhos + " resposta(s) para hóspedes esperando aprovação." : ""}`, "#/temporada/visao");
+  }
+  if (tipo === "tp_precos" || tipo === "tp_disponibilidade") {
+    const im = acharIm(a.imovel), de = dia(a.de), ate = dia(a.ate) || dia(a.de);
+    if (!de) return R(false, "Diga o período (de e até).");
+    const corpo = { imovel_id: im.id, de, ate };
+    if (tipo === "tp_disponibilidade") corpo.fechado = a.bloquear !== false;
+    else { if (a.voltar_ao_base) corpo.limpar = true; else { if (Number(a.preco) > 0) corpo.preco = Number(a.preco); if (Number(a.minimo) > 0) corpo.minimo = Number(a.minimo); } }
+    const r = await contexto.tp("POST", "precos", corpo);
+    if (falhou(r)) return R(false, falhou(r));
+    const env2 = r.dados.plataformas?.enviado ? " Já enviado para as plataformas conectadas." : "";
+    return R(true, tipo === "tp_disponibilidade" ? `${im.nome}: ${corpo.fechado ? "fechado" : "aberto"} de ${de} a ${ate}.${env2}` : corpo.limpar ? `${im.nome}: de ${de} a ${ate} voltou ao preço normal.${env2}` : `${im.nome}: ${corpo.preco ? "diária de " + corpo.preco : ""}${corpo.minimo ? " mínimo de " + corpo.minimo + " noites" : ""} de ${de} a ${ate}.${env2}`);
+  }
+  if (tipo === "tp_config") {
+    const im = acharIm(a.imovel);
+    const campos = ["preco_base", "preco_fds", "minimo_noites", "maximo_noites", "taxa_limpeza", "desconto_semanal", "desconto_mensal", "taxa_hospede_extra", "hospedes_incluidos", "taxa_pet"];
+    const corpo = Object.fromEntries(campos.filter(c => a[c] !== undefined && a[c] !== null && a[c] !== "").map(c => [c, Number(a[c])]));
+    if (!Object.keys(corpo).length) return R(false, "Diga o que mudar (diária, fim de semana, limpeza, desconto semanal ou mensal, mínimo de noites).");
+    const r = await contexto.tp("POST", `imoveis/${im.id}`, corpo);
+    if (falhou(r)) return R(false, falhou(r));
+    const NOME = { preco_base: "diária", preco_fds: "fim de semana", minimo_noites: "mínimo de noites", maximo_noites: "máximo de noites", taxa_limpeza: "taxa de limpeza", desconto_semanal: "desconto semanal (%)", desconto_mensal: "desconto mensal (%)", taxa_hospede_extra: "hóspede extra", hospedes_incluidos: "hóspedes incluídos", taxa_pet: "taxa de pet" };
+    return R(true, `${im.nome}: ${Object.entries(corpo).map(([c, v]) => `${NOME[c]} ${v}`).join(", ")}.${r.dados.plataformas?.enviado ? " Enviado para as plataformas." : ""}`, "#/temporada/imoveis");
+  }
+  if (tipo === "tp_estoque") {
+    const im = acharIm(a.imovel);
+    const est = await contexto.tp("GET", `estoque?imovel=${im.id}`);
+    if (falhou(est)) return R(false, falhou(est));
+    const itens = est.dados.itens || [];
+    if (!a.item) return R(true, itens.length ? `Estoque de ${im.nome}: ${itens.map(x => `${x.item} ${x.quantidade}${x.unidade ? " " + x.unidade : ""}${x.minimo > 0 && x.quantidade <= x.minimo ? " (acabando)" : ""}`).join(", ")}.` : `${im.nome} ainda não tem lista de estoque.`, "#/temporada/estoque");
+    const it = itens.find(x => norm(x.item) === norm(a.item)) || itens.find(x => norm(x.item).includes(norm(a.item)) || norm(a.item).includes(norm(x.item)));
+    if (!it) {
+      if (a.quantidade === undefined) return R(false, `Não há "${a.item}" no estoque de ${im.nome}.`);
+      const r = await contexto.tp("POST", "estoque", { imovel_id: im.id, item: a.item, quantidade: Number(a.quantidade) || 0, minimo: Number(a.minimo) || 0, unidade: a.unidade || "un" });
+      return falhou(r) ? R(false, falhou(r)) : R(true, `Adicionei ${a.item} (${Number(a.quantidade) || 0}) ao estoque de ${im.nome}.`, "#/temporada/estoque");
+    }
+    if (a.minimo !== undefined) await contexto.tp("POST", "estoque", { imovel_id: im.id, item: it.item, quantidade: it.quantidade, minimo: Number(a.minimo) || 0, unidade: it.unidade, categoria: it.categoria });
+    if (a.quantidade === undefined && a.somar === undefined) return R(true, `${it.item} em ${im.nome}: ${it.quantidade}${it.unidade ? " " + it.unidade : ""} (mínimo ${it.minimo}).`, "#/temporada/estoque");
+    const nova = a.somar !== undefined ? Math.max(0, Number(it.quantidade) + Number(a.somar)) : Number(a.quantidade);
+    const r = await contexto.tp("POST", "estoque/conferir", { imovel_id: im.id, itens: [{ id: it.id, quantidade: nova }], origem: "VOZ" });
+    return falhou(r) ? R(false, falhou(r)) : R(true, `${it.item} em ${im.nome}: agora ${nova}${it.unidade ? " " + it.unidade : ""}.${(r.dados.baixos || []).length ? " Acabando: " + r.dados.baixos.map(b => b.item).join(", ") + "." : ""}`, "#/temporada/estoque");
+  }
+  if (tipo === "tp_nota") {
+    const im = acharIm(a.imovel);
+    const r = await contexto.tp("POST", "notas", { imovel_id: im.id, texto: a.texto, prioridade: ["ALTA", "MEDIA", "BAIXA"].includes(a.prioridade) ? a.prioridade : "MEDIA", categoria: a.categoria });
+    return falhou(r) ? R(false, falhou(r)) : R(true, `Anotado em ${im.nome}: ${txt(a.texto, 160)}.`, "#/temporada/melhorias");
+  }
+  if (tipo === "tp_cotacao") {
+    const im = acharIm(a.imovel);
+    if (!dia(a.inicio) || !dia(a.fim)) return R(false, "Diga a entrada e a saída.");
+    const r = await contexto.tp("GET", `cotacao?imovel=${im.id}&inicio=${a.inicio}&fim=${a.fim}&hospedes=${Number(a.hospedes) || 0}&canal=${a.canal || "direto"}`);
+    if (falhou(r)) return R(false, falhou(r));
+    const c = r.dados;
+    return R(true, `${im.nome}, ${c.noites} noite(s): diárias ${c.diarias}${c.desconto ? `, desconto de ${c.desconto_pct}% (−${c.desconto})` : ""}${c.hospede_extra ? `, hóspede extra ${c.hospede_extra}` : ""}, limpeza ${c.limpeza}. Total ${c.moeda} ${c.total}.${c.ocupado ? " Atenção: essas datas já estão ocupadas." : ""}${c.abaixo_do_minimo ? ` Abaixo do mínimo de ${c.minimo_noites} noites.` : ""}`, "#/temporada/calendario");
+  }
+  if (tipo === "tp_mercado") {
+    const im = acharIm(a.imovel);
+    const r = await contexto.tp("POST", `imoveis/${im.id}/mercado`, { pergunta: a.pergunta, periodo: a.periodo });
+    return falhou(r) ? R(false, falhou(r)) : R(true, r.dados.resultado, "#/temporada/imoveis");
+  }
+  return R(false, "Ação desconhecida.");
 }
 
 // Executa uma ação pedida por voz usando as rotas normais do painel (com as mesmas permissões e auditoria).
 async function executarAcao(a, { marcasOrg, contexto, txt }) {
   const tipo = String(a?.tipo || "");
+  if (ACOES_TP.includes(tipo)) return contexto.tp ? executarTemporada({ ...a, tipo }, contexto, txt) : { tipo, ok: false, resumo: "Locação por temporada indisponível aqui." };
   const acharMarca = (nome, obrigatoria = true) => marcaPorNome(marcasOrg, nome, obrigatoria);
   const falhou = r => r.status >= 400 ? (r.dados?.erro || "Não foi possível fazer agora.") : "";
   const canais = Array.isArray(a.canais) && a.canais.length ? a.canais : undefined;
@@ -1215,6 +1303,15 @@ Você também EXECUTA ações quando a pessoa pede claramente. Ações disponív
 - {"tipo":"atualizar_google","marca":"nome"} — busca agora as avaliações e o desempenho no Google.
 - {"tipo":"responder_avaliacoes","marca":"nome","publicar":false} — escreve uma resposta específica para cada avaliação sem resposta. publicar=true só quando a pessoa pedir claramente para publicar; as avaliações graves ou que podem violar as regras do Google nunca são publicadas sozinhas — avise quais precisam de uma pessoa e o motivo.
 - {"tipo":"relatorio_google","marca":"nome"} — gera agora o relatório de especialista da marca (o que melhorou, o que precisa de atenção, buscas e plano da semana).
+LOCAÇÃO POR TEMPORADA (imóveis no Airbnb, Booking e Vrbo) — use o nome do imóvel; datas sempre AAAA-MM-DD:
+- {"tipo":"tp_resumo","imovel":"nome ou vazio"} — ocupação, receita, próximas entradas, estoque acabando.
+- {"tipo":"tp_precos","imovel":"nome","de":"AAAA-MM-DD","ate":"AAAA-MM-DD","preco":800,"minimo":3} — muda a diária e/ou o mínimo de noites de um período (vai para as plataformas conectadas). "voltar_ao_base":true volta ao preço normal.
+- {"tipo":"tp_disponibilidade","imovel":"nome","de":"...","ate":"...","bloquear":true|false} — fecha ou abre datas.
+- {"tipo":"tp_config","imovel":"nome","preco_base":700,"preco_fds":900,"taxa_limpeza":150,"desconto_semanal":10,"desconto_mensal":25,"minimo_noites":2,"maximo_noites":30,"taxa_hospede_extra":50,"hospedes_incluidos":4} — muda a configuração geral (só os campos pedidos).
+- {"tipo":"tp_estoque","imovel":"nome","item":"papel higiênico","quantidade":10|"somar":-2,"minimo":6} — consulta (sem item ou sem quantidade) ou atualiza o estoque.
+- {"tipo":"tp_nota","imovel":"nome","texto":"o que melhorar","prioridade":"ALTA"|"MEDIA"|"BAIXA"} — anota uma melhoria ou manutenção.
+- {"tipo":"tp_cotacao","imovel":"nome","inicio":"...","fim":"...","hospedes":4} — calcula quanto fica a estadia.
+- {"tipo":"tp_mercado","imovel":"nome","pergunta":"opcional","periodo":"opcional"} — pesquisa na internet as diárias da região, se o anúncio aparece no Google e se o preço está bom.
 Regras: só inclua uma ação quando o pedido for claro; se faltar algo essencial (por exemplo a marca, havendo mais de uma), pergunte em vez de agir. Marcas existentes: ${marcasOrg.map(m => m.nome).join(", ") || "nenhuma cadastrada"}. Na "resposta", diga em poucas palavras o que você está fazendo (no futuro imediato: "Vou criar..."), porque o resultado aparece logo depois.
 Responda SEMPRE em JSON: {"resposta":"texto para falar","acoes":[]}
 DADOS DO PAINEL (agora):
@@ -1249,12 +1346,14 @@ Use os DADOS DO PAINEL para responder sobre conversas do WhatsApp, atendimentos,
 ${ESPECIALISTA_DIGITAL}
 Para assuntos de fora (notícias, concorrentes, tendências, preços de mercado, qualquer dúvida do mundo), use a ferramenta pesquisar_web e conte o resultado de forma curta, citando de onde veio.
 Quando a pessoa pedir claramente uma ação, use a ferramenta certa (criar_semana, criar_post, aprovar_posts, publicar_post, treinar, pausar_ia, google_resumo, atualizar_google, responder_avaliacoes, relatorio_google). Para perguntas sobre o Google de uma marca (avaliações, nota, ligações, buscas, posição), use google_resumo antes de responder. Antes, diga numa frase curta o que vai fazer ("Vou abrir o treinamento e acrescentar isso"); a pessoa vê você fazendo na tela e pode pausar ou parar. Quando a ferramenta devolver o resultado, conte em uma frase. Se faltar algo essencial (por exemplo qual marca, havendo mais de uma), pergunte antes.
+Locação por temporada: para preços, disponibilidade, estoque, melhorias, cotação e mercado use as ferramentas tp_*. Datas em AAAA-MM-DD (se a pessoa disser "próximo fim de semana", calcule a partir da data de hoje). Antes de mudar preço ou fechar datas, confirme o imóvel e o período em uma frase.
 Treinamento: prefira acrescentar; substituir só se pedirem para trocar tudo daquele campo (aí o texto é o campo inteiro já reescrito). Escreva o texto do treinamento como instrução clara para a IA que atende os clientes no WhatsApp.
 Publicar: com a marca conectada (Marcas → Conectar Instagram e Facebook), os posts aprovados saem sozinhos no horário marcado e publicar_post publica na hora. Sem conexão, o post fica aprovado. No Google Meu Negócio é igual: com a marca conectada (Marcas → Conectar Google) os posts saem no perfil e as respostas às avaliações são publicadas direto no Google. Diga isso com honestidade.
 Marcas existentes: ${marcasOrg.map(m => m.nome).join(", ") || "nenhuma cadastrada"}.
 DADOS DO PAINEL (no início da conversa):
 ${contexto.dados}`;
       const marca = { type: "string", description: "Nome da marca" };
+      const imovelP = { type: "string", description: "Nome do imóvel de temporada" }, dataP = { type: "string", description: "AAAA-MM-DD" };
       const canais = { type: "array", items: { type: "string", enum: ["instagram", "facebook", "google"] } };
       const tools = [
         { type: "function", name: "criar_semana", description: "Planeja e cria os posts da semana de uma marca (legendas, hashtags e imagens).", parameters: { type: "object", properties: { marca, canais, quantidade: { type: "integer", minimum: 1, maximum: 14 }, semana: { type: "string", enum: ["esta", "proxima"] }, com_artes: { type: "boolean" } }, required: ["marca"] } },
@@ -1268,6 +1367,14 @@ ${contexto.dados}`;
         { type: "function", name: "responder_avaliacoes", description: "Escreve uma resposta específica para cada avaliação sem resposta. publicar=true só se a pessoa pedir claramente; as graves ou que podem violar as regras do Google nunca são publicadas sozinhas.", parameters: { type: "object", properties: { marca, publicar: { type: "boolean" } }, required: ["marca"] } },
         { type: "function", name: "relatorio_google", description: "Gera agora o relatório de especialista da marca (Google Meu Negócio e redes).", parameters: { type: "object", properties: { marca }, required: ["marca"] } },
         { type: "function", name: "pesquisar_web", description: "Pesquisa na internet, ao vivo, e devolve um resumo com as fontes.", parameters: { type: "object", properties: { pergunta: { type: "string" } }, required: ["pergunta"] } },
+        { type: "function", name: "tp_resumo", description: "Locação por temporada: ocupação, receita, próximas entradas, estoque acabando (de um imóvel ou de todos).", parameters: { type: "object", properties: { imovel: imovelP } } },
+        { type: "function", name: "tp_precos", description: "Muda a diária e/ou o mínimo de noites de um período de um imóvel (vai para Airbnb/Booking/Vrbo conectados). voltar_ao_base volta ao preço normal.", parameters: { type: "object", properties: { imovel: imovelP, de: dataP, ate: dataP, preco: { type: "number" }, minimo: { type: "integer" }, voltar_ao_base: { type: "boolean" } }, required: ["imovel", "de", "ate"] } },
+        { type: "function", name: "tp_disponibilidade", description: "Fecha (bloquear=true) ou abre datas de um imóvel.", parameters: { type: "object", properties: { imovel: imovelP, de: dataP, ate: dataP, bloquear: { type: "boolean" } }, required: ["imovel", "de", "ate"] } },
+        { type: "function", name: "tp_config", description: "Muda a configuração geral de preço de um imóvel: diária, fim de semana, taxa de limpeza, descontos semanal/mensal (%), mínimo/máximo de noites, hóspede extra.", parameters: { type: "object", properties: { imovel: imovelP, preco_base: { type: "number" }, preco_fds: { type: "number" }, taxa_limpeza: { type: "number" }, desconto_semanal: { type: "number" }, desconto_mensal: { type: "number" }, minimo_noites: { type: "integer" }, maximo_noites: { type: "integer" }, taxa_hospede_extra: { type: "number" }, hospedes_incluidos: { type: "integer" } }, required: ["imovel"] } },
+        { type: "function", name: "tp_estoque", description: "Consulta ou atualiza o estoque de um imóvel. Sem item: lista tudo. quantidade = contagem nova; somar = soma/subtrai.", parameters: { type: "object", properties: { imovel: imovelP, item: { type: "string" }, quantidade: { type: "number" }, somar: { type: "number" }, minimo: { type: "number" } }, required: ["imovel"] } },
+        { type: "function", name: "tp_nota", description: "Anota uma melhoria ou manutenção para um imóvel.", parameters: { type: "object", properties: { imovel: imovelP, texto: { type: "string" }, prioridade: { type: "string", enum: ["ALTA", "MEDIA", "BAIXA"] } }, required: ["imovel", "texto"] } },
+        { type: "function", name: "tp_cotacao", description: "Calcula quanto fica uma estadia (diárias, descontos, limpeza, hóspede extra).", parameters: { type: "object", properties: { imovel: imovelP, inicio: dataP, fim: dataP, hospedes: { type: "integer" } }, required: ["imovel", "inicio", "fim"] } },
+        { type: "function", name: "tp_mercado", description: "Pesquisa na internet diárias de imóveis parecidos na região, se o anúncio aparece no Google, eventos e se o preço está bom.", parameters: { type: "object", properties: { imovel: imovelP, pergunta: { type: "string" }, periodo: { type: "string" } }, required: ["imovel"] } },
         { type: "function", name: "dados_do_painel", description: "Busca os dados mais recentes do painel (conversas, atendimentos, posts, treinamento).", parameters: { type: "object", properties: {} } }
       ];
       // Com a voz da pessoa (ElevenLabs), a conversa ao vivo devolve texto e o painel fala com a voz clonada.

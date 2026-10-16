@@ -714,7 +714,7 @@ test("Voz ao vivo — chave temporária com ferramentas, pesquisa na internet, e
   assert.deepEqual([r.dados.chave, r.dados.url], ["ek_temporaria", "https://api.openai.com/v1/realtime/calls"], "o navegador recebe só uma chave temporária");
   assert.ok(!JSON.stringify(r.dados).includes("sk-proj"), "a chave de verdade nunca vai para o navegador");
   assert.equal(sessao.audio.input.turn_detection.type, "semantic_vad", "detecta sozinho quando a pessoa terminou de falar");
-  assert.deepEqual(sessao.tools.map(t => t.name), ["criar_semana", "criar_post", "aprovar_posts", "publicar_post", "treinar", "pausar_ia", "google_resumo", "atualizar_google", "responder_avaliacoes", "relatorio_google", "pesquisar_web", "dados_do_painel"]);
+  assert.deepEqual(sessao.tools.map(t => t.name), ["criar_semana", "criar_post", "aprovar_posts", "publicar_post", "treinar", "pausar_ia", "google_resumo", "atualizar_google", "responder_avaliacoes", "relatorio_google", "pesquisar_web", "tp_resumo", "tp_precos", "tp_disponibilidade", "tp_config", "tp_estoque", "tp_nota", "tp_cotacao", "tp_mercado", "dados_do_painel"]);
   assert.match(sessao.instructions, /Clínica Sol/);
   assert.match(sessao.instructions, /IA do WhatsApp/);
   const busca = await p.req("/api/orgs/1/assistente/pesquisar", { metodo: "POST", quem: "admin", corpo: { pergunta: "tendências" } });
@@ -2114,3 +2114,118 @@ test("Temporada — importar todos os anúncios da conta (Channex): só os do gr
   assert.ok(p.channexChamadas.filter(c => c.caminho === "/webhooks").length === 2, "cada anúncio importado já avisa reservas e mensagens");
 });
 
+
+test("Temporada — cotação com descontos, valores da reserva e planilha da plataforma (Booking 'indisponível' vira reserva)", async () => {
+  const p = await criarPlataforma();
+  p.env.__agora = () => Date.parse("2026-10-16T12:00:00Z");
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  const id = (await p.req("/api/orgs/1/tp/imoveis", { metodo: "POST", quem: "admin", corpo: { nome: "Loft Ipanema", capacidade: 4, preco_base: 500, preco_fds: 700, taxa_limpeza: 180, desconto_semanal: 10, desconto_mensal: 30, hospedes_incluidos: 2, taxa_hospede_extra: 50, comodidades: ["Wi-Fi", "Ar-condicionado", "Wi-Fi"] } })).dados.id;
+  const im = (await p.req(`/api/orgs/1/tp/imoveis/${id}`, { quem: "admin" })).dados.imovel;
+  assert.deepEqual(im.comodidades, ["Wi-Fi", "Ar-condicionado"]);
+  // 7 noites (seg 19/10 a seg 26/10): 5×500 + sex e sáb 2×700 = 3900; −10% = 3510; 2 hóspedes extras × 50 × 7 = 700; limpeza 180.
+  const c = (await p.req(`/api/orgs/1/tp/cotacao?imovel=${id}&inicio=2026-10-19&fim=2026-10-26&hospedes=4`, { quem: "admin" })).dados;
+  assert.equal(c.diarias, 3900); assert.equal(c.desconto_pct, 10); assert.equal(c.desconto, 390); assert.equal(c.hospede_extra, 700); assert.equal(c.limpeza, 180); assert.equal(c.total, 4390);
+  assert.equal((await p.req(`/api/orgs/1/tp/cotacao?imovel=${id}&inicio=2026-11-01&fim=2026-12-01`, { quem: "admin" })).dados.desconto_pct, 30, "28+ noites: desconto mensal");
+  // Reserva manual já entra com a limpeza do imóvel; valores editáveis.
+  const r = (await p.req("/api/orgs/1/tp/reservas", { metodo: "POST", quem: "admin", corpo: { imovel_id: id, inicio: "2026-11-10", fim: "2026-11-13", hospede: "Ana", valor: 1800 } })).dados.id;
+  assert.equal(p.env.DB.q("SELECT taxa_limpeza FROM plt_tp_reservas WHERE id=?", r)[0].taxa_limpeza, 180);
+  await p.req(`/api/orgs/1/tp/reservas/${r}/valores`, { metodo: "POST", quem: "admin", corpo: { valor: 1900, taxas: 57 } });
+  assert.deepEqual(p.env.DB.q("SELECT valor, taxas, taxa_limpeza FROM plt_tp_reservas WHERE id=?", r)[0], { valor: 1900, taxas: 57, taxa_limpeza: 180 });
+  // O calendário do Booking trouxe "indisponível": a planilha completa como reserva, com valor e hóspede.
+  p.env.DB.prepare("INSERT INTO plt_tp_reservas(org_id,imovel_id,canal,externo_id,tipo,status,hospede,inicio,fim,origem,criado_ms,atualizado_ms) VALUES(1,?,'booking','ical1','BLOQUEIO','CONFIRMADA','Bloqueio','2026-12-01','2026-12-05','ICAL',1,1)").bind(id).run();
+  const imp = (await p.req("/api/orgs/1/tp/reservas/importar", { metodo: "POST", quem: "admin", corpo: { canal: "booking", linhas: [
+    { inicio: "2026-12-01", fim: "2026-12-05", hospede: "Hans Müller", valor: 2600, limpeza: 180, taxas: 390, anuncio: "Loft Ipanema", codigo: "BK123" },
+    { inicio: "2027-01-02", fim: "2027-01-06", hospede: "Joana", valor: 3000, anuncio: "loft ipanema" },
+    { inicio: "2027-01-02", fim: "2027-01-06", anuncio: "Outro imóvel" }, { inicio: "x", fim: "y" }] } })).dados;
+  assert.deepEqual([imp.atualizadas, imp.criadas, imp.sem_imovel, imp.invalidas], [1, 1, 1, 1]);
+  const bk = p.env.DB.q("SELECT tipo, hospede, valor, taxas, codigo FROM plt_tp_reservas WHERE externo_id='ical1'")[0];
+  assert.deepEqual(bk, { tipo: "RESERVA", hospede: "Hans Müller", valor: 2600, taxas: 390, codigo: "BK123" });
+});
+
+test("Temporada — estoque: lista pronta, check-out pede conferência, link sem login para quem limpa e problemas viram melhoria", async () => {
+  const p = await criarPlataforma({ RESEND_API_KEY: "re_teste", EMAIL_REMETENTE: "DENIA <oi@denia.test>" });
+  p.env.__agora = () => Date.parse("2026-10-16T20:00:00Z");
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  p.env.DB.prepare("INSERT OR REPLACE INTO plt_meta(chave,valor) VALUES('base_url','https://plataforma.test')").run();
+  const id = (await p.req("/api/orgs/1/tp/imoveis", { metodo: "POST", quem: "admin", corpo: { nome: "Casa Búzios" } })).dados.id;
+  assert.equal((await p.req("/api/orgs/1/tp/estoque", { metodo: "POST", quem: "admin", corpo: { imovel_id: id, padrao: true } })).dados.itens, 18);
+  await p.req("/api/orgs/1/tp/reservas", { metodo: "POST", quem: "admin", corpo: { imovel_id: id, inicio: "2026-10-12", fim: "2026-10-16", hospede: "Ana" } });
+  const est = (await p.req(`/api/orgs/1/tp/estoque?imovel=${id}`, { quem: "admin" })).dados;
+  assert.equal(est.pendentes.length, 1, "check-out de hoje sem conferência");
+  const papel = est.itens.find(x => x.item === "Papel higiênico");
+  // Cron: e-mail com o link para quem limpa.
+  const mod = await import("../src/worker.js");
+  { let t; await mod.default.scheduled({}, p.env, { waitUntil: x => { t = x; } }); await t; }
+  const email = p.emails.find(e => /confira o estoque/.test(e.subject));
+  assert.ok(email, "avisou o responsável");
+  const link = String(email.text || email.html).match(/https:\/\/plataforma\.test(\/tp\/limpeza\/\d+-[A-Za-z0-9]{32})/)[1];
+  assert.equal((await p.req(link.replace(/.$/, "x"))).status, 404, "link adulterado não abre");
+  const pag = await p.req(link);
+  assert.equal(pag.status, 200); assert.match(await pag.r.text(), /Papel higiênico/);
+  // Quem limpa responde pelo celular (formulário simples, sem login).
+  const form = new URLSearchParams({ quem: "Dona Maria", ["q_" + papel.id]: "4", obs: "Chuveiro do banheiro pingando", feita: "1" });
+  const env2 = await mod.default.fetch(new Request("https://plataforma.test" + link, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: form }), p.env);
+  assert.match(await env2.text(), /Acabando: Papel higiênico \(4 rolos\)\. O anfitrião já foi avisado/);
+  assert.ok(p.emails.some(e => /comprar reposição/.test(e.subject) && /Chuveiro/.test(e.text)), "anfitrião avisado do que comprar");
+  const depois = (await p.req(`/api/orgs/1/tp/estoque?imovel=${id}`, { quem: "admin" })).dados;
+  assert.equal(depois.itens.find(x => x.item === "Papel higiênico").quantidade, 4);
+  assert.equal(depois.pendentes.length, 0, "conferência feita");
+  assert.equal(depois.movimentos[0].origem, "CHECKOUT"); assert.equal(depois.movimentos[0].autor, "Dona Maria");
+  const notas = (await p.req("/api/orgs/1/tp/notas", { quem: "admin" })).dados.notas;
+  assert.equal(notas[0].texto, "Chuveiro do banheiro pingando");
+  assert.equal(p.env.DB.q("SELECT status, responsavel FROM plt_tp_limpezas")[0].status, "FEITA");
+  // Melhorias: concluir.
+  await p.req(`/api/orgs/1/tp/notas/${notas[0].id}`, { metodo: "POST", quem: "admin", corpo: { status: "FEITA", custo: 120 } });
+  assert.equal(p.env.DB.q("SELECT status, custo FROM plt_tp_notas")[0].custo, 120);
+});
+
+test("Temporada — preços ficam na plataforma, janela de reservas e fotos", async () => {
+  const p = await criarPlataforma({ CHANNEX_API_KEY: "cx_teste", CHANNEX_STAGING: "1" });
+  p.env.__agora = () => Date.parse("2026-10-16T12:00:00Z");
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  let n = 0;
+  p.channex = caminho => caminho === "/properties" ? { data: { id: "prop-1" } } : caminho === "/room_types" ? { data: { id: "room-1" } } : caminho === "/rate_plans" ? { data: { id: "rate-" + (++n) } } : caminho === "/auth/one_time_token" ? { data: { token: "t" } } : caminho === "/groups" ? { data: { id: "g1" } } : { data: {} };
+  const id = (await p.req("/api/orgs/1/tp/imoveis", { metodo: "POST", quem: "admin", corpo: { nome: "Apto", preco_base: 400, precos_modo: "PLATAFORMA", janela_meses: 3 } })).dados.id;
+  await p.req(`/api/orgs/1/tp/imoveis/${id}/conectar`, { metodo: "POST", quem: "admin", corpo: {} });
+  const vals = p.channexChamadas.filter(c => c.caminho === "/restrictions").flatMap(c => c.corpo.values);
+  assert.ok(vals.length > 300);
+  assert.ok(vals.every(v => v.rate === undefined), "com os preços na plataforma, a DENIA não grava preço noite a noite");
+  assert.ok(vals.filter(v => v.date_from > "2027-01-16").every(v => v.stop_sell === true), "depois da janela de 3 meses: fechado");
+  assert.ok(vals.filter(v => v.date_from <= "2027-01-16").every(v => v.stop_sell === false));
+  const cal = (await p.req("/api/orgs/1/tp/calendario?de=2027-01-10&ate=2027-01-20", { quem: "admin" })).dados.imoveis[0];
+  assert.equal(cal.precos.find(x => x.data === "2027-01-20").fora_janela, true);
+  const ical = await (await p.req(`/tp/ical/${p.env.DB.q("SELECT ical_token FROM plt_tp_imoveis")[0].ical_token}.ics`)).r.text();
+  assert.match(ical, /Fora da janela de reservas/);
+  // Fotos: guarda reduzida e devolve a imagem só para a empresa.
+  const png = "data:image/png;base64," + btoa(String.fromCharCode(137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 0));
+  const f = (await p.req(`/api/orgs/1/tp/imoveis/${id}/fotos`, { metodo: "POST", quem: "admin", corpo: { dados: png, legenda: "Sala" } })).dados.id;
+  const img = await p.req(`/api/orgs/1/tp/fotos/${f}`, { quem: "admin" });
+  assert.equal(img.r.headers.get("content-type"), "image/png");
+  assert.equal((await p.req(`/api/orgs/1/tp/imoveis/${id}/fotos`, { metodo: "POST", quem: "admin", corpo: { dados: "data:text/html;base64,PHNjcmlwdD4=" } })).status, 400);
+  // Desconectar apaga o imóvel do Channex.
+  await p.req(`/api/orgs/1/tp/imoveis/${id}/desconectar`, { metodo: "POST", quem: "admin", corpo: {} });
+  assert.ok(p.channexChamadas.some(c => c.metodo === "DELETE" && c.caminho === "/properties/prop-1"));
+});
+
+test("DENIA por voz — temporada: muda preço de um período, atualiza estoque, anota melhoria e cota estadia", async () => {
+  const p = await criarPlataforma();
+  p.env.__agora = () => Date.parse("2026-10-16T12:00:00Z");
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  await p.req("/api/orgs/1/ia/chave", { metodo: "POST", quem: "admin", corpo: { chave: "sk-proj-" + "f".repeat(40) } });
+  const id = (await p.req("/api/orgs/1/tp/imoveis", { metodo: "POST", quem: "admin", corpo: { nome: "Loft Ipanema", preco_base: 500 } })).dados.id;
+  await p.req("/api/orgs/1/tp/estoque", { metodo: "POST", quem: "admin", corpo: { imovel_id: id, item: "Papel higiênico", quantidade: 10, minimo: 6, unidade: "rolos" } });
+  const ex = acao => p.req("/api/orgs/1/assistente/executar", { metodo: "POST", quem: "admin", corpo: { acao } });
+  const a = (await ex({ tipo: "tp_precos", imovel: "loft ipanema", de: "2026-12-30", ate: "2027-01-01", preco: 1500, minimo: 3 })).dados;
+  assert.equal(a.ok, true, JSON.stringify(a));
+  assert.equal(p.env.DB.q("SELECT COUNT(*) n FROM plt_tp_precos WHERE preco=1500 AND minimo=3")[0].n, 3);
+  const b = (await ex({ tipo: "tp_estoque", imovel: "Loft", item: "papel", somar: -5 })).dados;
+  assert.equal(b.ok, true); assert.match(b.resumo, /agora 5/); assert.match(b.resumo, /Acabando: Papel higiênico/);
+  const c = (await ex({ tipo: "tp_nota", imovel: "Loft Ipanema", texto: "Trocar a lâmpada da sala", prioridade: "ALTA" })).dados;
+  assert.equal(c.ok, true); assert.equal(p.env.DB.q("SELECT prioridade FROM plt_tp_notas")[0].prioridade, "ALTA");
+  const d = (await ex({ tipo: "tp_config", imovel: "Loft Ipanema", taxa_limpeza: 150, desconto_semanal: 12 })).dados;
+  assert.equal(d.ok, true); assert.deepEqual(p.env.DB.q("SELECT taxa_limpeza, desconto_semanal FROM plt_tp_imoveis")[0], { taxa_limpeza: 150, desconto_semanal: 12 });
+  const e = (await ex({ tipo: "tp_cotacao", imovel: "Loft Ipanema", inicio: "2026-12-30", fim: "2027-01-02" })).dados;
+  assert.match(e.resumo, /Total BRL 4650/, e.resumo);
+  const f = (await ex({ tipo: "tp_precos", imovel: "Casa que não existe", de: "2026-12-01", ate: "2026-12-02", preco: 1 })).dados;
+  assert.equal(f.ok, false); assert.match(f.resumo, /Não achei o imóvel/);
+});

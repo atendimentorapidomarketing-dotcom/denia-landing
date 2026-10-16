@@ -21,7 +21,40 @@ export const DDL_TEMPORADA = [
   `CREATE TABLE IF NOT EXISTS plt_tp_msgs (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, imovel_id INTEGER, reserva_id INTEGER, canal TEXT, direcao TEXT NOT NULL, origem TEXT NOT NULL, texto TEXT, traducao TEXT, externo_id TEXT UNIQUE, status TEXT, criado_ms INTEGER NOT NULL)`,
   `CREATE INDEX IF NOT EXISTS idx_tp_msgs_reserva ON plt_tp_msgs(org_id, reserva_id, id)`,
   `CREATE TABLE IF NOT EXISTS plt_tp_limpezas (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, imovel_id INTEGER NOT NULL, reserva_id INTEGER UNIQUE, data TEXT NOT NULL, responsavel TEXT, status TEXT NOT NULL DEFAULT 'PENDENTE', criado_ms INTEGER NOT NULL)`,
-  `CREATE INDEX IF NOT EXISTS idx_tp_limp_data ON plt_tp_limpezas(org_id, data)`
+  `CREATE INDEX IF NOT EXISTS idx_tp_limp_data ON plt_tp_limpezas(org_id, data)`,
+  `CREATE TABLE IF NOT EXISTS plt_tp_notas (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, imovel_id INTEGER NOT NULL, texto TEXT NOT NULL, categoria TEXT, prioridade TEXT NOT NULL DEFAULT 'MEDIA', status TEXT NOT NULL DEFAULT 'ABERTA', custo REAL, autor TEXT, criado_ms INTEGER NOT NULL, feito_ms INTEGER)`,
+  `CREATE INDEX IF NOT EXISTS idx_tp_notas ON plt_tp_notas(org_id, imovel_id, status)`,
+  `CREATE TABLE IF NOT EXISTS plt_tp_estoque (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, imovel_id INTEGER NOT NULL, item TEXT NOT NULL, categoria TEXT, quantidade REAL NOT NULL DEFAULT 0, minimo REAL NOT NULL DEFAULT 0, unidade TEXT, atualizado_ms INTEGER, atualizado_por TEXT, UNIQUE(imovel_id, item))`,
+  `CREATE TABLE IF NOT EXISTS plt_tp_estoque_mov (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, imovel_id INTEGER NOT NULL, item_id INTEGER NOT NULL, antes REAL, depois REAL, origem TEXT, limpeza_id INTEGER, autor TEXT, ms INTEGER NOT NULL)`,
+  `CREATE INDEX IF NOT EXISTS idx_tp_est_mov ON plt_tp_estoque_mov(org_id, imovel_id, ms)`,
+  `CREATE TABLE IF NOT EXISTS plt_tp_fotos (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, imovel_id INTEGER NOT NULL, mime TEXT NOT NULL, dados TEXT NOT NULL, legenda TEXT, ordem INTEGER NOT NULL DEFAULT 0, criado_ms INTEGER NOT NULL)`,
+  `CREATE INDEX IF NOT EXISTS idx_tp_fotos ON plt_tp_fotos(org_id, imovel_id, ordem)`
+];
+// Colunas novas (bancos criados antes desta versão).
+export const ALTERS_TEMPORADA = [
+  ...["desconto_semanal REAL", "desconto_mensal REAL", "hospedes_incluidos INTEGER", "taxa_hospede_extra REAL", "taxa_pet REAL", "maximo_noites INTEGER", "antecedencia_dias INTEGER", "comodidades TEXT", "precos_modo TEXT", "janela_meses INTEGER"].map(c => "ALTER TABLE plt_tp_imoveis ADD COLUMN " + c),
+  ...["taxa_limpeza REAL", "taxas REAL", "codigo TEXT"].map(c => "ALTER TABLE plt_tp_reservas ADD COLUMN " + c),
+  ...["estoque_ok_ms INTEGER", "aviso_ms INTEGER", "obs TEXT"].map(c => "ALTER TABLE plt_tp_limpezas ADD COLUMN " + c)
+];
+// Comodidades (as mesmas categorias que Airbnb e Booking usam), para marcar no imóvel e a IA usar nas respostas.
+export const COMODIDADES = {
+  "Essenciais": ["Wi-Fi", "Ar-condicionado", "Ventilador", "Aquecimento", "Roupa de cama", "Toalhas", "Sabonete e xampu", "Papel higiênico", "Cabides", "Ferro de passar", "Secador de cabelo"],
+  "Cozinha": ["Cozinha completa", "Geladeira", "Micro-ondas", "Fogão", "Forno", "Cafeteira", "Liquidificador", "Utensílios de cozinha", "Louças e talheres", "Lava-louças", "Churrasqueira"],
+  "Lazer": ["TV", "Smart TV / streaming", "Piscina", "Hidromassagem", "Varanda", "Vista para o mar", "Jardim", "Área de jogos", "Academia", "Sauna"],
+  "Lavanderia": ["Máquina de lavar", "Secadora", "Varal"],
+  "Estacionamento e acesso": ["Estacionamento grátis", "Garagem coberta", "Elevador", "Entrada independente", "Fechadura eletrônica", "Portaria 24h", "Acessível para cadeira de rodas"],
+  "Família e pets": ["Berço", "Cadeira de bebê", "Aceita pets", "Adequado para crianças"],
+  "Trabalho": ["Espaço de trabalho", "Mesa e cadeira", "Wi-Fi rápido (fibra)"],
+  "Segurança": ["Detector de fumaça", "Extintor", "Kit de primeiros socorros", "Câmeras na área externa", "Cofre"],
+  "Localização": ["Pé na areia", "Perto da praia", "Perto do centro", "Perto de mercado", "Perto de transporte público"]
+};
+// Lista inicial de estoque (produtos de limpeza e reposição) — o anfitrião ajusta.
+export const ESTOQUE_PADRAO = [
+  ["Papel higiênico", "Banheiro", 12, 6, "rolos"], ["Sabonete", "Banheiro", 6, 3, "un"], ["Xampu", "Banheiro", 4, 2, "un"], ["Condicionador", "Banheiro", 4, 2, "un"],
+  ["Detergente", "Limpeza", 3, 1, "un"], ["Esponja", "Limpeza", 6, 2, "un"], ["Desinfetante", "Limpeza", 2, 1, "un"], ["Água sanitária", "Limpeza", 2, 1, "un"],
+  ["Multiuso", "Limpeza", 2, 1, "un"], ["Saco de lixo", "Limpeza", 30, 10, "un"], ["Pano de chão", "Limpeza", 3, 1, "un"],
+  ["Café", "Cozinha", 2, 1, "pct"], ["Açúcar", "Cozinha", 2, 1, "pct"], ["Filtro de café", "Cozinha", 2, 1, "cx"], ["Papel toalha", "Cozinha", 4, 2, "rolos"],
+  ["Jogo de cama (troca)", "Enxoval", 3, 2, "jogos"], ["Toalha de banho", "Enxoval", 6, 4, "un"], ["Toalha de rosto", "Enxoval", 6, 4, "un"]
 ];
 export const CANAIS = { airbnb: "Airbnb", booking: "Booking.com", vrbo: "Vrbo", direto: "Reserva direta", outro: "Outro" };
 export const CAMPOS_TREINO_IMOVEL = [
@@ -121,6 +154,12 @@ function precoDoDia(im, data, especial) {
   const dow = new Date(data + "T12:00:00Z").getUTCDay(); // noite de sexta e sábado = fim de semana
   return (dow === 5 || dow === 6) && im.preco_fds > 0 ? im.preco_fds : Number(im.preco_base || 0);
 }
+// Janela de reservas (como no Airbnb): o calendário fica aberto só até N meses à frente. 0 ou vazio = sem limite.
+function fimDaJanela(im, agoraMs) {
+  const n = Number(im.janela_meses || 0);
+  if (!n) return null;
+  const h0 = new Date(agoraMs); return iso(Date.UTC(h0.getUTCFullYear(), h0.getUTCMonth() + n, h0.getUTCDate()));
+}
 function precoNoCanal(preco, im, canal) { const aj = json_(im.ajustes, {}); return Math.round(preco * (1 + (Number(aj[canal]) || 0) / 100) * 100) / 100; }
 
 // ---------------------------------------------------------------------------
@@ -150,9 +189,12 @@ const webhookUrlChannex = async (env, k, orgId, base) => new URL(`/webhook/chann
 async function gravarReservaChannex(env, org, im, bookingId, b, agora) {
   const canal = /airbnb/i.test(b.ota_name || "") ? "airbnb" : /booking/i.test(b.ota_name || "") ? "booking" : /vrbo|homeaway|expedia/i.test(b.ota_name || "") ? "vrbo" : "outro";
   const cliente = b.customer || {};
-  await env.DB.prepare(`INSERT INTO plt_tp_reservas(org_id,imovel_id,canal,externo_id,tipo,status,hospede,hospedes,inicio,fim,valor,moeda,contato,origem,criado_ms,atualizado_ms) VALUES(?,?,?,?,'RESERVA',?,?,?,?,?,?,?,?,'CHANNEX',?,?)
-    ON CONFLICT(org_id,imovel_id,canal,externo_id) DO UPDATE SET status=excluded.status, hospede=excluded.hospede, hospedes=excluded.hospedes, inicio=excluded.inicio, fim=excluded.fim, valor=excluded.valor, moeda=excluded.moeda, contato=excluded.contato, origem='CHANNEX', atualizado_ms=excluded.atualizado_ms`)
-    .bind(org, im.id, canal, "cx:" + bookingId, b.status === "cancelled" ? "CANCELADA" : "CONFIRMADA", cortar([cliente.name, cliente.surname].filter(Boolean).join(" "), 120) || "Hóspede", Number(b.occupancy?.adults || 0) + Number(b.occupancy?.children || 0) || null, b.arrival_date || iso(agora), b.departure_date || iso(agora + DIA), Number(b.amount || 0) || null, b.currency || im.moeda || "BRL", cortar(cliente.mail || cliente.phone || "", 120), agora, agora).run();
+  // Taxa de limpeza: a que veio da plataforma (serviço "cleaning" da reserva) ou, se não vier, a do imóvel.
+  const servicos = (b.rooms || []).flatMap(x => x.services || []).concat(b.services || []);
+  const limpeza = servicos.filter(x => /clean|limpeza/i.test(String(x.name || x.type || ""))).reduce((t, x) => t + Number(x.total_price || x.price || 0), 0) || Number(im.taxa_limpeza || 0) || null;
+  await env.DB.prepare(`INSERT INTO plt_tp_reservas(org_id,imovel_id,canal,externo_id,tipo,status,hospede,hospedes,inicio,fim,valor,moeda,contato,origem,taxa_limpeza,codigo,criado_ms,atualizado_ms) VALUES(?,?,?,?,'RESERVA',?,?,?,?,?,?,?,?,'CHANNEX',?,?,?,?)
+    ON CONFLICT(org_id,imovel_id,canal,externo_id) DO UPDATE SET status=excluded.status, hospede=excluded.hospede, hospedes=excluded.hospedes, inicio=excluded.inicio, fim=excluded.fim, valor=excluded.valor, moeda=excluded.moeda, contato=excluded.contato, origem='CHANNEX', taxa_limpeza=COALESCE(excluded.taxa_limpeza,taxa_limpeza), codigo=COALESCE(excluded.codigo,codigo), atualizado_ms=excluded.atualizado_ms`)
+    .bind(org, im.id, canal, "cx:" + bookingId, b.status === "cancelled" ? "CANCELADA" : "CONFIRMADA", cortar([cliente.name, cliente.surname].filter(Boolean).join(" "), 120) || "Hóspede", Number(b.occupancy?.adults || 0) + Number(b.occupancy?.children || 0) || null, b.arrival_date || iso(agora), b.departure_date || iso(agora + DIA), Number(b.amount || 0) || null, b.currency || im.moeda || "BRL", cortar(cliente.mail || cliente.phone || "", 120), limpeza, cortar(b.ota_reservation_code || b.unique_id || "", 60) || null, agora, agora).run();
 }
 // Traz para a DENIA todos os imóveis da empresa que estão no Channex (ligados às plataformas) e as reservas futuras.
 export async function importarDoChannex(env, k, orgId, base) {
@@ -204,11 +246,16 @@ async function enviarPrecosChannex(env, k, im, de, ate) {
   const rates = json_(im.channex_rates, {});
   const esp = new Map(((await env.DB.prepare("SELECT * FROM plt_tp_precos WHERE imovel_id=? AND data BETWEEN ? AND ?").bind(im.id, de, ate).all())?.results || []).map(x => [x.data, x]));
   const values = [];
+  const limiteJanela = fimDaJanela(im, k.agora(env));
   for (let d = de; d <= ate && values.length < 2500; d = somaDias(d, 1)) {
-    const e = esp.get(d);
+    const e0 = esp.get(d), e = limiteJanela && d > limiteJanela ? { ...(e0 || {}), fechado: 1 } : e0;
     for (const [canal, rate] of Object.entries(rates)) {
       if (!rate) continue;
-      values.push({ property_id: im.channex_property, rate_plan_id: rate, date_from: d, date_to: d, rate: precoNoCanal(precoDoDia(im, d, e), im, canal).toFixed(2), min_stay_arrival: Number(e?.minimo || im.minimo_noites || 1), stop_sell: Boolean(e?.fechado) });
+      // Preços na plataforma: a DENIA só cuida da disponibilidade e do mínimo de noites (o preço fica como o anfitrião deixou lá).
+      const v = { property_id: im.channex_property, rate_plan_id: rate, date_from: d, date_to: d, min_stay_arrival: Number(e?.minimo || im.minimo_noites || 1), stop_sell: Boolean(e?.fechado) };
+      if (im.precos_modo !== "PLATAFORMA") v.rate = precoNoCanal(precoDoDia(im, d, e), im, canal).toFixed(2);
+      if (Number(im.maximo_noites) > 0) v.max_stay = Number(im.maximo_noites);
+      values.push(v);
     }
   }
   for (let i = 0; i < values.length; i += 500) await cx(env, "POST", "/restrictions", { values: values.slice(i, i + 500) });
@@ -255,7 +302,12 @@ const INSTRUCOES_HOSPEDE = `Você é o anfitrião (ou a equipe do anfitrião) de
 Responda em JSON: {"resposta":"","traducao":"","traducao_hospede":"","precisa_anfitriao":false,"motivo":"","risco":"baixo","sinais":[]}`;
 function textoTreino(im) {
   const t = json_(im.treinamento, {});
-  return CAMPOS_TREINO_IMOVEL.map(([c, r]) => t[c] ? `${r.toUpperCase()}:\n${cortar(t[c], 2500)}` : "").filter(Boolean).join("\n\n") || "(o anfitrião ainda não preencheu o treinamento deste imóvel)";
+  const com = json_(im.comodidades, []);
+  const partes = CAMPOS_TREINO_IMOVEL.map(([c, r]) => t[c] ? `${r.toUpperCase()}:\n${cortar(t[c], 2500)}` : "").filter(Boolean);
+  if (com.length) partes.push(`COMODIDADES (o imóvel TEM; o que não está aqui, não diga que tem):\n${com.join(", ")}`);
+  const taxas = [im.taxa_limpeza ? `limpeza ${im.taxa_limpeza}` : "", im.taxa_hospede_extra ? `hóspede extra ${im.taxa_hospede_extra} por noite acima de ${im.hospedes_incluidos || im.capacidade || "?"} pessoas` : "", im.taxa_pet ? `pet ${im.taxa_pet}` : ""].filter(Boolean);
+  if (taxas.length) partes.push(`TAXAS (${im.moeda || "BRL"}): ${taxas.join("; ")}`);
+  return partes.join("\n\n") || "(o anfitrião ainda não preencheu o treinamento deste imóvel)";
 }
 export async function sugerirResposta(env, k, orgId, im, reserva, texto, historico = []) {
   const envIA = await k.comIA(env, orgId);
@@ -294,7 +346,7 @@ async function resumo(env, orgId, de, ate, imovelId) {
   const res = (await env.DB.prepare(`SELECT * FROM plt_tp_reservas WHERE org_id=? AND status='CONFIRMADA' AND inicio <= ? AND fim > ? ${imovelId ? "AND imovel_id=?" : ""}`).bind(orgId, ate, de, ...(imovelId ? [imovelId] : [])).all())?.results || [];
   const dias = noites(de, somaDias(ate, 1));
   const disponiveis = imoveis.length * dias;
-  let ocupadas = 0, bloqueadas = 0, receita = 0, noitesPagas = 0;
+  let ocupadas = 0, bloqueadas = 0, receita = 0, noitesPagas = 0, limpezas = 0;
   const porCanal = {}, porDia = new Map(), antecedencia = [], estadias = [];
   for (const r of res) {
     const ini = r.inicio < de ? de : r.inicio, fim = r.fim > somaDias(ate, 1) ? somaDias(ate, 1) : r.fim;
@@ -303,6 +355,7 @@ async function resumo(env, orgId, de, ate, imovelId) {
     ocupadas += n;
     const valor = r.valor ? (Number(r.valor) * n) / total : 0;
     receita += valor; if (r.valor) noitesPagas += n;
+    if (r.taxa_limpeza && r.fim > de && r.fim <= somaDias(ate, 1)) limpezas += Number(r.taxa_limpeza);
     const c = porCanal[r.canal] = porCanal[r.canal] || { canal: r.canal, nome: CANAIS[r.canal] || r.canal, reservas: 0, noites: 0, receita: 0 };
     c.reservas++; c.noites += n; c.receita += valor;
     for (let d = ini; d < fim; d = somaDias(d, 1)) porDia.set(d, (porDia.get(d) || 0) + 1);
@@ -317,7 +370,7 @@ async function resumo(env, orgId, de, ate, imovelId) {
     receita: Math.round(receita * 100) / 100, diaria_media: noitesPagas ? Math.round((receita / noitesPagas) * 100) / 100 : null,
     revpar: disponiveis ? Math.round((receita / disponiveis) * 100) / 100 : null, reservas: res.filter(r => r.tipo === "RESERVA").length,
     por_canal: Object.values(porCanal).map(c => ({ ...c, receita: Math.round(c.receita * 100) / 100 })), serie,
-    antecedencia_mediana: med(antecedencia), estadia_mediana: med(estadias)
+    antecedencia_mediana: med(antecedencia), estadia_mediana: med(estadias), taxas_limpeza: Math.round(limpezas * 100) / 100
   };
 }
 
@@ -333,9 +386,11 @@ export async function rotasTemporada(request, env, k, orgId, papel, resto) {
   const ler = async (lim = 60000) => { const { corpo, erro } = await lerCorpo(request, lim); return erro ? { erro } : { corpo }; };
   const precisa = n => pode(papel, n) ? null : json({ erro: "Seu perfil não pode fazer isso." }, 403);
   const imovel = async id => env.DB.prepare("SELECT * FROM plt_tp_imoveis WHERE id=? AND org_id=?").bind(Number(id), orgId).first();
-  const publico = im => ({ ...im, ajustes: json_(im.ajustes, {}), treinamento: json_(im.treinamento, {}), anuncio: json_(im.anuncio, {}), channex_rates: undefined, conectado_channex: Boolean(im.channex_property),
+  const publico = im => ({ ...im, ajustes: json_(im.ajustes, {}), treinamento: json_(im.treinamento, {}), anuncio: json_(im.anuncio, {}), comodidades: json_(im.comodidades, []), channex_rates: undefined, conectado_channex: Boolean(im.channex_property),
     ical_url: im.ical_token ? new URL(`/tp/ical/${im.ical_token}.ics`, request.url).toString() : null });
   let m;
+  const extra = await rotasTemporadaExtra(request, env, k, orgId, r, { json, ler, precisa, imovel, agora, q });
+  if (extra) return extra;
 
   if (r === "visao" && metodo === "GET") {
     const de = dataOk(q.get("de")) ? q.get("de") : iso(agora - 29 * DIA), ate = dataOk(q.get("ate")) ? q.get("ate") : iso(agora);
@@ -373,12 +428,19 @@ export async function rotasTemporada(request, env, k, orgId, papel, resto) {
       /^[A-Z]{3}$/.test(corpo.moeda || "") ? corpo.moeda : atual?.moeda || "BRL", num(corpo.preco_base, atual?.preco_base), num(corpo.preco_fds, atual?.preco_fds), num(corpo.minimo_noites, atual?.minimo_noites), num(corpo.taxa_limpeza, atual?.taxa_limpeza),
       JSON.stringify(ajustes), JSON.stringify(treinamento), JSON.stringify(anuncio), ["AUTO", "SUGERIR"].includes(corpo.ia_modo) ? corpo.ia_modo : atual?.ia_modo || "SUGERIR", corpo.ativo === false ? 0 : 1];
     let novoId = id;
+    const extras = { desconto_semanal: num(corpo.desconto_semanal, atual?.desconto_semanal), desconto_mensal: num(corpo.desconto_mensal, atual?.desconto_mensal), hospedes_incluidos: num(corpo.hospedes_incluidos, atual?.hospedes_incluidos), taxa_hospede_extra: num(corpo.taxa_hospede_extra, atual?.taxa_hospede_extra),
+      taxa_pet: num(corpo.taxa_pet, atual?.taxa_pet), maximo_noites: num(corpo.maximo_noites, atual?.maximo_noites), antecedencia_dias: num(corpo.antecedencia_dias, atual?.antecedencia_dias),
+      comodidades: Array.isArray(corpo.comodidades) ? JSON.stringify([...new Set(corpo.comodidades.map(x => k.txt(x, 60)).filter(Boolean))].slice(0, 150)) : atual?.comodidades ?? null,
+      precos_modo: ["DENIA", "PLATAFORMA"].includes(corpo.precos_modo) ? corpo.precos_modo : atual?.precos_modo || "DENIA",
+      janela_meses: corpo.janela_meses !== undefined ? ([0, 3, 6, 9, 12, 24].includes(Number(corpo.janela_meses)) ? Number(corpo.janela_meses) : 0) : atual?.janela_meses ?? null };
+    for (const c of ["desconto_semanal", "desconto_mensal"]) if (extras[c] != null) extras[c] = Math.max(0, Math.min(90, extras[c]));
     if (id) await env.DB.prepare("UPDATE plt_tp_imoveis SET nome=?, endereco=?, cidade=?, capacidade=?, quartos=?, banheiros=?, checkin=?, checkout=?, moeda=?, preco_base=?, preco_fds=?, minimo_noites=?, taxa_limpeza=?, ajustes=?, treinamento=?, anuncio=?, ia_modo=?, ativo=? WHERE id=? AND org_id=?").bind(...v, id, orgId).run();
     else novoId = (await env.DB.prepare("INSERT INTO plt_tp_imoveis(nome,endereco,cidade,capacidade,quartos,banheiros,checkin,checkout,moeda,preco_base,preco_fds,minimo_noites,taxa_limpeza,ajustes,treinamento,anuncio,ia_modo,ativo,org_id,ical_token,criado_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id").bind(...v, orgId, [...crypto.getRandomValues(new Uint8Array(18))].map(b => b.toString(16).padStart(2, "0")).join(""), agora).first())?.id;
+    await env.DB.prepare(`UPDATE plt_tp_imoveis SET ${Object.keys(extras).map(c => c + "=?").join(", ")} WHERE id=? AND org_id=?`).bind(...Object.values(extras), novoId, orgId).run();
     // Mudou preço, mínimo ou ajuste das plataformas: manda para as plataformas conectadas.
     let enviado = null;
     const im = await imovel(novoId);
-    if (im.channex_property && (corpo.preco_base !== undefined || corpo.preco_fds !== undefined || corpo.ajustes || corpo.minimo_noites !== undefined))
+    if (im.channex_property && (corpo.preco_base !== undefined || corpo.preco_fds !== undefined || corpo.ajustes || corpo.minimo_noites !== undefined || corpo.maximo_noites !== undefined || corpo.precos_modo !== undefined || corpo.janela_meses !== undefined))
       enviado = await enviarPrecosChannex(env, k, im, iso(agora), iso(agora + 365 * DIA)).catch(e => ({ erro: e.message }));
     await auditar(env, request, sessao, orgId, "TEMPORADA", `${id ? "Atualizou" : "Cadastrou"} o imóvel ${nome}`);
     return json({ ok: true, id: novoId, plataformas: enviado });
@@ -453,7 +515,7 @@ export async function rotasTemporada(request, env, k, orgId, papel, resto) {
     return json({ ok: true });
   }
   if (r === "calendario" && metodo === "GET") {
-    const de = dataOk(q.get("de")) ? q.get("de") : iso(agora), ate = dataOk(q.get("ate")) && noites(de, q.get("ate")) <= 120 ? q.get("ate") : somaDias(de, 41);
+    const de = dataOk(q.get("de")) ? q.get("de") : iso(agora), ate = dataOk(q.get("ate")) && noites(de, q.get("ate")) <= 400 ? q.get("ate") : somaDias(de, 41);
     const ims = (await env.DB.prepare("SELECT * FROM plt_tp_imoveis WHERE org_id=? AND ativo=1 ORDER BY nome").bind(orgId).all())?.results || [];
     const [res, esp] = await env.DB.batch([
       env.DB.prepare("SELECT id, imovel_id, canal, tipo, hospede, hospedes, inicio, fim, valor, risco, origem FROM plt_tp_reservas WHERE org_id=? AND status='CONFIRMADA' AND inicio <= ? AND fim > ?").bind(orgId, ate, de),
@@ -461,7 +523,7 @@ export async function rotasTemporada(request, env, k, orgId, papel, resto) {
     ]);
     const e = new Map((esp?.results || []).map(x => [x.imovel_id + "|" + x.data, x]));
     const dias = []; for (let d = de; d <= ate; d = somaDias(d, 1)) dias.push(d);
-    return json({ de, ate, dias, imoveis: ims.map(im => ({ id: im.id, nome: im.nome, moeda: im.moeda, ajustes: json_(im.ajustes, {}), precos: dias.map(d => { const x = e.get(im.id + "|" + d); return { data: d, preco: precoDoDia(im, d, x), minimo: x?.minimo || im.minimo_noites || 1, fechado: Boolean(x?.fechado), especial: Boolean(x?.preco) }; }) })), reservas: res?.results || [], canais: CANAIS });
+    return json({ de, ate, dias, imoveis: ims.map(im => ({ id: im.id, nome: im.nome, moeda: im.moeda, ajustes: json_(im.ajustes, {}), janela_ate: fimDaJanela(im, agora), precos: dias.map(d => { const x = e.get(im.id + "|" + d), fora = fimDaJanela(im, agora) && d > fimDaJanela(im, agora); return { data: d, preco: precoDoDia(im, d, x), minimo: x?.minimo || im.minimo_noites || 1, fechado: Boolean(x?.fechado) || Boolean(fora), fora_janela: Boolean(fora), especial: Boolean(x?.preco) }; }) })), reservas: res?.results || [], canais: CANAIS });
   }
   if (r === "precos" && metodo === "POST") {
     const negado = precisa("AGENTE"); if (negado) return negado;
@@ -490,8 +552,9 @@ export async function rotasTemporada(request, env, k, orgId, papel, resto) {
     const conflito = await env.DB.prepare("SELECT id, canal, inicio, fim FROM plt_tp_reservas WHERE imovel_id=? AND status='CONFIRMADA' AND inicio < ? AND fim > ? LIMIT 1").bind(im.id, corpo.fim, corpo.inicio).first();
     if (conflito && !corpo.forcar) return json({ erro: `Essas datas já estão ocupadas (${CANAIS[conflito.canal] || conflito.canal}: ${conflito.inicio} a ${conflito.fim}).`, codigo: "CONFLITO" }, 409);
     const tipo = corpo.tipo === "BLOQUEIO" ? "BLOQUEIO" : "RESERVA";
-    const id = (await env.DB.prepare("INSERT INTO plt_tp_reservas(org_id,imovel_id,canal,externo_id,tipo,status,hospede,hospedes,inicio,fim,valor,moeda,contato,notas,origem,criado_ms,atualizado_ms) VALUES(?,?,?,?,?,'CONFIRMADA',?,?,?,?,?,?,?,?,'MANUAL',?,?) RETURNING id")
-      .bind(orgId, im.id, tipo === "BLOQUEIO" ? "direto" : canalOk(corpo.canal || "direto"), "man:" + crypto.randomUUID(), tipo, k.txt(corpo.hospede, 120) || (tipo === "BLOQUEIO" ? "Bloqueio" : "Hóspede"), Number(corpo.hospedes) || null, corpo.inicio, corpo.fim, Number(corpo.valor) || null, im.moeda, k.txt(corpo.contato, 120), k.txt(corpo.notas, 1000), agora, agora).first()).id;
+    const id = (await env.DB.prepare("INSERT INTO plt_tp_reservas(org_id,imovel_id,canal,externo_id,tipo,status,hospede,hospedes,inicio,fim,valor,moeda,contato,notas,origem,taxa_limpeza,criado_ms,atualizado_ms) VALUES(?,?,?,?,?,'CONFIRMADA',?,?,?,?,?,?,?,?,'MANUAL',?,?,?) RETURNING id")
+      .bind(orgId, im.id, tipo === "BLOQUEIO" ? "direto" : canalOk(corpo.canal || "direto"), "man:" + crypto.randomUUID(), tipo, k.txt(corpo.hospede, 120) || (tipo === "BLOQUEIO" ? "Bloqueio" : "Hóspede"), Number(corpo.hospedes) || null, corpo.inicio, corpo.fim, Number(corpo.valor) || null, im.moeda, k.txt(corpo.contato, 120), k.txt(corpo.notas, 1000),
+        tipo === "RESERVA" ? (corpo.taxa_limpeza !== undefined && corpo.taxa_limpeza !== "" ? Number(corpo.taxa_limpeza) || 0 : Number(im.taxa_limpeza || 0) || null) : null, agora, agora).first()).id;
     await agendarLimpezas(env, orgId, im.id, agora);
     if (channexLigado(env) && im.channex_property) await cx(env, "POST", "/availability", { values: [{ property_id: im.channex_property, room_type_id: im.channex_room, date_from: corpo.inicio, date_to: somaDias(corpo.fim, -1), availability: 0 }] }).catch(() => {});
     return json({ ok: true, id });
@@ -667,6 +730,8 @@ export async function icalPublico(env, caminho) {
   const fech = (await env.DB.prepare("SELECT data FROM plt_tp_precos WHERE imovel_id=? AND fechado=1 AND data >= ? ORDER BY data LIMIT 800").bind(im.id, hoje).all())?.results || [];
   const eventos = res.map(r => ({ uid: "r" + r.id, inicio: r.inicio, fim: r.fim, titulo: r.tipo === "BLOQUEIO" ? "Indisponível" : "Reservado" }));
   for (const f of fech) eventos.push({ uid: "f" + im.id + f.data, inicio: f.data, fim: somaDias(f.data, 1), titulo: "Fechado" });
+  const janela = fimDaJanela(im, Date.now());
+  if (janela) eventos.push({ uid: "janela" + im.id, inicio: somaDias(janela, 1), fim: somaDias(janela, 3 * 365), titulo: "Fora da janela de reservas" });
   return new Response(gerarIcal(im.nome, eventos), { headers: { "content-type": "text/calendar; charset=utf-8", "cache-control": "no-store" } });
 }
 
@@ -688,4 +753,296 @@ export async function desligarInadimplentes(env, k, acessoDe) {
     if (ims.length && k.avisar) await k.avisar(org_id, `A conexão oficial com Airbnb, Booking e Vrbo foi pausada (${ims.length} imóvel(is)) porque o plano está pendente. Seus calendários, reservas e o treinamento da IA continuam guardados. Para voltar, regularize em Plano e pagamento e conecte de novo.`).catch(() => {});
   }
   return n;
+}
+
+// ---------------------------------------------------------------------------
+// Ferramentas do anfitrião: cotação, valores das reservas (e planilha das plataformas), anotações de melhoria,
+// estoque com conferência a cada check-out, fotos, comodidades e pesquisa de mercado.
+// ---------------------------------------------------------------------------
+
+// Quanto fica uma estadia: diárias (base, fim de semana e datas especiais), desconto semanal/mensal, limpeza e hóspede extra.
+export async function cotar(env, im, inicio, fim, hospedes = 0, canal = "direto") {
+  const n = noites(inicio, fim);
+  const esp = new Map((((await env.DB.prepare("SELECT * FROM plt_tp_precos WHERE imovel_id=? AND data>=? AND data<?").bind(im.id, inicio, fim).all())?.results) || []).map(x => [x.data, x]));
+  let diarias = 0, fechado = false, minimo = Number(im.minimo_noites || 1);
+  for (let d = inicio; d < fim; d = somaDias(d, 1)) { const e = esp.get(d); diarias += precoNoCanal(precoDoDia(im, d, e), im, canal); if (e?.fechado) fechado = true; if (d === inicio && e?.minimo) minimo = e.minimo; }
+  const pct = n >= 28 && Number(im.desconto_mensal) > 0 ? Number(im.desconto_mensal) : n >= 7 && Number(im.desconto_semanal) > 0 ? Number(im.desconto_semanal) : 0;
+  const desconto = Math.round(diarias * pct) / 100;
+  const extras = Math.max(0, Number(hospedes || 0) - Number(im.hospedes_incluidos || im.capacidade || 99)) * Number(im.taxa_hospede_extra || 0) * n;
+  const limpeza = Number(im.taxa_limpeza || 0);
+  const r2 = x => Math.round(x * 100) / 100;
+  return { noites: n, diarias: r2(diarias), desconto_pct: pct, desconto: r2(desconto), hospede_extra: r2(extras), limpeza: r2(limpeza), total: r2(diarias - desconto + extras + limpeza), media_noite: n ? r2((diarias - desconto) / n) : 0,
+    minimo_noites: minimo, abaixo_do_minimo: n < minimo, acima_do_maximo: Number(im.maximo_noites) > 0 && n > Number(im.maximo_noites), fechado, moeda: im.moeda || "BRL" };
+}
+
+const tokenLimpeza = async (env, k, id) => (await k.hmac(await k.segredo(env), "tp-limpeza:" + id)).replace(/[^A-Za-z0-9]/g, "").slice(0, 32);
+async function linksLimpeza(env, k, base, id) { return `${String(base || "").replace(/\/+$/, "")}/tp/limpeza/${id}-${await tokenLimpeza(env, k, id)}`; }
+
+// Grava a contagem do estoque (do painel, da voz ou do link da limpeza) com o histórico.
+async function gravarEstoque(env, orgId, imovelId, itens, { origem, autor, limpezaId, agora }) {
+  const atuais = new Map((((await env.DB.prepare("SELECT * FROM plt_tp_estoque WHERE org_id=? AND imovel_id=?").bind(orgId, imovelId).all())?.results) || []).map(x => [x.id, x]));
+  const st = [];
+  for (const it of itens) {
+    const a = atuais.get(Number(it.id));
+    if (!a) continue;
+    const q2 = Math.max(0, Math.min(100000, Number(it.quantidade)));
+    if (!Number.isFinite(q2)) continue;
+    st.push(env.DB.prepare("UPDATE plt_tp_estoque SET quantidade=?, atualizado_ms=?, atualizado_por=? WHERE id=?").bind(q2, agora, autor || origem, a.id));
+    if (q2 !== Number(a.quantidade)) st.push(env.DB.prepare("INSERT INTO plt_tp_estoque_mov(org_id,imovel_id,item_id,antes,depois,origem,limpeza_id,autor,ms) VALUES(?,?,?,?,?,?,?,?,?)").bind(orgId, imovelId, a.id, a.quantidade, q2, origem, limpezaId || null, autor || null, agora));
+  }
+  if (limpezaId) st.push(env.DB.prepare("UPDATE plt_tp_limpezas SET estoque_ok_ms=? WHERE id=? AND org_id=?").bind(agora, limpezaId, orgId));
+  for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
+  const baixos = (((await env.DB.prepare("SELECT item, quantidade, minimo, unidade FROM plt_tp_estoque WHERE org_id=? AND imovel_id=? AND quantidade <= minimo AND minimo > 0 ORDER BY item").bind(orgId, imovelId).all())?.results) || []);
+  return { atualizados: itens.length, baixos };
+}
+
+// Cron (de hora em hora): depois de cada check-out, pede a conferência do estoque (link sem login para quem limpa)
+// e avisa o que está acabando.
+// Cron (1x por dia): com janela de reservas, abre nas plataformas o dia novo que entrou na janela.
+async function moverJanelas(env, k) {
+  if (!channexLigado(env)) return;
+  const hoje = iso(k.agora(env));
+  const feito = (await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave='tp_janela_dia'").first().catch(() => null))?.valor;
+  if (feito === hoje) return;
+  await env.DB.prepare("INSERT OR REPLACE INTO plt_meta(chave,valor) VALUES('tp_janela_dia',?)").bind(hoje).run();
+  const ims = (((await env.DB.prepare("SELECT * FROM plt_tp_imoveis WHERE ativo=1 AND channex_property IS NOT NULL AND janela_meses > 0 LIMIT 300").all().catch(() => null))?.results) || []);
+  for (const im of ims) { const fim = fimDaJanela(im, k.agora(env)); await enviarPrecosChannex(env, k, im, somaDias(fim, -3), somaDias(fim, 1)).catch(e => console.warn("janela", e?.message)); }
+}
+export async function lembrarEstoque(env, k) {
+  await moverJanelas(env, k).catch(() => { });
+  const agora = k.agora(env), hoje = iso(agora - 3 * 3600000);
+  const ult = Number((await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave='tp_estoque_ms'").first().catch(() => null))?.valor || 0);
+  if (agora - ult < 55 * 60000) return 0;
+  await env.DB.prepare("INSERT OR REPLACE INTO plt_meta(chave,valor) VALUES('tp_estoque_ms',?)").bind(String(agora)).run();
+  const pend = (((await env.DB.prepare(`SELECT l.id, l.org_id, l.imovel_id, l.data, l.responsavel, i.nome FROM plt_tp_limpezas l JOIN plt_tp_imoveis i ON i.id=l.imovel_id
+    WHERE l.data <= ? AND l.data >= ? AND l.status<>'CANCELADA' AND l.estoque_ok_ms IS NULL AND l.aviso_ms IS NULL AND EXISTS (SELECT 1 FROM plt_tp_estoque e WHERE e.imovel_id=l.imovel_id) LIMIT 40`).bind(hoje, somaDias(hoje, -3)).all().catch(() => null))?.results) || []);
+  let n = 0;
+  for (const l of pend) {
+    const baixos = (((await env.DB.prepare("SELECT item, quantidade, unidade FROM plt_tp_estoque WHERE imovel_id=? AND quantidade <= minimo AND minimo > 0").bind(l.imovel_id).all())?.results) || []);
+    const link = await linksLimpeza(env, k, k.base, l.id);
+    if (k.alertarEmail) await k.alertarEmail(l.org_id, `DENIA — check-out em ${l.nome}: confira o estoque`, `Hoje teve check-out em ${l.nome} (${l.data.split("-").reverse().join("/")}).\n\nQuem fez a limpeza pode conferir o estoque pelo celular, sem login, neste link:\n${link}\n\n${baixos.length ? "Já está acabando: " + baixos.map(b => `${b.item} (${b.quantidade} ${b.unidade || ""})`).join(", ") + "." : ""}\n\nNo painel: Locação por temporada → Estoque.`).catch(() => { });
+    await env.DB.prepare("UPDATE plt_tp_limpezas SET aviso_ms=? WHERE id=?").bind(agora, l.id).run();
+    n++;
+  }
+  return n;
+}
+
+// Página pública da limpeza (/tp/limpeza/<id>-<token>): marca a limpeza como feita, conta o estoque e anota problemas.
+export async function limpezaPublica(request, env, k) {
+  const url = new URL(request.url);
+  const m = url.pathname.match(/^\/tp\/limpeza\/(\d{1,12})-([A-Za-z0-9]{32})$/);
+  if (!m) return null;
+  const id = Number(m[1]);
+  if (m[2] !== await tokenLimpeza(env, k, id)) return new Response("Link inválido.", { status: 404 });
+  const l = await env.DB.prepare("SELECT l.*, i.nome, i.org_id FROM plt_tp_limpezas l JOIN plt_tp_imoveis i ON i.id=l.imovel_id WHERE l.id=?").bind(id).first();
+  if (!l) return new Response("Link inválido.", { status: 404 });
+  const esc = t => String(t ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+  const pagina = corpo => new Response(`<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>Limpeza — ${esc(l.nome)}</title><link rel="stylesheet" href="/assets/css/base.css"><link rel="stylesheet" href="/assets/css/limpeza.css"></head><body class="limpeza-pub"><main>${corpo}</main></body></html>`, { headers: { "content-type": "text/html; charset=UTF-8", "cache-control": "no-store" } });
+  const agora = k.agora(env);
+  if (request.method === "POST") {
+    const f = await request.formData().catch(() => null);
+    if (!f) return pagina("<h1>Não deu certo</h1><p>Tente de novo.</p>");
+    const itens = [...f.entries()].filter(([n2]) => /^q_\d+$/.test(n2)).map(([n2, v]) => ({ id: Number(n2.slice(2)), quantidade: String(v).trim() === "" ? NaN : Number(String(v).replace(",", ".")) })).filter(x => Number.isFinite(x.quantidade));
+    const quem = cortar(f.get("quem"), 60) || "Limpeza";
+    const r = await gravarEstoque(env, l.org_id, l.imovel_id, itens, { origem: "CHECKOUT", autor: quem, limpezaId: id, agora });
+    const obs = cortar(f.get("obs"), 1500);
+    await env.DB.prepare("UPDATE plt_tp_limpezas SET status=CASE WHEN ?='1' THEN 'FEITA' ELSE status END, responsavel=COALESCE(NULLIF(?, ''), responsavel), obs=COALESCE(NULLIF(?, ''), obs) WHERE id=?").bind(f.get("feita") ? "1" : "0", quem === "Limpeza" ? "" : quem, obs, id).run();
+    if ((r.baixos.length || obs) && k.alertarEmail) await k.alertarEmail(l.org_id, `DENIA — ${l.nome}: ${r.baixos.length ? "comprar reposição" : "observação da limpeza"}`, `${quem} conferiu o estoque de ${l.nome}.${r.baixos.length ? "\n\nAcabando: " + r.baixos.map(b => `${b.item} (${b.quantidade} ${b.unidade || ""})`).join(", ") + "." : ""}${obs ? "\n\nObservação: " + obs : ""}`).catch(() => { });
+    if (obs) await env.DB.prepare("INSERT INTO plt_tp_notas(org_id,imovel_id,texto,categoria,prioridade,status,autor,criado_ms) VALUES(?,?,?,'Limpeza','MEDIA','ABERTA',?,?)").bind(l.org_id, l.imovel_id, obs, quem, agora).run();
+    return pagina(`<h1>Obrigado!</h1><p>Estoque de <strong>${esc(l.nome)}</strong> atualizado.</p>${r.baixos.length ? `<p class="aviso">Acabando: ${r.baixos.map(b => esc(`${b.item} (${b.quantidade} ${b.unidade || ""})`)).join(", ")}. O anfitrião já foi avisado.</p>` : ""}${obs ? "<p>Sua observação foi enviada ao anfitrião.</p>" : ""}`);
+  }
+  const itens = (((await env.DB.prepare("SELECT * FROM plt_tp_estoque WHERE imovel_id=? ORDER BY categoria, item").bind(l.imovel_id).all())?.results) || []);
+  let cat = "";
+  const linhas = itens.map(it => { const cab = it.categoria !== cat ? `<h2>${esc(it.categoria || "Itens")}</h2>` : ""; cat = it.categoria; return `${cab}<label class="item${it.quantidade <= it.minimo && it.minimo > 0 ? " baixo" : ""}"><span>${esc(it.item)}<small>tinha ${esc(it.quantidade)} ${esc(it.unidade || "")} · mínimo ${esc(it.minimo)}</small></span><input name="q_${it.id}" type="number" inputmode="decimal" min="0" step="any" placeholder="${esc(it.quantidade)}"></label>`; }).join("");
+  return pagina(`<h1>${esc(l.nome)}</h1><p>Check-out de ${esc(l.data.split("-").reverse().join("/"))}. Conte o que sobrou de cada item (deixe em branco o que não mudou).</p>
+    <form method="post"><label class="campo">Seu nome<input name="quem" maxlength="60" value="${esc(l.responsavel || "")}"></label>${linhas || "<p>Nenhum item de estoque cadastrado neste imóvel.</p>"}
+    <label class="campo">Algum problema ou algo a melhorar? (opcional)<textarea name="obs" maxlength="1500" placeholder="Ex.: chuveiro pingando, faltou lâmpada na sala"></textarea></label>
+    <label class="check"><input type="checkbox" name="feita" value="1" checked> Limpeza concluída</label>
+    <button type="submit">Enviar</button></form>${l.estoque_ok_ms ? `<p class="sub">Já conferido em ${new Date(l.estoque_ok_ms).toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" })}. Enviar de novo atualiza.</p>` : ""}`);
+}
+
+// Planilha de reservas exportada do Airbnb/Booking/Vrbo: preenche valor, limpeza, hóspede e código das reservas que vieram pelo calendário.
+async function importarPlanilhaReservas(env, orgId, corpo, agora, k) {
+  const ims = (((await env.DB.prepare("SELECT * FROM plt_tp_imoveis WHERE org_id=? AND ativo=1").bind(orgId).all())?.results) || []);
+  const norm = t => String(t || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  const fixo = ims.find(i => i.id === Number(corpo.imovel_id));
+  const canal = canalOk(corpo.canal || "airbnb");
+  let atualizadas = 0, criadas = 0, sem_imovel = 0, invalidas = 0;
+  for (const l of (Array.isArray(corpo.linhas) ? corpo.linhas : []).slice(0, 2000)) {
+    if (!dataOk(l.inicio) || !dataOk(l.fim) || l.fim <= l.inicio) { invalidas++; continue; }
+    const an = norm(l.anuncio);
+    const im = fixo || ims.find(i => an && (norm(i.nome) === an || an.includes(norm(i.nome)) || norm(i.nome).includes(an)));
+    if (!im) { sem_imovel++; continue; }
+    const valor = Number(l.valor) || null, limpeza = l.limpeza !== undefined && l.limpeza !== "" ? Number(l.limpeza) || 0 : null, taxas = Number(l.taxas) || null;
+    const ja = await env.DB.prepare("SELECT id FROM plt_tp_reservas WHERE org_id=? AND imovel_id=? AND inicio=? AND fim=? AND status='CONFIRMADA' ORDER BY (tipo='RESERVA') DESC LIMIT 1").bind(orgId, im.id, l.inicio, l.fim).first();
+    if (ja) {
+      await env.DB.prepare("UPDATE plt_tp_reservas SET tipo='RESERVA', valor=COALESCE(?,valor), taxa_limpeza=COALESCE(?,taxa_limpeza), taxas=COALESCE(?,taxas), hospede=COALESCE(NULLIF(?,''),hospede), hospedes=COALESCE(?,hospedes), codigo=COALESCE(NULLIF(?,''),codigo), atualizado_ms=? WHERE id=?")
+        .bind(valor, limpeza, taxas, k.txt(l.hospede, 120), Number(l.hospedes) || null, k.txt(l.codigo, 60), agora, ja.id).run();
+      atualizadas++;
+    } else if (corpo.criar !== false) {
+      await env.DB.prepare("INSERT OR IGNORE INTO plt_tp_reservas(org_id,imovel_id,canal,externo_id,tipo,status,hospede,hospedes,inicio,fim,valor,moeda,origem,taxa_limpeza,taxas,codigo,criado_ms,atualizado_ms) VALUES(?,?,?,?,'RESERVA',?,?,?,?,?,?,?,'PLANILHA',?,?,?,?,?)")
+        .bind(orgId, im.id, canal, "csv:" + (k.txt(l.codigo, 60) || `${l.inicio}_${l.fim}`), /cancel/i.test(l.status || "") ? "CANCELADA" : "CONFIRMADA", k.txt(l.hospede, 120) || "Hóspede", Number(l.hospedes) || null, l.inicio, l.fim, valor, im.moeda, limpeza, taxas, k.txt(l.codigo, 60) || null, agora, agora).run();
+      criadas++;
+    }
+  }
+  return { atualizadas, criadas, sem_imovel, invalidas };
+}
+
+async function rotasTemporadaExtra(request, env, k, orgId, r, { json, ler, precisa, imovel, agora, q }) {
+  const metodo = request.method;
+  const autor = k.sessao?.usuario?.nome || k.sessao?.usuario?.email || "Equipe";
+  let m;
+  if (r === "comodidades" && metodo === "GET") return json({ comodidades: COMODIDADES });
+  // Desligar a conexão oficial de um imóvel (o calendário iCal e os dados continuam).
+  if ((m = r.match(/^imoveis\/(\d{1,12})\/desconectar$/)) && metodo === "POST") {
+    const negado = precisa("ADMIN"); if (negado) return negado;
+    const im = await imovel(m[1]); if (!im) return json({ erro: "Imóvel não encontrado." }, 404);
+    if (im.channex_property && channexLigado(env)) await cx(env, "DELETE", "/properties/" + im.channex_property).catch(e => console.warn("channex desconectar", e?.message));
+    await env.DB.prepare("UPDATE plt_tp_imoveis SET channex_property=NULL, channex_room=NULL, channex_rates=NULL WHERE id=? AND org_id=?").bind(im.id, orgId).run();
+    await k.auditar(env, request, k.sessao, orgId, "TEMPORADA", `Desconectou ${im.nome} da conexão oficial`);
+    return json({ ok: true });
+  }
+  if (r === "cotacao" && metodo === "GET") {
+    const im = await imovel(q.get("imovel")); if (!im) return json({ erro: "Escolha o imóvel." }, 400);
+    if (!dataOk(q.get("inicio")) || !dataOk(q.get("fim")) || q.get("fim") <= q.get("inicio") || noites(q.get("inicio"), q.get("fim")) > 365) return json({ erro: "Escolha a entrada e a saída." }, 400);
+    const ocupado = await env.DB.prepare("SELECT canal, inicio, fim FROM plt_tp_reservas WHERE imovel_id=? AND status='CONFIRMADA' AND inicio < ? AND fim > ? LIMIT 1").bind(im.id, q.get("fim"), q.get("inicio")).first();
+    return json({ ...(await cotar(env, im, q.get("inicio"), q.get("fim"), Number(q.get("hospedes")) || 0, canalOk(q.get("canal") || "direto"))), ocupado: ocupado || null });
+  }
+  // Valores de uma reserva (o calendário não traz): total, limpeza, taxas da plataforma, hóspede.
+  if ((m = r.match(/^reservas\/(\d{1,12})\/valores$/)) && metodo === "POST") {
+    const negado = precisa("AGENTE"); if (negado) return negado;
+    const { corpo, erro } = await ler(); if (erro) return erro;
+    const n2 = v => v === undefined ? null : v === "" || v === null ? null : Number(v);
+    await env.DB.prepare("UPDATE plt_tp_reservas SET valor=COALESCE(?,valor), taxa_limpeza=COALESCE(?,taxa_limpeza), taxas=COALESCE(?,taxas), hospede=COALESCE(NULLIF(?,''),hospede), hospedes=COALESCE(?,hospedes), tipo=CASE WHEN ?='1' THEN 'RESERVA' ELSE tipo END, atualizado_ms=? WHERE id=? AND org_id=?")
+      .bind(n2(corpo.valor), n2(corpo.taxa_limpeza), n2(corpo.taxas), k.txt(corpo.hospede, 120), n2(corpo.hospedes), corpo.e_reserva ? "1" : "0", agora, Number(m[1]), orgId).run();
+    return json({ ok: true });
+  }
+  if (r === "reservas/importar" && metodo === "POST") {
+    const negado = precisa("AGENTE"); if (negado) return negado;
+    const { corpo, erro } = await ler(900000); if (erro) return erro;
+    const res = await importarPlanilhaReservas(env, orgId, corpo, agora, k);
+    await k.auditar(env, request, k.sessao, orgId, "TEMPORADA", `Planilha de reservas importada: ${res.atualizadas} atualizada(s), ${res.criadas} nova(s)`);
+    return json({ ok: true, ...res });
+  }
+
+  // Anotações de melhoria (manutenção, compras, ideias) por imóvel.
+  if (r === "notas" && metodo === "GET") {
+    const im = Number(q.get("imovel")) || 0;
+    const l = (((await env.DB.prepare(`SELECT n.*, i.nome imovel FROM plt_tp_notas n JOIN plt_tp_imoveis i ON i.id=n.imovel_id WHERE n.org_id=? ${im ? "AND n.imovel_id=?" : ""} ORDER BY n.status='FEITA', CASE n.prioridade WHEN 'ALTA' THEN 0 WHEN 'MEDIA' THEN 1 ELSE 2 END, n.id DESC LIMIT 500`).bind(orgId, ...(im ? [im] : [])).all())?.results) || []);
+    return json({ notas: l });
+  }
+  if ((r === "notas" || (m = r.match(/^notas\/(\d{1,12})$/))) && metodo === "POST") {
+    const negado = precisa("AGENTE"); if (negado) return negado;
+    const { corpo, erro } = await ler(); if (erro) return erro;
+    const pri = ["ALTA", "MEDIA", "BAIXA"].includes(corpo.prioridade) ? corpo.prioridade : null, st = ["ABERTA", "ANDAMENTO", "FEITA"].includes(corpo.status) ? corpo.status : null;
+    if (m) {
+      await env.DB.prepare("UPDATE plt_tp_notas SET texto=COALESCE(NULLIF(?,''),texto), categoria=COALESCE(?,categoria), prioridade=COALESCE(?,prioridade), status=COALESCE(?,status), custo=COALESCE(?,custo), feito_ms=CASE WHEN ?='FEITA' THEN ? ELSE feito_ms END WHERE id=? AND org_id=?")
+        .bind(k.txt(corpo.texto, 1500), corpo.categoria !== undefined ? k.txt(corpo.categoria, 40) : null, pri, st, corpo.custo !== undefined && corpo.custo !== "" ? Number(corpo.custo) || 0 : null, st || "", agora, Number(m[1]), orgId).run();
+      return json({ ok: true });
+    }
+    const im = await imovel(corpo.imovel_id); if (!im) return json({ erro: "Escolha o imóvel." }, 400);
+    const texto = k.txt(corpo.texto, 1500); if (!texto) return json({ erro: "Escreva a anotação." }, 400);
+    const id = (await env.DB.prepare("INSERT INTO plt_tp_notas(org_id,imovel_id,texto,categoria,prioridade,status,custo,autor,criado_ms) VALUES(?,?,?,?,?,'ABERTA',?,?,?) RETURNING id").bind(orgId, im.id, texto, k.txt(corpo.categoria, 40) || null, pri || "MEDIA", Number(corpo.custo) || null, autor, agora).first()).id;
+    return json({ ok: true, id });
+  }
+  if ((m = r.match(/^notas\/(\d{1,12})\/excluir$/)) && metodo === "POST") {
+    const negado = precisa("AGENTE"); if (negado) return negado;
+    await env.DB.prepare("DELETE FROM plt_tp_notas WHERE id=? AND org_id=?").bind(Number(m[1]), orgId).run();
+    return json({ ok: true });
+  }
+
+  // Estoque por imóvel.
+  if (r === "estoque" && metodo === "GET") {
+    const im = Number(q.get("imovel")) || 0;
+    const [itens, pend, mov] = await Promise.all([
+      env.DB.prepare(`SELECT e.*, i.nome imovel FROM plt_tp_estoque e JOIN plt_tp_imoveis i ON i.id=e.imovel_id WHERE e.org_id=? ${im ? "AND e.imovel_id=?" : ""} ORDER BY i.nome, e.categoria, e.item LIMIT 2000`).bind(orgId, ...(im ? [im] : [])).all(),
+      env.DB.prepare(`SELECT l.id, l.data, l.imovel_id, i.nome imovel, l.responsavel FROM plt_tp_limpezas l JOIN plt_tp_imoveis i ON i.id=l.imovel_id WHERE l.org_id=? AND l.data <= ? AND l.data >= ? AND l.status<>'CANCELADA' AND l.estoque_ok_ms IS NULL ${im ? "AND l.imovel_id=?" : ""} ORDER BY l.data DESC LIMIT 30`).bind(orgId, iso(agora), iso(agora - 14 * DIA), ...(im ? [im] : [])).all(),
+      env.DB.prepare(`SELECT m.*, e.item, e.unidade, i.nome imovel FROM plt_tp_estoque_mov m JOIN plt_tp_estoque e ON e.id=m.item_id JOIN plt_tp_imoveis i ON i.id=m.imovel_id WHERE m.org_id=? ${im ? "AND m.imovel_id=?" : ""} ORDER BY m.ms DESC LIMIT 60`).bind(orgId, ...(im ? [im] : [])).all()
+    ]);
+    const pendentes = [];
+    for (const p of pend?.results || []) pendentes.push({ ...p, link: await linksLimpeza(env, k, new URL(request.url).origin, p.id) });
+    return json({ itens: itens?.results || [], pendentes, movimentos: mov?.results || [], padrao: ESTOQUE_PADRAO.map(([item, categoria, quantidade, minimo, unidade]) => ({ item, categoria, quantidade, minimo, unidade })) });
+  }
+  if (r === "estoque" && metodo === "POST") {
+    const negado = precisa("AGENTE"); if (negado) return negado;
+    const { corpo, erro } = await ler(); if (erro) return erro;
+    const im = await imovel(corpo.imovel_id); if (!im) return json({ erro: "Escolha o imóvel." }, 400);
+    const lista = corpo.padrao ? ESTOQUE_PADRAO.map(([item, categoria, quantidade, minimo, unidade]) => ({ item, categoria, quantidade, minimo, unidade })) : (Array.isArray(corpo.itens) ? corpo.itens : [corpo]);
+    let n = 0;
+    for (const it of lista.slice(0, 200)) {
+      const nome = k.txt(it.item, 80); if (!nome) continue;
+      const qt = Math.max(0, Number(it.quantidade) || 0), mn = Math.max(0, Number(it.minimo) || 0);
+      const antes = await env.DB.prepare("SELECT id, quantidade FROM plt_tp_estoque WHERE imovel_id=? AND item=?").bind(im.id, nome).first();
+      await env.DB.prepare("INSERT INTO plt_tp_estoque(org_id,imovel_id,item,categoria,quantidade,minimo,unidade,atualizado_ms,atualizado_por) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(imovel_id,item) DO UPDATE SET categoria=COALESCE(excluded.categoria,categoria), quantidade=excluded.quantidade, minimo=excluded.minimo, unidade=COALESCE(excluded.unidade,unidade), atualizado_ms=excluded.atualizado_ms, atualizado_por=excluded.atualizado_por")
+        .bind(orgId, im.id, nome, k.txt(it.categoria, 40) || null, qt, mn, k.txt(it.unidade, 20) || null, agora, autor).run();
+      if (antes && Number(antes.quantidade) !== qt) await env.DB.prepare("INSERT INTO plt_tp_estoque_mov(org_id,imovel_id,item_id,antes,depois,origem,autor,ms) VALUES(?,?,?,?,?,'MANUAL',?,?)").bind(orgId, im.id, antes.id, antes.quantidade, qt, autor, agora).run();
+      n++;
+    }
+    return json({ ok: true, itens: n });
+  }
+  if (r === "estoque/conferir" && metodo === "POST") {
+    const negado = precisa("AGENTE"); if (negado) return negado;
+    const { corpo, erro } = await ler(); if (erro) return erro;
+    const im = await imovel(corpo.imovel_id); if (!im) return json({ erro: "Escolha o imóvel." }, 400);
+    const lim = corpo.limpeza_id ? await env.DB.prepare("SELECT id FROM plt_tp_limpezas WHERE id=? AND org_id=? AND imovel_id=?").bind(Number(corpo.limpeza_id), orgId, im.id).first() : null;
+    return json({ ok: true, ...(await gravarEstoque(env, orgId, im.id, Array.isArray(corpo.itens) ? corpo.itens : [], { origem: corpo.origem === "VOZ" ? "VOZ" : "MANUAL", autor, limpezaId: lim?.id, agora })) });
+  }
+  if ((m = r.match(/^estoque\/(\d{1,12})\/excluir$/)) && metodo === "POST") {
+    const negado = precisa("AGENTE"); if (negado) return negado;
+    await env.DB.batch([env.DB.prepare("DELETE FROM plt_tp_estoque WHERE id=? AND org_id=?").bind(Number(m[1]), orgId), env.DB.prepare("DELETE FROM plt_tp_estoque_mov WHERE item_id=? AND org_id=?").bind(Number(m[1]), orgId)]);
+    return json({ ok: true });
+  }
+  if ((m = r.match(/^limpezas\/(\d{1,12})\/link$/)) && metodo === "GET") {
+    const l = await env.DB.prepare("SELECT id FROM plt_tp_limpezas WHERE id=? AND org_id=?").bind(Number(m[1]), orgId).first();
+    if (!l) return json({ erro: "Limpeza não encontrada." }, 404);
+    return json({ link: await linksLimpeza(env, k, new URL(request.url).origin, l.id) });
+  }
+
+  // Fotos do imóvel (guardadas reduzidas na DENIA; a IA e a análise do anúncio usam).
+  if ((m = r.match(/^imoveis\/(\d{1,12})\/fotos$/)) && metodo === "GET") {
+    const l = (((await env.DB.prepare("SELECT id, legenda, ordem, criado_ms FROM plt_tp_fotos WHERE org_id=? AND imovel_id=? ORDER BY ordem, id").bind(orgId, Number(m[1])).all())?.results) || []);
+    return json({ fotos: l });
+  }
+  if ((m = r.match(/^imoveis\/(\d{1,12})\/fotos$/)) && metodo === "POST") {
+    const negado = precisa("AGENTE"); if (negado) return negado;
+    const { corpo, erro } = await ler(1600000); if (erro) return erro;
+    const im = await imovel(m[1]); if (!im) return json({ erro: "Imóvel não encontrado." }, 404);
+    const d = String(corpo.dados || "").match(/^data:(image\/(jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/);
+    if (!d || d[3].length > 1400000) return json({ erro: "Envie uma foto JPG, PNG ou WebP (a DENIA reduz antes de enviar)." }, 400);
+    const n = Number((await env.DB.prepare("SELECT COUNT(*) n FROM plt_tp_fotos WHERE imovel_id=?").bind(im.id).first())?.n || 0);
+    if (n >= 60) return json({ erro: "Até 60 fotos por imóvel." }, 400);
+    const id = (await env.DB.prepare("INSERT INTO plt_tp_fotos(org_id,imovel_id,mime,dados,legenda,ordem,criado_ms) VALUES(?,?,?,?,?,?,?) RETURNING id").bind(orgId, im.id, d[1], d[3], k.txt(corpo.legenda, 140) || null, n, agora).first()).id;
+    return json({ ok: true, id });
+  }
+  if ((m = r.match(/^fotos\/(\d{1,12})$/)) && metodo === "GET") {
+    const f = await env.DB.prepare("SELECT mime, dados FROM plt_tp_fotos WHERE id=? AND org_id=?").bind(Number(m[1]), orgId).first();
+    if (!f) return new Response("Não encontrada.", { status: 404 });
+    const bin = Uint8Array.from(atob(f.dados), c => c.charCodeAt(0));
+    return new Response(bin, { headers: { "content-type": f.mime, "cache-control": "private, max-age=86400" } });
+  }
+  if ((m = r.match(/^fotos\/(\d{1,12})\/(excluir|editar)$/)) && metodo === "POST") {
+    const negado = precisa("AGENTE"); if (negado) return negado;
+    const { corpo, erro } = await ler(); if (erro) return erro;
+    if (m[2] === "excluir") await env.DB.prepare("DELETE FROM plt_tp_fotos WHERE id=? AND org_id=?").bind(Number(m[1]), orgId).run();
+    else await env.DB.prepare("UPDATE plt_tp_fotos SET legenda=COALESCE(?,legenda), ordem=COALESCE(?,ordem) WHERE id=? AND org_id=?").bind(corpo.legenda !== undefined ? k.txt(corpo.legenda, 140) : null, Number.isFinite(Number(corpo.ordem)) ? Number(corpo.ordem) : null, Number(m[1]), orgId).run();
+    return json({ ok: true });
+  }
+
+  // Pesquisa de mercado (internet ao vivo): diárias de imóveis parecidos na região e se o anúncio aparece no Google.
+  if ((m = r.match(/^imoveis\/(\d{1,12})\/mercado$/)) && metodo === "POST") {
+    const negado = precisa("AGENTE"); if (negado) return negado;
+    const { corpo, erro } = await ler(); if (erro) return erro;
+    const im = await imovel(m[1]); if (!im) return json({ erro: "Imóvel não encontrado." }, 404);
+    const envIA = await k.comIA(env, orgId);
+    if (!envIA.OPENAI_API_KEY || !k.openai) return json({ erro: "A IA da plataforma ainda não está ligada." }, 503);
+    const anuncio = json_(im.anuncio, {});
+    const pergunta = `Imóvel de temporada: "${anuncio.titulo || im.nome}" em ${im.cidade || "(cidade não informada)"}${im.endereco ? " — " + im.endereco : ""}. ${im.quartos ? im.quartos + " quarto(s), " : ""}${im.capacidade ? "até " + im.capacidade + " hóspedes" : ""}. Diária atual: ${im.moeda || "BRL"} ${im.preco_base || "?"} (fim de semana ${im.preco_fds || "igual"}).
+${corpo.pergunta ? "Pergunta do anfitrião: " + cortar(corpo.pergunta, 500) + "\n" : ""}Pesquise na internet: (1) faixa de diárias de imóveis parecidos na mesma região (Airbnb, Booking e outros), para ${corpo.periodo ? cortar(corpo.periodo, 80) : "as próximas semanas"}; (2) se este anúncio aparece numa busca no Google pelo título ou pelo nome; (3) eventos e alta temporada próximos na cidade; (4) diga se o preço está abaixo, dentro ou acima do mercado e o que ajustar. Seja objetivo, com números, e cite as fontes pelo nome do site. Não invente: se não achar, diga.`;
+    try {
+      const d = await k.openai(envIA, "responses", { model: String(env.OPENAI_MODEL || "gpt-5-mini"), tools: [{ type: "web_search" }], instructions: "Você é um especialista em revenue management de locação por temporada no Brasil. Responda em português do Brasil, em até 12 frases.", input: [{ role: "user", content: [{ type: "input_text", text: pergunta }] }], max_output_tokens: 1400, store: false }, { timeout: 90000 });
+      const texto = (d.output || []).flatMap(o => o.content || []).filter(c => c.type === "output_text").map(c => c.text).join("\n").trim() || d.output_text || "";
+      return json({ resultado: texto || "Não encontrei dados confiáveis agora." });
+    } catch (e) { return json({ erro: e.message }, 502); }
+  }
+  return null;
 }
