@@ -1648,6 +1648,36 @@ test("Telegram — bot da plataforma conecta o grupo com um toque e a equipe res
   } finally { globalThis.fetch = anterior; }
 });
 
+test("Chatbot — cliente manda várias mensagens seguidas: uma resposta só (menu e IA)", async () => {
+  const { p, inf } = await duasEmpresasComChatbot();
+  p.env.ZAP_JANELA_MS = "250";
+  const CLI = "5521944443333";
+  await Promise.all(["Oi", "tudo bem?", "queria uma informação"].map((body, i) => new Promise(r => setTimeout(r, i * 40)).then(() => webhookZap(p, "111111111111", { from: CLI, type: "text", text: { body } }))));
+  assert.equal(enviadosPara(p, CLI).length, 1, "menu: uma resposta para as três mensagens");
+  // Clique em botão responde na hora (sem esperar).
+  const antes = Date.now();
+  await clicar(p, "111111111111", CLI, "z:inicio");
+  assert.ok(Date.now() - antes < 200);
+  assert.equal(enviadosPara(p, CLI).length, 2);
+
+  await p.req("/api/orgs/1/ia/chave", { metodo: "POST", quem: "admin", corpo: { chave: "sk-proj-" + "d".repeat(40) } });
+  await p.req(`/api/orgs/${inf}/zap/config`, { metodo: "POST", quem: "admin", corpo: { modo: "IA", sobre: "Shopping Infomix: aberto das 10h às 22h." } });
+  const entradas = [];
+  p.openai = (url, corpo) => {
+    const t = corpo.input[0].content[0].text; entradas.push(t);
+    return { output: [{ content: [{ type: "output_text", text: JSON.stringify({ resposta: "Abrimos às 10h e fechamos às 22h, Marcos!" }) }] }], usage: { input_tokens: 500, output_tokens: 20 } };
+  };
+  const CLI2 = "5521933332222";
+  await Promise.all(["Boa tarde", "meu nome é Marcos", "que horas vocês abrem?"].map((body, i) => new Promise(r => setTimeout(r, i * 40)).then(() => webhookZap(p, "111111111111", { from: CLI2, type: "text", text: { body } }))));
+  assert.equal(enviadosPara(p, CLI2).length, 1, "IA: uma resposta para as três mensagens");
+  assert.equal(entradas.length, 1, "a IA é chamada uma vez só");
+  assert.match(entradas[0], /MENSAGEM NOVA DO CLIENTE: "Boa tarde\nmeu nome é Marcos\nque horas vocês abrem\?"/, "a IA lê tudo junto");
+  // Depois da resposta, uma mensagem nova é respondida normalmente (e só ela é a "nova").
+  await webhookZap(p, "111111111111", { from: CLI2, type: "text", text: { body: "obrigado" } });
+  assert.equal(enviadosPara(p, CLI2).length, 2);
+  assert.match(entradas.at(-1), /MENSAGEM NOVA DO CLIENTE: "obrigado"/);
+});
+
 test("IA completa — qualquer empresa: conversa como gente, lembra do cliente, não mistura empresas e chama a equipe", async () => {
   const { p, inf } = await duasEmpresasComChatbot();
   await p.req("/api/orgs/1/ia/chave", { metodo: "POST", quem: "admin", corpo: { chave: "sk-proj-" + "d".repeat(40) } });

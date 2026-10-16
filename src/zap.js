@@ -461,6 +461,7 @@ function lerEntrada(msg) {
   const texto = t === "text" ? String(msg.text?.body || "") : t === "interactive" ? String(msg.interactive?.button_reply?.title || msg.interactive?.list_reply?.title || "") : t === "button" ? String(msg.button?.text || "") : "";
   return { acao, texto: texto.slice(0, 2000), rotulo: texto || `[${t || "mensagem"}]` };
 }
+const JANELA_AGRUPAR_MS = 8000; // dentro dos 30 s que a Cloudflare dá depois de responder ao webhook
 async function receberMensagem(env, k, conta, msg, nome) {
   const tel = digitos(msg.from);
   const wamid = String(msg.id || "");
@@ -493,7 +494,25 @@ async function receberMensagem(env, k, conta, msg, nome) {
   if (!rec.includes("chatbot")) return;
   z.nome = nome || c.nome || "";
   z.ultimoMenu = c.ultimo_menu;
-  await responder(z, e.texto, e.acao);
+  // Cliente escrevendo em várias mensagens seguidas ("oi" / "tudo bem?" / "quanto custa?"): espera ele
+  // parar e responde UMA vez, pela mensagem mais nova. Cliques em botões e listas respondem na hora.
+  let texto = e.texto;
+  if (!e.acao) {
+    const espera = env.ZAP_JANELA_MS !== undefined && env.ZAP_JANELA_MS !== "" ? Number(env.ZAP_JANELA_MS) : env.__semEspera ? 0 : JANELA_AGRUPAR_MS;
+    if (espera > 0) await new Promise(r => setTimeout(r, Math.min(20000, espera)));
+    const nova = await env.DB.prepare("SELECT MAX(id) id FROM plt_zap_msgs WHERE org_id=? AND telefone=? AND direcao='E'").bind(z.org, tel).first();
+    if (Number(nova?.id || 0) > z.msgId) return; // chegou outra depois desta: ela responde por todas
+    if (z.modo === "IA") {
+      // A IA lê tudo o que o cliente mandou desde a última resposta, como uma mensagem só.
+      const juntas = (await env.DB.prepare(`SELECT texto FROM plt_zap_msgs WHERE org_id=? AND telefone=? AND direcao='E' AND criado_ms>?
+        AND id > COALESCE((SELECT MAX(id) FROM plt_zap_msgs WHERE org_id=? AND telefone=? AND direcao='S'), 0) ORDER BY id DESC LIMIT 8`)
+        .bind(z.org, tel, agora - 10 * 60000, z.org, tel).all())?.results || [];
+      const lista = juntas.reverse().map(x => String(x.texto || "").trim()).filter(Boolean);
+      if (lista.length > 1) texto = cortar(lista.join("\n"), 2000);
+    }
+    if (Number((await env.DB.prepare("SELECT pausado_ate FROM plt_zap_contatos WHERE org_id=? AND telefone=?").bind(z.org, tel).first())?.pausado_ate || 0) > k.agora(env)) return; // a equipe assumiu enquanto esperava
+  }
+  await responder(z, texto, e.acao);
 }
 
 // ---------------------------------------------------------------------------
