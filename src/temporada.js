@@ -40,7 +40,7 @@ export const DDL_TEMPORADA = [
 ];
 // Colunas novas (bancos criados antes desta versão).
 export const ALTERS_TEMPORADA = [
-  ...["desconto_semanal REAL", "desconto_mensal REAL", "hospedes_incluidos INTEGER", "taxa_hospede_extra REAL", "taxa_pet REAL", "maximo_noites INTEGER", "antecedencia_dias INTEGER", "comodidades TEXT", "precos_modo TEXT", "janela_meses INTEGER"].map(c => "ALTER TABLE plt_tp_imoveis ADD COLUMN " + c),
+  ...["desconto_semanal REAL", "desconto_mensal REAL", "hospedes_incluidos INTEGER", "taxa_hospede_extra REAL", "taxa_pet REAL", "maximo_noites INTEGER", "antecedencia_dias INTEGER", "comodidades TEXT", "precos_modo TEXT", "janela_meses INTEGER", "taxas_plataforma TEXT"].map(c => "ALTER TABLE plt_tp_imoveis ADD COLUMN " + c),
   ...["taxa_limpeza REAL", "taxas REAL", "codigo TEXT"].map(c => "ALTER TABLE plt_tp_reservas ADD COLUMN " + c),
   ...["estoque_ok_ms INTEGER", "aviso_ms INTEGER", "obs TEXT", "inicio_ms INTEGER", "fim_ms INTEGER", "resumo TEXT", "data_saida TEXT"].map(c => "ALTER TABLE plt_tp_limpezas ADD COLUMN " + c),
   "ALTER TABLE plt_tp_fotos ADD COLUMN limpeza_id INTEGER", "ALTER TABLE plt_tp_fotos ADD COLUMN transcricao TEXT"
@@ -397,7 +397,7 @@ export async function rotasTemporada(request, env, k, orgId, papel, resto) {
   const imovel = async id => env.DB.prepare("SELECT * FROM plt_tp_imoveis WHERE id=? AND org_id=?").bind(Number(id), orgId).first();
   // Em quais plataformas o imóvel está: pelo calendário (iCal) de cada uma e/ou pela conexão oficial.
   const plataformasDe = im => { const m2 = {}; for (const x of String(im.canais_cal || "").split(",").filter(Boolean)) { const [c, st] = x.split(":"); m2[c] = { canal: c, via: "calendario", ok: m2[c]?.ok || st === "ok" }; } if (im.channex_property) for (const c of ["airbnb", "booking", "vrbo"]) m2[c] = { ...(m2[c] || { canal: c, ok: true }), oficial: true }; return Object.values(m2); };
-  const publico = im => ({ ...im, plataformas: plataformasDe(im), ajustes: json_(im.ajustes, {}), treinamento: json_(im.treinamento, {}), anuncio: json_(im.anuncio, {}), comodidades: json_(im.comodidades, []), channex_rates: undefined, conectado_channex: Boolean(im.channex_property),
+  const publico = im => ({ ...im, taxas_plataforma: { ...TAXAS_PADRAO, ...json_(im.taxas_plataforma, {}) }, plataformas: plataformasDe(im), ajustes: json_(im.ajustes, {}), treinamento: json_(im.treinamento, {}), anuncio: json_(im.anuncio, {}), comodidades: json_(im.comodidades, []), channex_rates: undefined, conectado_channex: Boolean(im.channex_property),
     ical_url: im.ical_token ? new URL(`/tp/ical/${im.ical_token}.ics`, request.url).toString() : null });
   let m;
   const org = await rotasOrganizacao(request, env, k, orgId, r, { json, ler, precisa, imovel, agora, q });
@@ -449,6 +449,7 @@ export async function rotasTemporada(request, env, k, orgId, papel, resto) {
       taxa_pet: num(corpo.taxa_pet, atual?.taxa_pet), maximo_noites: num(corpo.maximo_noites, atual?.maximo_noites), antecedencia_dias: num(corpo.antecedencia_dias, atual?.antecedencia_dias),
       comodidades: Array.isArray(corpo.comodidades) ? JSON.stringify([...new Set(corpo.comodidades.map(x => k.txt(x, 60)).filter(Boolean))].slice(0, 150)) : atual?.comodidades ?? null,
       precos_modo: ["DENIA", "PLATAFORMA"].includes(corpo.precos_modo) ? corpo.precos_modo : atual?.precos_modo || "DENIA",
+      taxas_plataforma: corpo.taxas_plataforma && typeof corpo.taxas_plataforma === "object" ? JSON.stringify(Object.fromEntries(["airbnb", "booking", "vrbo"].map(c => [c, Math.max(0, Math.min(40, Number(corpo.taxas_plataforma[c]) || 0))]))) : atual?.taxas_plataforma ?? null,
       janela_meses: corpo.janela_meses !== undefined ? ([0, 3, 6, 9, 12, 24].includes(Number(corpo.janela_meses)) ? Number(corpo.janela_meses) : 0) : atual?.janela_meses ?? null };
     for (const c of ["desconto_semanal", "desconto_mensal"]) if (extras[c] != null) extras[c] = Math.max(0, Math.min(90, extras[c]));
     if (id) await env.DB.prepare("UPDATE plt_tp_imoveis SET nome=?, endereco=?, cidade=?, capacidade=?, quartos=?, banheiros=?, checkin=?, checkout=?, moeda=?, preco_base=?, preco_fds=?, minimo_noites=?, taxa_limpeza=?, ajustes=?, treinamento=?, anuncio=?, ia_modo=?, ativo=? WHERE id=? AND org_id=?").bind(...v, id, orgId).run();
@@ -809,6 +810,8 @@ export async function desligarInadimplentes(env, k, acessoDe) {
 // estoque com conferência a cada check-out, fotos, comodidades e pesquisa de mercado.
 // ---------------------------------------------------------------------------
 
+// Comissão que cada plataforma desconta do anfitrião (padrão; o anfitrião ajusta conforme o contrato dele).
+export const TAXAS_PADRAO = { airbnb: 3, booking: 15, vrbo: 8 };
 // Quanto fica uma estadia: diárias (base, fim de semana e datas especiais), desconto semanal/mensal, limpeza e hóspede extra.
 export async function cotar(env, im, inicio, fim, hospedes = 0, canal = "direto") {
   const n = noites(inicio, fim);
@@ -820,7 +823,9 @@ export async function cotar(env, im, inicio, fim, hospedes = 0, canal = "direto"
   const extras = Math.max(0, Number(hospedes || 0) - Number(im.hospedes_incluidos || im.capacidade || 99)) * Number(im.taxa_hospede_extra || 0) * n;
   const limpeza = Number(im.taxa_limpeza || 0);
   const r2 = x => Math.round(x * 100) / 100;
-  return { noites: n, diarias: r2(diarias), desconto_pct: pct, desconto: r2(desconto), hospede_extra: r2(extras), limpeza: r2(limpeza), total: r2(diarias - desconto + extras + limpeza), media_noite: n ? r2((diarias - desconto) / n) : 0,
+  const taxa = { ...TAXAS_PADRAO, ...json_(im.taxas_plataforma, {}) }[canal] || 0;
+  const total = diarias - desconto + extras + limpeza;
+  return { taxa_plataforma_pct: taxa, taxa_plataforma: r2(total * taxa / 100), voce_recebe: r2(total * (1 - taxa / 100)), noites: n, diarias: r2(diarias), desconto_pct: pct, desconto: r2(desconto), hospede_extra: r2(extras), limpeza: r2(limpeza), total: r2(diarias - desconto + extras + limpeza), media_noite: n ? r2((diarias - desconto) / n) : 0,
     minimo_noites: minimo, abaixo_do_minimo: n < minimo, acima_do_maximo: Number(im.maximo_noites) > 0 && n > Number(im.maximo_noites), fechado, moeda: im.moeda || "BRL" };
 }
 
