@@ -2338,13 +2338,45 @@
     const d = await tp("imoveis");
     if (!vivo()) return;
     trocar(area,
-      h("div", { class: "acoes" }, pode("AGENTE") ? botao("+ Novo imóvel", () => editarImovelTp(null, d), "btn-primario") : null),
+      h("div", { class: "acoes" }, pode("AGENTE") ? botao("+ Adicionar imóveis", () => cadastroRapidoTp(), "btn-primario") : null),
+      !d.imoveis.length && pode("AGENTE") ? h("section", { class: "cartao vidro destaque-ia" }, h("h3", { style: "margin:0", text: "Traga seus anúncios em 1 minuto" }), h("p", { class: "sub", style: "margin:0", text: "Cole o link do calendário de cada anúncio do Airbnb, Booking ou Vrbo. A DENIA cria os imóveis e já traz as reservas. Preços e treinamento você completa depois, se quiser." }), botao("Adicionar imóveis", () => cadastroRapidoTp(), "btn-primario")) : null,
       d.imoveis.length ? h("section", { class: "grade grade-3" }, d.imoveis.filter(i => i.ativo).map(im => h("article", { class: "cartao vidro imovel-tp" },
         (im.anuncio.fotos || [])[0] ? h("img", { class: "imovel-tp-foto", src: im.anuncio.fotos[0], alt: "", loading: "lazy" }) : h("div", { class: "imovel-tp-foto imovel-tp-sem", text: "🏠" }),
         h("h3", { style: "margin:0", text: im.nome }), h("p", { class: "sub", style: "margin:0", text: [im.cidade, im.capacidade ? im.capacidade + " pessoas" : "", im.quartos ? im.quartos + " quartos" : ""].filter(Boolean).join(" · ") || "—" }),
         h("p", { style: "margin:0" }, h("strong", { text: im.preco_base ? dinheiro(im.preco_base, im.moeda) : "sem preço" }), h("span", { class: "sub", text: im.preco_fds ? ` · fim de semana ${dinheiro(im.preco_fds, im.moeda)}` : "" })),
         h("p", { style: "margin:0" }, im.conectado_channex ? selo("Conexão oficial", "ok") : im.calendarios ? selo(`${im.calendarios} calendário(s)`, "info") : selo("Sem plataforma", "alerta"), " ", selo(im.ia_modo === "AUTO" ? "IA responde sozinha" : "IA sugere, você aprova", "info")),
         h("div", { class: "acoes" }, botao("Editar", () => editarImovelTp(im, d), "btn-secundario btn-pequeno"))))) : h("section", { class: "cartao vidro" }, vazio("Nenhum imóvel", "Cadastre o primeiro para conectar as plataformas.")));
+  }
+  // Cadastro rápido: só os links dos calendários (o nome é opcional). Vários imóveis de uma vez.
+  function cadastroRapidoTp() {
+    const linhas = h("div", { class: "grade" });
+    const novaLinha = () => {
+      const e = { nome: h("input", { class: "entrada", maxlength: "120", placeholder: "Nome (opcional) — ex.: Apto Copacabana" }), airbnb: h("input", { class: "entrada", placeholder: "Link do calendário do Airbnb" }), booking: h("input", { class: "entrada", placeholder: "Link do calendário do Booking (opcional)" }), vrbo: h("input", { class: "entrada", placeholder: "Link do calendário do Vrbo (opcional)" }) };
+      const caixa = h("div", { class: "secao-tp grade" }, h("strong", { text: `Imóvel ${linhas.children.length + 1}` }), e.nome, e.airbnb, e.booking, e.vrbo);
+      caixa._e = e; linhas.appendChild(caixa);
+    };
+    novaLinha();
+    const varios = h("textarea", { class: "entrada", style: "min-height:110px", placeholder: "Tem muitos anúncios? Cole aqui todos os links de uma vez, um por linha. Cada link vira um imóvel." });
+    const resultado = h("div", {});
+    const COMO = [["Airbnb", "Anúncios → escolha o anúncio → Disponibilidade → Conectar calendários → Exportar calendário → Copiar link."], ["Booking.com", "Extranet → Tarifas e disponibilidade → Sincronizar calendários → Exportar calendário → Copiar link."], ["Vrbo", "Calendário → Importar/Exportar → Exportar calendário → Copiar link."]];
+    const fechar = gaveta("Adicionar imóveis", [
+      h("p", { text: "Só precisa do link do calendário de cada anúncio. A DENIA cria o imóvel, traz as reservas e evita reserva dupla. Se o mesmo imóvel está em mais de uma plataforma, cole os links dele juntos." }),
+      h("details", { class: "detalhes" }, h("summary", { text: "Onde acho o link do calendário?" }), h("ul", { class: "lista-simples" }, COMO.map(([p2, t]) => h("li", {}, h("strong", { text: p2 + ": " }), t)))),
+      linhas, botao("+ Outro imóvel", () => novaLinha(), "btn-secundario btn-pequeno"),
+      campo("Ou cole vários de uma vez", varios),
+      h("div", { class: "acoes" }, botao("Adicionar e importar", async (_e, b) => {
+        const imoveis = [...linhas.children].map(c => ({ nome: c._e.nome.value.trim(), links: [c._e.airbnb.value, c._e.booking.value, c._e.vrbo.value].map(x => x.trim()).filter(Boolean) })).filter(x => x.nome || x.links.length);
+        for (const l of varios.value.split(/\s+/).map(x => x.trim()).filter(x => /^(https|webcal):\/\//i.test(x))) imoveis.push({ nome: "", links: [l] });
+        if (!imoveis.length) { aviso("Cole pelo menos um link.", "erro"); return; }
+        b.textContent = "Importando…";
+        try {
+          const r = await tp("imoveis/rapido", { metodo: "POST", corpo: { imoveis } });
+          trocar(resultado, h("p", { class: "nota", text: `Pronto: ${r.imoveis.length} imóvel(is) e ${numero(r.imoveis.reduce((t, x) => t + x.reservas, 0))} reserva(s)/bloqueio(s) importados.` }),
+            h("ul", { class: "lista-simples" }, r.imoveis.map(x => h("li", { text: `• ${x.nome}: ${x.calendarios} calendário(s)${x.erros.length ? " — ⚠ " + x.erros.join("; ") : ""}` }))),
+            h("p", { class: "sub", text: "Os nomes você pode trocar quando quiser. Preços, regras da casa e o treinamento da IA são opcionais: abra o imóvel e complete quando tiver tempo." }),
+            h("div", { class: "acoes" }, botao("Ver calendário", () => { fechar(); location.hash = "#/temporada/calendario"; }, "btn-primario"), botao("Fechar", () => { fechar(); navegar(); }, "btn-secundario")));
+        } catch (e) { aviso(e.message, "erro"); } finally { b.textContent = "Adicionar e importar"; }
+      }, "btn-primario")), resultado]);
   }
   async function editarImovelTp(im0, d) {
     const im = im0 ? (await tp("imoveis/" + im0.id)).imovel : { nome: "", ajustes: { airbnb: 0, booking: 18, vrbo: 10 }, treinamento: {}, anuncio: {}, ia_modo: "SUGERIR", checkin: "15:00", checkout: "11:00", moeda: "BRL" };

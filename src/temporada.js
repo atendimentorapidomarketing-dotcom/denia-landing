@@ -92,7 +92,8 @@ async function sincronizarCalendario(env, k, cal) {
     st.push(env.DB.prepare("UPDATE plt_tp_calendarios SET ultimo_ms=?, erro=NULL, eventos=? WHERE id=?").bind(agora, eventos.length, cal.id));
     for (let i = 0; i < st.length; i += 90) await env.DB.batch(st.slice(i, i + 90));
     await agendarLimpezas(env, cal.org_id, cal.imovel_id, agora);
-    return { ok: true, eventos: eventos.length };
+    const nome = (texto.match(/^X-WR-CALNAME:(.+)$/m) || [])[1]?.trim() || "";
+    return { ok: true, eventos: eventos.length, nome: /^(airbnb|booking(\.com)?|vrbo|homeaway|calendar|calendário)$/i.test(nome) ? "" : cortar(nome, 120) };
   } catch (e) {
     await env.DB.prepare("UPDATE plt_tp_calendarios SET ultimo_ms=?, erro=? WHERE id=?").bind(agora, cortar(e?.message || "erro", 300), cal.id).run();
     return { ok: false, erro: e?.message };
@@ -344,6 +345,45 @@ export async function rotasTemporada(request, env, k, orgId, papel, resto) {
     await env.DB.prepare("UPDATE plt_tp_imoveis SET ativo=0 WHERE id=? AND org_id=?").bind(Number(m[1]), orgId).run();
     await env.DB.prepare("DELETE FROM plt_tp_calendarios WHERE imovel_id=? AND org_id=?").bind(Number(m[1]), orgId).run();
     return json({ ok: true });
+  }
+  // Cadastro rápido: cole os links dos calendários (um imóvel por linha) e a DENIA cria tudo sozinha.
+  if (r === "imoveis/rapido" && metodo === "POST") {
+    const negado = precisa("AGENTE"); if (negado) return negado;
+    const { corpo, erro } = await ler(); if (erro) return erro;
+    const itens = (Array.isArray(corpo.imoveis) ? corpo.imoveis : []).slice(0, 60).map(x => ({ nome: k.txt(x.nome, 120), links: (Array.isArray(x.links) ? x.links : []).map(u => String(u || "").trim().replace(/^webcal:\/\//i, "https://")).filter(Boolean).slice(0, 6) })).filter(x => x.nome || x.links.length);
+    if (!itens.length) return json({ erro: "Cole pelo menos um link de calendário (ou o nome do imóvel)." }, 400);
+    const ruins = itens.flatMap(x => x.links).filter(u => !/^https:\/\/\S{10,1000}$/.test(u) || /airbnb\.[a-z.]+\/rooms\/|booking\.com\/hotel\/[a-z]{2}\/|vrbo\.com\/\d+$/i.test(u) && !/ical|\.ics/i.test(u));
+    if (ruins.length) return json({ erro: `Este link é do anúncio, não do calendário: ${cortar(ruins[0], 80)}. Use o link de EXPORTAR o calendário (veja "Onde acho o link").`, codigo: "LINK_ANUNCIO" }, 400);
+    if (k.acesso?.limites?.imoveis) {
+      const n = Number((await env.DB.prepare("SELECT COUNT(*) n FROM plt_tp_imoveis WHERE org_id=? AND ativo=1").bind(orgId).first())?.n || 0);
+      if (n + itens.length > k.acesso.limites.imoveis) return json({ erro: `O plano ${k.acesso.nome} permite até ${k.acesso.limites.imoveis} imóveis (você já tem ${n}). Atualize o plano para cadastrar mais.`, codigo: "PLANO_LIMITE" }, 402);
+    }
+    const canalDe = u => /airbnb/i.test(u) ? "airbnb" : /booking\.com/i.test(u) ? "booking" : /vrbo|homeaway/i.test(u) ? "vrbo" : "outro";
+    const criados = [];
+    let sincronizados = 0;
+    for (const it of itens) {
+      const primeiro = it.links[0] || "";
+      const idAnuncio = (primeiro.match(/ical\/(\d{5,})/) || primeiro.match(/(\d{6,})/) || [])[1];
+      const nome = it.nome || (primeiro ? `${CANAIS[canalDe(primeiro)]}${idAnuncio ? " — anúncio " + idAnuncio : ""}` : "Imóvel");
+      const imId = (await env.DB.prepare("INSERT INTO plt_tp_imoveis(org_id,nome,moeda,ajustes,treinamento,anuncio,ia_modo,ativo,ical_token,checkin,checkout,criado_ms) VALUES(?,?,'BRL',?,'{}','{}','SUGERIR',1,?,'15:00','11:00',?) RETURNING id")
+        .bind(orgId, nome, JSON.stringify({ airbnb: 0, booking: 18, vrbo: 10 }), [...crypto.getRandomValues(new Uint8Array(18))].map(b => b.toString(16).padStart(2, "0")).join(""), agora).first()).id;
+      const res = { id: imId, nome, calendarios: 0, reservas: 0, erros: [] };
+      for (const u of it.links) {
+        const canal = canalDe(u);
+        const calId = (await env.DB.prepare("INSERT INTO plt_tp_calendarios(org_id,imovel_id,canal,url) VALUES(?,?,?,?) RETURNING id").bind(orgId, imId, canal, u).first()).id;
+        res.calendarios++;
+        // Lê na hora os primeiros (o resto o cron lê em poucos minutos), sem pesar a requisição.
+        if (sincronizados < 12) {
+          sincronizados++;
+          const sinc = await sincronizarCalendario(env, k, { id: calId, org_id: orgId, imovel_id: imId, canal, url: u });
+          if (sinc.ok) { res.reservas += sinc.eventos; if (!it.nome && sinc.nome) { await env.DB.prepare("UPDATE plt_tp_imoveis SET nome=? WHERE id=?").bind(sinc.nome, imId).run(); res.nome = sinc.nome; } }
+          else res.erros.push(`${CANAIS[canal]}: ${sinc.erro}`);
+        }
+      }
+      criados.push(res);
+    }
+    await auditar(env, request, sessao, orgId, "TEMPORADA", `Cadastro rápido: ${criados.length} imóvel(is), ${criados.reduce((t, x) => t + x.calendarios, 0)} calendário(s)`);
+    return json({ ok: true, imoveis: criados });
   }
   if ((m = r.match(/^imoveis\/(\d{1,12})\/calendarios$/)) && metodo === "POST") {
     const negado = precisa("AGENTE"); if (negado) return negado;

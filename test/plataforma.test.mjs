@@ -1845,3 +1845,20 @@ test("Temporada — conexão oficial só para quem pagou; quem para de pagar é 
   assert.equal(p.env.DB.q("SELECT channex_property FROM plt_tp_imoveis WHERE id=?", id)[0].channex_property, null);
   assert.equal(p.env.DB.q("SELECT nome FROM plt_tp_imoveis WHERE id=?", id)[0].nome, "Casa", "imóvel e dados continuam");
 });
+
+test("Temporada — cadastro rápido: só os links dos calendários, vários imóveis de uma vez", async () => {
+  const p = await criarPlataforma();
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  p.web = { "https://www.airbnb.com.br/calendar/ical/55501.ics?s=a": ICAL_AIRBNB, "https://www.airbnb.com.br/calendar/ical/55502.ics?s=b": ICAL_AIRBNB.replace("VERSION:2.0", "VERSION:2.0\r\nX-WR-CALNAME:Casa da Praia"), "https://admin.booking.com/hotel/hoteladmin/ical.html?t=xyz": ICAL_AIRBNB.replace(/Reserved/g, "CLOSED - Not available") };
+  const r = await p.req("/api/orgs/1/tp/imoveis/rapido", { metodo: "POST", quem: "admin", corpo: { imoveis: [
+    { nome: "", links: ["https://www.airbnb.com.br/calendar/ical/55501.ics?s=a", "https://admin.booking.com/hotel/hoteladmin/ical.html?t=xyz"] },
+    { nome: "", links: ["https://www.airbnb.com.br/calendar/ical/55502.ics?s=b"] }] } });
+  assert.equal(r.status, 200, JSON.stringify(r.dados));
+  assert.equal(r.dados.imoveis.length, 2);
+  assert.equal(r.dados.imoveis[0].nome, "Airbnb — anúncio 55501"); assert.equal(r.dados.imoveis[0].calendarios, 2);
+  assert.equal(r.dados.imoveis[1].nome, "Casa da Praia", "usa o nome do calendário quando existe");
+  const ims = (await p.req("/api/orgs/1/tp/imoveis", { quem: "admin" })).dados.imoveis;
+  assert.equal(ims.length, 2);
+  const anuncio = await p.req("/api/orgs/1/tp/imoveis/rapido", { metodo: "POST", quem: "admin", corpo: { imoveis: [{ links: ["https://www.airbnb.com.br/rooms/123456"] }] } });
+  assert.equal(anuncio.dados.codigo, "LINK_ANUNCIO", "explica que precisa do link do calendário");
+});
