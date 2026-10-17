@@ -118,12 +118,31 @@ function gerarIcal(nome, eventos) {
     ...eventos.flatMap(e => ["BEGIN:VEVENT", `UID:${esc(e.uid)}@denia`, `DTSTAMP:${agora}`, `DTSTART;VALUE=DATE:${d(e.inicio)}`, `DTEND;VALUE=DATE:${d(e.fim)}`, `SUMMARY:${esc(e.titulo || "Indisponível")}`, "END:VEVENT"]),
     "END:VCALENDAR", ""].join("\r\n");
 }
+// Link de calendário só para endereços públicos (nada de localhost/rede interna) e até 3 redirecionamentos https.
+function enderecoPublico(u) {
+  let x; try { x = new URL(u); } catch { return false; }
+  if (x.protocol !== "https:" || x.username || x.password) return false;
+  const h = x.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (h === "localhost" || h.endsWith(".localhost") || h.endsWith(".local") || h.endsWith(".internal") || !h.includes(".") && !h.includes(":")) return false;
+  if (/^(0|10|127)\.|^169\.254\.|^192\.168\.|^172\.(1[6-9]|2\d|3[01])\.|^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(h)) return false;
+  if (h.includes(":") && (h === "::1" || /^(fc|fd|fe8|fe9|fea|feb)/.test(h) || h.startsWith("::ffff:"))) return false;
+  return true;
+}
+async function buscarIcal(url) {
+  for (let salto = 0; salto < 4; salto++) {
+    if (!enderecoPublico(url)) throw new Error("Use o link público do calendário (https://…).");
+    const r = await fetch(url, { headers: { "user-agent": "DENIA Calendar Sync" }, signal: AbortSignal.timeout(15000), redirect: "manual" });
+    if (r.status >= 300 && r.status < 400 && r.headers.get("location")) { url = new URL(r.headers.get("location"), url).toString(); continue; }
+    return r;
+  }
+  throw new Error("O link do calendário redireciona demais.");
+}
 async function sincronizarCalendario(env, k, cal) {
   const agora = k.agora(env);
   try {
-    const r = await fetch(cal.url, { headers: { "user-agent": "DENIA Calendar Sync" }, signal: AbortSignal.timeout(15000), redirect: "follow" });
-    const texto = await r.text();
-    if (!r.ok || !/BEGIN:VCALENDAR/.test(texto)) throw new Error(r.ok ? "O link não devolveu um calendário (iCal)." : `A plataforma respondeu ${r.status}.`);
+    const r = await buscarIcal(cal.url);
+    const texto = (await r.text()).slice(0, 3000000);
+    if (!r.ok || !/BEGIN:VCALENDAR/.test(texto)) throw new Error(r.ok ? "O link não devolveu um calendário (iCal)." : "A plataforma não devolveu o calendário. Confira o link.");
     const hoje = iso(agora - 2 * DIA);
     const eventos = lerIcal(texto).filter(e => e.fim >= hoje).slice(0, 800);
     const st = eventos.map(e => env.DB.prepare(`INSERT INTO plt_tp_reservas(org_id,imovel_id,canal,externo_id,tipo,status,hospede,inicio,fim,notas,origem,calendario_id,criado_ms,atualizado_ms) VALUES(?,?,?,?,?,'CONFIRMADA',?,?,?,?,'ICAL',?,?,?)
@@ -1141,7 +1160,10 @@ export async function limpezaPublica(request, env, k) {
   const m = url.pathname.match(/^\/tp\/limpeza\/(\d{1,12})-([A-Za-z0-9]{32})(\/dados|\/comecar|\/enviar)?$/);
   if (!m) return null;
   const id = Number(m[1]);
-  if (m[2] !== await tokenLimpeza(env, k, id)) return new Response("Link inválido.", { status: 404 });
+  const certo = await tokenLimpeza(env, k, id);
+  let dif = certo.length ^ String(m[2]).length;
+  for (let i = 0; i < certo.length; i++) dif |= certo.charCodeAt(i) ^ (String(m[2]).charCodeAt(i) || 0);
+  if (dif) return new Response("Link inválido.", { status: 404 });
   const l = await env.DB.prepare("SELECT l.*, i.nome, i.org_id, i.checkin, i.checkout FROM plt_tp_limpezas l JOIN plt_tp_imoveis i ON i.id=l.imovel_id WHERE l.id=?").bind(id).first();
   if (!l) return new Response("Link inválido.", { status: 404 });
   const agora = k.agora(env);

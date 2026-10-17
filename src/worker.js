@@ -29,12 +29,12 @@ import { openaiBruto } from "./marketing.js";
 import { DDL_ZAP, webhookZap, rotasZap, webhookTelegram, segredoTelegram, tokenTelegramPlataforma, processarCampanhas } from "./zap.js";
 import { lerPlanos, acessoDa, recursoDaRota, planoMinimo, rotasPlano, webhookAsaas, lembretesDePlano, TESTE_DIAS, STATUS as STATUS_PLANO, PLANOS_PADRAO, RECURSOS } from "./planos.js";
 
-const VERSAO = "3.7.0";
+const VERSAO = "3.8.0";
 // Versão dos Termos de uso e da Política de privacidade aceitas no cadastro.
 const VERSAO_TERMOS = "2026-10-16";
 // WhatsApp da Central de Atendimento (botão flutuante do site).
 const WHATSAPP_CENTRAL = "5521975469162";
-const SCHEMA = "2.12.0";
+const SCHEMA = "2.13.0";
 const COOKIE = "__Host-denia_sessao";
 const SESSAO_MS = 8 * 60 * 60 * 1000;
 const MAX_TENTATIVAS = 5;
@@ -125,6 +125,10 @@ function senhaTemporaria() {
   for (const x of b) s += alfabeto[x % alfabeto.length];
   return `${s.slice(0, 4)}-${s.slice(4, 9)}-${s.slice(9)}`;
 }
+function origemPublica(env, request) {
+  const site = String(env.SITE_URL || "").trim().replace(/\/+$/, "");
+  return /^https:\/\/[^/\s]+$/.test(site) ? site : new URL(request.url).origin;
+}
 function ipDe(request) { return request.headers.get("cf-connecting-ip") || "local"; }
 
 // ---------------------------------------------------------------------------
@@ -190,6 +194,8 @@ async function garantirSchema(env) {
     await env.DB.prepare("ALTER TABLE plt_zap_itens ADD COLUMN exibicao TEXT").run().catch(() => { });
     await env.DB.prepare("ALTER TABLE plt_zap_itens ADD COLUMN extra TEXT").run().catch(() => { });
     await env.DB.prepare("ALTER TABLE plt_zap_catalogo ADD COLUMN link TEXT").run().catch(() => { });
+    // E-mail ainda não comprovado (contas do cadastro aberto). NULL = contas antigas ou criadas pela equipe.
+    await env.DB.prepare("ALTER TABLE plt_usuarios ADD COLUMN email_confirmado INTEGER").run().catch(() => { });
     await env.DB.prepare("ALTER TABLE plt_zap_cat_itens ADD COLUMN ordem INTEGER").run().catch(() => { });
     await env.DB.prepare("ALTER TABLE plt_zap_contas ADD COLUMN telegram_chat TEXT").run().catch(() => { });
     await env.DB.prepare("ALTER TABLE plt_zap_contatos ADD COLUMN memoria TEXT").run().catch(() => { });
@@ -400,7 +406,7 @@ async function cadastrar(request, env) {
   if (existe || (admin && admin.email === email)) return json({ erro: "Já existe uma conta com este e-mail. Use a opção Entrar." }, 409);
   await env.DB.prepare(`INSERT INTO plt_tentativas(chave,n,ate) VALUES(?,1,?) ON CONFLICT(chave) DO UPDATE SET n = CASE WHEN plt_tentativas.ate < ? THEN 1 ELSE plt_tentativas.n + 1 END, ate = excluded.ate`).bind(chave, agora(env) + 3600000, agora(env)).run();
   const h = await hashSenha(senha, null, PBKDF2_ITER);
-  const u = await env.DB.prepare("INSERT INTO plt_usuarios(email,nome,senha_hash,senha_salt,senha_iter,super_admin,ativo,origem,criado_ms) VALUES(?,?,?,?,?,0,1,'CADASTRO',?) RETURNING *").bind(email, nome, h.hash, h.salt, h.iter, agora(env)).first();
+  const u = await env.DB.prepare("INSERT INTO plt_usuarios(email,nome,senha_hash,senha_salt,senha_iter,super_admin,ativo,origem,email_confirmado,criado_ms) VALUES(?,?,?,?,?,0,1,'CADASTRO',0,?) RETURNING *").bind(email, nome, h.hash, h.salt, h.iter, agora(env)).first();
   const o = await criarEmpresa(env, empresa);
   const plano = PLANOS_PADRAO[String(corpo.plano || "")] ? String(corpo.plano) : "start";
   await env.DB.prepare("UPDATE plt_organizacoes SET plano=?, plano_status='TESTE' WHERE id=?").bind(plano, o.id).run();
@@ -447,7 +453,8 @@ async function esqueciSenha(request, env) {
     if (porEmail) {
       const token = b64url(crypto.getRandomValues(new Uint8Array(32)));
       await env.DB.prepare("INSERT INTO plt_redefinicoes(token_hash,usuario_id,expira_ms,criado_ms) VALUES(?,?,?,?)").bind(await sha256(token), u.id, agora(env) + 30 * 60000, agora(env)).run();
-      const link = `${new URL(request.url).origin}/redefinir?t=${token}`;
+      // Endereço fixo da plataforma (SITE_URL) quando existir: o link nunca depende de cabeçalhos do pedido.
+      const link = `${origemPublica(env, request)}/redefinir?t=${token}`;
       await enviarEmail(env, u.email, "DENIA — redefinir a sua senha", `Olá${u.nome ? ", " + u.nome : ""}!\n\nRecebemos um pedido para redefinir a sua senha da DENIA. Para criar uma senha nova, abra o link abaixo (vale por 30 minutos):\n\n${link}\n\nSe não foi você, ignore este e-mail: a sua senha continua a mesma.\n\nEquipe DENIA`);
     }
     const orgs = (await env.DB.prepare("SELECT org_id FROM plt_membros WHERE usuario_id=?").bind(u.id).all())?.results || [];
@@ -466,7 +473,7 @@ async function redefinirSenha(request, env) {
   if (fraca) return json({ erro: fraca }, 400);
   const h = await hashSenha(String(corpo.nova), null, PBKDF2_ITER);
   await env.DB.batch([
-    env.DB.prepare("UPDATE plt_usuarios SET senha_hash=?, senha_salt=?, senha_iter=?, trocar_senha=0, sessao_versao=sessao_versao+1 WHERE id=?").bind(h.hash, h.salt, h.iter, r.usuario_id),
+    env.DB.prepare("UPDATE plt_usuarios SET senha_hash=?, senha_salt=?, senha_iter=?, trocar_senha=0, email_confirmado=1, sessao_versao=sessao_versao+1 WHERE id=?").bind(h.hash, h.salt, h.iter, r.usuario_id),
     env.DB.prepare("UPDATE plt_redefinicoes SET usado=1 WHERE usuario_id=?").bind(r.usuario_id)
   ]);
   return json({ ok: true });
@@ -756,8 +763,10 @@ async function limparBanco(env) {
   if (feito?.valor === hoje) return;
   await env.DB.prepare("INSERT OR REPLACE INTO plt_meta(chave,valor) VALUES('limpeza_dia',?)").bind(hoje).run();
   const t = agora(env);
+  // Só artes de posts antigos: imagens do chatbot e logos das marcas nunca são apagadas.
+  // (Separado: sem o Marketing em uso, as tabelas de posts/marcas podem não existir.)
+  await env.DB.prepare("DELETE FROM plt_mk_midias WHERE criado_ms < ? AND COALESCE(prompt,'') NOT IN ('chatbot','logo') AND id NOT IN (SELECT logo_midia_id FROM plt_mk_marcas WHERE logo_midia_id IS NOT NULL) AND id NOT IN (SELECT midia_id FROM plt_mk_posts WHERE midia_id IS NOT NULL AND (status NOT IN ('PUBLICADO','REJEITADO') OR atualizado_ms > ?))").bind(t - 30 * 86400000, t - 90 * 86400000).run().catch(() => { });
   await env.DB.batch([
-    env.DB.prepare("DELETE FROM plt_mk_midias WHERE criado_ms < ? AND id NOT IN (SELECT midia_id FROM plt_mk_posts WHERE midia_id IS NOT NULL AND (status NOT IN ('PUBLICADO','REJEITADO') OR atualizado_ms > ?))").bind(t - 30 * 86400000, t - 90 * 86400000),
     env.DB.prepare("DELETE FROM plt_tentativas WHERE ate < ?").bind(t - 86400000),
     env.DB.prepare("DELETE FROM plt_redefinicoes WHERE expira_ms < ?").bind(t - 7 * 86400000),
     env.DB.prepare("DELETE FROM plt_meta WHERE chave LIKE 'tg_codigo:%' AND CAST(json_extract(valor,'$.ate') AS INTEGER) < ?").bind(t),
@@ -932,6 +941,14 @@ async function apiOrg(request, env, sessao, orgId, resto) {
     }
     const ja = await env.DB.prepare("SELECT 1 FROM plt_membros WHERE org_id=? AND usuario_id=?").bind(orgId, u.id).first();
     if (ja) return json({ erro: "Esta pessoa já faz parte da equipe." }, 409);
+    // Conta aberta no cadastro e com e-mail nunca comprovado: qualquer um poderia ter criado com o e-mail de
+    // outra pessoa para "herdar" o acesso. Ganha uma senha temporária nova (entregue pela equipe/e-mail) e
+    // as sessões antigas caem; quem criou sem ser dono do e-mail perde o acesso.
+    if (u.email_confirmado === 0 && !u.super_admin) {
+      senha = senhaTemporaria();
+      const h = await hashSenha(senha, null, PBKDF2_ITER);
+      u = await env.DB.prepare("UPDATE plt_usuarios SET senha_hash=?, senha_salt=?, senha_iter=?, trocar_senha=1, email_confirmado=1, sessao_versao=sessao_versao+1 WHERE id=? RETURNING *").bind(h.hash, h.salt, h.iter, u.id).first();
+    }
     const naEquipe = Number((await env.DB.prepare("SELECT COUNT(*) n FROM plt_membros WHERE org_id=?").bind(orgId).first())?.n || 0);
     if (!sessao.usuario.super_admin && naEquipe >= Number(acesso.limites?.usuarios || 0)) return json({ erro: `O plano ${acesso.nome} permite até ${acesso.limites.usuarios} pessoas na equipe. Atualize o plano para adicionar mais.`, codigo: "PLANO_LIMITE" }, 402);
     await env.DB.prepare("INSERT INTO plt_membros(org_id,usuario_id,papel,criado_ms) VALUES(?,?,?,?)").bind(orgId, u.id, novoPapel, agora(env)).run();

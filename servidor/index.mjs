@@ -255,8 +255,13 @@ export async function iniciar(op = {}) {
 
   const servidor = http.createServer(async (req, res) => {
     try {
-      const proto = String(req.headers["x-forwarded-proto"] || "").split(",")[0].trim() || (req.socket.encrypted ? "https" : "http");
-      const host = String(req.headers["x-forwarded-host"] || req.headers.host || "localhost").split(",")[0].trim();
+      const protoCab = String(req.headers["x-forwarded-proto"] || "").split(",")[0].trim();
+      const proto = /^https?$/.test(protoCab) ? protoCab : (req.socket.encrypted ? "https" : "http");
+      // Endereço do pedido: o SITE_URL configurado vale sempre (links de e-mail e retornos não podem ser
+      // desviados por um cabeçalho forjado). Sem ele, usa o Host; X-Forwarded-Host só com DENIA_CONFIAR_HOST=1.
+      const site = /^https?:\/\/[^/\s]+$/.test(String(ambiente.SITE_URL || "").trim().replace(/\/+$/, "")) ? new URL(String(ambiente.SITE_URL).trim()) : null;
+      const hostCab = ambiente.DENIA_CONFIAR_HOST === "1" ? req.headers["x-forwarded-host"] || req.headers.host : req.headers.host;
+      const host = site && !(hostIA && String(req.headers.host || "").toLowerCase() === hostIA) ? site.host : String(hostCab || "localhost").split(",")[0].trim();
       const headers = new Headers();
       for (const [k, v] of Object.entries(req.headers)) {
         if (k.startsWith(":") || k === "cf-connecting-ip") continue;

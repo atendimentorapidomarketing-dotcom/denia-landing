@@ -521,8 +521,10 @@ async function processarWebhook(env, k, d, bruto, assinatura) {
       let valida = Boolean(conta);
       if (conta) {
         const segredos = [conta.segredo_cifrado ? await k.decifrar(env, conta.segredo_cifrado) : "", String(env.META_APP_SECRET || "")].filter(Boolean);
-        // Com o segredo do app salvo, só aceita mensagem assinada pela Meta (ninguém consegue se passar por cliente).
-        if (segredos.length && conta.segredo_cifrado) valida = assinatura && (await Promise.all(segredos.map(s => hmacHex(s, bruto)))).some(h => iguais(h, assinatura));
+        // Só aceita o que a Meta assinou (com a chave do app da empresa ou a da plataforma): ninguém consegue
+        // se passar por cliente, descadastrar contatos ou pausar o robô mandando um webhook falso.
+        if (segredos.length) valida = Boolean(assinatura) && (await Promise.all(segredos.map(s => hmacHex(s, bruto)))).some(h => iguais(h, assinatura));
+        if (!valida) await env.DB.prepare("INSERT OR REPLACE INTO plt_meta(chave,valor) VALUES(?,?)").bind("zap_assinatura_falhou_" + conta.org_id, String(k.agora(env))).run().catch(() => {});
       }
       contas.set(pnid, valida ? conta : null);
     }
@@ -921,7 +923,9 @@ export async function rotasZap(request, env, k, orgId, papel, resto) {
   if (r === "conta" && metodo === "GET") {
     const c = await contaDa(env, orgId);
     const ult = await env.DB.prepare("SELECT MAX(criado_ms) ms FROM plt_zap_msgs WHERE org_id=? AND direcao='E'").bind(orgId).first().catch(() => null);
-    return json(publicaConta(c, { webhook_url: new URL("/webhook/whatsapp", request.url).toString(), verify_token: pode(papel, "ADMIN") ? await tokenVerificacao(env) : "", ultima_recebida_ms: ult?.ms || null }));
+    const falhou = await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave=?").bind("zap_assinatura_falhou_" + orgId).first().catch(() => null);
+    return json(publicaConta(c, { webhook_url: new URL("/webhook/whatsapp", request.url).toString(), verify_token: pode(papel, "ADMIN") ? await tokenVerificacao(env) : "", ultima_recebida_ms: ult?.ms || null,
+      assinatura_falhou_ms: Number(falhou?.valor || 0) > Number(ult?.ms || 0) ? Number(falhou.valor) : null }));
   }
   if (r === "conta" && metodo === "POST") {
     const negado = precisa("ADMIN"); if (negado) return negado;
@@ -978,6 +982,11 @@ export async function rotasZap(request, env, k, orgId, papel, resto) {
     let token;
     try { token = (await chamar("GET", "oauth/access_token", { client_id: String(env.META_APP_ID).trim(), client_secret: String(env.META_APP_SECRET).trim(), code })).access_token; }
     catch (e) { return json({ erro: "A Meta recusou a autorização: " + e.message }, 400); }
+    // O número precisa ser da conta do WhatsApp que esse login da Meta liberou: ninguém conecta o número de outra empresa.
+    try {
+      const nums = await fetch(`${GRAPH}/${waba}/phone_numbers?fields=id&limit=100`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(20000) }).then(x => x.json()).catch(() => ({}));
+      if (!(nums?.data || []).some(n => String(n.id) === pnid)) return json({ erro: "Esse número não pertence à conta do WhatsApp liberada no login do Facebook. Escolha o número certo e tente de novo." }, 400);
+    } catch { return json({ erro: "Não consegui conferir o número na Meta. Tente de novo." }, 502); }
     const avisos = [];
     const post = async (caminho, corpoJ) => { const u = `${GRAPH}/${caminho}`; const resp = await fetch(u, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify(corpoJ || {}), signal: AbortSignal.timeout(20000) }); const d = await resp.json().catch(() => ({})); if (!resp.ok) throw new Error(cortar(d?.error?.error_user_msg || d?.error?.message || `HTTP ${resp.status}`, 300)); return d; };
     try { await post(`${waba}/subscribed_apps`); } catch (e) { avisos.push("Assinatura do webhook: " + e.message); }
@@ -988,7 +997,7 @@ export async function rotasZap(request, env, k, orgId, papel, resto) {
       try { await post(`${pnid}/register`, { messaging_product: "whatsapp", pin: String(100000 + Math.floor(Math.random() * 899999)) }); } catch (e) { avisos.push("Registro do número: " + e.message); }
     }
     let info = { numero: "", nome: "" };
-    try { info = await conferirNumero(pnid, token); } catch (e) { avisos.push(e.message); }
+    try { info = await conferirNumero(pnid, token); } catch (e) { return json({ erro: e.message }, 400); }
     await env.DB.prepare(`INSERT INTO plt_zap_contas(org_id,phone_number_id,waba_id,numero,nome_verificado,token_cifrado,ativo,modo,config,atualizado_ms) VALUES(?,?,?,?,?,?,1,'BOTOES','{}',?)
       ON CONFLICT(org_id) DO UPDATE SET phone_number_id=excluded.phone_number_id, waba_id=excluded.waba_id, numero=excluded.numero, nome_verificado=excluded.nome_verificado, token_cifrado=excluded.token_cifrado, atualizado_ms=excluded.atualizado_ms`)
       .bind(orgId, pnid, waba, info.numero, info.nome, await k.cifrar(env, token), agora).run();

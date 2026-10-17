@@ -2,6 +2,7 @@
 // integração de ponta a ponta com o DENIA Engine real (em memória).
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createHmac } from "node:crypto";
 import { D1Fake, criarAmbiente } from "../engine/test/harness.mjs";
 
 const ADMIN = "dono@denia.test", SENHA_ADMIN = "senha-do-admin-123";
@@ -313,6 +314,20 @@ test("Plataforma — funciona sem configurar nada: contas antigas, chave automá
   const antigo = await p.req("/login.html");
   assert.equal(antigo.status, 302);
   assert.equal(antigo.r.headers.get("location"), "/entrar");
+});
+
+test("Segurança — conta criada com o e-mail de outra pessoa não herda o acesso quando a empresa a adiciona", async () => {
+  const p = await criarPlataforma();
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  // Alguém abre conta com o e-mail do financeiro de outra empresa, antes dele.
+  const golpe = await p.req("/api/cadastro", { metodo: "POST", quem: "golpista", corpo: { nome: "Xis", empresa: "Fachada", email: "cfo@vitima.test", senha: "SenhaDoGolpe2026", aceite: true } });
+  assert.equal(golpe.status, 200);
+  const add = await p.req("/api/orgs/1/membros", { metodo: "POST", quem: "admin", corpo: { email: "cfo@vitima.test", nome: "CFO", papel: "ADMIN" } });
+  assert.equal(add.status, 200);
+  assert.ok(add.dados.senha_temporaria, "ganha senha temporária nova, entregue pela equipe");
+  assert.equal((await p.req("/api/eu", { quem: "golpista" })).status, 401, "a sessão de quem criou cai");
+  assert.equal((await p.entrar("golpista", "cfo@vitima.test", "SenhaDoGolpe2026")).status, 401, "a senha de quem criou não vale mais");
+  assert.equal((await p.entrar("cfo", "cfo@vitima.test", add.dados.senha_temporaria)).status, 200, "o dono do e-mail entra com a senha temporária");
 });
 
 test("Plataforma — criar conta: empresa própria, sem configuração e sem acesso à Central", async () => {
@@ -1366,7 +1381,13 @@ test("Plataforma — guia de lojas (motor em MODO=guia): status, importação, a
 
 // ===== Chatbot do WhatsApp da plataforma: qualquer empresa, sem Worker por empresa
 const TOKEN_META = "EAAG" + "x".repeat(60);
-const webhookZap = (p, pnid, msg, nome = "Marcos") => p.req("/webhook/whatsapp", { metodo: "POST", corpo: { object: "whatsapp_business_account", entry: [{ changes: [{ field: "messages", value: { metadata: { phone_number_id: pnid }, contacts: [{ wa_id: msg.from, profile: { name: nome } }], messages: [{ id: "wamid." + Math.random().toString(36).slice(2), timestamp: String(Math.floor(Date.now() / 1000)), ...msg }] } }] }] } });
+// Como a Meta: com a chave do app configurada, o webhook vem assinado (x-hub-signature-256).
+const webhookAssinado = (p, corpo) => {
+  const bruto = JSON.stringify(corpo);
+  const cab = p.env.META_APP_SECRET ? { "x-hub-signature-256": "sha256=" + createHmac("sha256", p.env.META_APP_SECRET).update(bruto).digest("hex") } : {};
+  return p.req("/webhook/whatsapp", { metodo: "POST", corpo, cabecalhos: cab });
+};
+const webhookZap = (p, pnid, msg, nome = "Marcos") => webhookAssinado(p, { object: "whatsapp_business_account", entry: [{ changes: [{ field: "messages", value: { metadata: { phone_number_id: pnid }, contacts: [{ wa_id: msg.from, profile: { name: nome } }], messages: [{ id: "wamid." + Math.random().toString(36).slice(2), timestamp: String(Math.floor(Date.now() / 1000)), ...msg }] } }] }] });
 const clicar = (p, pnid, de, id) => webhookZap(p, pnid, { from: de, type: "interactive", interactive: { type: "list_reply", list_reply: { id, title: "x" } } });
 async function duasEmpresasComChatbot() {
   const p = await criarPlataforma();
@@ -1497,7 +1518,7 @@ test("Chatbot — com a chave secreta do app, só aceita mensagem assinada pela 
   const CLI = "5521922221111";
   await webhookZap(p, "111111111111", { from: CLI, type: "text", text: { body: "oi" } });
   assert.equal(enviadosPara(p, CLI).length, 0, "sem assinatura: ignorada");
-  const { createHmac } = await import("node:crypto");
+
   const corpo = JSON.stringify({ entry: [{ changes: [{ value: { metadata: { phone_number_id: "111111111111" }, messages: [{ id: "wamid.ass", from: CLI, timestamp: String(Math.floor(Date.now() / 1000)), type: "text", text: { body: "oi" } }] } }] }] });
   const r = await p.req("/webhook/whatsapp", { metodo: "POST", corpo: JSON.parse(corpo), cabecalhos: { "x-hub-signature-256": "sha256=" + createHmac("sha256", "a".repeat(32)).update(corpo).digest("hex") } });
   assert.equal(r.status, 200);
@@ -2161,8 +2182,12 @@ test("WhatsApp — conectar pelo Facebook com coexistência: número continua no
     if (url.includes("oauth/access_token")) return { access_token: "EAAT" + "y".repeat(60) };
     if (url.includes("/subscribed_apps") || url.includes("/smb_app_data")) return { success: true };
     if (url.includes("/555666777888?")) return { display_phone_number: "+55 21 99999-0000", verified_name: "Loja" };
+    if (url.includes("111222333444/phone_numbers")) return { data: [{ id: "555666777888" }] };
     return {};
   };
+  const alheio = await p.req(`/api/orgs/${org}/zap/embedded`, { metodo: "POST", quem: "admin", corpo: { code: "codigo-da-meta", phone_number_id: "999888777666", waba_id: "111222333444" } });
+  assert.equal(alheio.status, 400, "número que não é da conta liberada não conecta");
+  assert.equal(p.env.DB.q("SELECT COUNT(*) n FROM plt_zap_contas WHERE phone_number_id='999888777666'")[0].n, 0);
   const r = await p.req(`/api/orgs/${org}/zap/embedded`, { metodo: "POST", quem: "admin", corpo: { code: "codigo-da-meta", phone_number_id: "555666777888", waba_id: "111222333444", coexistencia: true } });
   assert.equal(r.status, 200, JSON.stringify(r.dados)); assert.equal(r.dados.numero, "+55 21 99999-0000");
   const chamadas = p.metaChamadas.map(c => c.url);
@@ -2175,7 +2200,11 @@ test("WhatsApp — conectar pelo Facebook com coexistência: número continua no
   const CLI = "5521944440000";
   await webhookZap(p, "555666777888", { from: CLI, type: "text", text: { body: "oi" } });
   assert.equal(enviadosPara(p, CLI).length, 1);
-  await p.req("/webhook/whatsapp", { metodo: "POST", corpo: { entry: [{ changes: [{ field: "smb_message_echoes", value: { metadata: { phone_number_id: "555666777888" }, message_echoes: [{ id: "wamid.eco1", from: "5521999990000", to: CLI, type: "text", text: { body: "Oi! Aqui é a Ana, pelo celular." } }] } }] }] } });
+  // Webhook falso (sem a assinatura da Meta) é ignorado: ninguém pausa o robô nem se passa por cliente.
+  const falso = await p.req("/webhook/whatsapp", { metodo: "POST", corpo: { entry: [{ changes: [{ field: "smb_message_echoes", value: { metadata: { phone_number_id: "555666777888" }, message_echoes: [{ id: "wamid.falso", from: "5521999990000", to: CLI, type: "text", text: { body: "falso" } }] } }] }] } });
+  assert.equal(falso.status, 200);
+  assert.equal(p.env.DB.q("SELECT COUNT(*) n FROM plt_zap_msgs WHERE wamid='wamid.falso'")[0].n, 0, "webhook sem assinatura não entra");
+  await webhookAssinado(p, { entry: [{ changes: [{ field: "smb_message_echoes", value: { metadata: { phone_number_id: "555666777888" }, message_echoes: [{ id: "wamid.eco1", from: "5521999990000", to: CLI, type: "text", text: { body: "Oi! Aqui é a Ana, pelo celular." } }] } }] }] });
   const conv = (await p.req(`/api/orgs/${org}/zap/conversas/${CLI}`, { quem: "admin" })).dados;
   assert.ok(conv.mensagens.some(m => m.origem === "EQUIPE" && /pelo celular/.test(m.texto)));
   assert.equal(conv.contato.pausado, true);
