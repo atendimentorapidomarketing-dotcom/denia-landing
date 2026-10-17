@@ -958,3 +958,4 @@ input.fx-titulo:focus { outline: none; border-color: var(--azul); background: rg
 .fx-botpress > div { display: grid; gap: 2px; min-width: 0; flex: 1 1 240px; }
 .fx-empresa { margin: 0; padding: 10px 12px; border-radius: 12px; border: 1px solid rgba(251, 191, 36, 0.45); background: rgba(251, 191, 36, 0.08); font-size: 14px; }
 .fx-empresa-nome { color: #9ec0ff; }
+.fx-editar-loja { margin-left: auto; flex: 0 0 auto; }

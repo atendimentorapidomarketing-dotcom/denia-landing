@@ -58,7 +58,7 @@ No app Node.js → **Variáveis de ambiente**, cole cada uma. Os valores secreto
 
 | Nome | Valor |
 |---|---|
-| `SITE_URL` | `https://app.seudominio.com.br` (o endereço novo, sem barra no fim) |
+| `SITE_URL` | `https://app.seudominio.com.br` (o endereço novo, sem barra no fim). **Obrigatório**: os links dos e-mails (ex.: redefinir senha) e os retornos da Meta/Google usam sempre este endereço, nunca o que vem no pedido. |
 | `DENIA_CHAVE_SERVIDOR` | Uma senha longa que você inventa (40+ caracteres). Abre as páginas `/__denia/…`. |
 | `DENIA_TAREFAS` | `desligadas` enquanto estiver testando. Apague no dia da troca. |
 | `ENGINE_DENIA_PAUSADA` | `true` enquanto estiver testando (a IA da Hostinger não manda mensagens). Apague no dia da troca. |

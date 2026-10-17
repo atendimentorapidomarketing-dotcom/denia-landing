@@ -10,7 +10,7 @@ import { iniciar } from "../servidor/index.mjs";
 
 const CHAVE = "chave-do-servidor-de-teste-123";
 const SENHA = "SenhaForte2026!";
-const base = extra => ({ PLATFORM_ADMIN_EMAIL: "dono@teste.com", PLATFORM_ADMIN_PASSWORD: SENHA, SESSION_SECRET: "s".repeat(40), DENIA_CHAVE_SERVIDOR: CHAVE, ...extra });
+const base = extra => ({ PLATFORM_ADMIN_EMAIL: "dono@teste.com", PLATFORM_ADMIN_PASSWORD: SENHA, SESSION_SECRET: "s".repeat(40), DENIA_CHAVE_SERVIDOR: CHAVE, SITE_URL: "https://denia.test", ...extra });
 
 function cliente(porta) {
   const cookies = {};
@@ -48,6 +48,8 @@ test("Servidor Node — site, plataforma com login, IA do WhatsApp e rotas do se
     const eu = await req("/api/eu");
     assert.equal(eu.dados.usuario.super_admin, true);
     assert.equal((await req("/app")).status, 200);
+    const conta = await req("/api/orgs/1/zap/conta", { cabecalhos: { "x-forwarded-host": "evil.test", host: "evil.test" } });
+    assert.match(conta.dados.webhook_url, /^https:\/\/denia\.test\//, "cabeçalho forjado não muda o endereço (vale o SITE_URL)");
 
     const ia = await req("/ia/api/saude");
     assert.ok(ia.dados && typeof ia.dados === "object", "a IA do WhatsApp responde em /ia/");

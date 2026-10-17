@@ -521,8 +521,10 @@ async function processarWebhook(env, k, d, bruto, assinatura) {
       let valida = Boolean(conta);
       if (conta) {
         const segredos = [conta.segredo_cifrado ? await k.decifrar(env, conta.segredo_cifrado) : "", String(env.META_APP_SECRET || "")].filter(Boolean);
-        // Com o segredo do app salvo, só aceita mensagem assinada pela Meta (ninguém consegue se passar por cliente).
-        if (segredos.length && conta.segredo_cifrado) valida = assinatura && (await Promise.all(segredos.map(s => hmacHex(s, bruto)))).some(h => iguais(h, assinatura));
+        // Só aceita o que a Meta assinou (com a chave do app da empresa ou a da plataforma): ninguém consegue
+        // se passar por cliente, descadastrar contatos ou pausar o robô mandando um webhook falso.
+        if (segredos.length) valida = Boolean(assinatura) && (await Promise.all(segredos.map(s => hmacHex(s, bruto)))).some(h => iguais(h, assinatura));
+        if (!valida) await env.DB.prepare("INSERT OR REPLACE INTO plt_meta(chave,valor) VALUES(?,?)").bind("zap_assinatura_falhou_" + conta.org_id, String(k.agora(env))).run().catch(() => {});
       }
       contas.set(pnid, valida ? conta : null);
     }
@@ -743,6 +745,61 @@ export function escreverRoteiro(itens, catalogo, ligacoes, cfg, ordemLig = new M
 // Botpress → roteiro: lê o fluxo "Main" exportado (.bpz → bot.json) e escreve o roteiro igual,
 // na mesma ordem, com os mesmos textos. O navegador já tira o código das ações (tokens) antes de enviar.
 // ---------------------------------------------------------------------------
+// Motor comum dos importadores: recebe o começo (mensagens + pergunta com opções) e uma função que
+// resolve cada destino. Escreve o roteiro na mesma ordem, com os mesmos textos.
+const VOLTA_IMPORT = /^(menu\s+(principal|pincipal|inicial|anterior)|finalizar|voltar|in[ií]cio|encerrar)$/i;
+function montarRoteiro({ raiz, resolver, origem, avisoPadrao = null, tituloAviso = "", tagsAviso = "" }) {
+  const ehRodape = cap => cap && cap.opcoes.length > 0 && cap.opcoes.every(x => VOLTA_IMPORT.test(x.rotulo));
+  const nomeBotao = t => { t = String(t).replace(/\s+/g, " ").trim(); if ([...t].length > 24) t = t.replace(/\s*\|\s*/g, "|").replace(/\s*\/\s*/g, "/"); return [...t].slice(0, 24).join("").trim() || "Opção"; };
+  const LOJA = /^([^\n]{1,100}?)\s*\n?\s*(https:\/\/\S+)\s*$/;
+  const linhas = [];
+  let rodape = null, encerramento = "";
+  const escrever = (rot, r, nivel, caminho) => {
+    const o = r.cap && !ehRodape(r.cap) ? r.cap.opcoes : [];
+    if (ehRodape(r.cap) && !rodape) {
+      rodape = { pergunta: r.cap.pergunta || "", rotulos: r.cap.opcoes.map(x => x.rotulo) };
+      const fim = r.cap.opcoes.find(x => /^(finalizar|encerrar)/i.test(x.rotulo));
+      if (fim) encerramento = resolver(fim.destino).msgs.join("\n---\n");
+    }
+    const lojas = [], outros = [];
+    // Nome da loja num balão e o link sozinho no balão seguinte (comum no Typebot): vira uma loja só.
+    const msgs = [];
+    for (const m of r.msgs) { const ant = msgs.at(-1); if (ant && /^https:\/\/\S+$/.test(m) && !/\n|https?:\/\//.test(ant) && ant.length <= 100) msgs[msgs.length - 1] = ant + "\n" + m; else msgs.push(m); }
+    for (const m of msgs) { const l = m.match(LOJA); if (!o.length && l && !/\n/.test(l[1].trim())) lojas.push(`${l[1].trim().replace(/[:\s]+$/, "")} | ${l[2]}`); else outros.push(m); }
+    // Sem pergunta própria (ex.: Typebot), o último balão antes das opções é a mensagem dos botões.
+    if (ehRodape(r.cap) && !r.cap.pergunta && outros.length > 1) { const q = outros.pop(); if (rodape && !rodape.pergunta) rodape.pergunta = q; }
+    const avisa = avisoPadrao === null ? r.aviso : lojas.length > 0;
+    const marca = !o.length && !avisa ? " [sem aviso]" : "";
+    linhas.push(">".repeat(nivel) + " " + nomeBotao(rot) + (!o.length && !lojas.length && !outros.length ? " [resposta]" : "") + marca);
+    const corpo = [...outros, ...(o.length && r.cap.pergunta ? [r.cap.pergunta] : [])].filter(Boolean);
+    if (corpo.length) linhas.push(corpo.join("\n---\n"));
+    else if (o.length) linhas.push("Escolha uma opção:");
+    linhas.push(...lojas, "");
+    if (nivel >= 8) return;
+    for (const x of o) { if (caminho.has(x.destino)) continue; escrever(x.rotulo, resolver(x.destino), nivel + 1, new Set([...caminho, x.destino])); }
+  };
+  if (!raiz.cap || !raiz.cap.opcoes.length) throw new Error(`O fluxo do ${origem} não tem um menu com opções depois do início.`);
+  for (const x of raiz.cap.opcoes) escrever(x.rotulo, resolver(x.destino), 1, new Set([x.destino]));
+  let boasVindas = raiz.msgs, menu = raiz.cap.pergunta;
+  if (!menu) { menu = boasVindas.at(-1) || "Escolha uma opção:"; boasVindas = boasVindas.slice(0, -1); }
+  const cab = [`# Convertido do ${origem} pela DENIA. Uma linha com --- separa mensagens (cada parte vai num balão).`,
+    "BOAS-VINDAS: " + (boasVindas.join("\n---\n") || "-"),
+    "MENU: " + menu,
+    "QUALQUER MENSAGEM: mostra o começo",
+    "LISTAS SIMPLES: sim",
+    "RODAPÉ DAS LOJAS: -"];
+  if (rodape) {
+    if (rodape.pergunta) cab.push("DEPOIS DE CADA RESPOSTA: " + rodape.pergunta);
+    const r3 = rodape.rotulos.map(t => t.replace(/pincipal/i, "Principal"));
+    cab.push(`BOTÕES DO FIM: ${r3.find(t => /principal|inicial|in[ií]cio/i.test(t)) || "Menu Principal"} | ${r3.find(t => /anterior|voltar/i.test(t)) || "Menu Anterior"} | ${r3.find(t => /finalizar|encerrar/i.test(t)) || "Finalizar"}`);
+  }
+  if (encerramento) cab.push("ENCERRAMENTO: " + encerramento);
+  if (tituloAviso) cab.push("TÍTULO DO AVISO: " + tituloAviso);
+  if (tagsAviso) cab.push("ETIQUETAS DO AVISO: " + tagsAviso);
+  return cab.join("\n") + "\n\n" + linhas.join("\n").replace(/\n{3,}/g, "\n\n").trim() + "\n";
+}
+
+// Botpress (.bpz → bot.json): fluxo "Main". O navegador já tira o código das ações (tokens) antes de enviar.
 export function roteiroDoBotpress(bot) {
   const fluxos = Array.isArray(bot?.flows) ? bot.flows : [];
   const main = fluxos.find(f => f?.name === "Main") || fluxos.find(f => (f?.nodes || []).some(n => n?.type === "start"));
@@ -751,12 +808,8 @@ export function roteiroDoBotpress(bot) {
   const val = v => typeof v === "string" ? v : String(v?.dynamicValue || v?.staticValue || "");
   const ins = n => Array.isArray(n?.instructions) ? n.instructions : [];
   const textos = n => ins(n).filter(i => i.type === "content" && i.content?.type === "text").map(i => val(i.content.text).trim()).filter(Boolean);
-  const captura = n => ins(n).find(i => i.type === "capture");
   const proximo = n => ins(n).find(i => i.type === "transition")?.destination?.node || n?.defaultTransition?.targetNodeId || null;
-  const VOLTA = /^(menu\s+(principal|pincipal|inicial|anterior)|finalizar|voltar|in[ií]cio)$/i;
-  const opcoes = cap => (cap?.transitions || []).filter(t => t?.destination?.node).map(t => ({ rotulo: String(t.label || t.condition?.payload?.match(/__CHOICE=(.+)$/)?.[1] || "").trim(), destino: t.destination.node }));
-  let rodape = null, tagsAviso = "", tituloAviso = "";
-  // Segue o caminho até um nó que pergunta (ou até o fim), juntando as mensagens e vendo se passou por um aviso.
+  let tagsAviso = "", tituloAviso = "";
   const resolver = id => {
     const r = { msgs: [], cap: null, aviso: false };
     for (let passo = 0; id && passo < 12; passo++) {
@@ -764,53 +817,60 @@ export function roteiroDoBotpress(bot) {
       if (!n || n.type === "end") break;
       for (const a of ins(n).filter(i => i.type === "action")) { r.aviso = true; if (a.hashtags && !tagsAviso) tagsAviso = a.hashtags; if (a.titulo && !tituloAviso) tituloAviso = a.titulo; }
       r.msgs.push(...textos(n));
-      r.cap = captura(n);
-      if (r.cap) break;
+      const cap = ins(n).find(i => i.type === "capture");
+      if (cap) {
+        r.cap = { pergunta: val(cap.question).trim(), opcoes: (cap.transitions || []).filter(t => t?.destination?.node).map(t => ({ rotulo: String(t.label || t.condition?.payload?.match(/__CHOICE=(.+)$/)?.[1] || "").trim(), destino: t.destination.node })) };
+        break;
+      }
       id = proximo(n);
     }
     return r;
   };
-  const ehRodape = cap => { const o = opcoes(cap); return o.length > 0 && o.every(x => VOLTA.test(x.rotulo)); };
-  const nomeBotao = t => { t = String(t).replace(/\s+/g, " ").trim(); if ([...t].length > 24) t = t.replace(/\s*\|\s*/g, "|").replace(/\s*\/\s*/g, "/"); return [...t].slice(0, 24).join("").trim(); };
-  const LOJA = /^([^\n]{1,100}?)\s*\n?\s*(https:\/\/\S+)\s*$/;
-  const linhas = [];
-  let encerramento = "";
-  const escrever = (rot, r, nivel, caminho) => {
-    const o = r.cap && !ehRodape(r.cap) ? opcoes(r.cap) : [];
-    if (r.cap && ehRodape(r.cap) && !rodape) {
-      rodape = { pergunta: val(r.cap.question).trim(), rotulos: opcoes(r.cap).map(x => x.rotulo) };
-      const fim = opcoes(r.cap).find(x => /^finalizar/i.test(x.rotulo));
-      if (fim) encerramento = resolver(fim.destino).msgs.join("\n---\n");
-    }
-    const lojas = [], outros = [];
-    for (const m of r.msgs) { const l = m.match(LOJA); if (!o.length && l && !/\n/.test(l[1].trim())) lojas.push(`${l[1].trim().replace(/[:\s]+$/, "")} | ${l[2]}`); else outros.push(m); }
-    const marca = !o.length && !r.aviso ? " [sem aviso]" : "";
-    linhas.push(">".repeat(nivel) + " " + nomeBotao(rot) + (!o.length && !lojas.length && !outros.length ? " [resposta]" : "") + marca);
-    const corpo = [...outros, ...(o.length ? [val(r.cap.question).trim()] : [])].filter(Boolean);
-    if (corpo.length) linhas.push(corpo.join("\n---\n"));
-    linhas.push(...lojas, "");
-    if (nivel >= 8) return;
-    for (const x of o) { if (caminho.has(x.destino)) continue; escrever(x.rotulo, resolver(x.destino), nivel + 1, new Set([...caminho, x.destino])); }
-  };
   const inicio = nos.get(main.startNode) || [...nos.values()].find(n => n.type === "start");
   const raiz = resolver(proximo(inicio));
-  if (!raiz.cap) throw new Error("O fluxo do Botpress não tem um menu com opções depois do início.");
-  for (const x of opcoes(raiz.cap)) escrever(x.rotulo, resolver(x.destino), 1, new Set([x.destino]));
-  const cab = ["# Convertido do Botpress pela DENIA. Uma linha com --- separa mensagens (cada parte vai num balão).",
-    "BOAS-VINDAS: " + (raiz.msgs.join("\n---\n") || "-"),
-    "MENU: " + val(raiz.cap.question).trim(),
-    "QUALQUER MENSAGEM: mostra o começo",
-    "LISTAS SIMPLES: sim",
-    "RODAPÉ DAS LOJAS: -"];
-  if (rodape) {
-    cab.push("DEPOIS DE CADA RESPOSTA: " + rodape.pergunta);
-    const r3 = rodape.rotulos.map(t => t.replace(/pincipal/i, "Principal"));
-    cab.push(`BOTÕES DO FIM: ${r3.find(t => /principal|inicial|in[ií]cio/i.test(t)) || "Menu Principal"} | ${r3.find(t => /anterior|voltar/i.test(t)) || "Menu Anterior"} | ${r3.find(t => /finalizar/i.test(t)) || "Finalizar"}`);
-  }
-  if (encerramento) cab.push("ENCERRAMENTO: " + encerramento);
-  if (tituloAviso) cab.push("TÍTULO DO AVISO: " + tituloAviso);
-  if (tagsAviso) cab.push("ETIQUETAS DO AVISO: " + tagsAviso);
-  return cab.join("\n") + "\n\n" + linhas.join("\n").replace(/\n{3,}/g, "\n\n").trim() + "\n";
+  const roteiro = montarRoteiro({ raiz, resolver, origem: "Botpress" });
+  return roteiro.replace(/\n\n> /, (tituloAviso ? `\nTÍTULO DO AVISO: ${tituloAviso}` : "") + (tagsAviso ? `\nETIQUETAS DO AVISO: ${tagsAviso}` : "") + "\n\n> ");
+}
+
+// Typebot (Exportar → .json): grupos com balões de texto e "botões" (choice input), ligados por setas.
+export function roteiroDoTypebot(tb) {
+  const grupos = Array.isArray(tb?.groups) ? tb.groups : [];
+  const setas = new Map((Array.isArray(tb?.edges) ? tb.edges : []).map(e => [e.id, e]));
+  if (!grupos.length || !setas.size) throw new Error("Esse arquivo não parece um fluxo exportado do Typebot.");
+  const porGrupo = new Map(grupos.map(g => [g.id, g]));
+  const rico = n => { if (!n) return ""; if (typeof n.text === "string") return n.text; const filhos = (n.children || []).map(rico).join(""); return n.type === "a" && n.url && !filhos.includes(n.url) ? `${filhos} ${n.url}`.trim() : filhos; };
+  const textoBalao = b => { const c = b.content || {}; if (Array.isArray(c.richText)) return c.richText.map(rico).join("\n").trim(); return String(c.plainText || c.html || "").replace(/<[^>]+>/g, "").trim(); };
+  const destinoDa = idSeta => { const e = setas.get(idSeta); return e?.to ? `${e.to.groupId}#${e.to.blockId || ""}` : null; };
+  const resolver = alvo => {
+    const r = { msgs: [], cap: null, aviso: false };
+    let [gid, bid] = String(alvo || "").split("#");
+    for (let passo = 0; gid && passo < 15; passo++) {
+      const g = porGrupo.get(gid);
+      if (!g) break;
+      const blocos = g.blocks || [];
+      let i = bid ? Math.max(0, blocos.findIndex(b => b.id === bid)) : 0, prox = null;
+      for (; i < blocos.length; i++) {
+        const b = blocos[i], tipo = String(b.type || "").toLowerCase();
+        if (tipo === "text" || tipo === "bubble text") { const t = textoBalao(b); if (t) r.msgs.push(t); }
+        else if (tipo === "choice input" || tipo === "buttons") {
+          r.cap = { pergunta: "", opcoes: (b.items || []).filter(it => it.outgoingEdgeId).map(it => ({ rotulo: String(it.content || it.title || "").trim(), destino: destinoDa(it.outgoingEdgeId) })).filter(x => x.destino && x.rotulo) };
+          return r;
+        }
+        if (b.outgoingEdgeId) { prox = destinoDa(b.outgoingEdgeId); break; }
+      }
+      if (!prox && g.outgoingEdgeId) prox = destinoDa(g.outgoingEdgeId);
+      if (!prox) break;
+      [gid, bid] = prox.split("#");
+    }
+    return r;
+  };
+  // Começo: evento "start" (versões novas) ou o bloco "start" de um grupo (versões antigas).
+  let comeco = null;
+  const ev = (tb.events || []).find(e => e.type === "start");
+  if (ev?.outgoingEdgeId) comeco = destinoDa(ev.outgoingEdgeId);
+  if (!comeco) for (const g of grupos) { const st = (g.blocks || []).find(b => String(b.type).toLowerCase() === "start"); if (st?.outgoingEdgeId) { comeco = destinoDa(st.outgoingEdgeId); break; } }
+  if (!comeco) throw new Error("Não achei o começo do fluxo do Typebot.");
+  return montarRoteiro({ raiz: resolver(comeco), resolver, origem: "Typebot", avisoPadrao: "lojas" });
 }
 
 const URL_OK = u => /^https:\/\/[^\s<>"']{4,600}$/i.test(String(u || "").trim());
@@ -863,7 +923,9 @@ export async function rotasZap(request, env, k, orgId, papel, resto) {
   if (r === "conta" && metodo === "GET") {
     const c = await contaDa(env, orgId);
     const ult = await env.DB.prepare("SELECT MAX(criado_ms) ms FROM plt_zap_msgs WHERE org_id=? AND direcao='E'").bind(orgId).first().catch(() => null);
-    return json(publicaConta(c, { webhook_url: new URL("/webhook/whatsapp", request.url).toString(), verify_token: pode(papel, "ADMIN") ? await tokenVerificacao(env) : "", ultima_recebida_ms: ult?.ms || null }));
+    const falhou = await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave=?").bind("zap_assinatura_falhou_" + orgId).first().catch(() => null);
+    return json(publicaConta(c, { webhook_url: new URL("/webhook/whatsapp", request.url).toString(), verify_token: pode(papel, "ADMIN") ? await tokenVerificacao(env) : "", ultima_recebida_ms: ult?.ms || null,
+      assinatura_falhou_ms: Number(falhou?.valor || 0) > Number(ult?.ms || 0) ? Number(falhou.valor) : null }));
   }
   if (r === "conta" && metodo === "POST") {
     const negado = precisa("ADMIN"); if (negado) return negado;
@@ -920,6 +982,11 @@ export async function rotasZap(request, env, k, orgId, papel, resto) {
     let token;
     try { token = (await chamar("GET", "oauth/access_token", { client_id: String(env.META_APP_ID).trim(), client_secret: String(env.META_APP_SECRET).trim(), code })).access_token; }
     catch (e) { return json({ erro: "A Meta recusou a autorização: " + e.message }, 400); }
+    // O número precisa ser da conta do WhatsApp que esse login da Meta liberou: ninguém conecta o número de outra empresa.
+    try {
+      const nums = await fetch(`${GRAPH}/${waba}/phone_numbers?fields=id&limit=100`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(20000) }).then(x => x.json()).catch(() => ({}));
+      if (!(nums?.data || []).some(n => String(n.id) === pnid)) return json({ erro: "Esse número não pertence à conta do WhatsApp liberada no login do Facebook. Escolha o número certo e tente de novo." }, 400);
+    } catch { return json({ erro: "Não consegui conferir o número na Meta. Tente de novo." }, 502); }
     const avisos = [];
     const post = async (caminho, corpoJ) => { const u = `${GRAPH}/${caminho}`; const resp = await fetch(u, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify(corpoJ || {}), signal: AbortSignal.timeout(20000) }); const d = await resp.json().catch(() => ({})); if (!resp.ok) throw new Error(cortar(d?.error?.error_user_msg || d?.error?.message || `HTTP ${resp.status}`, 300)); return d; };
     try { await post(`${waba}/subscribed_apps`); } catch (e) { avisos.push("Assinatura do webhook: " + e.message); }
@@ -930,7 +997,7 @@ export async function rotasZap(request, env, k, orgId, papel, resto) {
       try { await post(`${pnid}/register`, { messaging_product: "whatsapp", pin: String(100000 + Math.floor(Math.random() * 899999)) }); } catch (e) { avisos.push("Registro do número: " + e.message); }
     }
     let info = { numero: "", nome: "" };
-    try { info = await conferirNumero(pnid, token); } catch (e) { avisos.push(e.message); }
+    try { info = await conferirNumero(pnid, token); } catch (e) { return json({ erro: e.message }, 400); }
     await env.DB.prepare(`INSERT INTO plt_zap_contas(org_id,phone_number_id,waba_id,numero,nome_verificado,token_cifrado,ativo,modo,config,atualizado_ms) VALUES(?,?,?,?,?,?,1,'BOTOES','{}',?)
       ON CONFLICT(org_id) DO UPDATE SET phone_number_id=excluded.phone_number_id, waba_id=excluded.waba_id, numero=excluded.numero, nome_verificado=excluded.nome_verificado, token_cifrado=excluded.token_cifrado, atualizado_ms=excluded.atualizado_ms`)
       .bind(orgId, pnid, waba, info.numero, info.nome, await k.cifrar(env, token), agora).run();
@@ -1003,8 +1070,11 @@ export async function rotasZap(request, env, k, orgId, papel, resto) {
     const [itens, catalogo, lig] = await env.DB.batch([
       env.DB.prepare("SELECT * FROM plt_zap_itens WHERE org_id=? ORDER BY pai_id, ordem, id").bind(orgId),
       env.DB.prepare("SELECT * FROM plt_zap_catalogo WHERE org_id=? ORDER BY nome").bind(orgId),
-      env.DB.prepare("SELECT ci.catalogo_id, ci.item_id FROM plt_zap_cat_itens ci JOIN plt_zap_catalogo c ON c.id=ci.catalogo_id WHERE c.org_id=?").bind(orgId)
+      env.DB.prepare("SELECT ci.catalogo_id, ci.item_id FROM plt_zap_cat_itens ci JOIN plt_zap_catalogo c ON c.id=ci.catalogo_id WHERE c.org_id=? ORDER BY ci.item_id, COALESCE(ci.ordem, 999999), c.destaque DESC, c.nome").bind(orgId)
     ]);
+    // Ordem das lojas em cada botão (a mesma em que o cliente recebe).
+    const ordemLojas = {};
+    for (const x of lig?.results || []) (ordemLojas[x.item_id] = ordemLojas[x.item_id] || []).push(x.catalogo_id);
     const porCat = new Map();
     for (const x of lig?.results || []) { if (!porCat.has(x.catalogo_id)) porCat.set(x.catalogo_id, []); porCat.get(x.catalogo_id).push(x.item_id); }
     // Endereço das imagens (só para a prévia no painel).
@@ -1016,7 +1086,7 @@ export async function rotasZap(request, env, k, orgId, papel, resto) {
       return { ...i, extra: ex, imagens: urls };
     }));
     const cfgItens = lerConfig(await contaDa(env, orgId));
-    return json({ itens: lista, catalogo: (catalogo?.results || []).map(c => ({ ...c, itens: porCat.get(c.id) || [] })),
+    return json({ itens: lista, ordem_lojas: ordemLojas, catalogo: (catalogo?.results || []).map(c => ({ ...c, itens: porCat.get(c.id) || [] })),
       inicio: { imagem_id: Number(cfgItens.imagem_inicio) || 0, imagem: Number(cfgItens.imagem_inicio) ? await urlImagem({ ...kz, sim: true }, cfgItens.imagem_inicio) : "" } });
   }
   if (r === "itens" && metodo === "POST") {
@@ -1115,7 +1185,7 @@ export async function rotasZap(request, env, k, orgId, papel, resto) {
   if (r === "botpress" && metodo === "POST") {
     const negado = precisa("AGENTE"); if (negado) return negado;
     const { corpo, erro } = await ler(3000000); if (erro) return erro;
-    try { return json({ ok: true, roteiro: roteiroDoBotpress(corpo.bot) }); }
+    try { return json({ ok: true, roteiro: corpo.typebot ? roteiroDoTypebot(corpo.typebot) : roteiroDoBotpress(corpo.bot) }); }
     catch (e) { return json({ erro: e.message || "Não consegui ler o arquivo do Botpress." }, 400); }
   }
   // Reordenar os botões de um bloco (a ordem em que o cliente vê).

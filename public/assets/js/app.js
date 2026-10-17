@@ -2085,7 +2085,17 @@
       else throw new Error("Não consegui abrir o arquivo. Atualize o navegador e tente de novo.");
     }
     let bot;
-    try { bot = JSON.parse(texto); } catch { throw new Error("O arquivo do Botpress está corrompido."); }
+    try { bot = JSON.parse(texto); } catch { throw new Error("O arquivo está corrompido."); }
+    // Typebot: só balões de texto, botões e setas (blocos de integração podem ter chaves e ficam de fora).
+    if (Array.isArray(bot.groups) && Array.isArray(bot.edges)) {
+      const tipo = b => String(b.type || "").toLowerCase();
+      return { typebot: {
+        events: (bot.events || []).map(e => ({ id: e.id, type: e.type, outgoingEdgeId: e.outgoingEdgeId })),
+        edges: bot.edges.map(e => ({ id: e.id, from: e.from, to: e.to })),
+        groups: bot.groups.map(g => ({ id: g.id, title: g.title, outgoingEdgeId: g.outgoingEdgeId, blocks: (g.blocks || []).map(b => ({ id: b.id, type: b.type, outgoingEdgeId: b.outgoingEdgeId,
+          ...(tipo(b) === "text" ? { content: b.content } : {}), ...(tipo(b) === "choice input" ? { items: (b.items || []).map(i => ({ id: i.id, content: i.content, outgoingEdgeId: i.outgoingEdgeId })) } : {}) })) })) }, telegram: null };
+    }
+    if (!Array.isArray(bot.flows)) throw new Error("Não reconheci o arquivo. Use o .bpz do Botpress ou o .json exportado do Typebot.");
     // O bot e o grupo do aviso "NOVO CLIENTE" ficam só aqui no navegador, para ligar os avisos se a pessoa quiser.
     let telegram = null;
     for (const f of bot.flows || []) for (const n of f.nodes || []) for (const i of n.instructions || []) {
@@ -2125,7 +2135,7 @@
 
     const porId = () => new Map(d.itens.map(i => [i.id, i]));
     const filhosDe = pai => d.itens.filter(i => Number(i.pai_id) === pai).sort((a, b) => (a.ordem || 0) - (b.ordem || 0) || a.id - b.id);
-    const lojasDe = id => d.catalogo.filter(c => (c.itens || []).includes(id));
+    const lojasDe = id => { const ordem = (d.ordem_lojas || {})[id] || []; return d.catalogo.filter(c => (c.itens || []).includes(id)).sort((a, b) => (ordem.indexOf(a.id) + 1 || 1e6) - (ordem.indexOf(b.id) + 1 || 1e6)); };
     // Mesma regra do robô: lista sem loja e submenu sem nada visível não aparecem para o cliente.
     const visivel = (i, n = 0) => !i.ativo ? false : i.tipo === "LISTA" ? lojasDe(i.id).some(c => c.ativo) : i.tipo === "MENU" ? n < 8 && filhosDe(i.id).some(f => visivel(f, n + 1)) : true;
 
@@ -2287,11 +2297,25 @@
       };
       const desenharLojas = () => {
         const q = busca.value.trim().toLowerCase();
-        const todas = d.catalogo.filter(c => ligadas.has(c.id) || (q && [c.nome, c.local, c.descricao].join(" ").toLowerCase().includes(q)));
+        const todas = [...lojasDe(item.id), ...d.catalogo.filter(c => !ligadas.has(c.id) && q && [c.nome, c.local, c.descricao].join(" ").toLowerCase().includes(q))];
         lista.replaceChildren(...(todas.length ? todas.map(c => h("label", { class: "fx-loja" + (ligadas.has(c.id) ? " ligada" : "") },
           h("input", { type: "checkbox", checked: ligadas.has(c.id), disabled: !podeEditar, onchange: e => alternar(c, e.target.checked) }),
-          h("span", {}, h("strong", { text: [c.local, c.nome].filter(Boolean).join(" - ") }), h("small", { text: c.link || c.whatsapp || c.telefone || "sem link nem WhatsApp" })))) :
+          h("span", {}, h("strong", { text: [c.local, c.nome].filter(Boolean).join(" - ") }), h("small", { text: c.link || c.whatsapp || c.telefone || "sem link nem WhatsApp" })),
+          podeEditar ? h("button", { type: "button", class: "fx-seta-ordem fx-editar-loja", "aria-label": "Editar a loja", title: "Editar nome, link e WhatsApp", onclick: e => { e.preventDefault(); e.stopPropagation(); editarLoja(c); } }, "✏️") : null)) :
           [h("p", { class: "fx-vazio", text: d.catalogo.length ? "Nenhuma loja ligada ainda. Busque acima ou cadastre uma nova." : "Nenhuma loja cadastrada. Cadastre aqui embaixo ou importe a planilha em Contatos e lojas." })]));
+      };
+      // Mudar o link, o WhatsApp ou o nome: vale para todos os botões em que essa loja aparece.
+      const editarLoja = c => {
+        const nome = h("input", { class: "entrada", maxlength: "100", value: c.nome || "" }), local = h("input", { class: "entrada", maxlength: "80", value: c.local || "" });
+        const lk = h("input", { class: "entrada", type: "url", maxlength: "600", value: c.link || "", placeholder: "https://tinyurl.com/minha-loja" }), wz = h("input", { class: "entrada", maxlength: "30", inputmode: "tel", value: c.whatsapp || "" });
+        const usos = d.itens.filter(i => (c.itens || []).includes(i.id)).map(i => i.titulo);
+        const fechar = gaveta("Editar loja", [
+          h("p", { class: "fx-nota", text: `Aparece em ${usos.length} botão(ões): ${usos.join(", ") || "—"}. A mudança vale para todos.` }),
+          campo("Nome", nome), campo("Local (opcional)", local), campo("Link próprio", lk, "Ex.: o tinyurl com a mensagem pronta. Se tiver, é ele que o cliente recebe."), campo("WhatsApp", wz, "Usado quando não há link próprio."),
+          h("div", { class: "acoes" }, botao("Salvar", async () => {
+            try { await zap("catalogo", { metodo: "POST", corpo: { id: c.id, nome: nome.value, local: local.value, link: lk.value.trim(), whatsapp: wz.value, telefone: c.telefone || "", descricao: c.descricao || "", destaque: Boolean(c.destaque), ativo: c.ativo !== 0, itens: c.itens || [] } }); fechar(); aviso("Loja atualizada em todos os botões.", "ok"); await recarregar(); }
+            catch (e) { aviso(e.message, "erro"); }
+          }, "btn-primario"))]);
       };
       busca.addEventListener("input", desenharLojas); desenharLojas();
       const nova = () => {
@@ -2496,22 +2520,24 @@
         const f = arquivoBp.files[0]; if (!f) return;
         resultado.replaceChildren(h("p", { class: "fx-nota", text: "Lendo o arquivo do Botpress…" }));
         try {
-          const { bot, telegram } = await lerArquivoBotpress(f);
-          const r = await zap("botpress", { metodo: "POST", corpo: { bot } });
+          const { bot, typebot, telegram } = await lerArquivoBotpress(f);
+          const r = await zap("botpress", { metodo: "POST", corpo: typebot ? { typebot } : { bot } });
           caixa.value = r.roteiro;
           substituir.checked = true;
           tgBotpress = telegram;
           ligarTg.checked = Boolean(telegram);
           caixaTg.classList.toggle("oculto", !telegram);
-          resultado.replaceChildren(h("p", { class: "fx-ok", text: "✓ Fluxo do Botpress convertido, na mesma ordem e com os mesmos textos." + (telegram ? " Os avisos vão para o mesmo grupo do Telegram." : "") + " Toque em Aplicar roteiro." }));
+          resultado.replaceChildren(h("p", { class: "fx-ok", text: `✓ Fluxo do ${typebot ? "Typebot" : "Botpress"} convertido, na mesma ordem e com os mesmos textos.` + (telegram ? " Os avisos vão para o mesmo grupo do Telegram." : "") + " Confira abaixo e toque em Aplicar roteiro." }));
         } catch (e) { resultado.replaceChildren(h("p", { class: "fx-erro", text: e.message })); }
         arquivoBp.value = "";
       });
       const nomeEmpresa = (estado.org && estado.org.nome) || "esta empresa";
       const fechar = gaveta("Roteiro do fluxo — " + nomeEmpresa, [
         h("p", { class: "fx-empresa" }, "🏢 O fluxo será gravado na empresa ", h("strong", { text: nomeEmpresa }), ". Para outra empresa, feche e troque no quadro EMPRESA (canto superior esquerdo)."),
-        podeEditar ? h("div", { class: "fx-botpress" }, h("div", {}, h("strong", { text: "Vem do Botpress?" }), h("p", { class: "fx-nota", text: "No Botpress: Bot → Exportar (arquivo .bpz). Escolha o arquivo aqui e a DENIA monta o mesmo fluxo." })),
-          botao("📥 Escolher o arquivo .bpz", () => arquivoBp.click(), "btn-primario btn-pequeno"), arquivoBp) : null,
+        podeEditar ? h("div", { class: "fx-botpress" }, h("div", {}, h("strong", { text: "Vem de outra plataforma?" }),
+          h("p", { class: "fx-nota", text: "Botpress: Bot → Exportar (arquivo .bpz). Typebot: ⋯ → Exportar (arquivo .json). Escolha o arquivo e a DENIA monta o mesmo fluxo, na mesma ordem." }),
+          h("p", { class: "fx-nota", text: "ManyChat, BotConversa, Blip e outras não exportam o fluxo: copie os textos para o roteiro abaixo (é só seguir o “Como escrever”) ou use “Criar com a IA” descrevendo o atendimento." })),
+          botao("📥 Escolher o arquivo", () => arquivoBp.click(), "btn-primario btn-pequeno"), arquivoBp) : null,
         h("p", { class: "sub", text: "O fluxo inteiro em texto, como num documento. Copie para guardar, ou cole um roteiro para montar todos os botões de uma vez." }),
         h("details", { class: "fx-ajuda" }, h("summary", { text: "Como escrever" }), h("pre", { text:
 `BOAS-VINDAS: primeira mensagem (vai sozinha)
@@ -2547,12 +2573,12 @@ Botão só com texto = resposta.` })),
         h("div", { class: "acoes" },
           botao("🛍️ Modelo Shopping", async () => { try { await zap("modelo", { metodo: "POST", corpo: { tipo: "shopping" } }); await recarregar(); aviso("Modelo criado. Ajuste do seu jeito.", "ok"); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno"),
           botao("🔧 Modelo Serviços", async () => { try { await zap("modelo", { metodo: "POST", corpo: { tipo: "servicos" } }); await recarregar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno"),
-          botao("📥 Importar do Botpress", () => roteiro(true), "btn-primario btn-pequeno"),
+          botao("📥 Importar (Botpress, Typebot…)", () => roteiro(true), "btn-primario btn-pequeno"),
           botao("📋 Colar roteiro", () => roteiro(false), "btn-secundario btn-pequeno"),
           botao("✨ Criar com a IA", () => criarComIA(false), "btn-secundario btn-pequeno"))) : null,
       h("section", { class: "cartao vidro fx-quadro" },
         h("div", { class: "fx-barra" }, h("div", {}, h("h3", { style: "margin:0" }, "Fluxo do WhatsApp · ", h("span", { class: "fx-empresa-nome", text: (estado.org && estado.org.nome) || "" })), h("p", { class: "sub", style: "margin:2px 0 0", text: "Toque num botão para abrir o próximo cartão. Tudo salva sozinho." })),
-          h("div", { class: "acoes" }, statusSalvo, verPrevia, podeEditar ? botao("📥 Importar do Botpress", () => roteiro(true), "btn-primario btn-pequeno") : null, botao("📋 Roteiro", () => roteiro(false), "btn-secundario btn-pequeno"), botao("🔔 Avisos no Telegram", avisos, "btn-secundario btn-pequeno"), h("a", { class: "btn btn-primario btn-pequeno", href: "#/chatbot/testar" }, "▶ Testar"),
+          h("div", { class: "acoes" }, statusSalvo, verPrevia, podeEditar ? botao("📥 Importar (Botpress, Typebot…)", () => roteiro(true), "btn-primario btn-pequeno") : null, botao("📋 Roteiro", () => roteiro(false), "btn-secundario btn-pequeno"), botao("🔔 Avisos no Telegram", avisos, "btn-secundario btn-pequeno"), h("a", { class: "btn btn-primario btn-pequeno", href: "#/chatbot/testar" }, "▶ Testar"),
             podeEditar && d.itens.length ? botao("✨ Refazer com a IA", () => criarComIA(true), "btn-secundario btn-pequeno") : null)),
         trilha, h("div", { class: "fx-palco-grade" }, palco)));
     palco.replaceChildren(colunas, previa);
@@ -2729,8 +2755,9 @@ Botão só com texto = resposta.` })),
           : h("p", { class: "nota", text: emb.disponivel ? "Somente administradores conectam o número." : "Em ativação: o administrador geral precisa criar no Worker da plataforma o secret META_WA_CONFIG_ID (a configuração de Cadastro incorporado do WhatsApp no app da Meta). Enquanto isso, use a conexão manual abaixo." })),
       h("section", { class: "grade grade-2" },
         h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "1. Número do WhatsApp — conexão manual (avançado)" }),
+          c.assinatura_falhou_ms ? h("p", { class: "fx-empresa", style: "border-color:rgba(239,68,68,.6);background:rgba(239,68,68,.1)" }, "⚠️ ", h("strong", { text: "A Meta mandou mensagens que a DENIA não conseguiu conferir" }), ` (${quandoFrase(c.assinatura_falhou_ms)}). Por segurança elas foram ignoradas. Cole abaixo a Chave secreta do app que esse número usa (se veio do Botpress, é o Client Secret da integração do WhatsApp) e salve.`) : null,
           c.conectada ? h("p", {}, selo("Conectado", "ok"), " ", h("strong", { text: c.numero || c.phone_number_id }), c.nome_verificado ? " · " + c.nome_verificado : "", c.ultima_recebida_ms ? h("span", { class: "sub", text: ` · última mensagem ${quandoFrase(c.ultima_recebida_ms)}` }) : h("span", { class: "sub", text: " · ainda não chegou mensagem (confira o passo 2)" })) : h("p", { class: "nota", text: "Em developers.facebook.com → seu app → WhatsApp → Configuração da API: copie o ID do número de telefone. O token permanente se cria em business.facebook.com → Configurações → Usuários do sistema → Gerar token (permissões whatsapp_business_messaging e whatsapp_business_management)." }),
-          campo("ID do número de telefone (Phone number ID)", pnid), campo("ID da conta do WhatsApp Business (opcional)", waba), campo("Token de acesso permanente", token), campo("Chave secreta do app (recomendado)", segredo, "Configurações do app → Básico → Chave secreta. Com ela, só mensagens assinadas pela Meta são aceitas."),
+          campo("ID do número de telefone (Phone number ID)", pnid), campo("ID da conta do WhatsApp Business (opcional)", waba), campo("Token de acesso permanente", token), campo("Chave secreta do app (obrigatória se o número for de outro app, ex.: Botpress)", segredo, "Configurações do app → Básico → Chave secreta. Com ela, só mensagens assinadas pela Meta são aceitas."),
           pode("ADMIN") ? h("div", { class: "acoes" }, botao(c.conectada ? "Salvar e testar" : "Conectar", async () => {
             try { const r = await zap("conta", { metodo: "POST", corpo: { phone_number_id: pnid.value, waba_id: waba.value, ...(token.value.trim() ? { token: token.value.trim() } : {}), ...(segredo.value.trim() ? { app_secret: segredo.value.trim() } : {}) } }); aviso(`WhatsApp conectado: ${r.numero || "ok"}.`, "ok"); estado.org.chatbot = true; aplicarModo(); navegar(); }
             catch (e) { aviso(e.message, "erro"); }
