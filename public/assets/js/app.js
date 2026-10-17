@@ -322,7 +322,29 @@
   // ---------------------------------------------------------------------------
 
   function fecharMenu() { $("lateral").classList.remove("aberta"); $("veu").classList.remove("ativo"); $("abrir-menu").setAttribute("aria-expanded", "false"); }
+  // No computador o mesmo botão (☰) recolhe o menu lateral para só os ícones, deixando a tela maior;
+  // no celular ele abre e fecha a gaveta. A escolha fica guardada neste aparelho.
+  const telaPequena = () => window.matchMedia("(max-width: 960px)").matches;
+  function aplicarRecolhido(sim) {
+    document.body.classList.toggle("menu-recolhido", sim);
+    const b = $("abrir-menu");
+    b.setAttribute("aria-label", telaPequena() ? "Abrir menu" : sim ? "Mostrar o menu" : "Recolher o menu");
+    b.title = telaPequena() ? "" : sim ? "Mostrar o menu" : "Recolher o menu";
+    if (!telaPequena()) b.setAttribute("aria-expanded", sim ? "false" : "true");
+    // Com o menu recolhido, o nome de cada opção aparece ao passar o mouse no ícone.
+    document.querySelectorAll("#lateral-nav a").forEach(a => { if (sim) a.title = a.textContent.replace("›", "").trim(); else a.removeAttribute("title"); });
+  }
+  let recolhido = false;
+  try { recolhido = localStorage.getItem("denia-menu-recolhido") === "1"; } catch { /* sem armazenamento */ }
+  aplicarRecolhido(recolhido && !telaPequena());
+  window.matchMedia("(max-width: 960px)").addEventListener("change", () => aplicarRecolhido(recolhido && !telaPequena()));
   $("abrir-menu").addEventListener("click", () => {
+    if (!telaPequena()) {
+      recolhido = !recolhido;
+      try { localStorage.setItem("denia-menu-recolhido", recolhido ? "1" : "0"); } catch { /* sem armazenamento */ }
+      aplicarRecolhido(recolhido);
+      return;
+    }
     const aberto = $("lateral").classList.toggle("aberta");
     $("veu").classList.toggle("ativo", aberto);
     $("abrir-menu").setAttribute("aria-expanded", aberto ? "true" : "false");
@@ -4840,7 +4862,7 @@ Botão só com texto = resposta.` })),
     if (!vivo()) return;
     el.appendChild(cabeca("Google Meu Negócio", "Reputação, posição nas buscas e desempenho de cada perfil, acompanhados semana a semana."));
     if (!lista.length) { semMarcas(el); return; }
-    const abas = [["publicacoes", "Posts e imagens"], ["avaliacoes", "Avaliações"], ["triagem", "Triagem 1★"], ["relatorio", "Relatório"], ["palavras", "Palavras-chave"], ["desempenho", "Desempenho"], ["conexao", "Conexão"]];
+    const abas = [["checagem", "Checagem do perfil"], ["publicacoes", "Posts e imagens"], ["avaliacoes", "Avaliações"], ["triagem", "Triagem 1★"], ["relatorio", "Relatório"], ["palavras", "Palavras-chave"], ["desempenho", "Desempenho"], ["conexao", "Conexão"]];
     abas.push(["seo", "Google orgânico"], ["ads", "Google Ads"], ["concorrentes", "Concorrentes"]);
     const atual = abas.some(a => a[0] === aba) ? aba : "desempenho";
     const sel = seletorMarca(lista, estado.marcaGoogle || lista[0].id);
@@ -4850,7 +4872,8 @@ Botão só com texto = resposta.` })),
     el.appendChild(area);
     const marcaId = sel.value;
     try {
-      if (atual === "avaliacoes") await abaAvaliacoes(area, marcaId);
+      if (atual === "checagem") await abaChecagemPerfil(area, marcaId);
+      else if (atual === "avaliacoes") await abaAvaliacoes(area, marcaId);
       else if (atual === "relatorio") await abaRelatorio(area, marcaId);
       else if (atual === "triagem") await abaTriagem(area, marcaId);
       else if (atual === "palavras") await abaPalavras(area, marcaId, lista.find(m => String(m.id) === String(marcaId)));
@@ -5398,6 +5421,32 @@ Botão só com texto = resposta.` })),
       lista.length > 1 ? h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Semanas anteriores" }),
         lista.slice(1).map(r => h("details", {}, h("summary", { text: `Semana de ${dataCurta(r.semana)}` }), h("div", { class: "relatorio-texto", text: r.texto })))) : null);
   }
+  // Checagem do perfil (como o GBP Check): nota de 0 a 100 e o que falta para completar o perfil no Google.
+  async function abaChecagemPerfil(area, marcaId) {
+    const d = await mk(`google/checagem?marca=${marcaId}`);
+    if (!d.conectada) { trocar(area, h("section", { class: "cartao vidro" }, vazio("Conecte o perfil do Google", "A checagem lê o perfil direto do Google. Conecte a marca em Conexão."), h("div", { class: "acoes" }, h("a", { class: "btn btn-primario", href: "#/google/conexao" }, "Conectar o Google")))); return; }
+    if (d.erro) { trocar(area, h("section", { class: "cartao vidro" }, vazio("Não consegui ler o perfil agora", d.erro), h("div", { class: "acoes" }, botao("Tentar de novo", () => navegar(), "btn-primario")))); return; }
+    const cor = d.nota >= 90 ? "var(--ok, #22c55e)" : d.nota >= 70 ? "#fbbf24" : "#f87171";
+    const anel = h("div", { class: "chk-anel", style: `--p:${d.nota};--cor:${cor}`, role: "img", "aria-label": `Perfil ${d.nota}% completo` }, h("strong", { text: d.nota + "%" }), h("span", { text: "completo" }));
+    const grupos = [...new Set(d.itens.map(i => i.grupo))];
+    const icone = { ok: "✅", parcial: "🟡", falta: "❌" };
+    const linha = i => h("li", { class: "chk-item chk-" + i.ok }, h("span", { class: "chk-ic", text: icone[i.ok] }),
+      h("div", {}, h("strong", { text: i.titulo }), h("span", { class: "sub", text: ` · ${i.detalhe}` }), i.dica ? h("p", { class: "chk-dica", text: i.dica }) : null),
+      h("span", { class: "chk-pts", text: `${String(i.pontos).replace(".", ",")}/${i.max}` }));
+    const faltando = d.itens.filter(i => i.ok !== "ok").sort((a, b) => (b.max - b.pontos) - (a.max - a.pontos));
+    trocar(area,
+      h("section", { class: "cartao vidro chk-topo" }, anel,
+        h("div", {}, h("h3", { style: "margin:0", text: d.perfil || "Perfil do Google" }),
+          h("p", { class: "sub", style: "margin:4px 0 10px", text: d.faltam ? `Faltam ${d.faltam} ponto(s) para o perfil ficar 100%. Comece pelos de cima: são os que mais pesam.` : "Perfil completo! Continue postando toda semana e respondendo as avaliações." }),
+          h("p", { class: "fx-nota", text: "A DENIA só lê o perfil (não muda nada no Google). As mudanças você faz no próprio Google; depois toque em Checar de novo." }),
+          h("div", { class: "acoes" }, botao("↻ Checar de novo", () => navegar(), "btn-secundario btn-pequeno"),
+            d.maps ? h("a", { class: "btn btn-secundario btn-pequeno", href: d.maps, target: "_blank", rel: "noopener" }, "Abrir no Google Maps") : null,
+            h("a", { class: "btn btn-primario btn-pequeno", href: "https://business.google.com/locations", target: "_blank", rel: "noopener" }, "Editar o perfil no Google")))),
+      faltando.length ? h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "O que fazer agora" }), h("ul", { class: "chk-lista" }, faltando.map(linha))) : null,
+      h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Tudo o que foi checado" }),
+        grupos.map(g => [h("p", { class: "fx-rot", text: g }), h("ul", { class: "chk-lista" }, d.itens.filter(i => i.grupo === g).map(linha))]),
+        h("p", { class: "fx-nota", text: "Perguntas e respostas: o Google tirou essa parte dos perfis, por isso ela não entra mais na checagem." })));
+  }
   async function abaPalavras(area, marcaId, marca) {
     const lista = (await mk(`palavras?marca=${marcaId}`)).palavras || [];
     const semanas = Array.from({ length: 6 }, (_, i) => isoLocal(somarDias(segundaDe(new Date()), -7 * (5 - i))));
@@ -5523,7 +5572,9 @@ Botão só com texto = resposta.` })),
 
   async function abaDesempenho(area, marcaId) {
     const f = estado.desempenhoG = estado.desempenhoG || { periodo: "30", de: "", ate: "", comparar: "anterior", metrica: "visualizacoes", agrupar: "auto", tabela: false };
+    if (f.meses_buscas === undefined) f.meses_buscas = "6";
     const q = new URLSearchParams({ marca: marcaId, comparar: f.comparar });
+    if (f.meses_buscas) q.set("meses_buscas", f.meses_buscas);
     if (f.periodo === "datas" && f.de && f.ate) { q.set("de", f.de); q.set("ate", f.ate); }
     else if (f.periodo === "mes" || f.periodo === "mes_passado") q.set("atalho", f.periodo);
     else q.set("dias", f.periodo === "datas" ? "30" : f.periodo);
@@ -5592,12 +5643,22 @@ Botão só com texto = resposta.` })),
         metrica("Dia mais forte", (() => { const d = (vivoG.diario || []).reduce((a, b) => (b.interacoes > (a?.interacoes ?? -1) ? b : a), null); return d && d.interacoes ? dataCompleta(d.data) : "—"; })(), "Dia com mais interações"));
       const plv = vivoG.palavras || [];
       const fmtMes = s => { const [a, mm] = String(s || "").split("-"); return mm ? `${mm}/${a}` : ""; };
+      const mesesE = h("select", { class: "entrada", "aria-label": "Meses das buscas", onchange: e => { f.meses_buscas = e.target.value; recarregar(); } },
+        [["1", "Último mês"], ["3", "Últimos 3 meses"], ["6", "Últimos 6 meses"], ["12", "Últimos 12 meses"], ["18", "Últimos 18 meses"], ["", "Meses do período escolhido"]].map(([v, n]) => h("option", { value: v, selected: (f.meses_buscas || "") === v, text: n })));
+      const filtroPlv = h("input", { class: "entrada", type: "search", placeholder: "Procurar uma busca (ex.: rt, conserto…)", "aria-label": "Procurar busca" });
+      const corpoPlv = h("tbody", {}), contaPlv = h("span", { class: "sub" });
+      const desenharPlv = () => {
+        const t = filtroPlv.value.trim().toLowerCase();
+        const lista = plv.map((p, i) => ({ ...p, n: i + 1 })).filter(p => !t || p.palavra.toLowerCase().includes(t));
+        corpoPlv.replaceChildren(...lista.map(p => h("tr", {}, h("td", { text: String(p.n) }), h("td", { text: p.palavra }), h("td", { text: p.buscas != null ? numero(p.buscas) : `menos de ${p.menos_de}` }))));
+        contaPlv.textContent = t ? `${lista.length} de ${plv.length} buscas` : `${plv.length} buscas diferentes`;
+      };
+      filtroPlv.addEventListener("input", desenharPlv); desenharPlv();
       const blocoPalavras = h("section", { class: "cartao vidro" },
         h("div", { class: "cabeca-grafico" }, h("h3", { style: "margin:0", text: "O que as pessoas pesquisaram para achar o perfil" }),
-          plv.length ? botao("Baixar buscas (planilha)", () => baixarCsv(`buscas-google-${vivoG.palavras_de}-${vivoG.palavras_ate}.csv`, [["Busca", "Pessoas"], ...plv.map(p => [p.palavra, p.buscas != null ? p.buscas : `menos de ${p.menos_de}`])]), "btn-secundario btn-pequeno") : null),
-        h("p", { class: "sub", style: "margin:4px 0 10px", text: vivoG.palavras_de ? `Meses ${fmtMes(vivoG.palavras_de)}${vivoG.palavras_ate !== vivoG.palavras_de ? " a " + fmtMes(vivoG.palavras_ate) : ""} — o Google só divulga as buscas por mês fechado.` : "" }),
-        plv.length ? h("div", { class: "tabela-caixa lista-rolavel" }, h("table", {}, h("thead", {}, h("tr", {}, h("th", { text: "#" }), h("th", { text: "Busca" }), h("th", { text: "Pessoas" }))),
-          h("tbody", {}, plv.map((p, i) => h("tr", {}, h("td", { text: String(i + 1) }), h("td", { text: p.palavra }), h("td", { text: p.buscas != null ? numero(p.buscas) : `menos de ${p.menos_de}` })))))) : vazio("Sem buscas para esses meses", "O Google ainda não divulgou as buscas desse período."));
+          h("div", { class: "acoes" }, mesesE, plv.length ? botao("Baixar buscas (planilha)", () => baixarCsv(`buscas-google-${vivoG.palavras_de}-${vivoG.palavras_ate}.csv`, [["Busca", "Pessoas"], ...plv.map(p => [p.palavra, p.buscas != null ? p.buscas : `menos de ${p.menos_de}`])]), "btn-secundario btn-pequeno") : null)),
+        h("p", { class: "sub", style: "margin:4px 0 10px", text: vivoG.palavras_de ? `Meses ${fmtMes(vivoG.palavras_de)}${vivoG.palavras_ate !== vivoG.palavras_de ? " a " + fmtMes(vivoG.palavras_ate) : ""} — o Google só divulga as buscas por mês fechado (o mês atual entra quando terminar). Buscas com poucas pessoas aparecem como “menos de 15”, igual ao painel do Google.` : "" }),
+        plv.length ? [h("div", { class: "acoes", style: "margin-bottom:8px" }, filtroPlv, contaPlv), h("div", { class: "tabela-caixa lista-rolavel" }, h("table", {}, h("thead", {}, h("tr", {}, h("th", { text: "#" }), h("th", { text: "Busca" }), h("th", { text: "Pessoas" }))), corpoPlv))] : vazio("Sem buscas para esses meses", "O Google ainda não divulgou as buscas desse período."));
       const planilha = () => baixarCsv(`desempenho-google-${vivoG.de}-a-${vivoG.ate}.csv`, [
         ["Dia", ...METRICAS_G.map(m => m[1]), ...ORIGENS_G.map(o => o[1])],
         ...(vivoG.diario || []).map(d => [dataCompleta(d.data), ...METRICAS_G.map(m => d[m[0]] || 0), ...ORIGENS_G.map(o => d[o[0]] || 0)]),
