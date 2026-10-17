@@ -222,11 +222,17 @@ export async function rotasGoogle(request, env, k, orgId, papel, resto) {
     }
   }
   // Desempenho de qualquer período (7 dias a 18 meses, ou datas escolhidas), com comparação e as buscas do período.
+  if (resto === "google/checagem" && metodo === "GET") {
+    const conta = await contaGoogleDe(env, orgId, Number(url.searchParams.get("marca")));
+    if (!conta) return json({ conectada: false });
+    try { return json({ conectada: true, ...(await checagemDoPerfil(env, k, conta)) }); }
+    catch (e) { return json({ conectada: true, erro: e.message }); }
+  }
   if (resto === "google/desempenho" && metodo === "GET") {
     const conta = await contaGoogleDe(env, orgId, Number(url.searchParams.get("marca")));
     if (!conta) return json({ conectada: false });
     const q = n => url.searchParams.get(n) || undefined;
-    try { return json({ conectada: true, ...(await desempenhoDoPeriodo(env, k, conta, { dias: q("dias"), de: q("de"), ate: q("ate"), atalho: q("atalho"), comparar: q("comparar") })) }); }
+    try { return json({ conectada: true, ...(await desempenhoDoPeriodo(env, k, conta, { dias: q("dias"), de: q("de"), ate: q("ate"), atalho: q("atalho"), comparar: q("comparar"), meses_buscas: q("meses_buscas") })) }); }
     catch (e) { return json({ conectada: true, erro: e.message }); }
   }
   const extra = await rotasGoogleExtra(request, env, k, orgId, papel, resto, url);
@@ -342,6 +348,72 @@ async function sincronizarAvaliacoes(env, k, conta, token, { paginas = 20, conti
   }
   return { novas: novas.length, total: info.total ?? doGoogle.length, lidas: doGoogle.length, removidas, completo };
 }
+// ---------------------------------------------------------------------------
+// Checagem do perfil (como o GBP Check): o que falta preencher para o perfil ficar 100% no Google.
+// Só lê — nada é alterado no Google. Cada item tem peso, situação e o que fazer.
+// ---------------------------------------------------------------------------
+export function avaliarPerfil({ info = {}, midias = [], posts = [], avaliacoes = {}, atributos = [], agoraMs = Date.now() }) {
+  const itens = [];
+  const add = (grupo, chave, titulo, max, pontos, detalhe, dica) => itens.push({ grupo, chave, titulo, max, pontos: Math.max(0, Math.min(max, Math.round(pontos * 10) / 10)), ok: pontos >= max ? "ok" : pontos > 0 ? "parcial" : "falta", detalhe, dica });
+  const end = info.storefrontAddress || {};
+  const atende = Boolean(info.serviceArea && (info.serviceArea.places?.placeInfos?.length || info.serviceArea.regionCode));
+  const titulo = String(info.title || "").trim();
+  add("Informações", "nome", "Nome da empresa", 5, titulo ? 5 : 0, titulo || "sem nome", titulo ? "" : "Coloque o nome real da empresa (sem palavras-chave extras, o Google pode suspender).");
+  const cat1 = info.categories?.primaryCategory?.displayName, extras = (info.categories?.additionalCategories || []).length;
+  add("Informações", "categoria", "Categoria principal", 8, cat1 ? 8 : 0, cat1 || "sem categoria", cat1 ? "" : "Escolha a categoria principal: é o que mais pesa para aparecer nas buscas.");
+  add("Informações", "categorias_extras", "Categorias adicionais", 5, Math.min(5, extras * (5 / 3)), `${extras} de 3 recomendadas`, extras >= 3 ? "" : "Adicione até 9 categorias secundárias que descrevam os serviços (o ideal é pelo menos 3).");
+  const desc = String(info.profile?.description || "").trim();
+  add("Informações", "descricao", "Descrição", 8, desc.length >= 500 ? 8 : desc.length >= 250 ? 6 : desc.length ? 3 : 0, desc ? `${desc.length} de 750 letras` : "sem descrição",
+    desc.length >= 500 ? "" : "Escreva uma descrição de 500 a 750 letras: o que faz, para quem, bairro/cidade e diferenciais (sem links nem telefone).");
+  const tel = String(info.phoneNumbers?.primaryPhone || "").replace(/\D/g, "");
+  add("Informações", "telefone", "Telefone com DDD", 6, tel.length >= 10 ? 6 : tel ? 3 : 0, info.phoneNumbers?.primaryPhone || "sem telefone", tel.length >= 10 ? "" : "Coloque o telefone principal completo, com DDD.");
+  const temRua = (end.addressLines || []).some(x => String(x).trim()), cep = String(end.postalCode || "").replace(/\D/g, "");
+  const ptsEnd = atende && !temRua ? 8 : (temRua ? 3 : 0) + (end.locality ? 1.5 : 0) + (end.administrativeArea ? 1 : 0) + (cep.length === 8 ? 2.5 : 0);
+  add("Informações", "endereco", "Endereço completo com CEP", 8, ptsEnd, temRua ? [...(end.addressLines || []), end.sublocality, end.locality, end.administrativeArea, end.postalCode].filter(Boolean).join(", ") : atende ? "atende na região (sem endereço público)" : "sem endereço",
+    ptsEnd >= 8 ? "" : !temRua && !atende ? "Coloque o endereço completo (rua, número, bairro, cidade, estado e CEP) ou a área de atendimento." : cep.length !== 8 ? "Falta o CEP (8 números) no endereço." : "Complete cidade e estado no endereço.");
+  const site = String(info.websiteUri || "").trim();
+  add("Informações", "site", "Site", 6, site ? 6 : 0, site || "sem site", site ? "" : "Coloque o site (ou o link do Instagram/WhatsApp, se não tiver site).");
+  const periodos = info.regularHours?.periods || [];
+  const dias = new Set(periodos.map(x => x.openDay)).size;
+  add("Horários", "horario", "Horário de funcionamento", 8, periodos.length ? 8 : 0, periodos.length ? `${dias} dia(s) da semana` : "sem horário", periodos.length ? "" : "Coloque o horário de cada dia: perfis sem horário aparecem menos e confundem o cliente.");
+  const especiais = (info.specialHours?.specialHourPeriods || []).filter(x => x.startDate && Date.UTC(x.startDate.year, x.startDate.month - 1, x.startDate.day) >= agoraMs - 86400000).length;
+  add("Horários", "feriados", "Horários de feriados", 3, especiais ? 3 : 0, especiais ? `${especiais} data(s) futura(s)` : "nenhum feriado marcado", especiais ? "" : "Marque os horários especiais dos próximos feriados: o Google valoriza perfis atualizados.");
+  const fotos = midias.filter(m => m.mediaFormat === "PHOTO"), videos = midias.filter(m => m.mediaFormat === "VIDEO");
+  const cat = c => midias.some(m => m.locationAssociation?.category === c);
+  add("Fotos e vídeos", "fotos", "Fotos (mínimo 3, ideal 10+)", 10, fotos.length >= 10 ? 10 : fotos.length >= 3 ? 7 : fotos.length * 2, `${fotos.length} foto(s)`, fotos.length >= 10 ? "" : fotos.length >= 3 ? "Chegue a 10 fotos ou mais: fachada, interior, equipe e serviços/produtos." : `Faltam ${3 - fotos.length} foto(s) para o mínimo de 3.`);
+  add("Fotos e vídeos", "logo", "Logo", 3, cat("PROFILE") || cat("LOGO") ? 3 : 0, cat("PROFILE") || cat("LOGO") ? "tem logo" : "sem logo", cat("PROFILE") || cat("LOGO") ? "" : "Envie a logo (foto de perfil) quadrada.");
+  add("Fotos e vídeos", "capa", "Foto de capa", 3, cat("COVER") ? 3 : 0, cat("COVER") ? "tem capa" : "sem capa", cat("COVER") ? "" : "Escolha uma foto de capa bonita da fachada ou do ambiente.");
+  add("Fotos e vídeos", "videos", "Vídeos (mínimo 3)", 7, Math.min(7, videos.length * (7 / 3)), `${videos.length} vídeo(s)`, videos.length >= 3 ? "" : `Faltam ${3 - videos.length} vídeo(s) curtos (até 30 s): ambiente, atendimento, um serviço sendo feito.`);
+  const total = Number(avaliacoes.total || 0), mediaNota = Number(avaliacoes.media || 0), semResp = Number(avaliacoes.sem_resposta || 0), lidas = Number(avaliacoes.lidas || 0);
+  add("Avaliações", "avaliacoes", "Avaliações (mínimo 5)", 8, total >= 5 ? 8 : total * 1.6, `${total} avaliação(ões)${total ? `, nota ${String(Math.round(mediaNota * 10) / 10).replace(".", ",")}` : ""}`, total >= 5 ? (mediaNota && mediaNota < 4.5 ? "A nota está abaixo de 4,5: peça avaliação aos clientes satisfeitos logo após o atendimento." : "") : `Faltam ${5 - total} avaliação(ões) para o mínimo de 5. Mande o link de avaliação para clientes satisfeitos.`);
+  const respondidas = lidas ? (lidas - semResp) / lidas : 1;
+  add("Avaliações", "respostas", "Avaliações respondidas", 5, lidas ? 5 * respondidas : total ? 0 : 5, lidas ? `${lidas - semResp} de ${lidas} recentes respondidas` : "sem avaliações", semResp ? `Responda as ${semResp} avaliação(ões) sem resposta (a DENIA sugere as respostas em Avaliações).` : "");
+  const recentes = posts.filter(p => Date.parse(p.createTime || p.updateTime || 0) >= agoraMs - 7 * 86400000).length;
+  const mes = posts.filter(p => Date.parse(p.createTime || p.updateTime || 0) >= agoraMs - 30 * 86400000).length;
+  add("Atividade", "posts", "Posts recentes", 4, recentes ? 4 : mes ? 2 : 0, recentes ? `${recentes} nos últimos 7 dias` : mes ? `${mes} nos últimos 30 dias` : "nenhum post no último mês", recentes ? "" : "Publique pelo menos 1 post por semana (novidade, oferta ou evento). A DENIA cria e publica em Posts e imagens.");
+  const aberto = !info.openInfo?.status || info.openInfo.status === "OPEN";
+  add("Atividade", "status", "Perfil aberto", 2, aberto ? 2 : 0, aberto ? "aberto" : info.openInfo.status === "CLOSED_TEMPORARILY" ? "fechado temporariamente" : "fechado", aberto ? "" : "O perfil está marcado como fechado: reabra se a empresa está funcionando.");
+  const abertura = info.openInfo?.openingDate;
+  add("Atividade", "abertura", "Data de abertura", 1, abertura?.year ? 1 : 0, abertura?.year ? `${String(abertura.month || 1).padStart(2, "0")}/${abertura.year}` : "sem data", abertura?.year ? "" : "Coloque o mês e o ano em que a empresa abriu.");
+  add("Atividade", "atributos", "Atributos (Wi-Fi, acessibilidade, pagamentos…)", 2, Math.min(2, atributos.length * (2 / 3)), `${atributos.length} marcado(s)`, atributos.length >= 3 ? "" : "Marque os atributos que valem para a empresa: formas de pagamento, acessibilidade, Wi-Fi, estacionamento…");
+  const max = itens.reduce((t, x) => t + x.max, 0), pts = itens.reduce((t, x) => t + x.pontos, 0);
+  return { nota: Math.round((pts / max) * 100), itens, faltam: itens.filter(x => x.ok !== "ok").length };
+}
+export async function checagemDoPerfil(env, k, conta) {
+  const token = await tokenDa(env, k, conta);
+  const campos = "title,phoneNumbers,categories,storefrontAddress,websiteUri,regularHours,specialHours,serviceArea,profile,openInfo,metadata";
+  const [info, midias, posts, rev, atributos] = await Promise.all([
+    chamar("GET", `${API_INFO}/${conta.local_nome}?readMask=${campos}`, token),
+    (async () => { const lista = []; let pg = ""; for (let i = 0; i < 5; i++) { const d = await chamar("GET", `${API_V4}/${caminhoV4(conta)}/media?pageSize=100${pg ? "&pageToken=" + encodeURIComponent(pg) : ""}`, token); lista.push(...(d.mediaItems || [])); if (!d.nextPageToken) break; pg = d.nextPageToken; } return lista; })().catch(() => []),
+    chamar("GET", `${API_V4}/${caminhoV4(conta)}/localPosts?pageSize=20`, token).then(d => d.localPosts || []).catch(() => []),
+    chamar("GET", `${API_V4}/${caminhoV4(conta)}/reviews?pageSize=50`, token).catch(() => ({})),
+    chamar("GET", `${API_INFO}/${conta.local_nome}/attributes`, token).then(d => (d.attributes || []).filter(a => (a.values || []).some(Boolean) || (a.uriValues || []).length)).catch(() => [])
+  ]);
+  const lidas = (rev.reviews || []).length, semResposta = (rev.reviews || []).filter(r => !r.reviewReply).length;
+  const r = avaliarPerfil({ info, midias, posts, atributos, agoraMs: k.agora(env), avaliacoes: { total: Number(rev.totalReviewCount || 0), media: Number(rev.averageRating || 0), lidas, sem_resposta: semResposta } });
+  return { perfil: info.title || conta.local_titulo, maps: info.metadata?.mapsUri || conta.maps_uri || null, ...r };
+}
+
 // Endereço do perfil no Google Maps (para abrir e denunciar uma avaliação).
 export async function linkDoPerfil(env, k, conta) {
   if (conta.maps_uri) return conta.maps_uri;
@@ -421,7 +493,7 @@ async function serieDoPeriodo(conta, token, ini, fim) {
 }
 async function metricas(conta, token, ini, fim) { return (await serieDoPeriodo(conta, token, ini, fim)).totais; }
 // Buscas que levaram ao perfil: o Google só publica meses completos, então usa os meses do período até o mês passado.
-async function palavrasDoPeriodo(conta, token, ini, fim, agoraMs, limite = 50) {
+async function palavrasDoPeriodo(conta, token, ini, fim, agoraMs, limite = 2000) {
   const agora = new Date(agoraMs), ultimoMes = new Date(Date.UTC(agora.getUTCFullYear(), agora.getUTCMonth() - 1, 1));
   let ate = new Date(Date.UTC(fim.getUTCFullYear(), fim.getUTCMonth(), 1));
   if (ate > ultimoMes) ate = ultimoMes;
@@ -430,7 +502,8 @@ async function palavrasDoPeriodo(conta, token, ini, fim, agoraMs, limite = 50) {
   const faixa = `monthlyRange.startMonth.year=${de.getUTCFullYear()}&monthlyRange.startMonth.month=${de.getUTCMonth() + 1}&monthlyRange.endMonth.year=${ate.getUTCFullYear()}&monthlyRange.endMonth.month=${ate.getUTCMonth() + 1}`;
   const todas = [];
   let pagina = "";
-  for (let i = 0; i < 5; i++) {
+  // Todas as páginas (até 2.000 buscas): as menos frequentes ("menos de 15") também aparecem, como no painel do Google.
+  for (let i = 0; i < 20; i++) {
     const r = await chamar("GET", `${API_DESEMPENHO}/${conta.local_nome}/searchkeywords/impressions/monthly?${faixa}&pageSize=100${pagina ? "&pageToken=" + encodeURIComponent(pagina) : ""}`, token);
     todas.push(...(r.searchKeywordsCounts || []));
     if (!r.nextPageToken) break;
@@ -501,7 +574,13 @@ export async function desempenhoDoPeriodo(env, k, conta, pedido = {}) {
   const [atual, antes, palavras] = await Promise.all([
     serieDoPeriodo(conta, token, per.ini, per.fim),
     cabe ? serieDoPeriodo(conta, token, cIni, cFim).catch(() => null) : null,
-    palavrasDoPeriodo(conta, token, per.ini, per.fim, agora).catch(() => ({ lista: [], mes_de: null, mes_ate: null }))
+    (() => {
+      // Buscas por meses fechados: os N últimos meses (como o filtro do painel do Google) ou os meses do período.
+      const n = Math.min(18, Math.max(0, Number(pedido.meses_buscas) || 0));
+      if (!n) return palavrasDoPeriodo(conta, token, per.ini, per.fim, agora);
+      const ag = new Date(agora), fimM = new Date(Date.UTC(ag.getUTCFullYear(), ag.getUTCMonth() - 1, 1)), iniM = new Date(Date.UTC(ag.getUTCFullYear(), ag.getUTCMonth() - n, 1));
+      return palavrasDoPeriodo(conta, token, iniM, fimM, agora);
+    })().catch(() => ({ lista: [], mes_de: null, mes_ate: null }))
   ]);
   const comparacao = modo === "nada" ? null : antes ? { modo, de: isoDia(cIni), ate: isoDia(cFim), totais: antes.totais, detalhe: antes.detalhe, diario: antes.diario }
     : { modo, indisponivel: "O Google guarda só os últimos 18 meses, então não há números para comparar com esse período." };

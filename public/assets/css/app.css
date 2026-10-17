@@ -959,3 +959,33 @@ input.fx-titulo:focus { outline: none; border-color: var(--azul); background: rg
 .fx-empresa { margin: 0; padding: 10px 12px; border-radius: 12px; border: 1px solid rgba(251, 191, 36, 0.45); background: rgba(251, 191, 36, 0.08); font-size: 14px; }
 .fx-empresa-nome { color: #9ec0ff; }
 .fx-editar-loja { margin-left: auto; flex: 0 0 auto; }
+
+/* ---------- Menu lateral recolhido (computador): só os ícones, tela maior ---------- */
+@media (min-width: 961px) {
+  #abrir-menu { display: grid; }
+  .app { transition: grid-template-columns 0.2s ease; }
+  body.menu-recolhido.app { grid-template-columns: 76px 1fr; }
+  body.menu-recolhido .lateral { padding: 18px 10px 14px; overflow-x: hidden; }
+  body.menu-recolhido .lateral-marca { justify-content: center; padding: 2px 0 6px; }
+  body.menu-recolhido .lateral-marca span,
+  body.menu-recolhido .empresa-info,
+  body.menu-recolhido .lateral-grupo,
+  body.menu-recolhido .lateral-titulo-modo,
+  body.menu-recolhido .lateral-nav .seta,
+  body.menu-recolhido .lateral > :not(.lateral-marca):not(.lateral-nav):not(.empresa) { display: none; }
+  body.menu-recolhido .empresa { justify-content: center; padding: 8px 0; }
+  body.menu-recolhido .lateral-nav a { font-size: 0; justify-content: center; gap: 0; padding: 10px 0; }
+  body.menu-recolhido .lateral-nav a svg { width: 21px; height: 21px; flex-basis: 21px; }
+}
+/* ---------- Checagem do perfil do Google ---------- */
+.chk-topo { display: flex; flex-wrap: wrap; gap: 20px; align-items: center; }
+.chk-topo > div:last-child { flex: 1 1 280px; min-width: 0; }
+.chk-anel { --p: 0; --cor: #22c55e; width: 132px; height: 132px; border-radius: 50%; display: grid; place-content: center; text-align: center; flex: 0 0 auto;
+  background: radial-gradient(closest-side, #0b1020 78%, transparent 79% 100%), conic-gradient(var(--cor) calc(var(--p) * 1%), rgba(148, 163, 214, 0.18) 0); }
+.chk-anel strong { font-size: 30px; line-height: 1; } .chk-anel span { font-size: 12px; color: var(--texto-3); }
+.chk-lista { list-style: none; margin: 0 0 10px; padding: 0; display: grid; gap: 6px; }
+.chk-item { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--borda); background: rgba(255, 255, 255, 0.02); }
+.chk-item > div { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.chk-falta { border-color: rgba(248, 113, 113, 0.4); } .chk-parcial { border-color: rgba(251, 191, 36, 0.4); }
+.chk-ic { flex: 0 0 auto; } .chk-pts { flex: 0 0 auto; font-size: 12.5px; color: var(--texto-3); font-variant-numeric: tabular-nums; }
+.chk-dica { margin: 4px 0 0; font-size: 13px; color: var(--texto-2); }

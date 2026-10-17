@@ -2231,6 +2231,52 @@ async function conectarGoogleTeste(p, escopos, extra = "") {
   return { marca, dialogo };
 }
 
+test("Google — checagem do perfil (como o GBP Check) e todas as buscas que acharam o perfil", async () => {
+  const p = await criarPlataforma({ GOOGLE_CLIENT_ID: "c.apps.googleusercontent.com", GOOGLE_CLIENT_SECRET: "s" });
+  p.env.__agora = () => Date.parse("2026-10-16T12:00:00Z");
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  const { marca } = await conectarGoogleTeste(p, "https://www.googleapis.com/auth/business.manage");
+  const base = p.google;
+  let completo = false;
+  const chamadas = [];
+  p.google = (url, metodo, corpo) => {
+    chamadas.push([metodo, url]);
+    if (url.includes("/locations/222?readMask=")) return completo
+      ? { title: "Oficina Niterói", phoneNumbers: { primaryPhone: "(21) 3333-4444" }, categories: { primaryCategory: { displayName: "Oficina" }, additionalCategories: [{}, {}, {}] }, profile: { description: "x".repeat(600) },
+        storefrontAddress: { addressLines: ["Rua A, 10"], locality: "Niterói", administrativeArea: "RJ", postalCode: "24000-000" }, websiteUri: "https://oficina.test", regularHours: { periods: [{ openDay: "MONDAY" }] },
+        specialHours: { specialHourPeriods: [{ startDate: { year: 2026, month: 12, day: 25 } }] }, openInfo: { status: "OPEN", openingDate: { year: 2015, month: 3 } }, metadata: { mapsUri: "https://maps.google.com/?cid=1" } }
+      : { title: "Oficina Niterói", categories: { primaryCategory: { displayName: "Oficina" } }, storefrontAddress: { addressLines: ["Rua A, 10"], locality: "Niterói" } };
+    if (url.includes("/media?")) return { mediaItems: completo ? [...Array(10).fill({ mediaFormat: "PHOTO" }), { mediaFormat: "PHOTO", locationAssociation: { category: "PROFILE" } }, { mediaFormat: "PHOTO", locationAssociation: { category: "COVER" } }, ...Array(3).fill({ mediaFormat: "VIDEO" })] : [{ mediaFormat: "PHOTO" }] };
+    if (url.includes("/localPosts?")) return { localPosts: completo ? [{ createTime: "2026-10-14T10:00:00Z" }] : [] };
+    if (url.includes("/reviews?pageSize=50")) return completo ? { totalReviewCount: 12, averageRating: 4.8, reviews: [{ reviewReply: { comment: "ok" } }, { reviewReply: { comment: "ok" } }] } : { totalReviewCount: 2, averageRating: 5, reviews: [{}, { reviewReply: {} }] };
+    if (url.includes("/attributes")) return { attributes: completo ? [{ values: [true] }, { values: [true] }, { values: [true] }] : [] };
+    if (url.includes("searchkeywords")) {
+      const pg = url.includes("pageToken=p2") ? 2 : 1;
+      return { searchKeywordsCounts: Array.from({ length: pg === 1 ? 100 : 30 }, (_, i) => ({ searchKeyword: pg === 2 && i === 29 ? "reforma tudo rt" : `busca ${pg}-${i}`, insightsValue: pg === 2 ? { threshold: "15" } : { value: String(500 - i) } })), ...(pg === 1 ? { nextPageToken: "p2" } : {}) };
+    }
+    return base(url, metodo, corpo);
+  };
+  const r = await p.req(`/api/orgs/1/mk/google/checagem?marca=${marca}`, { quem: "admin" });
+  assert.equal(r.status, 200, JSON.stringify(r.dados));
+  assert.ok(r.dados.nota < 50, "perfil incompleto tem nota baixa: " + r.dados.nota);
+  const it = c => r.dados.itens.find(i => i.chave === c);
+  assert.equal(it("endereco").ok, "parcial"); assert.match(it("endereco").dica, /CEP/);
+  assert.equal(it("fotos").detalhe, "1 foto(s)"); assert.match(it("fotos").dica, /Faltam 2 foto/);
+  assert.match(it("videos").dica, /Faltam 3 vídeo/);
+  assert.match(it("avaliacoes").dica, /Faltam 3 avaliação/);
+  assert.equal(it("respostas").detalhe, "1 de 2 recentes respondidas");
+  assert.ok(chamadas.every(([m]) => m === "GET"), "a checagem só lê, não muda nada no Google");
+  completo = true;
+  const r2 = await p.req(`/api/orgs/1/mk/google/checagem?marca=${marca}`, { quem: "admin" });
+  assert.equal(r2.dados.nota, 100, JSON.stringify(r2.dados.itens.filter(i => i.ok !== "ok")));
+  assert.equal(r2.dados.faltam, 0);
+  // Buscas: todas as páginas (inclusive as "menos de 15") e os meses escolhidos.
+  const dsp = await p.req(`/api/orgs/1/mk/google/desempenho?marca=${marca}&dias=30&meses_buscas=6`, { quem: "admin" });
+  assert.equal(dsp.dados.palavras.length, 130, "nenhuma busca fica de fora");
+  assert.ok(dsp.dados.palavras.some(x => x.palavra === "reforma tudo rt" && x.menos_de === 15));
+  assert.deepEqual([dsp.dados.palavras_de, dsp.dados.palavras_ate], ["2026-04", "2026-09"], "últimos 6 meses fechados");
+});
+
 test("Google — Search Console: escolher o site, números por busca e página, oportunidades, inspecionar e sitemap", async () => {
   const p = await criarPlataforma({ GOOGLE_CLIENT_ID: "c.apps.googleusercontent.com", GOOGLE_CLIENT_SECRET: "s" });
   p.env.__agora = () => Date.parse("2026-10-16T12:00:00Z");
