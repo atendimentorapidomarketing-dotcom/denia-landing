@@ -71,7 +71,7 @@ No app Node.js → **Variáveis de ambiente**, cole cada uma. Os valores secreto
 **Copiadas da Cloudflare.** São as mesmas do Worker `denia-landing` (Settings → Variables and Secrets) e do Worker `denia`. Coloque só as que existem lá:
 
 - Plataforma: `SESSION_SECRET`, `PLATFORM_ADMIN_EMAIL`, `PLATFORM_ADMIN_PASSWORD`, `OPENAI_API_KEY`, `OPENAI_MODEL`, `OPENAI_REALTIME_MODEL`, `OPENAI_TRANSCRIPTION_MODEL`, `META_APP_ID`, `META_APP_SECRET`, `META_CONFIG_ID`, `META_WA_CONFIG_ID`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_ADS_DEVELOPER_TOKEN`, `GOOGLE_PLACES_API_KEY`, `RESEND_API_KEY`, `EMAIL_REMETENTE`, `CONTATO_EMAIL`, `CONTATO_WHATSAPP`, `ASAAS_API_KEY`, `ASAAS_WEBHOOK_TOKEN`, `CHANNEX_API_KEY`, `TELEGRAM_BOT_TOKEN_PLATAFORMA`, `DENIA_PLATFORM_SERVICE_TOKEN`.
-- IA do WhatsApp (Worker `denia`): `WHATSAPP_TOKEN`, `WHATSAPP_VERIFY_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_WABA_ID`, `WHATSAPP_TEMPLATE_CONSULTA_TECNICO`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `EQUIPE_TELEFONES`, `PAINEL_SENHA`, `PLATAFORMA_API_URL`, `PLATAFORMA_API_TOKEN`, `CRM_CONSULTA_URL`, `CRM_TOKEN`, `RELATORIO_GMAIL_URL`, `RELATORIO_GMAIL_SEGREDO`, `RELATORIO_EMAIL_TO`, `MARKUP_PERCENT`.
+- IA do WhatsApp (Worker `denia`): `WHATSAPP_TOKEN`, `WHATSAPP_VERIFY_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_WABA_ID`, `WHATSAPP_TEMPLATE_CONSULTA_TECNICO`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `EQUIPE_TELEFONES`, `PAINEL_SENHA`, `PLATAFORMA_API_URL`, `PLATAFORMA_API_TOKEN`, `CRM_CONSULTA_URL`, `CRM_TOKEN`, `RELATORIO_GMAIL_URL`, `RELATORIO_GMAIL_SEGREDO`, `RELATORIO_EMAIL_TO`, `MARKUP_PERCENT`, `META_APP_SECRET` e, se tiver criado, `REUNIAO_HORARIO`, `WHATSAPP_TEMPLATE_RETOMAR`, `WHATSAPP_TEMPLATE_IDIOMA`, `TELEGRAM_AVISOS`, `TELEGRAM_EQUIPE`.
 - Algum nome existe nos **dois** Workers com valores **diferentes** (por exemplo, `OPENAI_MODEL`)? Coloque o da plataforma normalmente e o da IA com o prefixo `ENGINE_` (exemplo: `ENGINE_OPENAI_MODEL`).
 - Alguma variável aponta para um endereço `…workers.dev`, como `PLATAFORMA_API_URL`? Troque pelo endereço novo.
 - Não precisa de `LIMITE_CHAMADAS`: o servidor já usa 900, porque aqui não existe o limite do plano grátis.
@@ -100,6 +100,8 @@ Abra `https://app.seudominio.com.br/__denia/estado?chave=SUA_DENIA_CHAVE_SERVIDO
 
 Depois entre em `https://app.seudominio.com.br/entrar` com seu e-mail e senha de sempre e confira empresas, imóveis e conversas.
 
+Abra também `https://app.seudominio.com.br/ia/api/saude`: deve mostrar a versão da IA da Central (32.1.1 ou mais nova), `whatsapp_configurado: true`, `openai_configurado: true` e `telegram_configurado: true`.
+
 ## Passo 6 — Dia da troca (30 min, num horário calmo)
 
 1. **Cloudflare → Workers & Pages → `denia-landing` e `denia` → Settings → Triggers → apague os Cron Triggers.** Assim as tarefas não rodam em dobro.
@@ -119,7 +121,8 @@ Troque `https://…workers.dev` por `https://app.seudominio.com.br`:
 | Meta → Configurações → Básico → Domínios do app | adicione `app.seudominio.com.br` |
 | Google Cloud → APIs e serviços → Credenciais → cliente OAuth | origem `https://app.seudominio.com.br` e redirecionamento `https://app.seudominio.com.br/api/google/retorno` |
 | Asaas → Integrações → Webhooks | `https://app.seudominio.com.br/webhook/asaas` |
-| Telegram | Na plataforma, toque de novo em **Conectar Telegram** (ele registra o endereço novo sozinho) |
+| Telegram (avisos do chatbot das empresas) | Na plataforma, toque de novo em **Conectar Telegram** (ele registra o endereço novo sozinho) |
+| Telegram da Central (a equipe responde os avisos da IA) | Nada: a IA da Central troca sozinha para `https://app.seudominio.com.br/ia/telegram` alguns minutos depois da primeira mensagem do WhatsApp na Hostinger. Confira em `/ia/api/saude` → `telegram_equipe` com `"ok": true` |
 | Channex (se usar) | Desconecte e conecte de novo em Temporada → Conexões |
 
 Pronto. Deixe a Cloudflare parada (sem Cron Triggers) por uma semana como reserva e depois apague os Workers.

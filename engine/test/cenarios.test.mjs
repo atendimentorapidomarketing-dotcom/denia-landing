@@ -1291,3 +1291,15 @@ test("Equipe pelo Telegram: responde o aviso 'a equipe decide' e a DENIA consult
   await a.equipe("manda um oi pro cliente");
   assert.match(a.telegramMsgs.at(-1).texto, /De qual atendimento você está falando/);
 });
+
+test("Telegram da equipe na mudança para a Hostinger: troca o endereço antigo da Central, nunca o de outro sistema", async () => {
+  const a = await criarAmbiente();
+  a.tgWebhook = "https://denia.velho.workers.dev/telegram"; // ligado antes, na Cloudflare
+  const r1 = await (await a.http("/api/telegram/conectar", { method: "POST", body: "{}", headers: { "x-denia-prefixo": "/ia" } })).json();
+  assert.equal(r1.ok, true, JSON.stringify(r1));
+  assert.equal(a.tgWebhook, "https://denia.test/ia/telegram");
+  a.tgWebhook = "https://plataforma.test/webhook/telegram"; // bot usado por outro sistema
+  const r2 = await (await a.http("/api/telegram/conectar", { method: "POST", body: "{}" })).json();
+  assert.equal(r2.ok, false);
+  assert.equal(a.tgWebhook, "https://plataforma.test/webhook/telegram", "não mexe no endereço de outro sistema");
+});

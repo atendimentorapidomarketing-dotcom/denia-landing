@@ -36,7 +36,7 @@
 //       relatório diário. Nunca inicia conversa nova por conta própria.
 // ============================================================================
 
-const VERSAO = "32.1.0";
+const VERSAO = "32.1.1";
 const SCHEMA_VERSAO = "32.0.0"; // mude sempre que acrescentar tabela ou índice (senão o banco de produção não recebe)
 const EMPRESA_ID = 1;
 const PHONE_ID_PADRAO = "473474732510163";
@@ -4171,7 +4171,11 @@ async function conectarTelegramEquipe(c, base, forcar = false) {
   const info = await api("getWebhookInfo");
   const atual = String(info?.result?.url || "");
   if (atual === url) return { ok: true, url, ja: true };
-  if (atual && !forcar) return { ok: false, erro: `O bot já entrega mensagens para outro endereço (${atual}). Use "forçar" para trocar.` };
+  // Endereço antigo da própria IA da Central (ex.: o Worker da Cloudflare antes da mudança para a Hostinger):
+  // termina em "/telegram" (ou "/ia/telegram"). Esse ela troca sozinha; o de outro sistema, nunca.
+  let daCentral = false;
+  try { daCentral = /^(\/[\w-]+)?\/telegram$/.test(new URL(atual).pathname) && !/\/webhook\/telegram$/.test(new URL(atual).pathname); } catch { daCentral = false; }
+  if (atual && !forcar && !daCentral) return { ok: false, erro: `O bot já entrega mensagens para outro endereço (${atual}). Use "forçar" para trocar.` };
   const r = await api("setWebhook", { url, secret_token: segredoTelegramEngine(env), allowed_updates: ["message"], drop_pending_updates: true });
   return r?.ok ? { ok: true, url } : { ok: false, erro: r?.description || "Telegram recusou." };
 }
