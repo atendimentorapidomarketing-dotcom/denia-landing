@@ -1143,3 +1143,46 @@ test("Reunião online: a DENIA marca, avisa o Telegram da Central, não duplica,
   a.avancar(5 * 60000); await a.cron();
   assert.equal(a.telegram.filter(t => /LEMBRETE/.test(t)).length, 1);
 });
+
+test("Reunião online e feriados: calendário certo na conversa, recusa feriado/domingo/fora do horário e sugere outro dia", async () => {
+  const a = await criarAmbiente({ inicio: "2026-11-16T10:00:00-03:00" }); // segunda-feira
+  let entrada = "";
+  a.llmCliente = e => { entrada = e; return decisao({ resposta: "Que dia fica bom?" }); };
+  await a.cliente(CLI, "Quero marcar uma reunião online", { nome: "Marcos" });
+  assert.match(entrada, /seg 16\/11\/2026 \(hoje\)/);
+  assert.match(entrada, /sex 20\/11\/2026 — DIA DA CONSCIÊNCIA NEGRA/);
+  assert.match(entrada, /PRÓXIMOS FERIADOS DEPOIS DISSO: [^\n]*25\/12\/2026 \(sex\): Natal/);
+  assert.match(entrada, /HORÁRIO DE REUNIÕES ONLINE: seg 08:00–18:00; ter 08:00–18:00/);
+  // Feriado: não registra, explica e sugere o próximo dia possível no mesmo horário.
+  a.llmCliente = () => decisao({ resposta: "Marcado para sexta, 20/11, às 15h!", reuniao: { acao: "marcar", quando: "2026-11-20 15:00", assunto: "apresentação" } });
+  await a.cliente(CLI, "sexta dia 20 às 15h");
+  assert.equal(a.ultimoPara(CLI), "Poxa, nesse horário não dá: 20/11 é Dia da Consciência Negra, feriado. Pode ser sábado, 21/11, às 08h?", "sábado só até 12h: sugere o início do expediente");
+  assert.ok(!a.telegram.some(t => /REUNIÃO ONLINE MARCADA/.test(t)), "nada vai ao Telegram");
+  // Domingo e fora do horário.
+  a.llmCliente = () => decisao({ resposta: "Combinado!", reuniao: { acao: "marcar", quando: "2026-11-22 10:00" } });
+  await a.cliente(CLI, "domingo 10h?");
+  assert.match(a.ultimoPara(CLI), /não fazemos reunião aos domingos\. Pode ser segunda, 23\/11, às 10h\?/);
+  a.llmCliente = () => decisao({ resposta: "Combinado!", reuniao: { acao: "marcar", quando: "2026-11-23 21:00" } });
+  await a.cliente(CLI, "segunda 21h?");
+  assert.match(a.ultimoPara(CLI), /as reuniões são das 08h às 18h\. Pode ser terça, 24\/11, às 08h\?/);
+  // A IA errou o dia da semana: a confirmação sai com o dia certo da data registrada.
+  a.llmCliente = () => decisao({ resposta: "Prontinho, ficou para quarta às 15h!", reuniao: { acao: "marcar", quando: "2026-11-24 15:00", assunto: "apresentação" } });
+  await a.cliente(CLI, "terça 24 às 15h então");
+  assert.equal(a.ultimoPara(CLI), "Prontinho! Sua reunião online ficou marcada para terça, 24/11, às 15h. A equipe vai te enviar o link. 😊");
+  assert.equal(a.telegram.filter(t => /REUNIÃO ONLINE MARCADA/.test(t)).length, 1);
+});
+
+test("Feriados móveis calculados para qualquer ano (Carnaval, Sexta-feira Santa, Corpus Christi) e meio expediente", async () => {
+  const a = await criarAmbiente({ inicio: "2027-02-01T10:00:00-03:00", env: { REUNIAO_HORARIO: "seg-sex 09:00-17:00" } });
+  let entrada = "";
+  a.llmCliente = e => { entrada = e; return decisao({ resposta: "Oi!" }); };
+  await a.cliente(CLI, "oi");
+  assert.match(entrada, /seg 08\/02\/2027 — CARNAVAL \(SEGUNDA-FEIRA\)/);
+  assert.match(entrada, /ter 09\/02\/2027 — CARNAVAL \(TERÇA-FEIRA\)/);
+  assert.match(entrada, /qua 10\/02\/2027 — QUARTA-FEIRA DE CINZAS/);
+  assert.match(entrada, /26\/03\/2027 \(sex\): Sexta-feira Santa/);
+  assert.match(entrada, /HORÁRIO DE REUNIÕES ONLINE: seg 09:00–17:00; ter 09:00–17:00; qua 09:00–17:00; qui 09:00–17:00; sex 09:00–17:00 \(/);
+  a.llmCliente = () => decisao({ resposta: "Marcado!", reuniao: { acao: "marcar", quando: "2027-02-10 10:00" } });
+  await a.cliente(CLI, "quarta de cinzas 10h");
+  assert.match(a.ultimoPara(CLI), /Quarta-feira de Cinzas só tem atendimento a partir das 14h\. Pode ser quarta, 10\/02, às 14h\?/);
+});
