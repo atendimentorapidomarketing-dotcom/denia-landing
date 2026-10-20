@@ -1,5 +1,19 @@
 # Changelog — DENIA Engine
 
+## 31.11.0 — 2026-10-20
+
+### Novo — calendário com feriados e horário de reuniões
+- Feriados calculados para qualquer ano: nacionais (inclusive Carnaval, Sexta-feira Santa e Corpus
+  Christi, que mudam de data), estaduais do RJ (São Jorge) e municipais do Rio (São Sebastião).
+  Quarta-feira de Cinzas só a partir das 14h; 24/12 e 31/12 só até 12h.
+- A IA recebe os próximos 21 dias com o dia da semana certo, os feriados e o horário de reuniões,
+  para nunca errar "terça que vem".
+- Trava no código: reunião em feriado, domingo, horário passado ou fora do horário não é registrada;
+  o cliente recebe o motivo e o próximo horário possível.
+- A confirmação ao cliente sempre traz o dia da semana e a data registrados (se a IA errar o dia, a
+  frase é corrigida).
+- Horário de reuniões: secret opcional `REUNIAO_HORARIO` (padrão `seg-sex 08:00-18:00; sab 08:00-12:00`).
+
 ## 31.10.0 — 2026-10-20
 
 ### Corrigido — conversa com o profissional (equipe) sem contexto e repetitiva

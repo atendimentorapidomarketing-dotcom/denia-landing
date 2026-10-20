@@ -36,7 +36,7 @@
 //       relatório diário. Nunca inicia conversa nova por conta própria.
 // ============================================================================
 
-const VERSAO = "31.10.0";
+const VERSAO = "31.11.0";
 const SCHEMA_VERSAO = "31.10.0"; // mude sempre que acrescentar tabela ou índice (senão o banco de produção não recebe)
 const EMPRESA_ID = 1;
 const PHONE_ID_PADRAO = "473474732510163";
@@ -160,6 +160,111 @@ function dataSP(ms) {
   const g = t => p.find(x => x.type === t)?.value;
   return `${g("year")}-${g("month")}-${g("day")}`;
 }
+// ----- Calendário: feriados nacionais, do estado do RJ e da cidade do Rio de Janeiro (calculados para
+// qualquer ano, inclusive os móveis: Carnaval, Sexta-feira Santa e Corpus Christi) e o horário de reuniões.
+function pascoaUTC(ano) {
+  const a = ano % 19, b = Math.floor(ano / 100), c = ano % 100, d = Math.floor(b / 4), e = b % 4, f = Math.floor((b + 8) / 25), g = Math.floor((b - f + 1) / 3);
+  const h = (19 * a + b - d - g + 15) % 30, i = Math.floor(c / 4), k = c % 4, l = (32 + 2 * e + 2 * i - h - k) % 7, m = Math.floor((a + 11 * h + 22 * l) / 451);
+  const mes = Math.floor((h + l - 7 * m + 114) / 31), dia = ((h + l - 7 * m + 114) % 31) + 1;
+  return Date.UTC(ano, mes - 1, dia);
+}
+const cacheFeriados = new Map();
+// "AAAA-MM-DD" → { nome, livreDepois?: "HH:MM", livreAte?: "HH:MM" } (sem horário: o dia todo é feriado).
+function feriadosDoAno(ano) {
+  if (cacheFeriados.has(ano)) return cacheFeriados.get(ano);
+  const f = new Map(), p = pascoaUTC(ano);
+  const fixo = (md, nome, extra = {}) => f.set(`${ano}-${md}`, { nome, ...extra });
+  const movel = (dias, nome, extra = {}) => f.set(new Date(p + dias * 86400000).toISOString().slice(0, 10), { nome, ...extra });
+  fixo("01-01", "Confraternização Universal (feriado nacional)");
+  fixo("01-20", "Dia de São Sebastião (feriado municipal do Rio)");
+  fixo("04-21", "Tiradentes (feriado nacional)");
+  fixo("04-23", "Dia de São Jorge (feriado estadual do RJ)");
+  fixo("05-01", "Dia do Trabalho (feriado nacional)");
+  fixo("09-07", "Independência do Brasil (feriado nacional)");
+  fixo("10-12", "Nossa Senhora Aparecida (feriado nacional)");
+  fixo("11-02", "Finados (feriado nacional)");
+  fixo("11-15", "Proclamação da República (feriado nacional)");
+  fixo("11-20", "Dia da Consciência Negra (feriado nacional)");
+  fixo("12-24", "Véspera de Natal (meio expediente)", { livreAte: "12:00" });
+  fixo("12-25", "Natal (feriado nacional)");
+  fixo("12-31", "Véspera de Ano-Novo (meio expediente)", { livreAte: "12:00" });
+  movel(-48, "Carnaval (segunda-feira)");
+  movel(-47, "Carnaval (terça-feira)");
+  movel(-46, "Quarta-feira de Cinzas (só a partir das 14h)", { livreDepois: "14:00" });
+  movel(-2, "Sexta-feira Santa (feriado nacional)");
+  movel(60, "Corpus Christi (feriado no Rio)");
+  cacheFeriados.set(ano, f);
+  return f;
+}
+function feriadoEm(dataISO) { return feriadosDoAno(Number(String(dataISO).slice(0, 4))).get(String(dataISO).slice(0, 10)) || null; }
+const DIAS_SEMANA = ["dom", "seg", "ter", "qua", "qui", "sex", "sab"];
+const DIAS_LONGOS = ["domingo", "segunda-feira", "terça-feira", "quarta-feira", "quinta-feira", "sexta-feira", "sábado"];
+function diaSemanaSP(ms) { return new Date(Date.parse(dataSP(ms) + "T12:00:00-03:00")).getUTCDay(); }
+function hhmmSP(ms) { return new Intl.DateTimeFormat("en-GB", { timeZone: TZ, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(ms)); }
+// REUNIAO_HORARIO (secret opcional), ex.: "seg-sex 09:00-18:00; sab 09:00-12:00". Padrão: seg a sex 8h–18h, sáb 8h–12h.
+function horarioReunioes(env) {
+  const bruto = String(env?.REUNIAO_HORARIO || "seg-sex 08:00-18:00; sab 08:00-12:00");
+  const dias = Array.from({ length: 7 }, () => []);
+  for (const parte of bruto.split(/[;\n]+/)) {
+    const m = norm(parte).match(/^\s*([a-z ,\-]+?)\s+(\d{1,2}):?(\d{2})?\s*(?:-|a|ate)\s*(\d{1,2}):?(\d{2})?\s*$/);
+    if (!m) continue;
+    const de = `${m[2].padStart(2, "0")}:${m[3] || "00"}`, ate = `${m[4].padStart(2, "0")}:${m[5] || "00"}`;
+    for (const tok of m[1].split(/\s*,\s*/)) {
+      const [a, b] = tok.split(/\s*-\s*/).map(x => DIAS_SEMANA.indexOf(x.trim().slice(0, 3)));
+      if (a < 0) continue;
+      for (let d = a; ; d = (d + 1) % 7) { dias[d].push([de, ate]); if (b === undefined || b < 0 || d === b) break; }
+    }
+  }
+  return dias.some(x => x.length) ? dias : horarioReunioes({});
+}
+function descreverHorario(dias) {
+  const nomes = ["dom", "seg", "ter", "qua", "qui", "sex", "sáb"];
+  return dias.map((f, i) => f.length ? `${nomes[i]} ${f.map(([a, b]) => `${a}–${b}`).join(", ")}` : "").filter(Boolean).join("; ") || "não definido";
+}
+// "" se a reunião pode ser nesse horário; senão o motivo, em português, para dizer ao cliente.
+function motivoHorarioReuniao(env, agora, ms) {
+  if (!Number.isFinite(ms)) return "não entendi o dia e o horário";
+  if (ms < agora + 15 * 60000) return "esse horário já passou";
+  if (ms > agora + 180 * 86400000) return "é longe demais para marcar agora";
+  const data = dataSP(ms), hora = hhmmSP(ms), fer = feriadoEm(data);
+  if (fer && !fer.livreDepois && !fer.livreAte) return `${data.slice(8, 10)}/${data.slice(5, 7)} é ${fer.nome.replace(/\s*\(.*\)$/, "")}, feriado`;
+  if (fer?.livreDepois && hora < fer.livreDepois) return `${fer.nome.replace(/\s*\(.*\)$/, "")} só tem atendimento a partir das ${fer.livreDepois.replace(":00", "h")}`;
+  if (fer?.livreAte && hora >= fer.livreAte) return `${fer.nome.replace(/\s*\(.*\)$/, "")} só tem atendimento até as ${fer.livreAte.replace(":00", "h")}`;
+  const faixas = horarioReunioes(env)[diaSemanaSP(ms)];
+  if (!faixas.length) return `não fazemos reunião ${diaSemanaSP(ms) === 0 ? "aos domingos" : "aos " + DIAS_LONGOS[diaSemanaSP(ms)] + "s"}`;
+  if (!faixas.some(([a, b]) => hora >= a && hora < b)) return `nesse dia as reuniões são ${faixas.map(([a, b]) => `das ${a.replace(":00", "h")} às ${b.replace(":00", "h")}`).join(" ou ")}`;
+  return "";
+}
+// Próximo horário em que dá para marcar: o mesmo horário nos dias seguintes (ou o início do expediente).
+function proximoHorarioReuniao(env, agora, ms) {
+  const dias = horarioReunioes(env);
+  const hora = Number.isFinite(ms) ? hhmmSP(ms) : "10:00";
+  let base = Date.parse(dataSP(Number.isFinite(ms) && ms > agora ? ms : agora) + "T12:00:00-03:00");
+  for (let i = 0; i < 45; i++, base += 86400000) {
+    const data = dataSP(base), faixas = dias[diaSemanaSP(base)], fer = feriadoEm(data);
+    // No próprio dia: só mais tarde (ex.: Quarta de Cinzas a partir das 14h). Nos seguintes: o mesmo horário ou o início do expediente.
+    const opcoes = i === 0 ? [hora, ...(fer?.livreDepois ? [fer.livreDepois] : []), ...faixas.map(([a]) => a).filter(a => a > hora)] : [hora, ...faixas.map(([a]) => a)];
+    for (const h of opcoes) {
+      const t = Date.parse(`${data}T${h}:00-03:00`);
+      if (!motivoHorarioReuniao(env, agora, t)) return t;
+    }
+  }
+  return null;
+}
+function dataExtensoSP(ms) { return `${DIAS_LONGOS[diaSemanaSP(ms)].replace("-feira", "")}, ${new Intl.DateTimeFormat("pt-BR", { timeZone: TZ, day: "2-digit", month: "2-digit" }).format(new Date(ms))}, às ${hhmmSP(ms).replace(":00", "h").replace(":", "h")}`; }
+// O que a IA vê: os próximos dias com o dia da semana (para não errar "terça que vem") e os feriados.
+function calendarioTexto(env, agora, dias = 21) {
+  const linhas = [];
+  let base = Date.parse(dataSP(agora) + "T12:00:00-03:00");
+  for (let i = 0; i < dias; i++, base += 86400000) {
+    const data = dataSP(base), fer = feriadoEm(data);
+    linhas.push(`${DIAS_SEMANA[diaSemanaSP(base)]} ${data.slice(8, 10)}/${data.slice(5, 7)}/${data.slice(0, 4)}${i === 0 ? " (hoje)" : i === 1 ? " (amanhã)" : ""}${fer ? " — " + fer.nome.toUpperCase() : ""}`);
+  }
+  const prox = [];
+  for (let i = dias; i < 200 && prox.length < 8; i++) { const data = dataSP(Date.parse(dataSP(agora) + "T12:00:00-03:00") + i * 86400000), fer = feriadoEm(data); if (fer) prox.push(`${data.slice(8, 10)}/${data.slice(5, 7)}/${data.slice(0, 4)} (${DIAS_SEMANA[diaSemanaSP(Date.parse(data + "T12:00:00-03:00"))]}): ${fer.nome}`); }
+  return `${linhas.join("\n")}\nPRÓXIMOS FERIADOS DEPOIS DISSO: ${prox.join("; ") || "-"}\nHORÁRIO DE REUNIÕES ONLINE: ${descreverHorario(horarioReunioes(env))} (fora disso, em feriados e em horário passado, não marque).`;
+}
+
 function dataHoraSP(ms) { return new Intl.DateTimeFormat("pt-BR", { timeZone: TZ, dateStyle: "short", timeStyle: "short" }).format(new Date(ms)); }
 function inicioDiaSP(ms) { return Date.parse(dataSP(ms) + "T00:00:00-03:00"); }
 function saudacaoSP(ms) { const h = horaSP(ms); return h < 12 ? "Bom dia" : h < 18 ? "Boa tarde" : "Boa noite"; }
@@ -1825,6 +1930,7 @@ A ARTE DE ATENDER (o padrão das melhores atendentes):
 - Você atende somente o que é da Central (serviços, pedidos, agendamentos, dúvidas do atendimento). Não fale de marketing, redes sociais, Google ou assuntos fora do atendimento; se perguntarem, diga com gentileza que por aqui você cuida do atendimento.
 
 REUNIÃO ONLINE (ou ligação/videochamada com a equipe): se o TREINAMENTO permite marcar e o cliente CONFIRMOU um dia e horário, preencha "reuniao" com {"acao":"marcar","quando":"AAAA-MM-DD HH:MM","assunto":"do que é a reunião, em poucas palavras"} (horário de Brasília; use a DATA E HORA ATUAL para entender "amanhã", "terça" etc.). Se ele mudar o horário de uma reunião já marcada, "acao":"remarcar" com o novo horário; se desmarcar, "acao":"cancelar". O sistema registra e avisa a equipe no Telegram da Central; aí você pode dizer que ficou marcado e que a equipe envia o link. Nunca invente link. Enquanto o horário estiver em negociação, deixe "reuniao" vazio. Não repita uma reunião que já está em REUNIÕES MARCADAS.
+CALENDÁRIO: para QUALQUER data (reunião ou serviço), confira no CALENDÁRIO o dia da semana certo e se é feriado; nunca calcule o dia da semana de cabeça. Nunca proponha nem marque reunião em feriado, domingo, horário que já passou ou fora do HORÁRIO DE REUNIÕES ONLINE. Se o cliente pedir um desses, explique com gentileza (ex.: "dia 20/11 é feriado da Consciência Negra") e sugira o próximo dia possível. Ao confirmar, diga o dia da semana e a data (ex.: "quinta, 22/10, às 15h").
 
 COMO O SISTEMA AGE: quando o serviço está claro e o cliente quer orçamento, visita ou atendimento, o sistema consulta sozinho o profissional da categoria e avisa o cliente. Para isso basta preencher os fatos, quer_orcamento_ou_atendimento=true e pronto_para_profissional=true. Não é preciso bairro nem endereço para consultar.
 
@@ -1843,7 +1949,7 @@ intencao: CONVERSA | NOVO_PEDIDO | ACEITA_PROPOSTA | RECUSA_PROPOSTA | PEDE_OUTR
 - descricao_anexos: descrição objetiva das imagens/documentos anexados (leia textos visíveis). Se for comprovante de pagamento, comprovante_pagamento=true (isso não confirma o pagamento).
 - resumo_caso: 1 ou 2 frases atualizadas sobre o caso ativo.`;
 
-function montarEntradaCliente({ agora = Date.now(), treinamento, caso, consulta, autorizados, recentes, hist, novas, temAnexos, pessoa, perfil = "", estilo = "", ficha = "", memoria = "", reunioes = "" }) {
+function montarEntradaCliente({ agora = Date.now(), treinamento, caso, consulta, autorizados, recentes, hist, novas, temAnexos, pessoa, perfil = "", estilo = "", ficha = "", memoria = "", reunioes = "", calendario = "" }) {
   return `TREINAMENTO DA EMPRESA (siga sempre):
 ${formatarTreinamento(treinamento.dados)}
 
@@ -1864,6 +1970,7 @@ ${Object.entries(CATEGORIAS).map(([k, v]) => `${k}: ${v.rotulo}`).join("\n")}
 
 DATA E HORA ATUAL: ${dataHoraSP(agora)} (${new Intl.DateTimeFormat("pt-BR", { timeZone: TZ, weekday: "long" }).format(new Date(agora))})
 REUNIÕES MARCADAS COM ESTE CLIENTE: ${reunioes || "(nenhuma)"}
+${calendario ? `CALENDÁRIO (horário de Brasília; feriados nacionais, do RJ e da cidade do Rio):\n${calendario}` : ""}
 NOME DO CLIENTE NO CADASTRO: ${pessoa?.nome || "não informado"}
 
 ESTADO DO CASO ATIVO${caso ? ` #${caso.casoId}` : ""}:
@@ -1992,7 +2099,7 @@ async function processarCliente(c, tel, id, msgs, { apenasRegistrar, chaveLote, 
 
   let d;
   try {
-    const bruto = await openaiJSON(c, INSTRUCOES_CLIENTE, montarEntradaCliente({ agora: c.agora(), treinamento, caso, consulta, autorizados, recentes, hist: formatarHistorico(hist, "CLIENTE", novasIds), novas, temAnexos: anexos.length > 0, pessoa, perfil, estilo, ficha, memoria, reunioes: reunioes.map(r => `${r.quando_ms ? dataHoraSP(r.quando_ms) : r.quando_txt || "?"} — ${r.assunto || "reunião"}`).join("; ") }), anexos);
+    const bruto = await openaiJSON(c, INSTRUCOES_CLIENTE, montarEntradaCliente({ agora: c.agora(), treinamento, caso, consulta, autorizados, recentes, hist: formatarHistorico(hist, "CLIENTE", novasIds), novas, temAnexos: anexos.length > 0, pessoa, perfil, estilo, ficha, memoria, reunioes: reunioes.map(r => `${r.quando_ms ? dataHoraSP(r.quando_ms) : r.quando_txt || "?"} — ${r.assunto || "reunião"}`).join("; "), calendario: calendarioTexto(c.env, c.agora()) }), anexos);
     d = normalizarDecisaoCliente(bruto);
     capturarRespostaCurta(d, msgs, hist);
   } catch (e) {
@@ -2041,11 +2148,14 @@ async function processarCliente(c, tel, id, msgs, { apenasRegistrar, chaveLote, 
   const acao = await decidirCliente(c, { tel, pessoa, caso, consulta, d, chaveLote });
   let texto = acao.texto;
   if (!acao.fixa) {
-    const g = { reuniao: Boolean(reuniao), etapa: caso?.etapa || "SEM_CASO", autorizados, modo: CATEGORIAS[caso?.fatos?.categoria]?.modo || "", regiaoConfirmada: caso?.fatos?.regiao_confirmada === "SIM", fatos: caso && !ETAPAS_ENCERRADAS.has(caso.etapa) ? caso.fatos : null, nome: pessoa.nome, perguntadas: perguntasRecentes(hist) };
+    const g = { reuniao: Boolean(reuniao && !reuniao.recusada), etapa: caso?.etapa || "SEM_CASO", autorizados, modo: CATEGORIAS[caso?.fatos?.categoria]?.modo || "", regiaoConfirmada: caso?.fatos?.regiao_confirmada === "SIM", fatos: caso && !ETAPAS_ENCERRADAS.has(caso.etapa) ? caso.fatos : null, nome: pessoa.nome, perguntadas: perguntasRecentes(hist) };
     const r = guardarResposta(d.resposta, g);
     if (r.removidas.length) await evento(c, caso?.casoId, "RESPOSTA_CORRIGIDA", r.removidas.join(" | "));
     texto = r.texto || respostaPadraoEtapa(caso?.etapa);
   }
+  // Reunião: a data dita ao cliente é sempre a que ficou registrada (nunca um dia da semana errado).
+  if (reuniao?.recusada) texto = `Poxa, nesse horário não dá: ${reuniao.recusada}. ${reuniao.sugestao ? `Pode ser ${dataExtensoSP(reuniao.sugestao)}?` : "Qual outro dia fica bom pra você?"}`;
+  else if (reuniao?.nova && reuniao.quando_ms && !confereDataNoTexto(texto, reuniao.quando_ms)) texto = `Prontinho! Sua reunião online ficou marcada para ${dataExtensoSP(reuniao.quando_ms)}. A equipe vai te enviar o link. 😊`;
   if (!texto) return;
   const ultimaDenia = [...hist].reverse().find(m => String(m.direcao).toUpperCase() === "SAIDA" && !["HUMANO", "LIGACAO"].includes(String(m.origem).toUpperCase()));
   if (!acao.fixa && ultimaDenia && norm(ultimaDenia.conteudo) === norm(texto)) return; // não repetir a mesma frase
@@ -2071,13 +2181,18 @@ async function registrarReuniao(c, { tel, pessoa, caso, r, existentes = [] }) {
   const t = digitos(tel), quando_ms = horarioSP(r.quando), agora = c.agora();
   const atual = existentes[0] || null;
   const dados = { nome: pessoa?.nome || "", tel: t, quando_ms, quando_txt: r.quando || null, assunto: r.assunto || atual?.assunto || "" };
+  // Trava: feriado, domingo, horário passado ou fora do horário de reuniões não são registrados.
+  if (r.acao !== "cancelar" && quando_ms) {
+    const motivo = motivoHorarioReuniao(c.env, agora, quando_ms);
+    if (motivo) { await evento(c, caso?.casoId, "REUNIAO_RECUSADA", `${dataHoraSP(quando_ms)}: ${motivo}`); return { recusada: motivo, sugestao: proximoHorarioReuniao(c.env, agora, quando_ms) }; }
+  }
   if (r.acao === "marcar") {
     if (!quando_ms && !r.quando) return null;
     if (existentes.some(x => quando_ms && x.quando_ms === quando_ms)) return existentes.find(x => x.quando_ms === quando_ms); // já marcada
     const ins = await c.db.prepare("INSERT INTO d30_reunioes(pessoa_id,telefone,nome,caso_id,quando_ms,quando_txt,assunto,status,criado_ms,atualizado_ms) VALUES(?,?,?,?,?,?,?,'MARCADA',?,?) RETURNING id")
       .bind(pessoa?.id || null, t, dados.nome, caso?.casoId || null, quando_ms, dados.quando_txt, dados.assunto, agora, agora).first();
     await alertarEquipe(c, textoReuniao("📅 REUNIÃO ONLINE MARCADA", dados) + "\nCombinado pela DENIA no WhatsApp. Envie o link da reunião ao cliente.", "reuniao:" + ins?.id, caso?.casoId);
-    return ins;
+    return { ...ins, quando_ms, nova: true };
   }
   if (!atual) return null;
   if (r.acao === "cancelar") {
@@ -2090,7 +2205,16 @@ async function registrarReuniao(c, { tel, pessoa, caso, r, existentes = [] }) {
   await c.db.prepare("UPDATE d30_reunioes SET quando_ms=?, quando_txt=?, assunto=COALESCE(NULLIF(?,''),assunto), lembrado_ms=NULL, atualizado_ms=? WHERE id=?").bind(quando_ms, dados.quando_txt, r.assunto || "", agora, atual.id).run();
   const antes = atual.quando_ms ? dataHoraSP(atual.quando_ms) : atual.quando_txt || "?";
   await alertarEquipe(c, textoReuniao(`🔁 REUNIÃO ONLINE REMARCADA (antes: ${antes})`, dados) + "\nEnvie o link atualizado ao cliente, se mudou.", `reuniao-remarcada:${atual.id}:${quando_ms || r.quando}`, caso?.casoId);
-  return atual;
+  return { ...atual, quando_ms, nova: true };
+}
+// O texto da IA cita o dia da semana e a data certos da reunião (sem citar outro dia ou outra data)?
+function confereDataNoTexto(texto, ms) {
+  const n = norm(texto), dia = diaSemanaSP(ms), data = dataSP(ms);
+  const citados = ["domingo", "segunda", "terca", "quarta", "quinta", "sexta", "sabado"].map((w, i) => new RegExp(`\\b${w}\\b`).test(n) ? i : -1).filter(i => i >= 0);
+  if (citados.some(i => i !== dia)) return false;
+  const datas = [...n.matchAll(/\b(\d{1,2})\/(\d{1,2})\b/g)].map(m => `${m[2].padStart(2, "0")}-${m[1].padStart(2, "0")}`);
+  if (datas.some(d => d !== data.slice(5))) return false;
+  return citados.length > 0 || datas.length > 0;
 }
 async function lembrarReunioes(c) {
   const agora = c.agora();
