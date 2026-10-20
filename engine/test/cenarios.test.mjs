@@ -1071,3 +1071,75 @@ test("V31.8 — guia: pedir atendente pausa a DENIA e avisa a equipe; página de
   const st = await (await a.http("/status")).json().catch(() => ({}));
   if (st.modo) assert.equal(st.modo, "guia");
 });
+
+test("Profissional com dois atendimentos: segue a conversa em andamento, encaminha links ao cliente certo e confirma", async () => {
+  const a = await criarAmbiente();
+  await iniciarConsultaChaveiro(a, CLI);
+  a.llmCliente = () => decisao({ resposta: "Perfeito, vou consultar o profissional.", intencao: "NOVO_PEDIDO", quer_orcamento_ou_atendimento: true, pronto_para_profissional: true, fatos: { servico: "chaveiro", problema: "cópia de 3 chaves", bairro: "Tijuca", nome: "Bia" }, resumo_caso: "Bia quer 3 cópias da chave do portão." });
+  await a.cliente(CLI2, "Oi, sou a Bia. Preciso de 3 cópias de chave, na Tijuca", { nome: "Bia" });
+  assert.equal(a.para(CHAVEIRO).length, 2, "duas consultas abertas com o mesmo profissional");
+  // Ele diz de quem está falando; a IA dele lê o que a cliente escreveu e o resumo.
+  let entrada = "";
+  a.llmPrestador = e => { entrada = e; return prest({ tipo: "PEDE_CONTEXTO" }); };
+  await a.cliente(CHAVEIRO, "o da Bia na Tijuca, do que se trata?");
+  assert.match(entrada, /O QUE O CLIENTE ESCREVEU[\s\S]*3 cópias de chave, na Tijuca/);
+  assert.match(entrada, /RESUMO DO ATENDIMENTO: Bia quer 3 cópias/);
+  assert.match(a.ultimoPara(CHAVEIRO), /Tijuca[\s\S]*Resumo: Bia quer 3 cópias/);
+  // Mesma pergunta de novo, sem citar ninguém: segue a conversa (Bia) e não repete a mesma mensagem.
+  const n = a.para(CHAVEIRO).length;
+  await a.cliente(CHAVEIRO, "não entendi, do que se trata?");
+  assert.equal(a.para(CHAVEIRO).length, n, "não manda a mesma mensagem duas vezes");
+  assert.ok(a.telegram.some(t => /ia repetir/.test(t)));
+  // Manda links e pede para encaminhar: vão inteiros para a Bia (e não para o outro cliente).
+  const L1 = "https://www.airbnb.com.br/rooms/12345678901234?check_in=2027-02-12", L2 = "https://chaves.test/opcoes.pdf";
+  a.llmPrestador = () => prest({ tipo: "ENCAMINHAR", mensagem_para_cliente: "Oi Bia! O profissional mandou as opções." });
+  const antesCli = a.para(CLI).length;
+  await a.cliente(CHAVEIRO, `Opções: ${L1} e ${L2} . Encaminha pra ela por favor`);
+  const enviada = a.ultimoPara(CLI2);
+  assert.ok(enviada.includes(L1) && enviada.includes(L2), "links inteiros: " + enviada);
+  assert.equal(a.para(CLI).length, antesCli, "o outro cliente não recebe nada");
+  assert.match(a.ultimoPara(CHAVEIRO), /Pronto, enviei para Bia ✅ \(2 links\)/);
+});
+
+test("Profissional sem pista de qual atendimento: pergunta uma vez só e depois chama a equipe", async () => {
+  const a = await criarAmbiente();
+  await iniciarConsultaChaveiro(a, CLI);
+  a.llmCliente = () => decisao({ resposta: "Perfeito, vou consultar o profissional.", intencao: "NOVO_PEDIDO", quer_orcamento_ou_atendimento: true, pronto_para_profissional: true, fatos: { servico: "chaveiro", problema: "abrir porta", bairro: "Tijuca" } });
+  await a.cliente(CLI2, "Preciso abrir a porta, Tijuca");
+  a.avancar(19 * 3600000); // a conversa com ele esfriou (dia seguinte, em horário comercial)
+  a.llmPrestador = () => prest({ tipo: "COMENTARIO" });
+  await a.cliente(CHAVEIRO, "consigo amanhã");
+  assert.match(a.ultimoPara(CHAVEIRO), /só pra eu não confundir/);
+  const n = a.para(CHAVEIRO).length;
+  await a.cliente(CHAVEIRO, "isso mesmo");
+  assert.equal(a.para(CHAVEIRO).length, n, "não repete a pergunta");
+  assert.ok(a.telegram.some(t => /não deu para saber de qual atendimento/.test(t)));
+});
+
+test("Reunião online: a DENIA marca, avisa o Telegram da Central, não duplica, remarca e lembra 1 h antes", async () => {
+  const a = await criarAmbiente({ inicio: "2026-10-20T10:00:00-03:00" });
+  a.llmCliente = () => decisao({ resposta: "Que dia e horário ficam bons pra reunião?" });
+  await a.cliente(CLI, "Quero marcar uma reunião online", { nome: "Marcos" });
+  let reuniaoEntrada = "";
+  a.llmCliente = e => { reuniaoEntrada = e; return decisao({ resposta: "Prontinho, Marcos! Ficou confirmada para quinta às 15h. A equipe te envia o link.", reuniao: { acao: "marcar", quando: "2026-10-22 15:00", assunto: "conhecer os serviços da Central" } }); };
+  await a.cliente(CLI, "quinta às 15h");
+  assert.match(reuniaoEntrada, /DATA E HORA ATUAL: [\s\S]*terça-feira/);
+  assert.match(a.ultimoPara(CLI), /confirmada para quinta às 15h/, "a frase não é cortada pela trava de 'agendado'");
+  const avisos = a.telegram.filter(t => /REUNIÃO ONLINE MARCADA/.test(t));
+  assert.equal(avisos.length, 1);
+  assert.match(avisos[0], /Cliente: Marcos \(5521911112222\)[\s\S]*Quando: qui\.?, 22\/10,? 15:00[\s\S]*Assunto: conhecer os serviços/);
+  // Repetiu o mesmo horário: não duplica e a IA vê o que já está marcado.
+  await a.cliente(CLI, "confirmado então");
+  assert.equal(a.telegram.filter(t => /REUNIÃO ONLINE MARCADA/.test(t)).length, 1);
+  assert.match(reuniaoEntrada, /REUNIÕES MARCADAS COM ESTE CLIENTE: [^(]*conhecer os serviços/);
+  // Remarcou.
+  a.llmCliente = () => decisao({ resposta: "Sem problema, mudei para sexta às 10h.", reuniao: { acao: "remarcar", quando: "2026-10-23 10:00" } });
+  await a.cliente(CLI, "pode ser sexta às 10h?");
+  assert.ok(a.telegram.some(t => /REMARCADA \(antes: 22\/10\/2026,? 15:00\)[\s\S]*sex\.?, 23\/10,? 10:00/.test(t)), a.telegram.join("\n---\n"));
+  // Lembrete ~1 h antes, uma vez só.
+  a.agora = Date.parse("2026-10-23T09:05:00-03:00");
+  await a.cron();
+  assert.equal(a.telegram.filter(t => /LEMBRETE: reunião online daqui a 55 min/.test(t)).length, 1);
+  a.avancar(5 * 60000); await a.cron();
+  assert.equal(a.telegram.filter(t => /LEMBRETE/.test(t)).length, 1);
+});

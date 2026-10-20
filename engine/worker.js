@@ -36,8 +36,8 @@
 //       relatório diário. Nunca inicia conversa nova por conta própria.
 // ============================================================================
 
-const VERSAO = "31.9.0";
-const SCHEMA_VERSAO = "31.9.0"; // mude sempre que acrescentar tabela ou índice (senão o banco de produção não recebe)
+const VERSAO = "31.10.0";
+const SCHEMA_VERSAO = "31.10.0"; // mude sempre que acrescentar tabela ou índice (senão o banco de produção não recebe)
 const EMPRESA_ID = 1;
 const PHONE_ID_PADRAO = "473474732510163";
 const GRAPH = "v25.0";
@@ -342,6 +342,8 @@ const SQL_SCHEMA = [
   `CREATE INDEX IF NOT EXISTS d30_midias_caso ON d30_midias(caso_id)`,
   `CREATE TABLE IF NOT EXISTS d30_agendados (id INTEGER PRIMARY KEY AUTOINCREMENT, consulta_id INTEGER, caso_id INTEGER, para TEXT NOT NULL, texto TEXT NOT NULL, inicial INTEGER DEFAULT 0, status TEXT NOT NULL DEFAULT 'PENDENTE', criado_ms INTEGER NOT NULL)`,
   `CREATE INDEX IF NOT EXISTS d30_agendados_status ON d30_agendados(status, criado_ms)`,
+  `CREATE TABLE IF NOT EXISTS d30_reunioes (id INTEGER PRIMARY KEY AUTOINCREMENT, pessoa_id INTEGER, telefone TEXT NOT NULL, nome TEXT, caso_id INTEGER, quando_ms INTEGER, quando_txt TEXT, assunto TEXT, status TEXT NOT NULL DEFAULT 'MARCADA', lembrado_ms INTEGER, criado_ms INTEGER NOT NULL, atualizado_ms INTEGER NOT NULL)`,
+  `CREATE INDEX IF NOT EXISTS d30_reunioes_quando ON d30_reunioes(status, quando_ms)`,
   `CREATE TABLE IF NOT EXISTS d30_treinamento (versao INTEGER PRIMARY KEY AUTOINCREMENT, json TEXT NOT NULL, autor TEXT, criado_ms INTEGER NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS d30_eventos (id INTEGER PRIMARY KEY AUTOINCREMENT, caso_id INTEGER, tipo TEXT NOT NULL, descricao TEXT, dados TEXT, criado_ms INTEGER NOT NULL)`,
   `CREATE INDEX IF NOT EXISTS d30_eventos_ms ON d30_eventos(criado_ms)`,
@@ -1729,7 +1731,7 @@ function fraseProibida(frase, g) {
   if (/\b(cpf|rg|cnpj)\b/.test(n) || /\d{3}\.\d{3}\.\d{3}-\d{2}/.test(frase)) return "documento pessoal";
   if (/(\+?55[\s-]?)?\(?\d{2}\)?[\s-]?9?\d{4}[\s-]?\d{4}\b/.test(frase)) return "telefone";
   if (/\b(cancelad[oa]s?|cancelamos|cancelei)\b/.test(n) && g.etapa !== "CANCELADO" && !/\?/.test(frase)) return "cancelamento não confirmado";
-  if (/\b(agendad[oa]|esta confirmad[oa]|ficou confirmad[oa]|confirmad[oa] para|confirmamos (o|a|seu|sua)|confirmei)\b/.test(n) && g.etapa !== "AGENDADO" && !/\?/.test(frase)) return "agendamento não confirmado";
+  if (/\b(agendad[oa]|esta confirmad[oa]|ficou confirmad[oa]|confirmad[oa] para|confirmamos (o|a|seu|sua)|confirmei)\b/.test(n) && g.etapa !== "AGENDADO" && !g.reuniao && !/\?/.test(frase)) return "agendamento não confirmado";
   if (/\b(enviei|enviamos|encaminhei|encaminhamos|consultei|consultamos|repassei|repassamos|ja (falei|falamos|avisei|avisamos|contatei|contatamos))\b/.test(n) && !ETAPAS_COM_PRESTADOR.has(g.etapa)) return "ação não executada";
   if (/\b(vou|vamos|irei|iremos|ja vou)\b.{0,40}\b(consultar|verificar|falar|contatar|chamar|acionar|enviar|encaminhar|confirmar|perguntar)\b.{0,40}\b(profissional|tecnico|prestador)/.test(n) && !ETAPAS_COM_PRESTADOR.has(g.etapa)) return "promessa sem ação";
   if (/\b(o profissional|o tecnico|o prestador|ele|ela)\s+(faz|realiza|atende|aceitou|confirmou|pode ir|vai ate|consegue)\b/.test(n) && !ETAPAS_COM_RESPOSTA_PRESTADOR.has(g.etapa)) return "afirmação sobre prestador";
@@ -1796,7 +1798,7 @@ BREVIDADE E JEITO HUMANO: escreva como as atendentes escrevem no WhatsApp (veja 
 NÚMEROS DE CASO são internos: nunca escreva "caso 210", "#210" ou qualquer número de caso para o cliente; fale do serviço ("a instalação do chuveiro", "o conserto da geladeira").
 
 SEU PAPEL: você interpreta as mensagens e redige a resposta. Você NÃO executa ações. O sistema decide e executa (consultar profissional, enviar orçamento, agendar) com base nos fatos que você extrai. Portanto:
-- Nunca diga que enviou, consultou, falou, avisou, repassou, agendou, confirmou ou cancelou algo, a menos que o ESTADO DO CASO diga que isso já aconteceu.
+- Nunca diga que enviou, consultou, falou, avisou, repassou, agendou, confirmou ou cancelou algo, a menos que o ESTADO DO CASO diga que isso já aconteceu (exceção: a REUNIÃO ONLINE que você registrar em "reuniao", explicada abaixo).
 - Nunca invente preço, prazo, disponibilidade, diagnóstico, cobertura de região ou que um profissional faz certo serviço. Valores: somente os listados em VALORES AUTORIZADOS.
 - Nunca peça ao cliente para escolher profissional. Nunca informe telefone, CPF ou dados de profissionais ou de outras pessoas. Não peça CPF.
 - Bairro NÃO define preço: nunca diga que precisa do bairro para orçamento. Não pergunte bairro por iniciativa própria; o sistema e o profissional pedem quando for necessário. Nunca repita uma pergunta que você já fez nesta conversa, mesmo que o cliente não tenha respondido: siga em frente com o que ele disse.
@@ -1822,10 +1824,12 @@ A ARTE DE ATENDER (o padrão das melhores atendentes):
 - RESUMO DE LIGAÇÃO no HISTÓRICO é o que a equipe conversou por telefone com esta pessoa: vale como informação confirmada e mais recente; use naturalmente, sem dizer "conforme registro".
 - Você atende somente o que é da Central (serviços, pedidos, agendamentos, dúvidas do atendimento). Não fale de marketing, redes sociais, Google ou assuntos fora do atendimento; se perguntarem, diga com gentileza que por aqui você cuida do atendimento.
 
+REUNIÃO ONLINE (ou ligação/videochamada com a equipe): se o TREINAMENTO permite marcar e o cliente CONFIRMOU um dia e horário, preencha "reuniao" com {"acao":"marcar","quando":"AAAA-MM-DD HH:MM","assunto":"do que é a reunião, em poucas palavras"} (horário de Brasília; use a DATA E HORA ATUAL para entender "amanhã", "terça" etc.). Se ele mudar o horário de uma reunião já marcada, "acao":"remarcar" com o novo horário; se desmarcar, "acao":"cancelar". O sistema registra e avisa a equipe no Telegram da Central; aí você pode dizer que ficou marcado e que a equipe envia o link. Nunca invente link. Enquanto o horário estiver em negociação, deixe "reuniao" vazio. Não repita uma reunião que já está em REUNIÕES MARCADAS.
+
 COMO O SISTEMA AGE: quando o serviço está claro e o cliente quer orçamento, visita ou atendimento, o sistema consulta sozinho o profissional da categoria e avisa o cliente. Para isso basta preencher os fatos, quer_orcamento_ou_atendimento=true e pronto_para_profissional=true. Não é preciso bairro nem endereço para consultar.
 
 Responda SOMENTE com um objeto JSON neste formato:
-{"resposta":"","intencao":"CONVERSA","novo_pedido":false,"quer_orcamento_ou_atendimento":false,"pronto_para_profissional":false,"fatos":{"servico":"","categoria":"","problema":"","marca":"","modelo":"","bairro":"","cidade":"","endereco":"","preferencia_horario":"","nome":""},"categoria_confianca":"BAIXA","resposta_para_profissional":"","descricao_anexos":"","comprovante_pagamento":false,"precisa_humano":false,"motivo_humano":"","resumo_caso":""}
+{"resposta":"","intencao":"CONVERSA","novo_pedido":false,"quer_orcamento_ou_atendimento":false,"pronto_para_profissional":false,"fatos":{"servico":"","categoria":"","problema":"","marca":"","modelo":"","bairro":"","cidade":"","endereco":"","preferencia_horario":"","nome":""},"categoria_confianca":"BAIXA","resposta_para_profissional":"","descricao_anexos":"","comprovante_pagamento":false,"precisa_humano":false,"motivo_humano":"","resumo_caso":"","reuniao":{"acao":"","quando":"","assunto":""}}
 
 intencao: CONVERSA | NOVO_PEDIDO | ACEITA_PROPOSTA | RECUSA_PROPOSTA | PEDE_OUTRO_HORARIO | PEDE_ALTERACAO | PERGUNTA_PARA_PROFISSIONAL | PEDE_CANCELAMENTO | PERGUNTA_STATUS | AGRADECIMENTO | FALAR_COM_HUMANO.
 - ACEITA_PROPOSTA/RECUSA_PROPOSTA/PEDE_OUTRO_HORARIO: só quando o cliente responde à proposta enviada (etapa AGUARDANDO_CLIENTE).
@@ -1839,7 +1843,7 @@ intencao: CONVERSA | NOVO_PEDIDO | ACEITA_PROPOSTA | RECUSA_PROPOSTA | PEDE_OUTR
 - descricao_anexos: descrição objetiva das imagens/documentos anexados (leia textos visíveis). Se for comprovante de pagamento, comprovante_pagamento=true (isso não confirma o pagamento).
 - resumo_caso: 1 ou 2 frases atualizadas sobre o caso ativo.`;
 
-function montarEntradaCliente({ agora = Date.now(), treinamento, caso, consulta, autorizados, recentes, hist, novas, temAnexos, pessoa, perfil = "", estilo = "", ficha = "", memoria = "" }) {
+function montarEntradaCliente({ agora = Date.now(), treinamento, caso, consulta, autorizados, recentes, hist, novas, temAnexos, pessoa, perfil = "", estilo = "", ficha = "", memoria = "", reunioes = "" }) {
   return `TREINAMENTO DA EMPRESA (siga sempre):
 ${formatarTreinamento(treinamento.dados)}
 
@@ -1858,7 +1862,8 @@ ${ficha || "(não disponível)"}
 CATEGORIAS:
 ${Object.entries(CATEGORIAS).map(([k, v]) => `${k}: ${v.rotulo}`).join("\n")}
 
-DATA E HORA ATUAL: ${dataHoraSP(agora)}
+DATA E HORA ATUAL: ${dataHoraSP(agora)} (${new Intl.DateTimeFormat("pt-BR", { timeZone: TZ, weekday: "long" }).format(new Date(agora))})
+REUNIÕES MARCADAS COM ESTE CLIENTE: ${reunioes || "(nenhuma)"}
 NOME DO CLIENTE NO CADASTRO: ${pessoa?.nome || "não informado"}
 
 ESTADO DO CASO ATIVO${caso ? ` #${caso.casoId}` : ""}:
@@ -1896,7 +1901,9 @@ tipo:
 - PEDE_CONTEXTO: não sabe de qual cliente/serviço se trata ("que cliente?", "verificar o quê?").
 - CONFIRMA_AGENDAMENTO: confirma o atendimento/dia/horário combinado.
 - RESPONDE: responde a um PEDIDO PENDENTE ou PERGUNTA DO CLIENTE (ex.: "sim, o material está incluso"), ou dá um aviso claro para o cliente sobre o atendimento (atraso, horário de chegada). Escreva mensagem_para_cliente em nome da central, educada, sem gírias, sem dados pessoais, sem inventar.
+- ENCAMINHAR: ele manda algo PARA O CLIENTE (links, opções, fotos, informações, explicação) ou pede para você encaminhar/mandar/passar ao cliente ("manda pra ela", "encaminha esses links"). Escreva mensagem_para_cliente em nome da central, curta e simpática, com TODO o conteúdo que ele quer que chegue ao cliente: copie os links exatamente como ele escreveu, sem resumir nem cortar. Se ele mandou o conteúdo em mensagens anteriores (veja o HISTÓRICO) e agora só pede para encaminhar, use esse conteúdo. Valor de orçamento do serviço do profissional NÃO é ENCAMINHAR (use ACEITA).
 - COMENTARIO: qualquer outra coisa: comentário solto, exclamação, mensagem ambígua (ex.: "Eita, Niterói"). NA DÚVIDA, use COMENTARIO.
+LEIA O CONTEXTO: o HISTÓRICO, a ÚLTIMA MENSAGEM QUE ENVIAMOS e O QUE O CLIENTE ESCREVEU mostram do que se trata. Uma pergunta como "do que se trata?" ou "qual cliente?" é PEDE_CONTEXTO. Nunca trate como novidade algo que ele já respondeu.
 Campos:
 - valor_centavos: SOMENTE se ele escreveu um valor em dinheiro NESTA mensagem (R$ 400 = 40000). Senão 0.
 - valor_e_final: "SIM" se ele disse que o valor é o final para o cliente / já inclui a central; "NAO" se disse que é só a parte dele; senão "NAO_INFORMADO".
@@ -1919,7 +1926,9 @@ function normalizarDecisaoCliente(o) {
     novo_pedido: o?.novo_pedido === true, quer: o?.quer_orcamento_ou_atendimento === true, pronto: o?.pronto_para_profissional === true,
     resposta_para_profissional: txt(o?.resposta_para_profissional, 600), descricao_anexos: txt(o?.descricao_anexos, 1500),
     comprovante: o?.comprovante_pagamento === true, precisa_humano: o?.precisa_humano === true, motivo_humano: txt(o?.motivo_humano, 300),
-    resumo: txt(o?.resumo_caso, 600)
+    resumo: txt(o?.resumo_caso, 600),
+    reuniao: o?.reuniao && typeof o.reuniao === "object" && ["marcar", "remarcar", "cancelar"].includes(String(o.reuniao.acao || "").toLowerCase())
+      ? { acao: String(o.reuniao.acao).toLowerCase(), quando: txt(o.reuniao.quando, 40), assunto: txt(o.reuniao.assunto, 200) } : null
   };
 }
 
@@ -1979,11 +1988,11 @@ async function processarCliente(c, tel, id, msgs, { apenasRegistrar, chaveLote, 
   let autorizados = await autorizadosParaCaso(c, consulta);
   const treinamento = await carregarTreinamento(c);
   const novas = (atrasoMs ? `(ATENÇÃO: estas mensagens chegaram há cerca de ${Math.max(1, Math.round(atrasoMs / 60000))} min e ainda não tinham sido respondidas. Comece com um pedido de desculpas breve e natural pela demora.)\n` : "") + msgs.map(m => `- ${m.conteudo || "(vazio)"}`).join("\n");
-  const [perfil, estilo, ficha, memoria] = await Promise.all([perfilCliente(c, pessoa), estiloDaEquipe(c), fichaCRM(c, tel), memoriaDoCliente(c, pessoa)]);
+  const [perfil, estilo, ficha, memoria, reunioes] = await Promise.all([perfilCliente(c, pessoa), estiloDaEquipe(c), fichaCRM(c, tel), memoriaDoCliente(c, pessoa), reunioesDoCliente(c, tel)]);
 
   let d;
   try {
-    const bruto = await openaiJSON(c, INSTRUCOES_CLIENTE, montarEntradaCliente({ agora: c.agora(), treinamento, caso, consulta, autorizados, recentes, hist: formatarHistorico(hist, "CLIENTE", novasIds), novas, temAnexos: anexos.length > 0, pessoa, perfil, estilo, ficha, memoria }), anexos);
+    const bruto = await openaiJSON(c, INSTRUCOES_CLIENTE, montarEntradaCliente({ agora: c.agora(), treinamento, caso, consulta, autorizados, recentes, hist: formatarHistorico(hist, "CLIENTE", novasIds), novas, temAnexos: anexos.length > 0, pessoa, perfil, estilo, ficha, memoria, reunioes: reunioes.map(r => `${r.quando_ms ? dataHoraSP(r.quando_ms) : r.quando_txt || "?"} — ${r.assunto || "reunião"}`).join("; ") }), anexos);
     d = normalizarDecisaoCliente(bruto);
     capturarRespostaCurta(d, msgs, hist);
   } catch (e) {
@@ -2025,11 +2034,14 @@ async function processarCliente(c, tel, id, msgs, { apenasRegistrar, chaveLote, 
   }
   if (d.comprovante) await alertarEquipe(c, `Comprovante de pagamento recebido de ${pessoa.nome || tel}${caso ? ` (caso #${caso.casoId})` : ""}. Conferir.`, "comprovante:" + chaveLote, caso?.casoId);
 
+  // Reunião online combinada na conversa: registra e avisa a equipe no Telegram da Central.
+  const reuniao = d.reuniao ? await registrarReuniao(c, { tel, pessoa, caso, r: d.reuniao, existentes: reunioes }).catch(e => { console.error("reunião", e?.message); return null; }) : null;
+
   // 4) Decisão determinística.
   const acao = await decidirCliente(c, { tel, pessoa, caso, consulta, d, chaveLote });
   let texto = acao.texto;
   if (!acao.fixa) {
-    const g = { etapa: caso?.etapa || "SEM_CASO", autorizados, modo: CATEGORIAS[caso?.fatos?.categoria]?.modo || "", regiaoConfirmada: caso?.fatos?.regiao_confirmada === "SIM", fatos: caso && !ETAPAS_ENCERRADAS.has(caso.etapa) ? caso.fatos : null, nome: pessoa.nome, perguntadas: perguntasRecentes(hist) };
+    const g = { reuniao: Boolean(reuniao), etapa: caso?.etapa || "SEM_CASO", autorizados, modo: CATEGORIAS[caso?.fatos?.categoria]?.modo || "", regiaoConfirmada: caso?.fatos?.regiao_confirmada === "SIM", fatos: caso && !ETAPAS_ENCERRADAS.has(caso.etapa) ? caso.fatos : null, nome: pessoa.nome, perguntadas: perguntasRecentes(hist) };
     const r = guardarResposta(d.resposta, g);
     if (r.removidas.length) await evento(c, caso?.casoId, "RESPOSTA_CORRIGIDA", r.removidas.join(" | "));
     texto = r.texto || respostaPadraoEtapa(caso?.etapa);
@@ -2038,6 +2050,56 @@ async function processarCliente(c, tel, id, msgs, { apenasRegistrar, chaveLote, 
   const ultimaDenia = [...hist].reverse().find(m => String(m.direcao).toUpperCase() === "SAIDA" && !["HUMANO", "LIGACAO"].includes(String(m.origem).toUpperCase()));
   if (!acao.fixa && ultimaDenia && norm(ultimaDenia.conteudo) === norm(texto)) return; // não repetir a mesma frase
   await enviarAoCliente(c, { tel, pessoaId: pessoa.id, casoId: caso?.casoId, texto, chave: chaveLote });
+}
+
+// ----- Reuniões online: a DENIA combina com o cliente, a equipe é avisada no Telegram da Central
+// (com cliente, dia, hora e assunto) e recebe um lembrete cerca de 1 hora antes.
+async function reunioesDoCliente(c, tel) {
+  const r = await c.db.prepare("SELECT * FROM d30_reunioes WHERE telefone=? AND status='MARCADA' AND (quando_ms IS NULL OR quando_ms > ?) ORDER BY id DESC LIMIT 5").bind(digitos(tel), c.agora() - 86400000).all().catch(() => null);
+  return r?.results || [];
+}
+function horarioSP(q) {
+  const m = String(q || "").match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}):(\d{2})/);
+  const ms = m ? Date.parse(`${m[1]}T${m[2]}:${m[3]}:00-03:00`) : NaN;
+  return Number.isFinite(ms) ? ms : null;
+}
+function textoReuniao(titulo, { nome, tel, quando_ms, quando_txt, assunto }) {
+  return [titulo, `Cliente: ${nome || "-"} (${digitos(tel)})`, `Quando: ${quando_ms ? new Intl.DateTimeFormat("pt-BR", { timeZone: TZ, weekday: "short", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(quando_ms)) : quando_txt || "a confirmar"}`,
+    `Assunto: ${assunto || "-"}`].join("\n");
+}
+async function registrarReuniao(c, { tel, pessoa, caso, r, existentes = [] }) {
+  const t = digitos(tel), quando_ms = horarioSP(r.quando), agora = c.agora();
+  const atual = existentes[0] || null;
+  const dados = { nome: pessoa?.nome || "", tel: t, quando_ms, quando_txt: r.quando || null, assunto: r.assunto || atual?.assunto || "" };
+  if (r.acao === "marcar") {
+    if (!quando_ms && !r.quando) return null;
+    if (existentes.some(x => quando_ms && x.quando_ms === quando_ms)) return existentes.find(x => x.quando_ms === quando_ms); // já marcada
+    const ins = await c.db.prepare("INSERT INTO d30_reunioes(pessoa_id,telefone,nome,caso_id,quando_ms,quando_txt,assunto,status,criado_ms,atualizado_ms) VALUES(?,?,?,?,?,?,?,'MARCADA',?,?) RETURNING id")
+      .bind(pessoa?.id || null, t, dados.nome, caso?.casoId || null, quando_ms, dados.quando_txt, dados.assunto, agora, agora).first();
+    await alertarEquipe(c, textoReuniao("📅 REUNIÃO ONLINE MARCADA", dados) + "\nCombinado pela DENIA no WhatsApp. Envie o link da reunião ao cliente.", "reuniao:" + ins?.id, caso?.casoId);
+    return ins;
+  }
+  if (!atual) return null;
+  if (r.acao === "cancelar") {
+    await c.db.prepare("UPDATE d30_reunioes SET status='CANCELADA', atualizado_ms=? WHERE id=?").bind(agora, atual.id).run();
+    await alertarEquipe(c, textoReuniao("❌ REUNIÃO ONLINE CANCELADA PELO CLIENTE", { ...dados, quando_ms: atual.quando_ms, quando_txt: atual.quando_txt }), "reuniao-cancelada:" + atual.id, caso?.casoId);
+    return atual;
+  }
+  if (!quando_ms && !r.quando) return null;
+  if (quando_ms && quando_ms === atual.quando_ms) return atual;
+  await c.db.prepare("UPDATE d30_reunioes SET quando_ms=?, quando_txt=?, assunto=COALESCE(NULLIF(?,''),assunto), lembrado_ms=NULL, atualizado_ms=? WHERE id=?").bind(quando_ms, dados.quando_txt, r.assunto || "", agora, atual.id).run();
+  const antes = atual.quando_ms ? dataHoraSP(atual.quando_ms) : atual.quando_txt || "?";
+  await alertarEquipe(c, textoReuniao(`🔁 REUNIÃO ONLINE REMARCADA (antes: ${antes})`, dados) + "\nEnvie o link atualizado ao cliente, se mudou.", `reuniao-remarcada:${atual.id}:${quando_ms || r.quando}`, caso?.casoId);
+  return atual;
+}
+async function lembrarReunioes(c) {
+  const agora = c.agora();
+  const r = await c.db.prepare("SELECT * FROM d30_reunioes WHERE status='MARCADA' AND lembrado_ms IS NULL AND quando_ms BETWEEN ? AND ? LIMIT 10").bind(agora, agora + 65 * 60000).all().catch(() => null);
+  for (const x of r?.results || []) {
+    await c.db.prepare("UPDATE d30_reunioes SET lembrado_ms=? WHERE id=?").bind(agora, x.id).run();
+    if (x.atualizado_ms > x.quando_ms - 70 * 60000) continue; // marcada há pouco: o aviso acabou de sair
+    await alertarEquipe(c, textoReuniao(`⏰ LEMBRETE: reunião online daqui a ${Math.max(1, Math.round((x.quando_ms - agora) / 60000))} min`, { nome: x.nome, tel: x.telefone, quando_ms: x.quando_ms, assunto: x.assunto }) + "\nO cliente já recebeu o link?", "reuniao-lembrete:" + x.id, x.caso_id);
+  }
 }
 
 async function decidirCliente(c, { tel, pessoa, caso, consulta, d, chaveLote }) {
@@ -2233,6 +2295,7 @@ async function humanizarCasos(c, texto) {
 function resumoParaPrestador(caso, consulta) {
   const f = caso.fatos || {};
   return [`É o caso ${caso.casoId}: cliente${f.bairro ? ` em ${f.bairro}` : ""} precisando de ${String(f.problema || f.servico || "-").replace(/[.\s]+$/, "")}${f.marca || f.modelo ? ` (${[f.marca, f.modelo].filter(Boolean).join(" ")})` : ""}.`,
+    caso.resumo && norm(caso.resumo) !== norm(f.problema || "") ? `Resumo: ${txt(caso.resumo, 400)}` : "",
     consulta.status === "ENVIADA" && !["AGENDADO", "EM_ANDAMENTO", "CONCLUIDO"].includes(caso.etapa) ? "Você consegue pegar? Se sim, me passa o valor e quando pode." : ["AGENDADO", "EM_ANDAMENTO"].includes(caso.etapa) && consulta.disponibilidade ? `Está agendado para ${consulta.disponibilidade}.` : ""].filter(Boolean).join("\n");
 }
 
@@ -2251,18 +2314,61 @@ async function consultaPeloContexto(c, abertas, msgs, textoTodo, pessoaPrest) {
       for (const x of ult?.results || []) citados.push(x.conteudo || "");
     }
     const alvo = norm([textoTodo, ...citados].join(" "));
-    const pontuar = (v, peso) => { let p = 0; for (const w of new Set(norm(v).split(/[^a-z0-9]+/).filter(x => x.length >= 4))) if (alvo.includes(w)) p += peso; return p; };
+    // Nomes curtos ("Bia", "Ana") também contam, como palavra inteira.
+    const pontuar = (v, peso, min = 4) => { let p = 0; for (const w of new Set(norm(v).split(/[^a-z0-9]+/).filter(x => x.length >= min))) if (min < 4 ? new RegExp(`\\b${w}\\b`).test(alvo) : alvo.includes(w)) p += peso; return p; };
     let melhor = null, pontos = 0, segundo = 0;
     for (const k of abertas.slice(0, 6)) {
       const caso = await carregarCasoPorId(c, k.caso_id);
       if (!caso) continue;
       const cli = caso.clienteId ? await c.db.prepare("SELECT nome FROM pessoas WHERE id=?").bind(caso.clienteId).first().catch(() => null) : null;
       const f = caso.fatos || {};
-      const p = pontuar(cli?.nome, 3) + pontuar(f.bairro, 2) + pontuar(f.endereco, 2) + pontuar(f.servico, 1) + pontuar(f.problema, 1) + pontuar([f.marca, f.modelo].join(" "), 1);
+      const p = pontuar(cli?.nome, 3, 3) + pontuar(f.bairro, 2) + pontuar(f.endereco, 2) + pontuar(f.servico, 1) + pontuar(f.problema, 1) + pontuar([f.marca, f.modelo].join(" "), 1);
       if (p > pontos) { segundo = pontos; pontos = p; melhor = k; } else if (p > segundo) segundo = p;
     }
     return pontos >= 3 && pontos >= segundo + 2 ? melhor : null;
   } catch (e) { console.warn("contexto do profissional", e?.message); return null; }
+}
+
+// Últimas mensagens do cliente neste atendimento (para o profissional entender do que se trata).
+async function palavrasDoCliente(c, caso) {
+  if (!caso?.clienteId) return "";
+  const r = await c.db.prepare("SELECT conteudo FROM mensagens WHERE empresa_id=? AND pessoa_id=? AND caso_id=? AND UPPER(direcao)='ENTRADA' ORDER BY id DESC LIMIT 8").bind(EMPRESA_ID, caso.clienteId, caso.casoId).all().catch(() => null);
+  return (r?.results || []).reverse().map(m => "- " + txt(m.conteudo, 300)).join("\n");
+}
+// Conversa em andamento: o atendimento de que o profissional estava falando (a última mensagem DELE ligada
+// a um caso aberto), desde que nada de outro atendimento tenha sido trocado com ele depois e que a conversa
+// esteja ativa (a DENIA falou com ele nas últimas 12 h). Duas consultas novas seguidas não contam: aí pergunta.
+async function consultaDaConversa(c, abertas, pessoa) {
+  if (!pessoa?.id) return null;
+  const vs = variantesTel(pessoa.telefone || "");
+  const quente = vs.length ? await c.db.prepare(`SELECT 1 ok FROM d30_saidas WHERE telefone IN (${vs.map(() => "?").join(",")}) AND criado_ms > ? LIMIT 1`).bind(...vs, c.agora() - 12 * 3600000).first().catch(() => null) : null;
+  if (!quente) return null;
+  // Acabamos de perguntar "de qual atendimento?" (mensagem sem caso): a resposta dele não decide sozinha.
+  const ultima = await c.db.prepare("SELECT caso_id, direcao FROM mensagens WHERE empresa_id=? AND pessoa_id=? ORDER BY id DESC LIMIT 1").bind(EMPRESA_ID, pessoa.id).first().catch(() => null);
+  if (ultima && !ultima.caso_id && String(ultima.direcao).toUpperCase() === "SAIDA") return null;
+  const dele = await c.db.prepare("SELECT id, caso_id FROM mensagens WHERE empresa_id=? AND pessoa_id=? AND caso_id IS NOT NULL AND UPPER(direcao)='ENTRADA' ORDER BY id DESC LIMIT 1").bind(EMPRESA_ID, pessoa.id).first().catch(() => null);
+  const k = dele ? abertas.find(x => x.caso_id === dele.caso_id) : null;
+  if (!k) return null;
+  const outra = await c.db.prepare("SELECT 1 ok FROM mensagens WHERE empresa_id=? AND pessoa_id=? AND id > ? AND caso_id IS NOT NULL AND caso_id <> ? LIMIT 1").bind(EMPRESA_ID, pessoa.id, dele.id, dele.caso_id).first().catch(() => null);
+  return outra ? null : k;
+}
+// Mensagem que o profissional quer que chegue ao cliente: os links vão inteiros (nunca cortados nem resumidos)
+// e só sai o que não pode ir ao cliente (telefone, documento, valor fora dos autorizados).
+const URL_RE = /\bhttps?:\/\/[^\s<>"]+|\bwww\.[^\s<>"]+/gi;
+function mensagemParaEncaminhar(texto, original, autorizados) {
+  const links = [...new Set(String(original || "").match(URL_RE) || [])];
+  let t = String(texto || "").trim();
+  for (const l of links) if (!t.includes(l)) t += "\n" + l;
+  const guardados = [];
+  const semLinks = t.replace(URL_RE, m => { guardados.push(m); return `§${guardados.length - 1}§`; });
+  const g = { etapa: "AGENDADO", autorizados, regiaoConfirmada: true };
+  const removidas = [];
+  const linhas = semLinks.split("\n").map(l => {
+    const frases = l.match(/[^.!?]+[.!?]*\s*/g) || [l];
+    return frases.filter(f => { const m = fraseProibida(f, g); if (m && /telefone|documento|valor/.test(m)) { removidas.push(m); return false; } return true; }).join("").trim();
+  });
+  const final = linhas.join("\n").replace(/§(\d+)§/g, (_, i) => guardados[Number(i)]).replace(/\n{3,}/g, "\n\n").trim();
+  return { texto: final.slice(0, 3500), removidas, links };
 }
 
 async function processarPrestador(c, tel, id, msgs, { apenasRegistrar, chaveLote }) {
@@ -2285,6 +2391,8 @@ async function processarPrestador(c, tel, id, msgs, { apenasRegistrar, chaveLote
   // Várias abertas: descobre pelo contexto — a mensagem que ele respondeu (inclusive as da equipe,
   // como "Serviço agendado: nome, endereço…"), o nome do cliente, o bairro, o endereço e o serviço.
   if (!consulta && abertas.length > 1) consulta = await consultaPeloContexto(c, abertas, msgs, textoTodo, pessoa);
+  // Conversa em andamento: sem outra pista, ele continua falando do atendimento da última mensagem trocada com ele.
+  if (!consulta && abertas.length > 1) consulta = await consultaDaConversa(c, abertas, pessoa);
 
   for (const m of msgs) await registrarMensagem(c, { pessoaId: pessoa?.id, casoId: consulta?.caso_id, wamid: m.wamid, direcao: "ENTRADA", origem: "WHATSAPP", tipo: String(m.tipo || "text").toUpperCase(), conteudo: m.conteudo });
   if (apenasRegistrar || await estaPausado(c, tel)) return;
@@ -2297,6 +2405,11 @@ async function processarPrestador(c, tel, id, msgs, { apenasRegistrar, chaveLote
     const opcoes = [];
     for (const k of casos) { const r = await refCaso(c, k.casoId); opcoes.push(`${r.nome ? `de ${r.nome}` : "do cliente"}${r.bairro ? ` em ${r.bairro}` : ""}${k.fatos.problema || k.fatos.servico ? ` (${txt(k.fatos.problema || k.fatos.servico, 50)})` : ""}`); }
     const lista = opcoes.length > 1 ? opcoes.slice(0, -1).join(", ") + " ou " + opcoes.at(-1) : opcoes[0] || "";
+    // Pergunta uma vez só a cada 6 h: se ele não esclareceu, quem resolve é a equipe (nada de repetir a mesma pergunta).
+    if (!(await reservarChave(c, `qual:${digitos(tel)}:${Math.floor(c.agora() / (6 * 3600000))}`))) {
+      await alertarEquipe(c, `${prest?.nome || pessoa?.nome || tel} mandou mensagem e não deu para saber de qual atendimento é (${lista}): "${txt(textoTodo, 300)}". Nada foi repassado. Responda a ele pelo app.`, "qual-equipe:" + chaveLote);
+      return;
+    }
     await enviarAgoraAoPrestador(c, { consulta: { ...abertas[0], caso_id: null }, texto: `${primeiroNome(prest?.nome || pessoa?.nome) || "Oi"}, só pra eu não confundir: você está falando do atendimento ${lista}?`, chave: "qual:" + chaveLote });
     return;
   }
@@ -2318,6 +2431,7 @@ async function processarPrestador(c, tel, id, msgs, { apenasRegistrar, chaveLote
     } catch (e) { console.warn("revisão antes de responder", e?.message); }
   }
   const ultimaNossa = [...histCaso].reverse().find(m => String(m.direcao).toUpperCase() === "SAIDA" && String(m.origem).toUpperCase() !== "LIGACAO" && !msgs.some(x => x.wamid === m.whatsapp_message_id));
+  const doCliente = await palavrasDoCliente(c, caso);
   let d;
   try {
     d = await openaiJSON(c, INSTRUCOES_PRESTADOR, `CASO #${caso.casoId} — etapa ${caso.etapa}; consulta ${consulta.status}
@@ -2327,6 +2441,9 @@ ${consulta.valor_prestador ? `Valor já informado por ele: ${moeda(consulta.valo
 ${consulta.disponibilidade ? `Disponibilidade já informada: ${consulta.disponibilidade}` : ""}
 ${consulta.pedido_pendente ? `PEDIDO PENDENTE DO CLIENTE (responda a ele com RESPONDE e mensagem_para_cliente): ${consulta.pedido_pendente}` : ""}
 ÚLTIMA MENSAGEM QUE ENVIAMOS A ELE: ${ultimaNossa?.conteudo || "-"}
+RESUMO DO ATENDIMENTO: ${caso.resumo || "-"}
+O QUE O CLIENTE ESCREVEU (mais recentes por último):
+${doCliente || "-"}
 
 HISTÓRICO DESTE CASO COM O PROFISSIONAL:
 ${formatarHistorico(histCaso, "PROFISSIONAL", new Set(msgs.map(m => m.wamid)))}
@@ -2354,7 +2471,15 @@ async function tratarRespostaPrestador(c, { caso, consulta, d, textoTodo, chaveL
   let tipo = String(d?.tipo || "COMENTARIO").toUpperCase();
   const cliente = await c.db.prepare("SELECT id,nome,telefone FROM pessoas WHERE id=?").bind(caso.clienteId).first();
   const telCliente = cliente?.telefone || caso.telefone;
-  const responder = (texto, k) => enviarAgoraAoPrestador(c, { consulta, caso, texto, chave: k + ":" + chaveLote });
+  // Nunca manda ao profissional a mesma mensagem que acabou de mandar: se ia repetir, quem responde é a equipe.
+  const ultimaAEle = [...histCaso].reverse().find(m => String(m.direcao).toUpperCase() === "SAIDA" && !msgs.some(x => x.wamid === m.whatsapp_message_id));
+  const responder = async (texto, k) => {
+    if (ultimaAEle && norm(await humanizarCasos(c, texto)) === norm(ultimaAEle.conteudo)) {
+      await alertarEquipe(c, `A DENIA ia repetir para ${consulta.prestador_nome} a mesma mensagem ("${txt(texto, 160)}") sobre ${cliente?.nome || "o cliente"} (caso #${caso.casoId}). Ele escreveu: "${txt(textoTodo, 300)}". Responda a ele pelo app.`, "repetiria:" + chaveLote, caso.casoId);
+      return { ok: false, repetida: true };
+    }
+    return enviarAgoraAoPrestador(c, { consulta, caso, texto, chave: k + ":" + chaveLote });
+  };
   const avisarCliente = async (texto, k) => {
     const r = await enviarAoCliente(c, { tel: telCliente, pessoaId: cliente?.id, casoId: caso.casoId, texto, chave: k + ":" + chaveLote, origem: "SISTEMA" });
     if (!r.ok && !r.duplicado) await alertarEquipe(c, `Retorno do profissional no caso #${caso.casoId} NÃO foi enviado ao cliente (${r.pausado ? "atendente está na conversa" : r.erro}). Mensagem que seria enviada: "${texto}"`, "falha-cli:" + k + ":" + chaveLote, caso.casoId);
@@ -2395,7 +2520,7 @@ async function tratarRespostaPrestador(c, { caso, consulta, d, textoTodo, chaveL
       return;
   };
   if (tipo === "PEDE_CONTEXTO") { await responder(resumoParaPrestador(caso, consulta), "ctx"); return; }
-  if (["AGENDADO", "EM_ANDAMENTO"].includes(caso.etapa) && !["RECUSA", "RESPONDE", "CONFIRMA_AGENDAMENTO", "ACEITA"].includes(tipo) && d?.atende_regiao !== "NAO") { await responderAgendado(); return; }
+  if (["AGENDADO", "EM_ANDAMENTO"].includes(caso.etapa) && !["RECUSA", "RESPONDE", "ENCAMINHAR", "CONFIRMA_AGENDAMENTO", "ACEITA"].includes(tipo) && d?.atende_regiao !== "NAO") { await responderAgendado(); return; }
 
   if (tipo === "RECUSA" || d?.atende_regiao === "NAO") {
     await atualizarConsulta(c, consulta.id, { status: "RECUSADA" });
@@ -2420,6 +2545,18 @@ async function tratarRespostaPrestador(c, { caso, consulta, d, textoTodo, chaveL
     if (!pergunta) return;
     const r = await avisarCliente(pergunta, "pergunta");
     if (r.ok) { await atualizarConsulta(c, consulta.id, { pergunta_pendente: pergunta }); await responder("Vou confirmar com o cliente e já retorno.", "perg-ok"); }
+    return;
+  }
+
+  if (tipo === "ENCAMINHAR") {
+    const enc = mensagemParaEncaminhar(d?.mensagem_para_cliente || textoTodo, [textoTodo, ...histCaso.filter(m => String(m.direcao).toUpperCase() === "ENTRADA").slice(-6).map(m => m.conteudo)].join("\n"), await autorizadosParaCaso(c, consulta));
+    if (!enc.texto) { await alertarEquipe(c, `${consulta.prestador_nome} pediu para encaminhar algo a ${cliente?.nome || "o cliente"} (caso #${caso.casoId}), mas não ficou claro o quê: "${txt(textoTodo, 300)}".`, "enc-vazio:" + chaveLote, caso.casoId); return; }
+    const r = await avisarCliente(enc.texto, "encaminhar");
+    const quem = primeiroNome(cliente?.nome) || "o cliente";
+    if (r.ok) {
+      await evento(c, caso.casoId, "ENCAMINHADO_AO_CLIENTE", enc.texto);
+      await responder(`Pronto, enviei para ${quem} ✅${enc.links.length ? ` (${enc.links.length} link${enc.links.length > 1 ? "s" : ""})` : ""}${enc.removidas.length ? ". Tirei telefone/valor da mensagem: isso a equipe passa." : ""}`, "enc-ok");
+    } else if (!r.duplicado) await responder(r.pausado ? `A equipe está conversando com ${quem} agora, então não enviei. Já avisei a equipe para repassar.` : `Não consegui enviar para ${quem} (${txt(r.erro, 80) || "o WhatsApp recusou"}). Já avisei a equipe.`, "enc-falha");
     return;
   }
 
@@ -2833,6 +2970,7 @@ async function cron(c) {
   for (const t of tels) { if (sobram(c) < 25) break; await processarPendentes(c, t.telefone); }
   if (c.atrasadasSemResposta) await alertarEquipe(c, `${c.atrasadasSemResposta} conversa(s) ficaram sem resposta por mais tempo e a DENIA NÃO respondeu sozinha para não mandar mensagens em massa. Veja em Conversas e responda quem ainda precisa.`, "atrasadas:" + Math.floor(agora / 3600000));
   if (sobram(c) > 20) await processarAgendados(c);
+  if (sobram(c) > 12) await lembrarReunioes(c).catch(e => console.error("reuniões", e?.message));
   if (sobram(c) > 20) await processarSync(c).catch(e => console.error("sync", e));
   if (sobram(c) > 25) await processarAprendizado(c).catch(e => console.error("aprendizado", e));
   if (sobram(c) > 25) await relatorioDiario(c).catch(e => console.error("relatório", e));
