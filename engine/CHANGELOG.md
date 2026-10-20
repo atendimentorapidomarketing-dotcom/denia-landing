@@ -1,5 +1,18 @@
 # Changelog — DENIA Engine
 
+## 31.12.0 — 2026-10-20
+
+### Corrigido — avisos repetidos de "mensagem não entregue" no Telegram
+- Fora da janela de 24 h (a pessoa não escreve há mais de um dia): a DENIA marca o contato, para de
+  tentar (as tentativas falhariam de novo) e **guarda** as mensagens; elas saem sozinhas assim que a
+  pessoa responder (até 72 h). Um aviso só por pessoa por dia.
+- Modelo de retomada opcional (`WHATSAPP_TEMPLATE_RETOMAR`): a DENIA manda o modelo aprovado, uma vez
+  por dia, para a pessoa responder e a conversa reabrir.
+- Número sem WhatsApp (131026): não tenta de novo por 7 dias (ou até a pessoa escrever); um aviso só.
+- Outras falhas: um aviso por pessoa e motivo a cada 6 h. E o mesmo texto de aviso nunca chega duas
+  vezes em 6 h, venha de onde vier.
+- O cliente não recebe "Um momento" quando a mensagem ao profissional ficou guardada.
+
 ## 31.11.0 — 2026-10-20
 
 ### Novo — calendário com feriados e horário de reuniões
