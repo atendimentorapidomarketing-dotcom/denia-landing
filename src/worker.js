@@ -30,7 +30,7 @@ import { DDL_PROBLEMAS, rotasProblemas, registrarProblema, resolverProblema, lim
 import { DDL_ZAP, webhookZap, rotasZap, webhookTelegram, segredoTelegram, tokenTelegramPlataforma, processarCampanhas, lembrarAgenda } from "./zap.js";
 import { lerPlanos, acessoDa, recursoDaRota, planoMinimo, rotasPlano, webhookAsaas, lembretesDePlano, TESTE_DIAS, STATUS as STATUS_PLANO, PLANOS_PADRAO, RECURSOS } from "./planos.js";
 
-const VERSAO = "3.11.0";
+const VERSAO = "3.12.0";
 // Versão dos Termos de uso e da Política de privacidade aceitas no cadastro.
 const VERSAO_TERMOS = "2026-10-16";
 // WhatsApp da Central de Atendimento (botão flutuante do site).
@@ -866,7 +866,16 @@ async function apiOrg(request, env, sessao, orgId, resto) {
   if (resto.startsWith("engine/")) return proxyEngine(request, env, sessao, orgId, papel, resto.slice(7));
   const kit = { ...kitBase(env), sessao };
   if (resto === "tp" || resto.startsWith("tp/")) return rotasTemporada(request, env, { ...(await kitZap(env, new URL(request.url).origin)), sessao, superAdmin: Boolean(sessao.usuario.super_admin), openai: openaiBruto, acesso: sessao.usuario.super_admin ? { ...acesso, limites: { ...acesso.limites, imoveis: 0 } } : acesso, avisar: async (o, texto) => { for (const para of await responsaveisDa(env, o)) await enviarEmail(env, para, "DENIA — hóspede precisa de você", texto); } }, orgId, papel, resto);
-  if (resto === "problemas" || resto.startsWith("problemas/")) return (await rotasProblemas(request, env, orgId, papel, resto, pode(papel, "AGENTE"), sessao.usuario.email)) || json({ erro: "Rota não encontrada." }, 404);
+  if (resto === "problemas" || resto.startsWith("problemas/")) {
+    // Empresa com a IA da Central ligada: os avisos não urgentes dela (que não vão ao Telegram) entram aqui.
+    const avisosCentral = async () => {
+      const con = await conexaoDa(env, orgId).catch(() => null);
+      if (!con?.token || !con?.url) return [];
+      const r = await Promise.race([chamarEngine(con, "GET", "avisos").catch(() => null), new Promise(ok => setTimeout(() => ok(null), 5000))]);
+      return r?.dados?.avisos || [];
+    };
+    return (await rotasProblemas(request, env, orgId, papel, resto, pode(papel, "AGENTE"), sessao.usuario.email, avisosCentral)) || json({ erro: "Rota não encontrada." }, 404);
+  }
   if (resto === "zap" || resto.startsWith("zap/")) return rotasZap(request, env, { ...(await kitZap(env, new URL(request.url).origin)), sessao, acesso: sessao.usuario.super_admin ? { ...acesso, recursos: Object.keys(RECURSOS) } : acesso }, orgId, papel, resto);
   if (resto === "ia/chave" && metodo === "GET") {
     const k = await chaveIA(env, orgId);

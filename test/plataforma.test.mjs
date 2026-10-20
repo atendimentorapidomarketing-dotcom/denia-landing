@@ -2833,3 +2833,25 @@ test("Agenda — a IA marca a reunião, a equipe é avisada no Telegram, vê na 
     assert.equal((await p.req(`/api/orgs/1/zap/agenda`, { quem: "admin" })).dados.agenda.length, 0);
   } finally { globalThis.fetch = anterior; }
 });
+
+test("Problemas — avisos não urgentes da IA da Central aparecem na página (e só para a empresa ligada a ela)", async () => {
+  const p = await criarPlataforma();
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  await p.req("/api/orgs/1/integracao", { metodo: "POST", quem: "admin", corpo: { engine_url: "https://engine.test/", token: TOKEN_ENGINE } });
+  await p.engine.cliente("5521911112222", "oi"); // o motor cria as tabelas
+  const t = p.engine.agora;
+  await p.engine.DB.prepare("INSERT INTO d30_eventos(caso_id,tipo,descricao,criado_ms) VALUES(12,'AVISO_PAINEL',?,?)").bind('Carlos (estofador) (caso #12) escreveu: "chego 15h". Nenhuma ação automática foi tomada.', t).run();
+  await p.engine.DB.prepare("INSERT INTO d30_eventos(caso_id,tipo,descricao,criado_ms) VALUES(NULL,'ALERTA_EQUIPE','urgente que foi ao Telegram',?)").bind(t).run();
+  const r = await p.req("/api/orgs/1/problemas", { quem: "admin" });
+  const central = r.dados.problemas.filter(x => x.area === "CENTRAL");
+  assert.equal(central.length, 1, JSON.stringify(r.dados.problemas.map(x => x.titulo)));
+  assert.match(central[0].titulo, /^Carlos \(estofador\) \(caso #12\) escreveu/);
+  assert.match(central[0].motivo, /Nenhuma ação automática/);
+  // Marcar como resolvido esconde.
+  await p.req("/api/orgs/1/problemas/resolver", { metodo: "POST", quem: "admin", corpo: { chaves: [central[0].chave] } });
+  assert.equal((await p.req("/api/orgs/1/problemas", { quem: "admin" })).dados.problemas.filter(x => x.area === "CENTRAL").length, 0);
+  // Outra empresa (sem a IA da Central) não vê nada disso.
+  const nova = await p.req("/api/admin/organizacoes", { metodo: "POST", quem: "admin", corpo: { nome: "Shopping Infomix", segmento: "Shopping" } });
+  const outra = await p.req(`/api/orgs/${nova.dados.id}/problemas`, { quem: "admin" });
+  assert.equal(outra.dados.problemas.filter(x => x.area === "CENTRAL").length, 0);
+});

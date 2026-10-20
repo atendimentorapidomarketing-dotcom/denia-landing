@@ -150,7 +150,8 @@ test("Prestador com 'Eita, Niterói' não vira ação; vai só para a equipe", a
   await a.cliente(CHAVEIRO, "Eita, Niterói");
   assert.equal(a.para(CLI).length, antes, "nada enviado ao cliente");
   assert.equal(a.para(CHAVEIRO).length, 1, "nada respondido ao prestador");
-  assert.ok(a.telegram.some(t => /Eita, Niterói[\s\S]*Nenhuma ação automática/.test(t)));
+  assert.ok((await a.avisos()).some(t => /Eita, Niterói[\s\S]*Nenhuma ação automática/.test(t)), "fica registrado no painel");
+  assert.ok(!a.telegram.some(t => /Eita, Niterói/.test(t)), "não é urgente: não vai ao Telegram");
 });
 
 test("Prestador pergunta 'que cliente?' e recebe o contexto do caso certo", async () => {
@@ -683,7 +684,7 @@ test("V30.6 — profissional escrevendo de OUTRO número sobre o caso não vira 
   await a.cliente(OUTRO_NUM, `Sobre o caso ${caso}: consigo ir amanhã às 10h, fica 150`);
   assert.equal(a.llm.filter(x => x.papel === "cliente" && x.entrada.includes("consigo ir amanhã")).length, 0);
   assert.equal(a.enviados.length, enviadosAntes, "nada enviado ao cliente, ao número nem a outro profissional");
-  assert.ok(a.telegram.some(t => /Pode ser o profissional escrevendo de outro número/.test(t)), "a equipe é avisada");
+  assert.ok((await a.avisos()).some(t => /Pode ser o profissional escrevendo de outro número/.test(t)), "fica registrado no painel");
   assert.equal(a.DB.q("SELECT COUNT(*) n FROM d30_casos")[0].n, 1, "nenhum pedido novo foi aberto");
 });
 
@@ -828,7 +829,7 @@ test("Entrega — a Meta aceita mas não entrega: a DENIA registra o motivo, avi
   assert.equal(a.para(CLI).length, n4 + 1);
   a.telegram.length = 0;
   await a.webhook({ statuses: [{ id: a.para(CLI).at(-1).id, status: "failed", recipient_id: CLI, errors: [{ code: 131026, title: "Message undeliverable" }] }] });
-  assert.ok(a.telegram.some(t => /NÃO entregue/.test(t)));
+  assert.ok((await a.avisos()).some(t => /NÃO entregue/.test(t)), "registrado no painel (não urgente)");
   assert.equal((await plat("/platform/status")).entrega_bloqueada, null);
 });
 
@@ -1089,7 +1090,7 @@ test("Profissional com dois atendimentos: segue a conversa em andamento, encamin
   const n = a.para(CHAVEIRO).length;
   await a.cliente(CHAVEIRO, "não entendi, do que se trata?");
   assert.equal(a.para(CHAVEIRO).length, n, "não manda a mesma mensagem duas vezes");
-  assert.ok(a.telegram.some(t => /ia repetir/.test(t)));
+  assert.ok((await a.avisos()).some(t => /ia repetir/.test(t)));
   // Manda links e pede para encaminhar: vão inteiros para a Bia (e não para o outro cliente).
   const L1 = "https://www.airbnb.com.br/rooms/12345678901234?check_in=2027-02-12", L2 = "https://chaves.test/opcoes.pdf";
   a.llmPrestador = () => prest({ tipo: "ENCAMINHAR", mensagem_para_cliente: "Oi Bia! O profissional mandou as opções." });
@@ -1113,7 +1114,7 @@ test("Profissional sem pista de qual atendimento: pergunta uma vez só e depois 
   const n = a.para(CHAVEIRO).length;
   await a.cliente(CHAVEIRO, "isso mesmo");
   assert.equal(a.para(CHAVEIRO).length, n, "não repete a pergunta");
-  assert.ok(a.telegram.some(t => /não deu para saber de qual atendimento/.test(t)));
+  assert.ok((await a.avisos()).some(t => /não deu para saber de qual atendimento/.test(t)));
 });
 
 test("Reunião online: a DENIA marca, avisa o Telegram da Central, não duplica, remarca e lembra 1 h antes", async () => {
@@ -1193,9 +1194,10 @@ test("Fora da janela de 24 h: um aviso só, sem novas tentativas; a mensagem fic
   const consulta = a.para(CHAVEIRO)[0];
   const falhar = id => a.webhook({ statuses: [{ id, status: "failed", recipient_id: CHAVEIRO, errors: [{ code: 131047, title: "Re-engagement message" }] }] });
   await falhar(consulta.id);
-  const avisos = () => a.telegram.filter(t => /📵|NÃO entregue|Falha no envio|NÃO foi enviado/.test(t));
-  assert.equal(avisos().length, 1);
-  assert.match(avisos()[0], /📵 [\s\S]*profissional[\s\S]*não escreve há mais de 24 h[\s\S]*ficou guardada e sai sozinha/);
+  const avisos = async () => [...a.telegram, ...(await a.avisos())].filter(t => /📵|NÃO entregue|Falha no envio|NÃO foi enviado/.test(t));
+  assert.equal((await avisos()).length, 1);
+  assert.ok(!a.telegram.some(t => /📵/.test(t)), "não é urgente: não vai ao Telegram");
+  assert.match((await avisos())[0], /📵 [\s\S]*profissional[\s\S]*não escreve há mais de 24 h[\s\S]*ficou guardada e sai sozinha/);
   // Pergunta do cliente para o profissional: não tenta mandar (iria falhar de novo) e não gera aviso novo.
   const antes = a.para(CHAVEIRO).length;
   a.llmCliente = () => decisao({ resposta: "Vou confirmar com o profissional.", intencao: "PERGUNTA_PARA_PROFISSIONAL", resposta_para_profissional: "A fechadura nova está inclusa no valor?" });
@@ -1203,7 +1205,7 @@ test("Fora da janela de 24 h: um aviso só, sem novas tentativas; a mensagem fic
   assert.equal(a.para(CHAVEIRO).length, antes, "nada enviado enquanto a janela está fechada");
   assert.doesNotMatch(a.ultimoPara(CLI), /Um momento/, "o cliente não fica sem resposta");
   await falhar(consulta.id); await falhar(consulta.id);
-  assert.equal(avisos().length, 1, "nunca o mesmo aviso de novo");
+  assert.equal((await avisos()).length, 1, "nunca o mesmo aviso de novo");
   // O profissional escreve: recebe primeiro o que ficou guardado (a consulta e a pergunta do cliente).
   a.llmPrestador = () => prest({ tipo: "COMENTARIO" });
   await a.cliente(CHAVEIRO, "Bom dia, vi agora");
@@ -1221,7 +1223,7 @@ test("Fora da janela com modelo de retomada configurado: manda o modelo uma vez 
   const modelos = a.para(CLI).filter(e => e.type === "template");
   assert.equal(modelos.length, 1); assert.equal(modelos[0].texto, "retomar_conversa");
   assert.equal(modelos[0].corpo.template.components[0].parameters[0].text, "Marcos");
-  assert.ok(a.telegram.some(t => /Mandei o modelo "retomar_conversa"/.test(t)));
+  assert.ok((await a.avisos()).some(t => /Mandei o modelo "retomar_conversa"/.test(t)));
   await a.webhook({ statuses: [{ id, status: "failed", recipient_id: CLI, errors: [{ code: 131047, title: "Re-engagement message" }] }] });
   assert.equal(a.para(CLI).filter(e => e.type === "template").length, 1, "uma vez por dia");
 });
@@ -1231,13 +1233,14 @@ test("Número sem WhatsApp e falhas repetidas: um aviso por pessoa e motivo, sem
   a.llmCliente = () => decisao({ resposta: "Oi! Como posso ajudar?" });
   await a.cliente(CLI, "oi");
   await a.webhook({ statuses: [{ id: a.para(CLI).at(-1).id, status: "failed", recipient_id: CLI, errors: [{ code: 131026, title: "Message undeliverable" }] }] });
-  assert.equal(a.telegram.filter(t => /NÃO entregue/.test(t)).length, 1);
-  assert.match(a.telegram.at(-1), /não vai tentar de novo nesse número por 7 dias/);
+  assert.equal((await a.avisos()).filter(t => /NÃO entregue/.test(t)).length, 1);
+  assert.match((await a.avisos()).at(-1), /não vai tentar de novo nesse número por 7 dias/);
+  assert.equal(a.telegram.filter(t => /NÃO entregue/.test(t)).length, 0, "nada disso vai ao Telegram");
   // Outra falha de outro tipo, duas vezes para a mesma pessoa: um aviso só.
   a.llmCliente = () => decisao({ resposta: "Segue a foto." });
   await a.cliente(CLI2, "manda a foto");
   for (let i = 0; i < 3; i++) await a.webhook({ statuses: [{ id: "wamid.x" + i, status: "failed", recipient_id: CLI2, errors: [{ code: 131053, title: "Media upload error" }] }] });
-  assert.equal(a.telegram.filter(t => /NÃO entregue para 5521933334444/.test(t)).length, 1);
+  assert.equal((await a.avisos()).filter(t => /NÃO entregue para 5521933334444/.test(t)).length, 1);
 });
 
 test("Equipe pelo Telegram: responde o aviso 'a equipe decide' e a DENIA consulta o profissional indicado", async () => {

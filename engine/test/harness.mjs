@@ -117,6 +117,8 @@ export async function criarAmbiente({ inicio = "2026-10-07T14:00:00-03:00", env:
   amb.para = tel => amb.enviados.filter(e => e.to === tel);
   amb.ultimoPara = tel => amb.para(tel).at(-1)?.texto?.replace(/\u00a0/g, " ");
   amb.avancar = ms => { amb.agora += ms; };
+  // Avisos não urgentes: não vão ao Telegram; ficam no registro (a plataforma mostra em Problemas).
+  amb.avisos = async () => ((await amb.DB.prepare("SELECT descricao FROM d30_eventos WHERE tipo='AVISO_PAINEL' ORDER BY id").all())?.results || []).map(r => r.descricao);
   let upd = 0;
   // A equipe escreve no grupo do Telegram da Central (opcionalmente respondendo um aviso).
   amb.equipe = (texto, { responde = null, chat = amb.env.TELEGRAM_CHAT_ID, segredo = amb.tgSegredo, de = "Ana" } = {}) => executar(new Request("https://denia.test/telegram", {
