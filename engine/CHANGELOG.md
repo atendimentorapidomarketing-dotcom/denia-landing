@@ -1,5 +1,14 @@
 # Changelog — DENIA Engine
 
+## 32.2.0 — 2026-10-20
+
+### Corrigido — conversa com o profissional e pedido mais claro
+- "Qual o bairro?" logo depois de um pedido: a DENIA entende que é sobre o pedido que acabou de mandar
+  (os outros atendimentos com ele estavam parados há mais de 30 min) e não lista outros casos.
+- O pedido ao profissional traz o resumo do que o cliente quer (feito pela IA) em vez de frases soltas
+  copiadas do cliente, e diz quando o bairro ainda não foi informado.
+- Atendimento no endereço do cliente: a DENIA pergunta o bairro uma vez antes de chamar o profissional.
+
 ## 32.1.1 — 2026-10-20
 
 ### Corrigido — Telegram da equipe na mudança para a Hostinger

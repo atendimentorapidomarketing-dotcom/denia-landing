@@ -36,7 +36,7 @@
 //       relatório diário. Nunca inicia conversa nova por conta própria.
 // ============================================================================
 
-const VERSAO = "32.1.1";
+const VERSAO = "32.2.0";
 const SCHEMA_VERSAO = "32.0.0"; // mude sempre que acrescentar tabela ou índice (senão o banco de produção não recebe)
 const EMPRESA_ID = 1;
 const PHONE_ID_PADRAO = "473474732510163";
@@ -2382,6 +2382,9 @@ async function decidirCliente(c, { tel, pessoa, caso, consulta, d, chaveLote }) 
   if (consulta && consulta.message_id && ETAPAS_COM_PRESTADOR.has(caso.etapa)) await encaminharMidiasAoPrestador(c, consulta);
 
   if (caso.etapa === "COLETANDO" && d.quer && d.pronto) {
+    // Atendimento no endereço do cliente: pergunta o bairro uma vez antes de chamar o profissional.
+    if (CATEGORIAS[caso.fatos.categoria]?.modo === "DOMICILIO" && !caso.fatos.bairro && await reservarChave(c, "pede-bairro:" + caso.casoId))
+      return { texto: "Perfeito! Pra eu já passar ao profissional certo: em qual bairro é o atendimento?", fixa: true };
     const r = await consultarPrestador(c, caso, pessoa, chaveLote);
     if (r) return r;
   }
@@ -2430,7 +2433,9 @@ async function consultarPrestador(c, caso, pessoa, chaveLote, escolhido = null) 
   const linhas = [
     `${saudacaoSP(c.agora())}, ${primeiroNome(p.nome)}! Tudo bem?`,
     `Tenho um cliente${local ? ` em ${local}` : ""} precisando de ${String(f.problema || f.servico || "").replace(/[.\s]+$/, "")}${f.marca || f.modelo ? ` (${[f.marca, f.modelo].filter(Boolean).join(" ")})` : ""}.`,
-    falas.length ? `O cliente me contou assim: "${falas.join(" / ")}"` : "",
+    // O que o cliente quer, resumido pela DENIA (frases soltas copiadas do cliente confundiam o profissional).
+    caso.resumo && norm(caso.resumo) !== norm(f.problema || f.servico || "") ? `Resumo do pedido: ${ocultarTelefones(txt(caso.resumo, 400))}` : (!f.problema && falas.length ? `O cliente escreveu: "${falas.at(-1)}"` : ""),
+    !f.bairro && CATEGORIAS[area]?.modo === "DOMICILIO" ? "O bairro o cliente ainda não informou." : "",
     `Você consegue pegar${f.bairro ? " e atende aí" : ""}? Se sim, me passa o valor (e se já é o valor final pro cliente ou só a sua parte) e quando você pode.`
   ].filter(Boolean);
   const r = await enviarAoPrestador(c, { consulta: ins, caso, texto: linhas.join("\n"), chave: `consulta:${ins.id}`, inicial: true });
@@ -2570,9 +2575,16 @@ async function consultaDaConversa(c, abertas, pessoa) {
   if (ultima && !ultima.caso_id && String(ultima.direcao).toUpperCase() === "SAIDA") return null;
   const dele = await c.db.prepare("SELECT id, caso_id FROM mensagens WHERE empresa_id=? AND pessoa_id=? AND caso_id IS NOT NULL AND UPPER(direcao)='ENTRADA' ORDER BY id DESC LIMIT 1").bind(EMPRESA_ID, pessoa.id).first().catch(() => null);
   const k = dele ? abertas.find(x => x.caso_id === dele.caso_id) : null;
-  if (!k) return null;
-  const outra = await c.db.prepare("SELECT 1 ok FROM mensagens WHERE empresa_id=? AND pessoa_id=? AND id > ? AND caso_id IS NOT NULL AND caso_id <> ? LIMIT 1").bind(EMPRESA_ID, pessoa.id, dele.id, dele.caso_id).first().catch(() => null);
-  return outra ? null : k;
+  if (k) {
+    const outra = await c.db.prepare("SELECT 1 ok FROM mensagens WHERE empresa_id=? AND pessoa_id=? AND id > ? AND caso_id IS NOT NULL AND caso_id <> ? LIMIT 1").bind(EMPRESA_ID, pessoa.id, dele.id, dele.caso_id).first().catch(() => null);
+    if (!outra) return k;
+  }
+  // Acabamos de mandar a ele um atendimento (ex.: a consulta) e os outros abertos estão parados há tempo:
+  // a mensagem dele é sobre esse ("qual o bairro?" logo depois do pedido).
+  const ord = [...abertas].sort((a, b) => Number(b.atualizado_ms || 0) - Number(a.atualizado_ms || 0));
+  const recente = ord[0];
+  if (recente && c.agora() - Number(recente.atualizado_ms || 0) < 6 * 3600000 && (!ord[1] || Number(recente.atualizado_ms) - Number(ord[1].atualizado_ms || 0) >= 30 * 60000)) return recente;
+  return null;
 }
 // Mensagem que o profissional quer que chegue ao cliente: os links vão inteiros (nunca cortados nem resumidos)
 // e só sai o que não pode ir ao cliente (telefone, documento, valor fora dos autorizados).

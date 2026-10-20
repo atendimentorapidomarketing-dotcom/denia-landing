@@ -136,7 +136,7 @@ test("Cenário 6 — caso antigo AGENDADO: 'Bom dia' não recomeça o atendiment
 
 test("Duplicidade de nomes — geladeira vai para Carlos da assistência técnica", async () => {
   const a = await criarAmbiente();
-  a.llmCliente = () => decisao({ resposta: "Ok", intencao: "NOVO_PEDIDO", quer_orcamento_ou_atendimento: true, pronto_para_profissional: true, fatos: { servico: "conserto de geladeira", problema: "geladeira não gela", categoria: "ESTOFADOR" } });
+  a.llmCliente = () => decisao({ resposta: "Ok", intencao: "NOVO_PEDIDO", quer_orcamento_ou_atendimento: true, pronto_para_profissional: true, fatos: { servico: "conserto de geladeira", problema: "geladeira não gela", categoria: "ESTOFADOR", bairro: "Méier" } });
   await a.cliente(CLI, "Minha geladeira não gela");
   assert.equal(a.para(CARLOS_ASSIST).length, 1);
   assert.equal(a.para(CARLOS_ESTOF).length, 0, "a regra determinística vence a sugestão errada da IA");
@@ -338,7 +338,7 @@ test("Preço autorizado no treinamento pode ser informado", async () => {
 
 test("Simulador do painel roda o fluxo sem enviar nada pela Meta", async () => {
   const a = await criarAmbiente();
-  a.llmCliente = () => decisao({ resposta: "Ok", intencao: "NOVO_PEDIDO", quer_orcamento_ou_atendimento: true, pronto_para_profissional: true, fatos: { servico: "chaveiro", problema: "cópia de chave" } });
+  a.llmCliente = () => decisao({ resposta: "Ok", intencao: "NOVO_PEDIDO", quer_orcamento_ou_atendimento: true, pronto_para_profissional: true, fatos: { servico: "chaveiro", problema: "cópia de chave", bairro: "Centro" } });
   const r = await (await a.http("/api/teste", { method: "POST", body: JSON.stringify({ remetente: "cliente", texto: "Preciso de cópia de chave" }) })).json();
   assert.equal(a.enviados.length, 0);
   assert.ok(r.saidas.some(s => s.papel === "prestador" && /Você consegue pegar/i.test(s.texto)));
@@ -441,7 +441,7 @@ test("V30.2 — aparelho ligado no 220 V NUNCA vai para o eletricista", async ()
 
 test("V30.2 — geladeira queimada no 220 V vai para a assistência técnica, não para o eletricista", async () => {
   const a = await criarAmbiente();
-  a.llmCliente = () => decisao({ resposta: "Poxa!", intencao: "NOVO_PEDIDO", quer_orcamento_ou_atendimento: true, pronto_para_profissional: true, categoria_confianca: "ALTA", fatos: { servico: "conserto de geladeira", problema: "geladeira queimou ao ligar na tomada 220v", categoria: "ASSISTENCIA_TECNICA" } });
+  a.llmCliente = () => decisao({ resposta: "Poxa!", intencao: "NOVO_PEDIDO", quer_orcamento_ou_atendimento: true, pronto_para_profissional: true, categoria_confianca: "ALTA", fatos: { servico: "conserto de geladeira", problema: "geladeira queimou ao ligar na tomada 220v", categoria: "ASSISTENCIA_TECNICA", bairro: "Méier" } });
   await a.cliente(CLI, "Minha geladeira queimou, liguei na tomada 220");
   assert.equal(a.para(WILLIAM).length, 0);
   assert.equal(a.para(CARLOS_ASSIST).length, 1);
@@ -1302,4 +1302,33 @@ test("Telegram da equipe na mudança para a Hostinger: troca o endereço antigo 
   const r2 = await (await a.http("/api/telegram/conectar", { method: "POST", body: "{}" })).json();
   assert.equal(r2.ok, false);
   assert.equal(a.tgWebhook, "https://plataforma.test/webhook/telegram", "não mexe no endereço de outro sistema");
+});
+
+test("Pedido sem bairro: pergunta o bairro antes de chamar o profissional; o pedido vai com resumo e bairro", async () => {
+  const a = await criarAmbiente();
+  a.llmCliente = () => decisao({ resposta: "Certo!", intencao: "NOVO_PEDIDO", quer_orcamento_ou_atendimento: true, pronto_para_profissional: true, fatos: { servico: "higienização de sofá", problema: "lavar sofá de 3 lugares" }, resumo_caso: "Cliente quer lavar um sofá de 3 lugares de tecido, com manchas de café, de preferência sábado de manhã." });
+  await a.cliente(CLI, "Quero lavar meu sofá de 3 lugares, tem mancha de café. Mas não é pra usar produto forte");
+  assert.equal(a.ultimoPara(CLI), "Perfeito! Pra eu já passar ao profissional certo: em qual bairro é o atendimento?");
+  assert.equal(a.para(MIRELLA).length, 0, "ainda não chama o profissional");
+  a.llmCliente = () => decisao({ resposta: "Obrigada!", quer_orcamento_ou_atendimento: true, pronto_para_profissional: true, fatos: { bairro: "Tijuca" } });
+  await a.cliente(CLI, "Tijuca");
+  const pedido = a.para(MIRELLA)[0]?.texto || "";
+  assert.match(pedido, /Tenho um cliente em Tijuca precisando de lavar sofá de 3 lugares/);
+  assert.match(pedido, /Resumo do pedido: Cliente quer lavar um sofá de 3 lugares de tecido, com manchas de café/);
+  assert.doesNotMatch(pedido, /não é pra usar produto forte|O cliente me contou/, "não copia frases soltas do cliente");
+});
+
+test("Profissional pergunta 'qual o bairro?' logo depois do pedido: responde sobre ESTE pedido, sem listar outros casos", async () => {
+  const a = await criarAmbiente();
+  await iniciarConsultaChaveiro(a, CLI); // um atendimento antigo com o mesmo profissional
+  a.avancar(2 * 3600000);
+  a.llmCliente = () => decisao({ resposta: "Perfeito, vou consultar o profissional.", intencao: "NOVO_PEDIDO", quer_orcamento_ou_atendimento: true, pronto_para_profissional: true, fatos: { servico: "chaveiro", problema: "abrir porta trancada", bairro: "Tijuca", nome: "Bia" } });
+  await a.cliente(CLI2, "Fiquei trancada pra fora, Tijuca", { nome: "Bia" });
+  assert.equal(a.para(CHAVEIRO).length, 2);
+  let entrada = "";
+  a.llmPrestador = e => { entrada = e; return prest({ tipo: "PERGUNTA", resposta_conhecida: "É na Tijuca." }); };
+  await a.cliente(CHAVEIRO, "qual o bairro?");
+  assert.doesNotMatch(a.ultimoPara(CHAVEIRO), /não confundir/, "não pergunta de qual caso é");
+  assert.match(a.ultimoPara(CHAVEIRO), /É na Tijuca/);
+  assert.match(entrada, /abrir porta trancada/, "a IA leu o pedido certo");
 });
