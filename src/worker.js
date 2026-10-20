@@ -26,15 +26,16 @@ import { retornoGoogle, sincronizarGooglePendentes } from "./google.js";
 import { comOrgUso, comRecurso, descarregarUso } from "./uso.js";
 import { DDL_TEMPORADA, ALTERS_TEMPORADA, rotasTemporada, icalPublico, webhookChannex, sincronizarTemporada, desligarInadimplentes, lembrarEstoque, limpezaPublica, avaliacoesDoCron } from "./temporada.js";
 import { openaiBruto } from "./marketing.js";
+import { DDL_PROBLEMAS, rotasProblemas, registrarProblema, resolverProblema, limparProblemas } from "./problemas.js";
 import { DDL_ZAP, webhookZap, rotasZap, webhookTelegram, segredoTelegram, tokenTelegramPlataforma, processarCampanhas } from "./zap.js";
 import { lerPlanos, acessoDa, recursoDaRota, planoMinimo, rotasPlano, webhookAsaas, lembretesDePlano, TESTE_DIAS, STATUS as STATUS_PLANO, PLANOS_PADRAO, RECURSOS } from "./planos.js";
 
-const VERSAO = "3.9.0";
+const VERSAO = "3.10.0";
 // Versão dos Termos de uso e da Política de privacidade aceitas no cadastro.
 const VERSAO_TERMOS = "2026-10-16";
 // WhatsApp da Central de Atendimento (botão flutuante do site).
 const WHATSAPP_CENTRAL = "5521975469162";
-const SCHEMA = "2.13.0";
+const SCHEMA = "2.14.0";
 const COOKIE = "__Host-denia_sessao";
 const SESSAO_MS = 8 * 60 * 60 * 1000;
 const MAX_TENTATIVAS = 5;
@@ -148,6 +149,7 @@ const DDL = [
   `CREATE TABLE IF NOT EXISTS plt_redefinicoes (token_hash TEXT PRIMARY KEY, usuario_id INTEGER NOT NULL, expira_ms INTEGER NOT NULL, usado INTEGER NOT NULL DEFAULT 0, criado_ms INTEGER NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS plt_contatos (id INTEGER PRIMARY KEY AUTOINCREMENT, nome TEXT, email TEXT, empresa TEXT, telefone TEXT, assunto TEXT, mensagem TEXT, ip TEXT, lido INTEGER NOT NULL DEFAULT 0, criado_ms INTEGER NOT NULL)`,
   ...DDL_ZAP,
+  ...DDL_PROBLEMAS,
   ...DDL_TEMPORADA,
   `CREATE TABLE IF NOT EXISTS plt_pagamentos (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, gateway_id TEXT UNIQUE, valor REAL, status TEXT, vencimento TEXT, pago_ms INTEGER, link TEXT, forma TEXT, criado_ms INTEGER)`
 ];
@@ -729,8 +731,9 @@ async function vigiarWhatsapp(env) {
       const en = st.entregas_24h;
       const pendentes = en ? (en.falhas_pendentes != null ? en.falhas_pendentes : en.falhas) : 0;
       const muitas = en && pendentes >= Math.max(3, (en.total || 0) * 0.2);
-      if (!st.entrega_bloqueada && !muitas) continue;
+      if (!st.entrega_bloqueada && !muitas) { await resolverProblema(env, org, "engine_entrega"); continue; }
       const motivo = st.entrega_bloqueada ? `${st.entrega_bloqueada.erro} (código ${st.entrega_bloqueada.codigo})` : (en.motivos || []).map(m => `${m.motivo} (${m.n}×)`).join(" · ");
+      await registrarProblema(env, org, { chave: "engine_entrega", area: "WHATSAPP", gravidade: "ALTA", titulo: st.entrega_bloqueada ? "O WhatsApp da IA não está entregando as mensagens" : `A IA do WhatsApp não conseguiu entregar ${pendentes} mensagem(ns) nas últimas 24 h`, motivo: "Motivo informado pela Meta: " + motivo, dica: "Até resolver, responda os clientes pelo celular. O diagnóstico completo está em WhatsApp → Diagnóstico.", link: "#/whatsapp/diagnostico" });
       const chave = "alerta_entrega_" + org;
       const ultimo = await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave=?").bind(chave).first().catch(() => null);
       let antes = {};
@@ -773,6 +776,7 @@ async function limparBanco(env) {
     env.DB.prepare("DELETE FROM plt_meta WHERE chave LIKE 'zap_ia_%' AND chave NOT LIKE 'zap_ia_mes_%' AND chave NOT LIKE ?").bind(`%_${hoje}`),
     env.DB.prepare("DELETE FROM plt_zap_tg WHERE criado_ms < ?").bind(t - 30 * 86400000)
   ]).catch(e => console.error("limpeza", e?.message));
+  await limparProblemas(env, t);
 }
 
 // Motores antigos (antes do 31.9) liam o histórico inteiro a cada "tick": com eles, só a cada 30 min.
@@ -862,6 +866,7 @@ async function apiOrg(request, env, sessao, orgId, resto) {
   if (resto.startsWith("engine/")) return proxyEngine(request, env, sessao, orgId, papel, resto.slice(7));
   const kit = { ...kitBase(env), sessao };
   if (resto === "tp" || resto.startsWith("tp/")) return rotasTemporada(request, env, { ...(await kitZap(env, new URL(request.url).origin)), sessao, superAdmin: Boolean(sessao.usuario.super_admin), openai: openaiBruto, acesso: sessao.usuario.super_admin ? { ...acesso, limites: { ...acesso.limites, imoveis: 0 } } : acesso, avisar: async (o, texto) => { for (const para of await responsaveisDa(env, o)) await enviarEmail(env, para, "DENIA — hóspede precisa de você", texto); } }, orgId, papel, resto);
+  if (resto === "problemas" || resto.startsWith("problemas/")) return (await rotasProblemas(request, env, orgId, papel, resto, pode(papel, "AGENTE"))) || json({ erro: "Rota não encontrada." }, 404);
   if (resto === "zap" || resto.startsWith("zap/")) return rotasZap(request, env, { ...(await kitZap(env, new URL(request.url).origin)), sessao, acesso: sessao.usuario.super_admin ? { ...acesso, recursos: Object.keys(RECURSOS) } : acesso }, orgId, papel, resto);
   if (resto === "ia/chave" && metodo === "GET") {
     const k = await chaveIA(env, orgId);

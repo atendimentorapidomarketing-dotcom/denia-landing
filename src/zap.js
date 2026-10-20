@@ -9,6 +9,7 @@ import { openaiResposta } from "./marketing.js";
 import { acessoDa, lerPlanos } from "./planos.js";
 
 const GRAPH = "https://graph.facebook.com/v21.0";
+import { registrarProblema, resolverProblema } from "./problemas.js";
 export const DDL_ZAP = [
   `CREATE TABLE IF NOT EXISTS plt_zap_contas (org_id INTEGER PRIMARY KEY, phone_number_id TEXT UNIQUE, waba_id TEXT, numero TEXT, nome_verificado TEXT, token_cifrado TEXT, segredo_cifrado TEXT, telegram_cifrado TEXT, ativo INTEGER NOT NULL DEFAULT 1, modo TEXT NOT NULL DEFAULT 'BOTOES', config TEXT, atualizado_ms INTEGER)`,
   `CREATE TABLE IF NOT EXISTS plt_zap_itens (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, pai_id INTEGER NOT NULL DEFAULT 0, tipo TEXT NOT NULL, titulo TEXT NOT NULL, descricao TEXT, texto TEXT, palavras TEXT, ordem INTEGER NOT NULL DEFAULT 0, ativo INTEGER NOT NULL DEFAULT 1)`,
@@ -161,6 +162,15 @@ async function tgApi(token, metodo, corpo) {
     return await r.json().catch(() => ({ ok: r.ok }));
   } catch { return { ok: false }; }
 }
+function motivoTelegram(r) {
+  const d = String(r?.description || "");
+  if (!d) return "O Telegram não respondeu (fora do ar ou sem conexão).";
+  if (/bot was kicked|not a member|chat not found|group chat was upgraded/i.test(d)) return "O bot foi removido do grupo, o grupo mudou ou não existe mais.";
+  if (/bot was blocked/i.test(d)) return "O bot foi bloqueado no Telegram.";
+  if (/unauthorized|401/i.test(d)) return "O token do bot do Telegram não vale mais.";
+  if (/too many requests/i.test(d)) return "O Telegram limitou os envios por alguns instantes.";
+  return "Resposta do Telegram: " + d.slice(0, 200);
+}
 async function telegram(z, texto, telCliente, semDica = false, markdown = false) {
   if (z.sim) return false;
   const d = await destinoTelegram(z.env, z.k, z.conta);
@@ -170,6 +180,8 @@ async function telegram(z, texto, telCliente, semDica = false, markdown = false)
   // Se o Telegram recusar a formatação, manda o mesmo aviso sem negrito.
   if (markdown && !r?.ok) r = await tgApi(d.token, "sendMessage", { chat_id: d.chat, text: corpo.replace(/\\([_*`\[])/g, "$1").replace(/\*/g, ""), disable_web_page_preview: true });
   const id = r?.result?.message_id;
+  if (r?.ok) await resolverProblema(z.env, z.org, "telegram");
+  else await registrarProblema(z.env, z.org, { chave: "telegram", area: "AVISOS", gravidade: "ALTA", titulo: "O aviso para a equipe no Telegram não foi enviado", motivo: motivoTelegram(r), dica: "Em Conectar número, conecte o grupo do Telegram de novo (o bot precisa estar no grupo). Enquanto isso, o aviso vai por e-mail.", link: "#/chatbot/conexao" });
   // Guarda de qual cliente é o aviso, para a equipe responder pelo próprio Telegram.
   if (id && telCliente) await z.env.DB.prepare("INSERT OR REPLACE INTO plt_zap_tg(chat_id,message_id,org_id,telefone,criado_ms) VALUES(?,?,?,?,?)").bind(String(d.chat), id, z.org, telCliente, z.agora).run().catch(() => {});
   return Boolean(r?.ok);

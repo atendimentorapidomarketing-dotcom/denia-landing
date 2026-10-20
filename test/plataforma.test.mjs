@@ -2687,3 +2687,65 @@ test("Temporada — importar anúncio colando a página: título, descrição, r
   assert.deepEqual(lista[0].plataformas.map(x => x.canal), ["airbnb"]);
   assert.equal((await p.req(`/api/orgs/1/tp/imoveis/${id}/anuncio/colar`, { metodo: "POST", quem: "admin", corpo: { texto: "curto" } })).status, 400);
 });
+
+test("Problemas — mensagens não entregues, clientes esperando, posts que não saíram e contador do menu", async () => {
+  const p = await criarPlataforma();
+  const t0 = Date.parse("2026-10-20T15:00:00Z");
+  p.env.__agora = () => t0;
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  const vazio = await p.req("/api/orgs/1/problemas", { quem: "admin" });
+  assert.equal(vazio.status, 200, JSON.stringify(vazio.dados));
+  assert.equal(vazio.dados.total, 0);
+  await p.req("/api/orgs/1/mk/resumo", { quem: "admin" }); // cria as tabelas do marketing
+  const db = p.env.DB, min = 60000;
+  const exec = (sql, ...a) => db.prepare(sql).bind(...a).run();
+  await exec("INSERT INTO plt_zap_contatos(org_id,telefone,nome,pausado_ate,ultima_entrada_ms,ultimo_ms) VALUES(1,'5521999990001','Ana',?,?,?)", t0 + 600 * min, t0 - 90 * min, t0 - 90 * min);
+  await exec("INSERT INTO plt_zap_contatos(org_id,telefone,nome,pausado_ate,ultima_entrada_ms,ultimo_ms) VALUES(1,'5521999990002','Beto',?,?,?)", t0 + 600 * min, t0 - 90 * min, t0 - 80 * min);
+  await exec("INSERT INTO plt_zap_msgs(org_id,telefone,direcao,origem,texto,status,criado_ms) VALUES(1,'5521999990002','S','EQUIPE','Oi Beto, já vamos ver','ENVIADA',?)", t0 - 80 * min);
+  for (const [i, erro] of [[1, "131047: Re-engagement message"], [2, "131047: Re-engagement message"], [3, "131026: Message undeliverable"]])
+    await exec("INSERT INTO plt_zap_msgs(org_id,telefone,direcao,origem,texto,wamid,status,erro,criado_ms) VALUES(1,?,'S','ROBO','Menu','w" + i + "','FAILED',?,?)", i < 3 ? "5521999990003" : "5521999990004", erro, t0 - i * min);
+  await exec("INSERT INTO plt_zap_msgs(org_id,telefone,direcao,origem,texto,wamid,status,erro,criado_ms) VALUES(1,'5521999990005','S','ROBO','velha','w9','FAILED','131026: x',?)", t0 - 9 * 86400000);
+  for (const c of ["publicacao TEXT", "tentativas INTEGER"]) await exec("ALTER TABLE plt_mk_posts ADD COLUMN " + c).catch(() => { }); // colunas da publicação automática
+  const marca = await db.prepare("INSERT INTO plt_mk_marcas(org_id,nome,criado_ms) VALUES(1,'Loja X',?) RETURNING id").bind(t0).first().catch(() => null);
+  const mid = marca?.id || 1;
+  await exec("INSERT INTO plt_mk_posts(org_id,marca_id,canais,data,hora,titulo,status,publicacao,criado_ms,atualizado_ms) VALUES(1,?,'[\"instagram\"]','2026-10-20','09:00','Promoção de outubro','APROVADO',?,?,?)", mid, JSON.stringify({ instagram: { erro: "O Instagram exige uma imagem. Crie a arte do post antes de publicar.", em: t0 - 30 * min } }), t0, t0);
+  await exec("INSERT INTO plt_mk_posts(org_id,marca_id,canais,data,hora,titulo,status,criado_ms,atualizado_ms) VALUES(1,?,'[\"facebook\"]','2026-10-19','10:00','Dica da semana','APROVADO',?,?)", mid, t0, t0);
+  await exec("INSERT INTO plt_mk_posts(org_id,marca_id,canais,data,hora,titulo,status,criado_ms,atualizado_ms) VALUES(1,?,'[\"facebook\"]','2026-10-25','10:00','Futuro','APROVADO',?,?)", mid, t0, t0);
+  await exec("INSERT INTO plt_mk_avaliacoes(org_id,marca_id,autor,nota,texto,status,criado_ms) VALUES(1,?,'Carla',1,'Péssimo atendimento','PENDENTE',?)", mid, t0 - 5 * min);
+  await exec("INSERT INTO plt_mk_avaliacoes(org_id,marca_id,autor,nota,texto,status,criado_ms) VALUES(1,?,'Davi',5,'Ótimo','PENDENTE',?)", mid, t0 - 5 * min);
+  await exec("INSERT INTO plt_meta(chave,valor) VALUES('zap_assinatura_falhou_1',?)", String(t0 - 10 * min));
+  const { registrarProblema, resolverProblema } = await import(new URL("../src/problemas.js", import.meta.url).href);
+  await registrarProblema(p.env, 1, { chave: "telegram", area: "AVISOS", gravidade: "ALTA", titulo: "O aviso para a equipe no Telegram não foi enviado", motivo: "O bot foi removido do grupo." });
+  await registrarProblema(p.env, 1, { chave: "telegram", area: "AVISOS", gravidade: "ALTA", titulo: "O aviso para a equipe no Telegram não foi enviado", motivo: "O bot foi removido do grupo." });
+  await registrarProblema(p.env, 2, { chave: "telegram", area: "AVISOS", titulo: "de outra empresa" });
+
+  const r = await p.req("/api/orgs/1/problemas", { quem: "admin" });
+  const lista = r.dados.problemas;
+  const achar = re => lista.find(x => re.test(x.titulo));
+  assert.ok(achar(/Ana .*esperando resposta/), "cliente pediu atendente e ninguém respondeu");
+  assert.ok(!achar(/Beto/), "a equipe já respondeu o Beto");
+  const nao = achar(/não entregue para 5521999990003/);
+  assert.equal(nao.vezes, 2); assert.match(nao.motivo, /24 horas/); assert.match(nao.dica, /modelo aprovado/);
+  assert.match(achar(/5521999990004/).motivo, /não tem WhatsApp|não recebeu/);
+  assert.ok(!achar(/5521999990005/), "falhas com mais de 7 dias não aparecem");
+  assert.match(achar(/Promoção de outubro.*Instagram/).motivo, /sem arte/);
+  assert.ok(achar(/Dica da semana.*não saiu/), "post atrasado aparece");
+  assert.ok(!achar(/Futuro/));
+  assert.ok(achar(/1★ de Carla/)); assert.ok(!achar(/Davi/));
+  assert.ok(achar(/recusadas/), "assinatura do webhook");
+  const tg = achar(/Telegram/); assert.equal(tg.vezes, 2); assert.equal(tg.gravidade, "ALTA");
+  assert.ok(!lista.some(x => x.titulo === "de outra empresa"), "cada empresa só vê os seus");
+  assert.equal(lista.length, 8, lista.map(x => x.titulo).join(" | "));
+  assert.equal((await p.req("/api/orgs/1/problemas?contar=1", { quem: "admin" })).dados.total, 8);
+
+  // Marcar como resolvido esconde; se acontecer de novo, volta.
+  assert.equal((await p.req("/api/orgs/1/problemas/resolver", { quem: "admin", metodo: "POST", corpo: { chaves: [nao.chave, tg.chave] } })).status, 200);
+  assert.equal((await p.req("/api/orgs/1/problemas?contar=1", { quem: "admin" })).dados.total, 6);
+  await exec("INSERT INTO plt_zap_msgs(org_id,telefone,direcao,origem,texto,wamid,status,erro,criado_ms) VALUES(1,'5521999990003','S','ROBO','Menu','w10','FAILED','131047: x',?)", t0);
+  await registrarProblema(p.env, 1, { chave: "telegram", area: "AVISOS", titulo: "O aviso para a equipe no Telegram não foi enviado", motivo: "x" });
+  const r2 = (await p.req("/api/orgs/1/problemas", { quem: "admin" })).dados.problemas;
+  assert.equal(r2.find(x => /5521999990003/.test(x.titulo)).vezes, 3, "falha nova faz voltar");
+  assert.equal(r2.find(x => /Telegram/.test(x.titulo)).vezes, 1, "volta contando do zero");
+  await resolverProblema(p.env, 1, "telegram");
+  assert.ok(!(await p.req("/api/orgs/1/problemas", { quem: "admin" })).dados.problemas.some(x => /Telegram/.test(x.titulo)), "some quando volta a funcionar");
+});
