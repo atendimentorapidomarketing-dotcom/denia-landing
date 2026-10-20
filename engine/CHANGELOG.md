@@ -1,5 +1,18 @@
 # Changelog — DENIA Engine
 
+## 32.0.0 — 2026-10-20
+
+### Novo — a equipe conversa com a DENIA pelo Telegram da Central
+- A equipe responde um aviso no grupo (ou cita o bot) e a DENIA entende pelo contexto do caso:
+  consulta o profissional indicado ("isso é com a Mirella"), manda mensagem ao cliente ou ao
+  profissional, pausa/retoma a conversa, muda a etapa ou só responde ("quem faz estofado?").
+- Ela confirma no grupo o que fez (✅/⚠️) e, sem saber o caso ou o profissional, pergunta em vez de chutar.
+- Só o grupo `TELEGRAM_CHAT_ID` é ouvido; o endereço `/telegram` exige o segredo combinado no setWebhook.
+- Avisos de um caso terminam com "↩️ Responda esta mensagem para me dizer o que fazer."
+- Liga sozinha uma vez por dia (sem trocar um endereço já usado por outro sistema), ou em
+  `POST /api/telegram/conectar` (`{"forcar":true}` para trocar). `TELEGRAM_EQUIPE=desligado` desliga.
+- Na Hostinger, o servidor informa o caminho `/ia` (cabeçalho `x-denia-prefixo`).
+
 ## 31.12.0 — 2026-10-20
 
 ### Corrigido — avisos repetidos de "mensagem não entregue" no Telegram
