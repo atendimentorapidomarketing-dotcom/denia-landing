@@ -181,18 +181,26 @@ function motivoPost(erro) {
   return cortar(s, 300) || "O canal não informou o motivo.";
 }
 
-// Só o que não foi marcado como resolvido.
-export async function problemasAbertos(env, orgId, agora = agoraDe(env)) {
-  const [todos, vistos] = await Promise.all([listarProblemas(env, orgId, agora), linhas(env, "SELECT chave FROM plt_problemas_vistos WHERE org_id=?", orgId)]);
-  const ocultos = new Set(vistos.map(v => v.chave));
-  return todos.filter(p => !ocultos.has(p.chave));
+// Avisos da IA da Central (motor) que não são urgentes: não vão ao Telegram, aparecem aqui.
+function problemaDaCentral(a) {
+  const t = String(a?.texto || "").replace(/^DENIA — /, "").trim();
+  const corte = t.search(/[.!?](\s|$)|: "/);
+  const titulo = cortar(corte > 15 && corte < 140 ? t.slice(0, corte) : t, 140);
+  return { chave: `central:${a.id}`, area: "CENTRAL", titulo, motivo: titulo !== t ? cortar(t, 700) : "", dica: "Veja a conversa em Conversas. Se precisar, a equipe responde pelo celular ou pelo Telegram (respondendo um aviso).", link: "#/conversas", gravidade: "MEDIA", vezes: 1, ms: Number(a?.em) || 0 };
 }
 
-export async function rotasProblemas(request, env, orgId, papel, resto, podeAgir, quem) {
+// Só o que não foi marcado como resolvido.
+export async function problemasAbertos(env, orgId, agora = agoraDe(env), avisosCentral = null) {
+  const [todos, vistos, central] = await Promise.all([listarProblemas(env, orgId, agora), linhas(env, "SELECT chave FROM plt_problemas_vistos WHERE org_id=?", orgId), avisosCentral ? avisosCentral().catch(() => []) : []]);
+  const ocultos = new Set(vistos.map(v => v.chave));
+  return [...todos, ...(central || []).map(problemaDaCentral)].filter(p => !ocultos.has(p.chave)).sort((a, b) => (b.ms || 0) - (a.ms || 0));
+}
+
+export async function rotasProblemas(request, env, orgId, papel, resto, podeAgir, quem, avisosCentral = null) {
   const metodo = request.method;
   const agora = agoraDe(env);
   if (resto === "problemas" && metodo === "GET") {
-    const abertos = await problemasAbertos(env, orgId, agora);
+    const abertos = await problemasAbertos(env, orgId, agora, avisosCentral);
     const url = new URL(request.url);
     if (url.searchParams.get("contar") === "1") return Response.json({ total: abertos.length, altos: abertos.filter(p => p.gravidade === "ALTA").length });
     return Response.json({ problemas: abertos, total: abertos.length });

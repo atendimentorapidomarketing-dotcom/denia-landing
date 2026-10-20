@@ -1254,7 +1254,7 @@
   // Problemas: o que deu errado e precisa de atenção, com o motivo e o que fazer
   // ---------------------------------------------------------------------------
 
-  const AREAS_PROBLEMA = [["", "Todos"], ["WHATSAPP", "Mensagens"], ["CLIENTES", "Clientes"], ["PUBLICACOES", "Postagens"], ["TEMPORADA", "Temporada"], ["AGENDA", "Agendamentos"], ["AVISOS", "Avisos para a equipe"], ["SISTEMA", "Sistema"]];
+  const AREAS_PROBLEMA = [["", "Todos"], ["WHATSAPP", "Mensagens"], ["CLIENTES", "Clientes"], ["PUBLICACOES", "Postagens"], ["TEMPORADA", "Temporada"], ["AGENDA", "Agendamentos"], ["CENTRAL", "IA da Central"], ["AVISOS", "Avisos para a equipe"], ["SISTEMA", "Sistema"]];
   async function paginaProblemas(el, _p, vivo) {
     el.appendChild(cabeca("Problemas", "Mensagens que não chegaram, clientes esperando, postagens que não saíram e tudo o que a DENIA não conseguiu fazer, com o motivo e o que fazer."));
     const area = h("div", {}, carregando());

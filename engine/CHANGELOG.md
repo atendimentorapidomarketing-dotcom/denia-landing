@@ -1,5 +1,17 @@
 # Changelog — DENIA Engine
 
+## 32.1.0 — 2026-10-20
+
+### Mudado — Telegram da Central só para o que é urgente
+- Vão ao Telegram só os avisos em que alguém precisa agir: cliente pediu atendente, cancelamento ou
+  reclamação; sem profissional certo ou disponível; consulta/confirmação que não saiu; profissional
+  desistiu ou quer mudar algo agendado; valores incertos; clientes sem resposta; WhatsApp fora do ar;
+  comprovante de pagamento; serviço agendado e reuniões.
+- O resto (o que o profissional ou o cliente escreveu, "nenhuma ação automática", falhas de entrega,
+  janela de 24 h, número sem WhatsApp, mídia não analisada, erros técnicos, estudo e relatório do dia)
+  fica registrado (`AVISO_PAINEL`) e aparece na página Problemas da plataforma (`GET /platform/avisos`).
+- `TELEGRAM_AVISOS=todos` volta a mandar tudo ao Telegram.
+
 ## 32.0.0 — 2026-10-20
 
 ### Novo — a equipe conversa com a DENIA pelo Telegram da Central

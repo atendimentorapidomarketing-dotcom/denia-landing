@@ -36,7 +36,7 @@
 //       relatório diário. Nunca inicia conversa nova por conta própria.
 // ============================================================================
 
-const VERSAO = "32.0.0";
+const VERSAO = "32.1.0";
 const SCHEMA_VERSAO = "32.0.0"; // mude sempre que acrescentar tabela ou índice (senão o banco de produção não recebe)
 const EMPRESA_ID = 1;
 const PHONE_ID_PADRAO = "473474732510163";
@@ -636,7 +636,7 @@ async function estudoDiario(c, { forcar = false } = {}) {
   const relatorio = { dia, conversas: porPessoa.size, nota: Number.isFinite(Number(o?.nota)) ? Math.max(0, Math.min(10, Number(o.nota))) : null, resumo: txt(o?.resumo, 500),
     erros: (Array.isArray(o?.erros) ? o.erros : []).slice(0, 10).map(e => ({ erro: ocultarTelefones(txt(e?.erro, 300)), correcao: ocultarTelefones(txt(e?.correcao, 300)) })), licoes, licoes_novas: novas, conhecimentos };
   await evento(c, null, "ESTUDO_DIARIO", relatorio.resumo || "Estudo do dia", relatorio);
-  if (!forcar) await c.saida.telegram(`DENIA — estudo do dia (${porPessoa.size} conversas): nota ${relatorio.nota ?? "-"}/10. ${relatorio.resumo}${novas ? ` ${novas} lição(ões) nova(s) já valem amanhã.` : ""}${conhecimentos ? ` ${conhecimentos} conhecimento(s) para aprovar em Aprendizados.` : ""}`).catch(() => {});
+  if (!forcar && String(c.env.TELEGRAM_AVISOS || "").toLowerCase() === "todos") await c.saida.telegram(`DENIA — estudo do dia (${porPessoa.size} conversas): nota ${relatorio.nota ?? "-"}/10. ${relatorio.resumo}${novas ? ` ${novas} lição(ões) nova(s) já valem amanhã.` : ""}${conhecimentos ? ` ${conhecimentos} conhecimento(s) para aprovar em Aprendizados.` : ""}`).catch(() => {});
   return relatorio;
 }
 // Uma vez por semana: pesquisa na internet boas práticas de atendimento com empatia e vira lição.
@@ -1538,10 +1538,17 @@ async function registrarSaidaTaxa(c, to) {
   try { await c.db.prepare("INSERT INTO d30_saidas(telefone,criado_ms) VALUES(?,?)").bind(digitos(to), c.agora()).run(); } catch (e) { console.warn("taxa", e?.message); }
 }
 
+// O Telegram da Central é só para o URGENTE (alguém precisa agir agora). O resto (o que o profissional
+// ou o cliente escreveu, falhas de entrega, janela de 24 h, erros técnicos) fica registrado e aparece
+// na página Problemas da plataforma. TELEGRAM_AVISOS=todos volta a mandar tudo.
+const AVISOS_URGENTES = ["bloqueio:", "sem-confirmacao:", "limite:", "ia:", "cancel:", "humano:", "apoio:", "comprovante:", "semcat:", "semprest:", "balcao:",
+  "falha-consulta:", "falha-aceite:", "falha-cli:", "valor-incerto:", "pos:", "desist:", "atraso:", "atrasadas:", "guia-humano:", "guia-ia-humano:", "agendado:", "reuniao"];
+function avisoUrgente(c, chave) { return String(c.env.TELEGRAM_AVISOS || "").toLowerCase() === "todos" || AVISOS_URGENTES.some(p => String(chave || "").startsWith(p)); }
 async function alertarEquipe(c, texto, chave, casoId = null) {
   if (chave && !(await reservarChave(c, "alerta:" + chave))) return;
   // O mesmo aviso (mesmo texto) nunca chega duas vezes em 6 h, venha de onde vier.
   if (!(await reservarChave(c, `alerta-txt:${hashTexto(norm(texto))}:${Math.floor(c.agora() / (6 * 3600000))}`))) return;
+  if (!avisoUrgente(c, chave)) { await evento(c, casoId, "AVISO_PAINEL", texto); return; }
   // Teto de alertas por hora: o Telegram nunca vira uma enxurrada.
   const recentes = Number((await c.db.prepare("SELECT COUNT(*) n FROM d30_eventos WHERE tipo='ALERTA_EQUIPE' AND criado_ms > ?").bind(c.agora() - 3600000).first().catch(() => null))?.n || 0);
   await evento(c, casoId, "ALERTA_EQUIPE", texto);
@@ -3339,7 +3346,9 @@ async function relatorioDiario(c) {
   const texto = [`Relatório DENIA — ${dia.split("-").reverse().join("/")}`, `Mensagens recebidas: ${recebidas}`, `Casos novos: ${novos}`, `Consultas a prestadores: ${consultas}`, `Agendamentos: ${agendados}`, `Alertas à equipe: ${alertas}`, `Respostas corrigidas pela guarda: ${correcoes}`, `Falhas de envio: ${falhas}`,
     atencao.length ? "\nCasos parados há mais de 2h:\n" + atencao.map(a => { let f = {}; try { f = JSON.parse(a.fatos_json); } catch { } return `#${a.caso_id} ${a.etapa} — ${f.servico || f.problema || "-"} (desde ${dataHoraSP(a.atualizado_ms)})`; }).join("\n") : "",
     analise ? "\nAutoavaliação:\n" + analise : ""].filter(Boolean).join("\n");
-  await c.saida.telegram(texto);
+  // Relatório não é urgente: vai por e-mail (se configurado) e fica no painel; no Telegram só com TELEGRAM_AVISOS=todos.
+  await evento(c, null, "RELATORIO_DIARIO", texto);
+  if (String(c.env.TELEGRAM_AVISOS || "").toLowerCase() === "todos") await c.saida.telegram(texto);
   await enviarEmailRelatorio(c, texto, dia);
 }
 
@@ -3602,6 +3611,11 @@ async function platformApi(request, env, caminho, metodo) {
     if (sobram(c) > 30) await estudoDiario(c).catch(e => console.error("estudo", e?.message));
     if (sobram(c) > 30 && horaSP(c.agora()) >= 22) await pesquisaSemanal(c).catch(e => console.error("pesquisa", e?.message));
     return json({ sucesso: true, enviadas, conversas: tels.length, memorias });
+  }
+  // Avisos que não foram ao Telegram (não urgentes): a plataforma mostra na página Problemas.
+  if (caminho === "/platform/avisos" && metodo === "GET") {
+    const ev = (await c.db.prepare("SELECT id, caso_id, descricao, criado_ms FROM d30_eventos WHERE tipo='AVISO_PAINEL' AND criado_ms > ? ORDER BY id DESC LIMIT 60").bind(c.agora() - 7 * 86400000).all().catch(() => null))?.results || [];
+    return json({ sucesso: true, avisos: ev.map(e => ({ id: e.id, caso_id: e.caso_id, texto: e.descricao, em: e.criado_ms })) });
   }
   if (caminho === "/platform/study" && metodo === "GET") {
     const ev = (await c.db.prepare("SELECT tipo, descricao, dados, criado_ms FROM d30_eventos WHERE tipo IN ('ESTUDO_DIARIO','PESQUISA_SEMANAL') ORDER BY id DESC LIMIT 14").all().catch(() => null))?.results || [];
