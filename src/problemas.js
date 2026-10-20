@@ -14,6 +14,11 @@ const HORA = 3600000, DIA = 24 * HORA;
 const agoraDe = env => typeof env.__agora === "function" ? env.__agora() : Date.now();
 const cortar = (s, n) => { s = String(s ?? ""); return s.length > n ? s.slice(0, n - 1) + "…" : s; };
 
+// "qua., 22/10 às 15:00" no horário de Brasília.
+const FMT_DIA = new Intl.DateTimeFormat("pt-BR", { timeZone: "America/Sao_Paulo", weekday: "short", day: "2-digit", month: "2-digit" });
+const FMT_HORA = new Intl.DateTimeFormat("pt-BR", { timeZone: "America/Sao_Paulo", hour: "2-digit", minute: "2-digit" });
+export function quandoBR(ms) { const d = new Date(Number(ms)); return isNaN(d) ? "" : `${FMT_DIA.format(d)} às ${FMT_HORA.format(d)}`; }
+
 // Registra (ou soma mais uma vez) um problema que não fica guardado em outro lugar.
 // Se ele tinha sido resolvido, volta a aparecer.
 export async function registrarProblema(env, orgId, p) {
@@ -147,7 +152,17 @@ export async function listarProblemas(env, orgId, agora = agoraDe(env)) {
   for (const a of await linhas(env, "SELECT a.id, a.autor, a.nota, a.nota_max, a.texto, a.canal, a.criado_ms, i.nome FROM plt_tp_avaliacoes a LEFT JOIN plt_tp_imoveis i ON i.id=a.imovel_id WHERE a.org_id=? AND a.status='PENDENTE' AND a.nota IS NOT NULL AND a.nota*1.0/COALESCE(NULLIF(a.nota_max,0),5) <= 0.6 ORDER BY a.id DESC LIMIT 20", orgId))
     add({ chave: `tpaval:${a.id}`, area: "CLIENTES", titulo: `Avaliação ruim de ${a.autor || "um hóspede"} no ${CANAL_TP[a.canal] || a.canal || "canal"}${a.nome ? " (" + a.nome + ")" : ""}`, motivo: `Nota ${a.nota}${a.nota_max ? " de " + a.nota_max : ""}, ainda sem resposta.`, detalhe: a.texto ? '"' + cortar(a.texto, 240) + '"' : "", dica: "Abra Locação por temporada → Avaliações dos hóspedes para responder.", link: "#/temporada/avaliacoes", gravidade: "MEDIA", ms: a.criado_ms });
 
-  // 8. Mensagens do WhatsApp recusadas por assinatura (chave secreta do app diferente).
+  // 8. Agendamentos que a IA marcou (ou que o cliente remarcou/cancelou) e ninguém da equipe confirmou que viu.
+  for (const a of await linhas(env, "SELECT * FROM plt_zap_agenda WHERE org_id=? AND visto_ms IS NULL AND status IN ('MARCADO','CANCELADO') AND (quando_ms IS NULL OR quando_ms>?) AND atualizado_ms>? ORDER BY COALESCE(quando_ms, criado_ms) LIMIT 40", orgId, agora - DIA, agora - 30 * DIA)) {
+    const quem = nomeCliente(a.nome, a.telefone), dia = a.quando_ms ? quandoBR(a.quando_ms) : a.quando_txt || "dia a confirmar";
+    const cancelado = a.status === "CANCELADO";
+    add({ chave: `agenda:${a.id}:${a.atualizado_ms}`, area: "AGENDA", titulo: cancelado ? `${quem} cancelou: ${a.o_que || "agendamento"} de ${dia}` : `Novo agendamento: ${a.o_que || "horário"} com ${quem} — ${dia}`,
+      motivo: (cancelado ? "O cliente desmarcou pelo WhatsApp." : "A IA combinou este horário com o cliente no WhatsApp.") + (a.avisado ? " O aviso foi enviado para a equipe, mas ninguém confirmou que viu." : " O aviso NÃO chegou à equipe (Telegram e e-mail não conectados)."),
+      detalhe: a.detalhes ? "Detalhes: " + cortar(a.detalhes, 300) : "", dica: "Abra a Agenda, confira e toque em \"Vi\". Para falar com o cliente, abra a conversa.", link: "#/chatbot/agenda",
+      gravidade: !a.avisado || (a.quando_ms && a.quando_ms - agora < DIA) ? "ALTA" : "MEDIA", ms: a.atualizado_ms });
+  }
+
+  // 9. Mensagens do WhatsApp recusadas por assinatura (chave secreta do app diferente).
   const assin = await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave=?").bind("zap_assinatura_falhou_" + orgId).first().catch(() => null);
   const assinMs = Number(assin?.valor || 0);
   if (assinMs && agora - assinMs < 2 * DIA)
@@ -173,7 +188,7 @@ export async function problemasAbertos(env, orgId, agora = agoraDe(env)) {
   return todos.filter(p => !ocultos.has(p.chave));
 }
 
-export async function rotasProblemas(request, env, orgId, papel, resto, podeAgir) {
+export async function rotasProblemas(request, env, orgId, papel, resto, podeAgir, quem) {
   const metodo = request.method;
   const agora = agoraDe(env);
   if (resto === "problemas" && metodo === "GET") {
@@ -190,6 +205,8 @@ export async function rotasProblemas(request, env, orgId, papel, resto, podeAgir
     // Os registrados só saem quando resolvidos (e voltam se acontecerem de novo); os outros ficam escondidos pela chave.
     const vistos = chaves.filter(c => !c.startsWith("reg:"));
     if (vistos.length) await env.DB.batch(vistos.map(c => env.DB.prepare("INSERT OR REPLACE INTO plt_problemas_vistos(org_id,chave,ms) VALUES(?,?,?)").bind(orgId, c, agora)));
+    const ags = chaves.map(c => c.match(/^agenda:(\d+):/)).filter(Boolean).map(m => Number(m[1]));
+    if (ags.length) await env.DB.batch(ags.map(id => env.DB.prepare("UPDATE plt_zap_agenda SET visto_ms=?, visto_por=? WHERE org_id=? AND id=?").bind(agora, quem || null, orgId, id)));
     const reg = chaves.filter(c => c.startsWith("reg:")).map(c => c.slice(4).replace(/:\d+$/, ""));
     if (reg.length) await env.DB.batch(reg.map(c => env.DB.prepare("UPDATE plt_problemas SET resolvido_ms=? WHERE org_id=? AND chave=? AND resolvido_ms IS NULL").bind(agora, orgId, c)));
     return Response.json({ ok: true, resolvidos: chaves.length });

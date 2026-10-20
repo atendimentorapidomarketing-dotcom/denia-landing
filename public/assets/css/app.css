@@ -1012,3 +1012,7 @@ input.fx-titulo:focus { outline: none; border-color: var(--azul); background: rg
 }
 .barra-app-item { position: relative; }
 .barra-contador { position: absolute; top: 2px; left: calc(50% + 6px); margin: 0; min-width: 17px; padding: 0 4px; font-size: 10.5px; line-height: 17px; }
+/* ---------- Agenda do chatbot ---------- */
+.agenda-dia h4 { margin: 16px 0 8px; font-size: 14.5px; color: var(--texto-2); }
+.agenda-hora { flex: 0 0 auto; min-width: 52px; font-weight: 700; font-size: 16px; font-variant-numeric: tabular-nums; }
+.agenda-passado { opacity: 0.7; }

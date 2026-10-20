@@ -1254,7 +1254,7 @@
   // Problemas: o que deu errado e precisa de atenção, com o motivo e o que fazer
   // ---------------------------------------------------------------------------
 
-  const AREAS_PROBLEMA = [["", "Todos"], ["WHATSAPP", "Mensagens"], ["CLIENTES", "Clientes"], ["PUBLICACOES", "Postagens"], ["TEMPORADA", "Temporada"], ["AVISOS", "Avisos para a equipe"], ["SISTEMA", "Sistema"]];
+  const AREAS_PROBLEMA = [["", "Todos"], ["WHATSAPP", "Mensagens"], ["CLIENTES", "Clientes"], ["PUBLICACOES", "Postagens"], ["TEMPORADA", "Temporada"], ["AGENDA", "Agendamentos"], ["AVISOS", "Avisos para a equipe"], ["SISTEMA", "Sistema"]];
   async function paginaProblemas(el, _p, vivo) {
     el.appendChild(cabeca("Problemas", "Mensagens que não chegaram, clientes esperando, postagens que não saíram e tudo o que a DENIA não conseguiu fazer, com o motivo e o que fazer."));
     const area = h("div", {}, carregando());
@@ -1776,7 +1776,7 @@
   const NOME_VIA_ZAP = { BOTAO: "Tocou nos botões", PALAVRA: "Escreveu (achado sem IA)", IA: "Escreveu (resolvido pela IA)" };
   async function paginaChatbot(el, aba, vivo) {
     el.appendChild(cabeca("Chatbot do WhatsApp", "Monte o atendimento automático da empresa sem programar: botões e listas oficiais do WhatsApp (sem custo de IA) e, se quiser, a IA para responder o que o cliente escrever."));
-    const abas = [["visao", "Visão geral"], ["conversas", "Conversas"], ["clientes", "Clientes"], ["campanhas", "Campanhas"], ["modelos", "Modelos"], ["respostas", "Respostas rápidas"], ["perfil", "Perfil comercial"], ["saude", "Saúde do número"], ["menu", "Menu"], ["contatos", "Contatos e lojas"], ["mensagens", "Mensagens e IA"], ["conexao", "Conexão"], ["testar", "Testar"]];
+    const abas = [["visao", "Visão geral"], ["conversas", "Conversas"], ["agenda", "Agenda"], ["clientes", "Clientes"], ["campanhas", "Campanhas"], ["modelos", "Modelos"], ["respostas", "Respostas rápidas"], ["perfil", "Perfil comercial"], ["saude", "Saúde do número"], ["menu", "Menu"], ["contatos", "Contatos e lojas"], ["mensagens", "Mensagens e IA"], ["conexao", "Conexão"], ["testar", "Testar"]];
     const atual = abas.some(a => a[0] === aba) ? aba : "visao";
     el.appendChild(h("div", { class: "abas", role: "tablist" }, abas.map(([k, n]) => h("a", { class: "aba" + (k === atual ? " ativo" : ""), href: "#/chatbot/" + k, role: "tab" }, n))));
     const area = h("div", { class: "grade" }, carregando());
@@ -1784,6 +1784,7 @@
     try {
       if (atual === "visao") return await abaZapVisao(area, vivo);
       if (atual === "conversas") return await abaZapConversas(area, vivo);
+      if (atual === "agenda") return await abaZapAgenda(area, vivo);
       if (atual === "menu") return await abaZapMenu(area, vivo);
       if (atual === "contatos") return await abaZapContatos(area, vivo);
       if (atual === "mensagens") return await abaZapMensagens(area, vivo);
@@ -1892,6 +1893,43 @@
         h("p", { class: "sub", text: "Em modelos de marketing a DENIA inclui o botão \"Parar promoções\": quem tocar sai das campanhas. Isso protege a qualidade do número." }),
         h("div", { class: "acoes" }, botao("Enviar para aprovação da Meta", criar, "btn-primario"))) : null);
   }
+  // Agenda: reuniões, visitas e horários que a IA combinou com os clientes.
+  async function abaZapAgenda(area, vivo) {
+    const d = await zap("agenda");
+    if (!vivo()) return;
+    const lista = d.agenda || [];
+    // Horário de Brasília, igual ao aviso do Telegram e ao que a IA combinou com o cliente.
+    const fmtDia = new Intl.DateTimeFormat(LOCALE, { weekday: "long", day: "2-digit", month: "long", timeZone: "America/Sao_Paulo" });
+    const fmtH = new Intl.DateTimeFormat(LOCALE, { hour: "2-digit", minute: "2-digit", timeZone: "America/Sao_Paulo" });
+    const STATUS = { MARCADO: ["Marcado", "ok"], CANCELADO: ["Cancelado", "alerta"], CONCLUIDO: ["Concluído", ""] };
+    const acao = async (a, ac, b) => { b.disabled = true; try { await zap(`agenda/${a.id}`, { metodo: "POST", corpo: { acao: ac } }); atualizarProblemas(); abaZapAgenda(area, vivo); } catch (e) { aviso(e.message, "erro"); b.disabled = false; } };
+    const cartao = a => {
+      const passado = a.quando_ms && a.quando_ms < d.agora;
+      const [st, cls] = STATUS[a.status] || [a.status, ""];
+      return h("li", { class: "prb-item agenda-item" + (!a.visto_ms && a.status !== "CONCLUIDO" ? " prb-alta" : "") + (passado || a.status !== "MARCADO" ? " agenda-passado" : "") },
+        h("span", { class: "agenda-hora", text: a.quando_ms ? fmtH.format(new Date(a.quando_ms)) : "—" }),
+        h("div", {},
+          h("div", { class: "prb-topo" }, h("strong", { text: `${a.o_que || "Agendamento"} — ${a.nome || telefone(a.telefone)}` }), selo(st, cls), !a.visto_ms && a.status !== "CONCLUIDO" ? h("span", { class: "prb-urgente", text: "Ninguém viu ainda" }) : null),
+          h("p", { class: "prb-meta", text: `${telefone(a.telefone)} · marcado ${quandoFrase(a.criado_ms)} pela IA${a.avisado ? " · equipe avisada" : " · aviso NÃO enviado (conecte o Telegram)"}${a.visto_por ? " · visto por " + a.visto_por : ""}` }),
+          !a.quando_ms && a.quando_txt ? h("p", { class: "prb-motivo", text: "Quando: " + a.quando_txt }) : null,
+          a.detalhes ? h("p", { class: "prb-detalhe", text: a.detalhes }) : null,
+          h("div", { class: "acoes" },
+            h("a", { class: "btn btn-secundario btn-pequeno", href: "#/chatbot/conversas" }, "Abrir conversa"),
+            pode("AGENTE") && !a.visto_ms && a.status !== "CONCLUIDO" ? botao("✔ Vi", (_e, b) => acao(a, "visto", b), "btn-primario btn-pequeno") : null,
+            pode("AGENTE") && a.status === "MARCADO" ? botao("Concluído", (_e, b) => acao(a, "concluir", b), "btn-secundario btn-pequeno") : null,
+            pode("AGENTE") && a.status === "MARCADO" ? botao("Cancelar", (_e, b) => acao(a, "cancelar", b), "btn-secundario btn-pequeno") : null,
+            pode("AGENTE") && a.status !== "MARCADO" ? botao("Reabrir", (_e, b) => acao(a, "reabrir", b), "btn-secundario btn-pequeno") : null)));
+    };
+    const grupos = new Map();
+    for (const a of lista) { const k = a.quando_ms ? fmtDia.format(new Date(a.quando_ms)) : "Sem dia certo"; if (!grupos.has(k)) grupos.set(k, []); grupos.get(k).push(a); }
+    const novos = lista.filter(a => !a.visto_ms && a.status !== "CONCLUIDO").length;
+    trocar(area, h("section", { class: "cartao vidro" },
+      h("h3", { style: "margin:0 0 4px", text: "Agenda" }),
+      h("p", { class: "sub", text: "Reuniões, visitas e horários que a IA combinou com os clientes no WhatsApp. A equipe recebe um aviso na hora (Telegram ou e-mail) e um lembrete cerca de 1 hora antes. Para a IA marcar, escreva em Mensagens e IA → Regras da empresa como e quando ela pode agendar (ex.: \"reuniões online de 30 min, seg a sex, 9h às 17h\")." }),
+      novos ? h("p", { class: "prb-urgente", style: "display:inline-block", text: `${novos} agendamento(s) que ninguém da equipe viu ainda` }) : null,
+      lista.length ? h("div", {}, [...grupos].map(([dia, itens]) => h("div", { class: "agenda-dia" }, h("h4", { text: dia.charAt(0).toUpperCase() + dia.slice(1) }), h("ul", { class: "prb-lista" }, itens.map(cartao))))) : vazio("Nada marcado ainda", "Quando a IA combinar um horário com um cliente, ele aparece aqui e a equipe é avisada.")));
+  }
+
   async function abaZapCampanhas(area, vivo) {
     let [camps, mods, cli] = await Promise.all([zap("campanhas"), zap("modelos").catch(e => ({ erro: e })), zap("clientes")]);
     if (!vivo()) return;

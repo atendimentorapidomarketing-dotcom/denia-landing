@@ -9,7 +9,7 @@ import { openaiResposta } from "./marketing.js";
 import { acessoDa, lerPlanos } from "./planos.js";
 
 const GRAPH = "https://graph.facebook.com/v21.0";
-import { registrarProblema, resolverProblema } from "./problemas.js";
+import { registrarProblema, resolverProblema, quandoBR } from "./problemas.js";
 export const DDL_ZAP = [
   `CREATE TABLE IF NOT EXISTS plt_zap_contas (org_id INTEGER PRIMARY KEY, phone_number_id TEXT UNIQUE, waba_id TEXT, numero TEXT, nome_verificado TEXT, token_cifrado TEXT, segredo_cifrado TEXT, telegram_cifrado TEXT, ativo INTEGER NOT NULL DEFAULT 1, modo TEXT NOT NULL DEFAULT 'BOTOES', config TEXT, atualizado_ms INTEGER)`,
   `CREATE TABLE IF NOT EXISTS plt_zap_itens (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, pai_id INTEGER NOT NULL DEFAULT 0, tipo TEXT NOT NULL, titulo TEXT NOT NULL, descricao TEXT, texto TEXT, palavras TEXT, ordem INTEGER NOT NULL DEFAULT 0, ativo INTEGER NOT NULL DEFAULT 1)`,
@@ -28,6 +28,8 @@ export const DDL_ZAP = [
   `CREATE INDEX IF NOT EXISTS plt_zap_envios_fila ON plt_zap_envios(status, campanha_id)`,
   // Imagens do fluxo usam a mesma tabela de mídias do Marketing (endereço público assinado /m/…).
   `CREATE TABLE IF NOT EXISTS plt_mk_midias (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, mime TEXT NOT NULL, dados TEXT NOT NULL, prompt TEXT, criado_ms INTEGER NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS plt_zap_agenda (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, telefone TEXT NOT NULL, nome TEXT, quando_ms INTEGER, quando_txt TEXT, o_que TEXT, detalhes TEXT, status TEXT NOT NULL DEFAULT 'MARCADO', avisado INTEGER NOT NULL DEFAULT 0, lembrado_ms INTEGER, visto_ms INTEGER, visto_por TEXT, criado_ms INTEGER NOT NULL, atualizado_ms INTEGER NOT NULL)`,
+  `CREATE INDEX IF NOT EXISTS idx_zap_agenda ON plt_zap_agenda(org_id, status, quando_ms)`,
   `CREATE TABLE IF NOT EXISTS plt_zap_tg (chat_id TEXT NOT NULL, message_id INTEGER NOT NULL, org_id INTEGER NOT NULL, telefone TEXT NOT NULL, criado_ms INTEGER NOT NULL, PRIMARY KEY (chat_id, message_id))`
 ];
 
@@ -409,8 +411,9 @@ REGRAS
 - Ponha "menu": true só se a pessoa pedir as opções ou estiver perdida.
 - Reclamação séria, pedido de falar com alguém, negociação fora das regras ou assunto sensível: "humano": true e uma resposta curta e acolhedora.
 - Se perguntarem com sinceridade se você é uma IA, diga que é a assistente virtual da empresa e que a equipe pode assumir quando quiser.
+- AGENDAMENTOS: quando nesta conversa ficar COMBINADO com o cliente um dia e horário (reunião online, visita, consulta, aula, serviço…) e as REGRAS DA EMPRESA permitirem marcar, preencha "agendamento" com {"acao":"marcar","quando":"AAAA-MM-DD HH:MM","o_que":"ex.: reunião online","detalhes":"assunto, e-mail ou contato do cliente, endereço, o que a equipe precisa saber"}. Se o cliente mudar o horário de algo já marcado, use "acao":"remarcar" com o novo horário; se desmarcar, "acao":"cancelar". Use o horário de Brasília e a data de AGORA para entender "amanhã", "terça" etc. Não preencha enquanto o horário ainda estiver sendo negociado nem repita um agendamento que já está em AGENDAMENTOS DESTE CLIENTE. Ao marcar, diga ao cliente que ficou registrado e que a equipe foi avisada; nunca invente link de reunião, endereço ou confirmação que não estejam no treinamento.
 - Em "lembrar", anote só FATOS NOVOS e úteis sobre o cliente para as próximas conversas (nome, preferências, endereço que ele informou, o que comprou/pediu), em frases curtas. Senão, vazio.
-Responda SEMPRE em JSON: {"resposta":"","abrir":0,"menu":false,"humano":false,"lembrar":""}`;
+Responda SEMPRE em JSON: {"resposta":"","abrir":0,"menu":false,"humano":false,"lembrar":"","agendamento":null}`;
 
 function blocosTreino(cfg) {
   const b = [["JEITO DE ATENDER", cfg.ia_tom], ["SOBRE A EMPRESA (horário, endereço, pagamento, perguntas frequentes)", cfg.sobre], ["PRODUTOS E SERVIÇOS", cfg.ia_servicos], ["PREÇOS AUTORIZADOS", cfg.ia_precos], ["REGRAS DA EMPRESA", cfg.ia_regras], ["EXEMPLOS DE COMO A EQUIPE RESPONDE", cfg.ia_exemplos]];
@@ -434,12 +437,13 @@ async function atenderComIA(z, texto, m) {
     z.env.DB.prepare("SELECT memoria FROM plt_zap_contatos WHERE org_id=? AND telefone=?").bind(z.org, z.tel),
     z.env.DB.prepare("SELECT nome, local FROM plt_zap_catalogo WHERE org_id=? AND ativo=1 LIMIT 200").bind(z.org)
   ]);
+  const agenda = z.sim ? (z.agendaTeste || []) : await linhasDe(z.env, "SELECT quando_ms, quando_txt, o_que, status FROM plt_zap_agenda WHERE org_id=? AND telefone=? AND status='MARCADO' AND (quando_ms IS NULL OR quando_ms>?) ORDER BY id DESC LIMIT 5", z.org, z.tel, z.agora - 86400000);
   const conversa = (hist?.results || []).slice().reverse().map(x => `${x.direcao === "E" ? "CLIENTE" : x.origem === "EQUIPE" ? "EQUIPE" : "VOCÊ"}: ${cortar(x.texto, 400)}`).join("\n");
   const memoria = String(ctt?.results?.[0]?.memoria || "");
   const opcoes = m.todos.filter(i => m.visivel(i)).map(i => `${i.id}|${caminhoDe(m, i)}`).join("\n");
   const contatos = (cat?.results || []).length ? `\n\n${z.cfg.rotulo_catalogo.toUpperCase()} CADASTRADOS: ${cortar(cat.results.map(c => c.nome + (c.local ? ` (${c.local})` : "")).join(", "), 2500)}` : "";
   const quando = new Date(z.agora - 3 * 3600000);
-  const entrada = `EMPRESA: ${z.nomeEmpresa}${z.cfg.nome_atendente ? `\nSEU NOME NO ATENDIMENTO: ${z.cfg.nome_atendente}` : ""}\nAGORA: ${quando.toISOString().slice(0, 16).replace("T", " ")} (horário de Brasília)\n\n${blocosTreino(z.cfg)}\n\nOPÇÕES DO MENU (id|caminho):\n${opcoes || "(sem menu)"}${contatos}\n\nCLIENTE: ${z.nome || "sem nome"}\nMEMÓRIA DO CLIENTE:\n${memoria || "(primeiro contato ou nada anotado)"}\n\nCONVERSA RECENTE:\n${conversa || "(nenhuma)"}\n\nMENSAGEM NOVA DO CLIENTE: "${cortar(texto, 1500)}"`;
+  const entrada = `EMPRESA: ${z.nomeEmpresa}${z.cfg.nome_atendente ? `\nSEU NOME NO ATENDIMENTO: ${z.cfg.nome_atendente}` : ""}\nAGORA: ${quando.toISOString().slice(0, 16).replace("T", " ")} (horário de Brasília)\n\n${blocosTreino(z.cfg)}\n\nOPÇÕES DO MENU (id|caminho):\n${opcoes || "(sem menu)"}${contatos}\n\nCLIENTE: ${z.nome || "sem nome"}\nAGENDAMENTOS DESTE CLIENTE: ${agenda.length ? agenda.map(a => `${a.quando_ms ? quandoBR(a.quando_ms) : a.quando_txt || "?"} — ${a.o_que || "agendamento"}`).join("; ") : "(nenhum)"}\nMEMÓRIA DO CLIENTE:\n${memoria || "(primeiro contato ou nada anotado)"}\n\nCONVERSA RECENTE:\n${conversa || "(nenhuma)"}\n\nMENSAGEM NOVA DO CLIENTE: "${cortar(texto, 1500)}"`;
   let o;
   try { o = await openaiResposta(envIA, { modelo: z.cfg.modelo_conversa || "gpt-5-mini", instrucoes: INSTRUCOES_CONVERSA, entrada, maxTokens: 700, esforco: "low", recurso: "chatbot/ia-completa" }); }
   catch (e) { console.warn("IA completa", e?.message); return false; }
@@ -454,12 +458,81 @@ async function atenderComIA(z, texto, m) {
     await z.env.DB.prepare("UPDATE plt_zap_contatos SET memoria=? WHERE org_id=? AND telefone=?").bind(nova.length > 1800 ? nova.slice(-1800) : nova, z.org, z.tel).run().catch(() => {});
   }
   const resp = cortar(o?.resposta, 1500);
+  if (o?.agendamento && typeof o.agendamento === "object") await registrarAgendamento(z, o.agendamento).catch(e => console.warn("agendamento", e?.message));
   if (o?.humano === true) { await transferir(z, resp || undefined); return true; }
   if (resp) await enviarTexto(z, resp, "IA");
   const item = m.porId.get(Number(o?.abrir) || -1);
   if (item && m.visivel(item)) { await abrirItem(z, item, "IA"); return true; }
   if (o?.menu === true) { await mostrarMenu(z); return true; }
   return Boolean(resp);
+}
+
+// ---------------------------------------------------------------------------
+// Agenda: o que a IA marcou com o cliente (reunião, visita, consulta…). Fica registrado, a equipe é
+// avisada na hora (Telegram ou e-mail), recebe um lembrete antes e vê tudo em Chatbot → Agenda.
+// ---------------------------------------------------------------------------
+
+function horarioDe(q) {
+  const m = String(q || "").match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}):(\d{2})/);
+  if (!m) return null;
+  const ms = Date.parse(`${m[1]}T${m[2]}:${m[3]}:00-03:00`);
+  return Number.isFinite(ms) ? ms : null;
+}
+async function avisarAgenda(z, texto, assunto) {
+  if (await telegram(z, texto, z.tel)) return true;
+  return Boolean(z.k.alertarEmail && await z.k.alertarEmail(z.org, assunto, texto).catch(() => false));
+}
+function textoAgenda(z, titulo, a) {
+  return [titulo, "", `👤 Cliente: ${z.nome || a.nome || "sem nome"} (${z.tel})`, `🗓️ Quando: ${a.quando_ms ? quandoBR(a.quando_ms) : a.quando_txt || "não informado"}`,
+    a.o_que ? `📝 O que: ${a.o_que}` : "", a.detalhes ? `ℹ️ Detalhes: ${a.detalhes}` : "",
+    "", `Marcado pela IA no WhatsApp de ${z.nomeEmpresa || "a empresa"}. Veja em Chatbot → Agenda.${z.k.base ? "\n" + z.k.base + "/app#/chatbot/agenda" : ""}`].filter((l, i, t) => l || (i > 0 && t[i - 1])).join("\n").trim();
+}
+async function registrarAgendamento(z, ag) {
+  const acao = ["remarcar", "cancelar"].includes(String(ag.acao || "").toLowerCase()) ? String(ag.acao).toLowerCase() : "marcar";
+  const quando_ms = horarioDe(ag.quando);
+  const a = { quando_ms, quando_txt: cortar(ag.quando, 40) || null, o_que: cortar(ag.o_que, 120) || null, detalhes: cortar(ag.detalhes, 600) || null, nome: z.nome || null };
+  if (acao === "marcar" && !quando_ms && !a.quando_txt) return;
+  if (z.sim) { z.registro.push({ texto: `📅 (Teste) A equipe seria avisada: ${acao === "marcar" ? "novo agendamento" : acao === "remarcar" ? "reagendado" : "cancelado"} — ${quando_ms ? quandoBR(quando_ms) : a.quando_txt || ""}${a.o_que ? " · " + a.o_que : ""}` }); return; }
+  const db = z.env.DB;
+  const atual = await db.prepare("SELECT * FROM plt_zap_agenda WHERE org_id=? AND telefone=? AND status='MARCADO' AND (quando_ms IS NULL OR quando_ms>?) ORDER BY id DESC LIMIT 1").bind(z.org, z.tel, z.agora - 86400000).first();
+  let id, titulo, assunto;
+  if (acao === "marcar") {
+    if (atual && quando_ms && atual.quando_ms === quando_ms) return; // já registrado
+    id = (await db.prepare("INSERT INTO plt_zap_agenda(org_id,telefone,nome,quando_ms,quando_txt,o_que,detalhes,status,criado_ms,atualizado_ms) VALUES(?,?,?,?,?,?,?,'MARCADO',?,?) RETURNING id").bind(z.org, z.tel, a.nome, quando_ms, a.quando_txt, a.o_que, a.detalhes, z.agora, z.agora).first())?.id;
+    titulo = "📅 NOVO AGENDAMENTO"; assunto = `DENIA — novo agendamento: ${a.nome || z.tel}, ${quando_ms ? quandoBR(quando_ms) : a.quando_txt}`;
+  } else {
+    if (!atual) return;
+    id = atual.id;
+    if (acao === "cancelar") {
+      await db.prepare("UPDATE plt_zap_agenda SET status='CANCELADO', visto_ms=NULL, atualizado_ms=? WHERE id=?").bind(z.agora, id).run();
+      Object.assign(a, { quando_ms: atual.quando_ms, quando_txt: atual.quando_txt, o_que: a.o_que || atual.o_que, detalhes: a.detalhes || atual.detalhes });
+      titulo = "❌ AGENDAMENTO CANCELADO PELO CLIENTE"; assunto = `DENIA — agendamento cancelado: ${a.nome || z.tel}`;
+    } else {
+      if (!quando_ms && !a.quando_txt) return;
+      await db.prepare("UPDATE plt_zap_agenda SET quando_ms=?, quando_txt=?, o_que=COALESCE(?,o_que), detalhes=COALESCE(?,detalhes), visto_ms=NULL, lembrado_ms=NULL, atualizado_ms=? WHERE id=?").bind(quando_ms, a.quando_txt, a.o_que, a.detalhes, z.agora, id).run();
+      titulo = `🔁 AGENDAMENTO REMARCADO (antes: ${atual.quando_ms ? quandoBR(atual.quando_ms) : atual.quando_txt || "?"})`; assunto = `DENIA — agendamento remarcado: ${a.nome || z.tel}`;
+    }
+  }
+  if (!id) return;
+  const ok = await avisarAgenda(z, textoAgenda(z, titulo, a), assunto);
+  await db.prepare("UPDATE plt_zap_agenda SET avisado=? WHERE id=?").bind(ok ? 1 : 0, id).run();
+  if (ok) await resolverProblema(z.env, z.org, "agenda_aviso");
+  else await registrarProblema(z.env, z.org, { chave: "agenda_aviso", area: "AGENDA", gravidade: "ALTA", titulo: "A equipe não foi avisada de um agendamento", motivo: "O Telegram não está conectado (ou recusou o aviso) e não há e-mail configurado para os responsáveis.", dica: "Conecte o grupo do Telegram em Conectar número. Os agendamentos ficam em Chatbot → Agenda.", link: "#/chatbot/agenda" });
+}
+
+// Cron: lembra a equipe cerca de 1 hora antes de cada agendamento.
+export async function lembrarAgenda(env, k) {
+  const agora = k.agora(env);
+  const lista = await linhasDe(env, "SELECT a.*, o.nome org_nome FROM plt_zap_agenda a JOIN plt_organizacoes o ON o.id=a.org_id WHERE a.status='MARCADO' AND a.lembrado_ms IS NULL AND a.quando_ms BETWEEN ? AND ? ORDER BY a.quando_ms LIMIT 20", agora, agora + 65 * 60000);
+  for (const a of lista) {
+    await env.DB.prepare("UPDATE plt_zap_agenda SET lembrado_ms=? WHERE id=?").bind(agora, a.id).run();
+    if (a.criado_ms > a.quando_ms - 70 * 60000 && a.atualizado_ms > a.quando_ms - 70 * 60000) continue; // marcado agora há pouco: o aviso acabou de sair
+    const conta = await contaDa(env, a.org_id);
+    if (!conta) continue;
+    const z = { env, k, org: a.org_id, conta, tel: a.telefone, nome: a.nome, agora, nomeEmpresa: a.org_nome, enviadas: 0 };
+    const min = Math.max(1, Math.round((a.quando_ms - agora) / 60000));
+    await avisarAgenda(z, textoAgenda(z, `⏰ LEMBRETE: daqui a ${min} min`, a), `DENIA — lembrete: ${a.o_que || "agendamento"} com ${a.nome || a.telefone} às ${quandoBR(a.quando_ms).split(" às ")[1] || ""}`).catch(() => { });
+  }
 }
 
 const INSTRUCOES_IA = `Você é a atendente virtual de uma empresa no WhatsApp. Responda SEMPRE em JSON {"item":0,"resposta":"","humano":false}.
@@ -1567,6 +1640,23 @@ async function rotasZapExtra(request, env, k, orgId, papel, r, { json, ler, prec
     return { conta, token: await k.decifrar(env, conta.token_cifrado) };
   };
   const falhou = e => json({ erro: e.message, codigo: e.codigo }, e.status && e.status < 500 ? (e.status === 401 ? 400 : e.status) : 502);
+
+  // Agenda: o que a IA marcou com os clientes (próximos e dos últimos 7 dias).
+  if (r === "agenda" && metodo === "GET") {
+    const lista = await linhasDe(env, "SELECT * FROM plt_zap_agenda WHERE org_id=? AND (quando_ms IS NULL OR quando_ms>?) ORDER BY CASE WHEN quando_ms IS NULL THEN 1 ELSE 0 END, quando_ms LIMIT 300", orgId, agora - 7 * 86400000).catch(() => []);
+    return json({ agenda: lista, agora });
+  }
+  if ((m = r.match(/^agenda\/(\d{1,12})$/)) && metodo === "POST") {
+    const negado = precisa("AGENTE"); if (negado) return negado;
+    const { corpo, erro } = await ler(); if (erro) return erro;
+    const a = await env.DB.prepare("SELECT * FROM plt_zap_agenda WHERE id=? AND org_id=?").bind(Number(m[1]), orgId).first();
+    if (!a) return json({ erro: "Agendamento não encontrado." }, 404);
+    const quem = k.sessao?.usuario?.email || null;
+    if (corpo.acao === "visto") await env.DB.prepare("UPDATE plt_zap_agenda SET visto_ms=?, visto_por=? WHERE id=?").bind(agora, quem, a.id).run();
+    else if (["concluir", "cancelar", "reabrir"].includes(corpo.acao)) await env.DB.prepare("UPDATE plt_zap_agenda SET status=?, visto_ms=COALESCE(visto_ms,?), visto_por=COALESCE(visto_por,?), atualizado_ms=? WHERE id=?").bind({ concluir: "CONCLUIDO", cancelar: "CANCELADO", reabrir: "MARCADO" }[corpo.acao], agora, quem, agora, a.id).run();
+    else return json({ erro: "Ação inválida." }, 400);
+    return json({ ok: true });
+  }
 
   // Perfil comercial (o que o cliente vê ao tocar no nome da empresa no WhatsApp).
   if (r === "perfil" && metodo === "GET") {

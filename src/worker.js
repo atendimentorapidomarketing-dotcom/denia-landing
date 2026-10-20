@@ -27,15 +27,15 @@ import { comOrgUso, comRecurso, descarregarUso } from "./uso.js";
 import { DDL_TEMPORADA, ALTERS_TEMPORADA, rotasTemporada, icalPublico, webhookChannex, sincronizarTemporada, desligarInadimplentes, lembrarEstoque, limpezaPublica, avaliacoesDoCron } from "./temporada.js";
 import { openaiBruto } from "./marketing.js";
 import { DDL_PROBLEMAS, rotasProblemas, registrarProblema, resolverProblema, limparProblemas } from "./problemas.js";
-import { DDL_ZAP, webhookZap, rotasZap, webhookTelegram, segredoTelegram, tokenTelegramPlataforma, processarCampanhas } from "./zap.js";
+import { DDL_ZAP, webhookZap, rotasZap, webhookTelegram, segredoTelegram, tokenTelegramPlataforma, processarCampanhas, lembrarAgenda } from "./zap.js";
 import { lerPlanos, acessoDa, recursoDaRota, planoMinimo, rotasPlano, webhookAsaas, lembretesDePlano, TESTE_DIAS, STATUS as STATUS_PLANO, PLANOS_PADRAO, RECURSOS } from "./planos.js";
 
-const VERSAO = "3.10.0";
+const VERSAO = "3.11.0";
 // Versão dos Termos de uso e da Política de privacidade aceitas no cadastro.
 const VERSAO_TERMOS = "2026-10-16";
 // WhatsApp da Central de Atendimento (botão flutuante do site).
 const WHATSAPP_CENTRAL = "5521975469162";
-const SCHEMA = "2.14.0";
+const SCHEMA = "2.15.0";
 const COOKIE = "__Host-denia_sessao";
 const SESSAO_MS = 8 * 60 * 60 * 1000;
 const MAX_TENTATIVAS = 5;
@@ -657,7 +657,7 @@ async function kitZap(env, base) {
   const url = base || String((await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave='base_url'").first().catch(() => null))?.valor || "").replace(/\/+$/, "");
   return {
     ...kitBase(env), comIA, base: url,
-    alertarEmail: async (orgId, assunto, texto) => { for (const para of await responsaveisDa(env, orgId)) await enviarEmail(env, para, assunto, texto); }
+    alertarEmail: async (orgId, assunto, texto) => { let ok = false; for (const para of await responsaveisDa(env, orgId)) if (await enviarEmail(env, para, assunto, texto)) ok = true; return ok; }
   };
 }
 
@@ -866,7 +866,7 @@ async function apiOrg(request, env, sessao, orgId, resto) {
   if (resto.startsWith("engine/")) return proxyEngine(request, env, sessao, orgId, papel, resto.slice(7));
   const kit = { ...kitBase(env), sessao };
   if (resto === "tp" || resto.startsWith("tp/")) return rotasTemporada(request, env, { ...(await kitZap(env, new URL(request.url).origin)), sessao, superAdmin: Boolean(sessao.usuario.super_admin), openai: openaiBruto, acesso: sessao.usuario.super_admin ? { ...acesso, limites: { ...acesso.limites, imoveis: 0 } } : acesso, avisar: async (o, texto) => { for (const para of await responsaveisDa(env, o)) await enviarEmail(env, para, "DENIA — hóspede precisa de você", texto); } }, orgId, papel, resto);
-  if (resto === "problemas" || resto.startsWith("problemas/")) return (await rotasProblemas(request, env, orgId, papel, resto, pode(papel, "AGENTE"))) || json({ erro: "Rota não encontrada." }, 404);
+  if (resto === "problemas" || resto.startsWith("problemas/")) return (await rotasProblemas(request, env, orgId, papel, resto, pode(papel, "AGENTE"), sessao.usuario.email)) || json({ erro: "Rota não encontrada." }, 404);
   if (resto === "zap" || resto.startsWith("zap/")) return rotasZap(request, env, { ...(await kitZap(env, new URL(request.url).origin)), sessao, acesso: sessao.usuario.super_admin ? { ...acesso, recursos: Object.keys(RECURSOS) } : acesso }, orgId, papel, resto);
   if (resto === "ia/chave" && metodo === "GET") {
     const k = await chaveIA(env, orgId);
@@ -1296,6 +1296,7 @@ export default {
       await limparBanco(env).catch(e => console.error("limpeza", e?.message));
       await sincronizarTemporada(env, await kitZap(env)).catch(e => console.error("temporada", e?.message));
       await processarCampanhas(env, await kitZap(env)).catch(e => console.error("campanhas", e?.message));
+      await lembrarAgenda(env, await kitZap(env)).catch(e => console.error("agenda", e?.message));
       await lembrarEstoque(env, await kitZap(env)).catch(e => console.error("estoque", e?.message));
       await avaliacoesDoCron(env, { ...(await kitZap(env)) }).catch(e => console.error("avaliações temporada", e?.message));
       if (await aCada(env, "temporada_inadimplentes", 20 * 3600000)) {

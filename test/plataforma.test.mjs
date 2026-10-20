@@ -2749,3 +2749,87 @@ test("Problemas — mensagens não entregues, clientes esperando, posts que não
   await resolverProblema(p.env, 1, "telegram");
   assert.ok(!(await p.req("/api/orgs/1/problemas", { quem: "admin" })).dados.problemas.some(x => /Telegram/.test(x.titulo)), "some quando volta a funcionar");
 });
+
+test("Agenda — a IA marca a reunião, a equipe é avisada no Telegram, vê na Agenda e em Problemas e recebe lembrete", async () => {
+  const { p, inf } = await duasEmpresasComChatbot();
+  const t0 = Date.parse("2026-10-20T15:00:00Z"); // 12:00 em Brasília
+  let agora = t0;
+  p.env.__agora = () => agora;
+  p.env.TELEGRAM_BOT_TOKEN_PLATAFORMA = "999:" + "T".repeat(30);
+  const anterior = globalThis.fetch, tg = [];
+  let segredo = "", tgFora = false;
+  globalThis.fetch = async (url, op = {}) => {
+    if (String(url).startsWith("https://api.telegram.org/bot999:")) {
+      const metodo = String(url).split("/").pop(), corpo = op.body ? JSON.parse(op.body) : {};
+      if (metodo === "sendMessage" && tgFora) return new Response(JSON.stringify({ ok: false, description: "Forbidden: bot was kicked from the supergroup chat" }), { status: 403 });
+      tg.push({ metodo, corpo });
+      if (metodo === "getMe") return new Response(JSON.stringify({ ok: true, result: { username: "DeniaAvisosBot" } }));
+      if (metodo === "setWebhook") { segredo = corpo.secret_token; return new Response(JSON.stringify({ ok: true })); }
+      return new Response(JSON.stringify({ ok: true, result: { message_id: 500 + tg.length } }));
+    }
+    return anterior(url, op);
+  };
+  try {
+    await p.req("/api/admin/telegram", { metodo: "POST", quem: "admin", corpo: {} });
+    const link = await p.req(`/api/orgs/${inf}/zap/telegram/link`, { metodo: "POST", quem: "admin", corpo: {} });
+    await p.req("/webhook/telegram", { metodo: "POST", cabecalhos: { "x-telegram-bot-api-secret-token": segredo }, corpo: { message: { message_id: 1, chat: { id: -100777, type: "supergroup", title: "Equipe" }, from: { first_name: "Ana" }, text: `/start@DeniaAvisosBot ${link.dados.codigo}` } } });
+    await p.req("/api/orgs/1/ia/chave", { metodo: "POST", quem: "admin", corpo: { chave: "sk-proj-" + "d".repeat(40) } });
+    await p.req(`/api/orgs/${inf}/zap/config`, { metodo: "POST", quem: "admin", corpo: { modo: "IA", sobre: "Consultoria. Reuniões online de 30 min, seg a sex, 9h às 17h.", ia_regras: "Pode marcar reuniões online." } });
+    const entradas = [];
+    p.openai = (url, corpo) => {
+      const t = corpo.input[0].content[0].text; entradas.push(t);
+      const nova = t.match(/MENSAGEM NOVA DO CLIENTE: "([^"]*)"/)[1];
+      let o = { resposta: "Claro! Que dia fica bom?" };
+      if (/quinta às 15/i.test(nova)) o = { resposta: "Pronto, Marcos! Reunião online marcada para quinta, 22/10, às 15h. A equipe já foi avisada.", agendamento: { acao: "marcar", quando: "2026-10-22 15:00", o_que: "Reunião online", detalhes: "Assunto: plano de marketing. E-mail: marcos@cliente.test" } };
+      if (/de novo/i.test(nova)) o = { resposta: "Já está marcado!", agendamento: { acao: "marcar", quando: "2026-10-22 15:00", o_que: "Reunião online" } };
+      if (/sexta às 10/i.test(nova)) o = { resposta: "Mudei para sexta às 10h.", agendamento: { acao: "remarcar", quando: "2026-10-23 10:00" } };
+      if (/desmarcar/i.test(nova)) o = { resposta: "Tudo bem, desmarquei.", agendamento: { acao: "cancelar" } };
+      return { output: [{ content: [{ type: "output_text", text: JSON.stringify(o) }] }], usage: { input_tokens: 900, output_tokens: 40 } };
+    };
+    const CLI = "5521977770000";
+    const enviar = async texto => { agora += 60000; await webhookZap(p, "111111111111", { from: CLI, type: "text", text: { body: texto }, timestamp: String(Math.floor(agora / 1000)) }, "Marcos"); };
+    await enviar("quero marcar uma reunião");
+    await enviar("pode ser quinta às 15h");
+    assert.match(enviadosPara(p, CLI).at(-1).corpo.text.body, /marcada para quinta/);
+    const aviso = tg.filter(x => x.metodo === "sendMessage").at(-1);
+    assert.equal(aviso.corpo.chat_id, "-100777");
+    assert.match(aviso.corpo.text, /NOVO AGENDAMENTO[\s\S]*5521977770000[\s\S]*qui\.?, 22\/10 às 15:00[\s\S]*Reunião online[\s\S]*plano de marketing/);
+    let ag = (await p.req(`/api/orgs/${inf}/zap/agenda`, { quem: "admin" })).dados.agenda;
+    assert.equal(ag.length, 1); assert.equal(ag[0].status, "MARCADO"); assert.equal(ag[0].avisado, 1);
+    assert.equal(ag[0].quando_ms, Date.parse("2026-10-22T18:00:00Z"));
+    // A IA vê o que já está marcado e não duplica.
+    await enviar("confirma de novo?");
+    assert.match(entradas.at(-1), /AGENDAMENTOS DESTE CLIENTE: qui\.?, 22\/10 às 15:00 — Reunião online/);
+    assert.equal((await p.req(`/api/orgs/${inf}/zap/agenda`, { quem: "admin" })).dados.agenda.length, 1);
+    // Aparece em Problemas até alguém da equipe tocar em "Vi".
+    let prb = (await p.req(`/api/orgs/${inf}/problemas`, { quem: "admin" })).dados.problemas.filter(x => x.area === "AGENDA");
+    assert.equal(prb.length, 1); assert.match(prb[0].titulo, /Novo agendamento: Reunião online com Marcos/);
+    assert.equal((await p.req(`/api/orgs/${inf}/zap/agenda/${ag[0].id}`, { metodo: "POST", quem: "admin", corpo: { acao: "visto" } })).status, 200);
+    assert.equal((await p.req(`/api/orgs/${inf}/problemas`, { quem: "admin" })).dados.problemas.filter(x => x.area === "AGENDA").length, 0);
+    // Remarcou: avisa de novo e volta para "ninguém viu".
+    await enviar("pode mudar para sexta às 10h?");
+    assert.match(tg.filter(x => x.metodo === "sendMessage").at(-1).corpo.text, /REMARCADO \(antes: qui\.?, 22\/10 às 15:00\)[\s\S]*sex\.?, 23\/10 às 10:00/);
+    ag = (await p.req(`/api/orgs/${inf}/zap/agenda`, { quem: "admin" })).dados.agenda;
+    assert.equal(ag.length, 1); assert.equal(ag[0].visto_ms, null);
+    // Lembrete cerca de 1 hora antes (pelo cron).
+    const mod = await import(new URL("../src/worker.js?t=" + (++n), import.meta.url).href);
+    const cron = async () => { let tarefa; await mod.default.scheduled({}, p.env, { waitUntil: pr => { tarefa = pr; } }); await tarefa; };
+    agora = Date.parse("2026-10-23T12:10:00Z"); // 09:10 em Brasília
+    await p.entrar("admin", ADMIN, SENHA_ADMIN); // a sessão expira em 3 dias parados
+    const antes = tg.length;
+    await cron();
+    assert.match(tg.slice(antes).filter(x => x.metodo === "sendMessage").map(x => x.corpo.text).join("\n"), /LEMBRETE: daqui a 50 min[\s\S]*Marcos/);
+    const depois = tg.length; agora += 5 * 60000; await cron();
+    assert.ok(!tg.slice(depois).some(x => /LEMBRETE/.test(x.corpo?.text || "")), "lembra uma vez só");
+    // Cancelou com o Telegram fora do ar: fica em Problemas como urgente.
+    tgFora = true;
+    await enviar("preciso desmarcar");
+    ag = (await p.req(`/api/orgs/${inf}/zap/agenda`, { quem: "admin" })).dados.agenda;
+    assert.equal(ag[0].status, "CANCELADO"); assert.equal(ag[0].avisado, 0);
+    prb = (await p.req(`/api/orgs/${inf}/problemas`, { quem: "admin" })).dados.problemas;
+    assert.ok(prb.some(x => x.area === "AGENDA" && /cancelou/.test(x.titulo) && x.gravidade === "ALTA"));
+    assert.ok(prb.some(x => /não foi avisada de um agendamento/.test(x.titulo)));
+    // Cada empresa só vê a própria agenda.
+    assert.equal((await p.req(`/api/orgs/1/zap/agenda`, { quem: "admin" })).dados.agenda.length, 0);
+  } finally { globalThis.fetch = anterior; }
+});
