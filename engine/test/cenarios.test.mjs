@@ -1186,3 +1186,56 @@ test("Feriados móveis calculados para qualquer ano (Carnaval, Sexta-feira Santa
   await a.cliente(CLI, "quarta de cinzas 10h");
   assert.match(a.ultimoPara(CLI), /Quarta-feira de Cinzas só tem atendimento a partir das 14h\. Pode ser quarta, 10\/02, às 14h\?/);
 });
+
+test("Fora da janela de 24 h: um aviso só, sem novas tentativas; a mensagem fica guardada e sai quando a pessoa responde", async () => {
+  const a = await criarAmbiente();
+  await iniciarConsultaChaveiro(a);
+  const consulta = a.para(CHAVEIRO)[0];
+  const falhar = id => a.webhook({ statuses: [{ id, status: "failed", recipient_id: CHAVEIRO, errors: [{ code: 131047, title: "Re-engagement message" }] }] });
+  await falhar(consulta.id);
+  const avisos = () => a.telegram.filter(t => /📵|NÃO entregue|Falha no envio|NÃO foi enviado/.test(t));
+  assert.equal(avisos().length, 1);
+  assert.match(avisos()[0], /📵 [\s\S]*profissional[\s\S]*não escreve há mais de 24 h[\s\S]*ficou guardada e sai sozinha/);
+  // Pergunta do cliente para o profissional: não tenta mandar (iria falhar de novo) e não gera aviso novo.
+  const antes = a.para(CHAVEIRO).length;
+  a.llmCliente = () => decisao({ resposta: "Vou confirmar com o profissional.", intencao: "PERGUNTA_PARA_PROFISSIONAL", resposta_para_profissional: "A fechadura nova está inclusa no valor?" });
+  await a.cliente(CLI, "A fechadura nova está inclusa?");
+  assert.equal(a.para(CHAVEIRO).length, antes, "nada enviado enquanto a janela está fechada");
+  assert.doesNotMatch(a.ultimoPara(CLI), /Um momento/, "o cliente não fica sem resposta");
+  await falhar(consulta.id); await falhar(consulta.id);
+  assert.equal(avisos().length, 1, "nunca o mesmo aviso de novo");
+  // O profissional escreve: recebe primeiro o que ficou guardado (a consulta e a pergunta do cliente).
+  a.llmPrestador = () => prest({ tipo: "COMENTARIO" });
+  await a.cliente(CHAVEIRO, "Bom dia, vi agora");
+  const novas = a.para(CHAVEIRO).slice(antes).map(e => e.texto).join("\n");
+  assert.match(novas, /Tenho um cliente em Botafogo/);
+  assert.match(novas, /A fechadura nova está inclusa no valor\?/);
+});
+
+test("Fora da janela com modelo de retomada configurado: manda o modelo uma vez por dia", async () => {
+  const a = await criarAmbiente({ env: { WHATSAPP_TEMPLATE_RETOMAR: "retomar_conversa" } });
+  a.llmCliente = () => decisao({ resposta: "Oi, Marcos! Tudo certo?" });
+  await a.cliente(CLI, "oi", { nome: "Marcos" });
+  const id = a.para(CLI).at(-1).id;
+  await a.webhook({ statuses: [{ id, status: "failed", recipient_id: CLI, errors: [{ code: 131047, title: "Re-engagement message" }] }] });
+  const modelos = a.para(CLI).filter(e => e.type === "template");
+  assert.equal(modelos.length, 1); assert.equal(modelos[0].texto, "retomar_conversa");
+  assert.equal(modelos[0].corpo.template.components[0].parameters[0].text, "Marcos");
+  assert.ok(a.telegram.some(t => /Mandei o modelo "retomar_conversa"/.test(t)));
+  await a.webhook({ statuses: [{ id, status: "failed", recipient_id: CLI, errors: [{ code: 131047, title: "Re-engagement message" }] }] });
+  assert.equal(a.para(CLI).filter(e => e.type === "template").length, 1, "uma vez por dia");
+});
+
+test("Número sem WhatsApp e falhas repetidas: um aviso por pessoa e motivo, sem insistir no número", async () => {
+  const a = await criarAmbiente();
+  a.llmCliente = () => decisao({ resposta: "Oi! Como posso ajudar?" });
+  await a.cliente(CLI, "oi");
+  await a.webhook({ statuses: [{ id: a.para(CLI).at(-1).id, status: "failed", recipient_id: CLI, errors: [{ code: 131026, title: "Message undeliverable" }] }] });
+  assert.equal(a.telegram.filter(t => /NÃO entregue/.test(t)).length, 1);
+  assert.match(a.telegram.at(-1), /não vai tentar de novo nesse número por 7 dias/);
+  // Outra falha de outro tipo, duas vezes para a mesma pessoa: um aviso só.
+  a.llmCliente = () => decisao({ resposta: "Segue a foto." });
+  await a.cliente(CLI2, "manda a foto");
+  for (let i = 0; i < 3; i++) await a.webhook({ statuses: [{ id: "wamid.x" + i, status: "failed", recipient_id: CLI2, errors: [{ code: 131053, title: "Media upload error" }] }] });
+  assert.equal(a.telegram.filter(t => /NÃO entregue para 5521933334444/.test(t)).length, 1);
+});
