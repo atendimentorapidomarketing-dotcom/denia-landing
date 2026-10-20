@@ -30,6 +30,16 @@ const { exportarD1, aplicarDump, importarKV } = await import("./importar.mjs");
 let instancias = 0;
 const RAIZ = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
+// Enquanto copia os dados da Cloudflare (ou se a cópia falhou), o site mostra isto no lugar da plataforma.
+function paginaAguarde(detalhe, falhou = false) {
+  const esc = t => String(t || "").replace(/[&<>"]/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch]);
+  const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">${falhou ? "" : '<meta http-equiv="refresh" content="20">'}<title>DENIA</title>
+<style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0b1020;color:#e8ecff;font:16px/1.5 system-ui,sans-serif;padding:16px}main{max-width:520px;text-align:center}h1{font-size:22px}p{color:#b8c0e0}code{background:#1a2140;padding:2px 6px;border-radius:6px;word-break:break-word}</style></head>
+<body><main><h1>${falhou ? "A cópia dos dados não deu certo" : "Copiando seus dados da Cloudflare…"}</h1>
+<p>${falhou ? `Motivo: <code>${esc(detalhe)}</code><br>Confira CF_CONTA_ID, CF_API_TOKEN, CF_D1_ID e CF_KV_ID nas variáveis do app e reinicie.` : `Na primeira vez a DENIA traz conversas, empresas e configurações. Leva de alguns segundos a poucos minutos. Esta página atualiza sozinha.${detalhe ? `<br><small>${esc(detalhe)}</small>` : ""}`}</p></main></body></html>`;
+  return new Response(html, { status: 503, headers: { "content-type": "text/html; charset=utf-8", "retry-after": "20", "cache-control": "no-store" } });
+}
+
 export async function iniciar(op = {}) {
   const ambiente = op.env || process.env;
   const DADOS = path.resolve(ambiente.DENIA_DADOS || path.join(os.homedir(), "denia-dados"));
@@ -66,10 +76,17 @@ export async function iniciar(op = {}) {
     log("Importação da Cloudflare concluída", JSON.stringify(resumo));
   }
 
+  // A cópia da primeira vez roda por trás: o servidor já responde (a Hostinger derruba app que demora a abrir a porta)
+  // com uma página de "copiando seus dados". Se a cópia falhar, o site mostra o erro em vez de abrir vazio.
   const vazio = arq => !existsSync(arq) || !BancoD1.temTabelas(arq);
+  let importando = null, importacaoFalhou = false;
   if (ambiente.CF_API_TOKEN && (vazio(ARQ_BANCO) || vazio(ARQ_ENGINE))) {
-    try { await importar(false); } catch (e) { situacao.importacao = { status: "erro", erro: e.message }; anotarErro("importação", e); }
+    importando = importar(false)
+      .then(() => { abrir(); gravarEndereco(); })
+      .catch(e => { importacaoFalhou = true; situacao.importacao = { status: "erro", erro: e.message }; anotarErro("importação", e); })
+      .finally(() => { importando = null; });
   }
+  const pronto = importando || Promise.resolve();
 
   // Bancos com "troca a quente" (para reimportar sem reiniciar).
   const abertos = {};
@@ -79,14 +96,14 @@ export async function iniciar(op = {}) {
     abertos.engine = ARQ_ENGINE === ARQ_BANCO ? abertos.plataforma : new BancoD1(ARQ_ENGINE);
     abertos.kv = new MemoriaKV(path.join(DADOS, "memoria.db"));
   }
-  abrir();
+  if (!importando) abrir();
   // Endereço novo: links de e-mail e retornos (Meta/Google) deixam de apontar para o workers.dev antigo.
   function gravarEndereco() {
     const site = String(ambiente.SITE_URL || "").trim().replace(/\/+$/, "");
     if (!/^https:\/\/[^/]+$/.test(site)) return;
     try { abertos.plataforma.db.prepare("UPDATE plt_meta SET valor=? WHERE chave='base_url'").run(site); } catch { }
   }
-  gravarEndereco();
+  if (!importando) gravarEndereco();
   const d1 = qual => ({ prepare: s => abertos[qual].prepare(s), batch: l => abertos[qual].batch(l), exec: s => abertos[qual].exec(s) });
   const kv = { get: (...a) => abertos.kv.get(...a), put: (...a) => abertos.kv.put(...a), delete: (...a) => abertos.kv.delete(...a), list: (...a) => abertos.kv.list(...a) };
 
@@ -157,6 +174,7 @@ export async function iniciar(op = {}) {
 
   async function tique(origem = "relógio") {
     if (desligadas) return { rodou: false, motivo: "DENIA_TAREFAS=desligadas" };
+    if (importando || importacaoFalhou) return { rodou: false, motivo: importando ? "copiando os dados da Cloudflare" : "a cópia dos dados falhou" };
     const agora = Date.now();
     const feito = {};
     if (agora - situacao.tiques.engine >= 50000) feito.engine = rodarAgendado("engine", engine, envEngine, "* * * * *");
@@ -217,6 +235,7 @@ export async function iniciar(op = {}) {
     if (url.pathname.startsWith("/__denia/")) {
       if (!confere(url.searchParams.get("chave") || request.headers.get("x-denia-chave"))) return json({ ok: false, erro: "Chave do servidor ausente ou errada (DENIA_CHAVE_SERVIDOR, mínimo 16 caracteres)." }, 403);
       if (url.pathname === "/__denia/tique") return json({ ok: true, ...(await tique("painel")) });
+      if (url.pathname === "/__denia/estado" && (importando || importacaoFalhou)) return json({ ok: !importacaoFalhou, node: process.versions.node, pasta_dados: DADOS, importacao: situacao.importacao, erros_recentes: situacao.erros });
       if (url.pathname === "/__denia/estado") {
         const tam = arq => { try { return Math.round(statSync(arq).size / 1048576 * 10) / 10 + " MB"; } catch { return "—"; } };
         return json({ ok: true, node: process.versions.node, no_ar_desde: new Date(situacao.iniciado).toISOString(), pasta_dados: DADOS,
@@ -232,10 +251,11 @@ export async function iniciar(op = {}) {
           await importar(true);
           return json({ ok: true, importacao: situacao.importacao });
         } catch (e) { situacao.importacao = { status: "erro", erro: e.message }; anotarErro("importação", e); return json({ ok: false, erro: e.message }, 500); }
-        finally { abrir(); gravarEndereco(); }
+        finally { importacaoFalhou = situacao.importacao.status === "erro" && vazio(ARQ_BANCO); abrir(); gravarEndereco(); }
       }
       return json({ ok: false, erro: "Rota desconhecida." }, 404);
     }
+    if (importando || importacaoFalhou) return paginaAguarde(importacaoFalhou ? situacao.importacao.erro : situacao.importacao.etapa, importacaoFalhou);
     const ehIA = (hostIA && url.hostname.toLowerCase() === hostIA) || url.pathname === prefixoIA || url.pathname.startsWith(prefixoIA + "/");
     if (ehIA) {
       if (!hostIA || url.hostname.toLowerCase() !== hostIA) {
@@ -307,7 +327,7 @@ export async function iniciar(op = {}) {
     await Promise.race([Promise.allSettled([...pendentes]), new Promise(ok => setTimeout(ok, 10000))]);
     for (const b of new Set(Object.values(abertos))) b.fechar();
   }
-  return { porta, servidor, parar, tique, atender, situacao, envPlataforma, envEngine, DADOS };
+  return { porta, servidor, parar, tique, atender, situacao, envPlataforma, envEngine, DADOS, pronto };
 }
 
 export async function iniciarProducao() {

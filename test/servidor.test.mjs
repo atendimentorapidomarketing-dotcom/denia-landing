@@ -134,6 +134,7 @@ test("Servidor Node — importa banco e memória da Cloudflare na primeira vez",
   try {
     const s = await iniciar({ env: base({ DENIA_DADOS: pasta, CF_CONTA_ID: "conta-1", CF_API_TOKEN: "token-cf-secreto", CF_D1_ID: "banco-1", CF_KV_ID: "kv-1", SITE_URL: "https://app.denia.test/" }), porta: 0, ip: "127.0.0.1", semRelogio: true, silencioso: true });
     try {
+      await s.pronto; // a cópia roda por trás: o servidor já responde enquanto isso
       assert.equal(s.situacao.importacao.status, "concluida", JSON.stringify(s.situacao));
       const m = await s.envPlataforma.DB.prepare("SELECT valor FROM plt_meta WHERE chave='marca'").first();
       assert.equal(m.valor, "texto com ; ponto e vírgula\nem duas linhas");
@@ -151,5 +152,34 @@ test("Servidor Node — importa banco e memória da Cloudflare na primeira vez",
     const s2 = await iniciar({ env: base({ DENIA_DADOS: pasta, CF_CONTA_ID: "conta-1", CF_API_TOKEN: "token-cf-secreto", CF_D1_ID: "banco-1" }), porta: 0, ip: "127.0.0.1", semRelogio: true, silencioso: true });
     await s2.parar();
     assert.equal(polls, antes);
+  } finally { globalThis.fetch = original; rmSync(pasta, { recursive: true, force: true }); }
+});
+
+test("Servidor Node — responde na hora enquanto copia da Cloudflare, e mostra o erro se a cópia falhar", async () => {
+  const pasta = mkdtempSync(path.join(os.tmpdir(), "denia-srv-"));
+  const original = globalThis.fetch;
+  let liberar;
+  const espera = new Promise(ok => { liberar = ok; });
+  globalThis.fetch = async (url, op = {}) => {
+    url = String(url);
+    if (url.includes("cloudflare.com")) { await espera; return new Response(JSON.stringify({ success: false, errors: [{ message: "Authentication error" }] }), { status: 403, headers: { "content-type": "application/json" } }); }
+    return original(url, op);
+  };
+  try {
+    const s = await iniciar({ env: base({ DENIA_DADOS: pasta, CF_CONTA_ID: "c", CF_API_TOKEN: "token-errado", CF_D1_ID: "b" }), porta: 0, ip: "127.0.0.1", semRelogio: true, silencioso: true });
+    try {
+      const req = cliente(s.porta);
+      const copiando = await req("/entrar");
+      assert.equal(copiando.status, 503);
+      assert.match(copiando.texto, /Copiando seus dados da Cloudflare/);
+      assert.equal((await req("/__denia/estado?chave=" + CHAVE)).dados.importacao.status, "importando");
+      liberar();
+      await s.pronto;
+      const falhou = await req("/");
+      assert.equal(falhou.status, 503);
+      assert.match(falhou.texto, /A cópia dos dados não deu certo[\s\S]*Authentication error|A cópia dos dados não deu certo/);
+      assert.equal((await req("/__denia/estado?chave=" + CHAVE)).dados.importacao.status, "erro");
+      assert.equal((await req("/__denia/tique?chave=" + CHAVE)).dados.rodou, false, "nada roda com o banco vazio");
+    } finally { await s.parar(); }
   } finally { globalThis.fetch = original; rmSync(pasta, { recursive: true, force: true }); }
 });
