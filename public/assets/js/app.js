@@ -220,6 +220,7 @@
   const ROTAS = {
     painel: { titulo: "Painel", render: paginaPainel },
     denia: { titulo: "DENIA por voz", render: paginaDenia },
+    problemas: { titulo: "Problemas", render: paginaProblemas },
     conversas: { titulo: "Conversas", render: paginaConversas },
     atendimentos: { titulo: "Atendimentos", render: paginaAtendimentos },
     profissionais: { titulo: "Profissionais", render: paginaProfissionais },
@@ -383,7 +384,7 @@
       atualizarStatus(); atualizarAprovacoes();
       // Confere de novo a cada 10 minutos (entregas do WhatsApp, aprovações e alertas).
       clearInterval(estado.relogioStatus);
-      estado.relogioStatus = setInterval(() => { if (document.visibilityState === "visible" && estado.org && estado.org.conectada) { cacheEng.delete(`/api/orgs/${estado.org.id}/engine/status`); atualizarStatus(); } }, 600000);
+      estado.relogioStatus = setInterval(() => { if (document.visibilityState !== "visible" || !estado.org) return; atualizarProblemas(); if (estado.org.conectada) { cacheEng.delete(`/api/orgs/${estado.org.id}/engine/status`); atualizarStatus(); } }, 600000);
     }
     else $("status-engine").replaceChildren(h("span", { class: "ponto" }), "Primeiro acesso");
   }
@@ -1247,6 +1248,57 @@
     area.replaceChildren(ev.length ? h("div", { class: "tabela-caixa" }, h("table", {},
       h("thead", {}, h("tr", {}, h("th", { text: "Quando" }), h("th", { text: "Pessoa" }), h("th", { text: "Área" }), h("th", { text: "O que foi feito" }))),
       h("tbody", {}, ev.map(x => h("tr", {}, h("td", { text: quando(x.criado_ms) }), h("td", { text: x.email || "—" }), h("td", { text: NOME_ACAO[x.acao] || x.acao }), h("td", { text: x.detalhe || "—" })))))) : h("div", { class: "cartao vidro" }, vazio("Nada registrado ainda", "")));
+  }
+
+  // ---------------------------------------------------------------------------
+  // Problemas: o que deu errado e precisa de atenção, com o motivo e o que fazer
+  // ---------------------------------------------------------------------------
+
+  const AREAS_PROBLEMA = [["", "Todos"], ["WHATSAPP", "Mensagens"], ["CLIENTES", "Clientes"], ["PUBLICACOES", "Postagens"], ["TEMPORADA", "Temporada"], ["AVISOS", "Avisos para a equipe"], ["SISTEMA", "Sistema"]];
+  async function paginaProblemas(el, _p, vivo) {
+    el.appendChild(cabeca("Problemas", "Mensagens que não chegaram, clientes esperando, postagens que não saíram e tudo o que a DENIA não conseguiu fazer, com o motivo e o que fazer."));
+    const area = h("div", {}, carregando());
+    el.appendChild(area);
+    let lista;
+    try { lista = (await org("problemas")).problemas || []; }
+    catch (e) { if (vivo()) falha(area, e); return; }
+    if (!vivo()) return;
+    let filtro = "";
+    const podeResolver = pode("AGENTE");
+    const resolver = async (chaves, b) => {
+      if (b) { b.disabled = true; b.textContent = "Salvando…"; }
+      try { await org("problemas/resolver", { metodo: "POST", corpo: { chaves } }); lista = lista.filter(p => !chaves.includes(p.chave)); desenhar(); atualizarProblemas(); aviso(chaves.length > 1 ? `${chaves.length} problemas marcados como resolvidos.` : "Marcado como resolvido. Se acontecer de novo, ele volta para a lista.", "ok"); }
+      catch (e) { aviso(e.message, "erro"); if (b) { b.disabled = false; b.textContent = "Marcar como resolvido"; } }
+    };
+    function cartaoProblema(p) {
+      const alta = p.gravidade === "ALTA";
+      const nome = (AREAS_PROBLEMA.find(a => a[0] === p.area) || [, p.area])[1];
+      return h("li", { class: "prb-item" + (alta ? " prb-alta" : "") },
+        h("span", { class: "prb-ic", "aria-hidden": "true", text: alta ? "⛔" : "⚠️" }),
+        h("div", {},
+          h("div", { class: "prb-topo" }, h("strong", { text: p.titulo }), h("small", { class: "prb-meta", text: `${nome} · ${quando(p.ms)}${p.vezes > 1 ? ` · ${p.vezes} vezes` : ""}` })),
+          h("p", { class: "prb-motivo" }, h("b", { text: "Motivo: " }), p.motivo || "não informado."),
+          p.detalhe ? h("p", { class: "prb-detalhe", text: p.detalhe }) : null,
+          p.dica ? h("p", { class: "prb-dica" }, h("b", { text: "O que fazer: " }), p.dica) : null,
+          h("div", { class: "acoes" },
+            p.link ? h("a", { class: "btn btn-secundario btn-pequeno", href: p.link }, "Abrir") : null,
+            podeResolver ? botao("Marcar como resolvido", (_e, b) => resolver([p.chave], b), "btn-secundario btn-pequeno") : null)));
+    }
+    function desenhar() {
+      const contagem = Object.fromEntries(AREAS_PROBLEMA.map(([a]) => [a, a ? lista.filter(p => p.area === a).length : lista.length]));
+      if (filtro && !contagem[filtro]) filtro = "";
+      const vistos = filtro ? lista.filter(p => p.area === filtro) : lista;
+      const altos = lista.filter(p => p.gravidade === "ALTA").length;
+      if (!lista.length) { area.replaceChildren(h("div", { class: "cartao vidro" }, vazio("Nenhum problema agora 🎉", "Mensagens, clientes, postagens e avisos estão em dia. Se algo der errado, aparece aqui e no número vermelho do menu."))); return; }
+      area.replaceChildren(
+        h("div", { class: "cartao vidro prb-resumo" },
+          h("strong", { text: `${lista.length} problema(s) para ver` }), altos ? h("span", { class: "prb-urgente", text: `${altos} urgente(s)` }) : null,
+          h("div", { class: "prb-filtros", role: "group", "aria-label": "Filtrar por área" }, AREAS_PROBLEMA.filter(([a]) => !a || contagem[a]).map(([a, n]) =>
+            h("button", { type: "button", class: "prb-filtro" + (filtro === a ? " ativo" : ""), "aria-pressed": filtro === a ? "true" : "false", onclick: () => { filtro = a; desenhar(); } }, `${n} (${contagem[a]})`))),
+          podeResolver && vistos.length > 1 ? h("div", { class: "acoes" }, botao(`Marcar ${filtro ? "estes" : "todos"} como resolvidos`, async (_e, b) => { if (await modal({ titulo: "Marcar como resolvidos?", conteudo: `${vistos.length} problema(s) saem da lista. Os que acontecerem de novo voltam.`, confirmar: "Marcar como resolvidos" })) resolver(vistos.map(p => p.chave), b); }, "btn-secundario btn-pequeno")) : null),
+        h("ul", { class: "prb-lista" }, vistos.map(cartaoProblema)));
+    }
+    desenhar();
   }
 
   // ---------------------------------------------------------------------------
@@ -2841,7 +2893,7 @@ Botão só com texto = resposta.` })),
     chatbot: "chatbot", temporada: "temporada", estudio: "marketing", calendario: "marketing", aprovacoes: "marketing", marcas: "marketing", instagram: "marketing", facebook: "marketing", google: "marketing", social: "marketing", denia: "voz"
   };
   window.DENIA_RECURSOS = window.DENIA_RECURSOS || { chatbot: "Chatbot do WhatsApp com botões e listas", chatbot_ia: "IA no chatbot", ia_completa: "IA completa de atendimento (atende como uma pessoa, com memória)", marketing: "Instagram, Facebook e Google: posts, artes, comentários e avaliações", voz: "DENIA por voz, ao vivo", multiempresa: "Várias empresas, marcas e unidades", temporada: "Locação por temporada" };
-  const ROTAS_LIVRES = ["plano", "conta", "equipe", "auditoria", "empresas", "contatos", "painel", "integracoes", "consumo"];
+  const ROTAS_LIVRES = ["plano", "conta", "equipe", "auditoria", "empresas", "contatos", "painel", "integracoes", "consumo", "problemas"];
   const acessoAtual = () => (estado.org && estado.org.acesso) || { liberado: true, recursos: [], status: "?" };
   const temRecurso = r => !r || estado.eu.usuario.super_admin || (acessoAtual().liberado && (acessoAtual().recursos || []).includes(r));
   const NOME_STATUS_PLANO = { TESTE: "Teste grátis", ATIVO: "Ativo", ATRASADO: "Pagamento pendente", CANCELADO: "Cancelado (usa até o fim do período)", CORTESIA: "Cortesia — acesso total", BLOQUEADO: "Bloqueado", TESTE_ACABOU: "Teste encerrado" };
@@ -3082,6 +3134,9 @@ Botão só com texto = resposta.` })),
       const entra = m => nav.querySelector(`[data-entra="${m}"]`);
       const lista = [nav.querySelector('a[data-rota="painel"]'), entra("whatsapp"), temRecurso("temporada") ? entra("temporada") : entra("instagram"), entra("google")].filter(a => a && !a.classList.contains("oculto"));
       b.replaceChildren(...lista.map(a => item(a, a.textContent.replace("›", "").replace("Locação por temporada", "Temporada").trim())), botaoItem(IC.menu, "Menu", () => { $("lateral").classList.add("aberta"); $("veu").classList.add("ativo"); $("abrir-menu").setAttribute("aria-expanded", "true"); }, false));
+      // Número vermelho de Problemas também no botão Menu do celular.
+      const cp = $("contador-problemas"), menuB = b.lastElementChild;
+      if (cp && menuB) menuB.appendChild(h("b", { class: "contador contador-alerta barra-contador" + (cp.classList.contains("oculto") ? " oculto" : ""), id: "contador-barra", text: cp.textContent }));
     }
   }
   function maisDoModo(modo, resto) {
@@ -5881,7 +5936,21 @@ Botão só com texto = resposta.` })),
     }
   }
 
+  async function atualizarProblemas() {
+    const c = $("contador-problemas");
+    if (!c || !estado.org || ehRevisor()) return;
+    try {
+      const r = await org("problemas?contar=1");
+      c.textContent = r.total > 99 ? "99+" : String(r.total);
+      c.classList.toggle("oculto", !r.total);
+      c.title = r.total ? `${r.total} problema(s) para ver` : "";
+    } catch { c.classList.add("oculto"); }
+    const cb = $("contador-barra");
+    if (cb) { cb.textContent = c.textContent; cb.classList.toggle("oculto", c.classList.contains("oculto")); }
+  }
+
   async function atualizarAprovacoes() {
+    atualizarProblemas();
     const c = $("contador-aprovacoes");
     if (!c || !estado.org) return;
     try {
