@@ -1,5 +1,24 @@
 # Changelog — DENIA Engine
 
+## 31.10.0 — 2026-10-20
+
+### Corrigido — conversa com o profissional (equipe) sem contexto e repetitiva
+- Com mais de um atendimento aberto, a DENIA segue o atendimento de que o profissional já estava falando
+  (se nada de outro atendimento foi trocado com ele depois). Sem pista, pergunta "de qual atendimento?"
+  **uma vez a cada 6 h**; depois disso avisa a equipe no Telegram em vez de repetir.
+- Nomes curtos ("Bia", "Ana") passam a identificar o atendimento.
+- Nunca manda ao profissional a mesma mensagem que acabou de mandar: se ia repetir, avisa a equipe.
+- A IA do profissional lê o que o cliente escreveu no atendimento e o resumo do caso ("do que se trata?").
+- Novo tipo **ENCAMINHAR**: links, opções e informações que o profissional quer mandar ao cliente vão ao
+  cliente certo, com os links inteiros, e o profissional recebe "Pronto, enviei para Fulano ✅".
+  Telefone, documento e valor fora dos autorizados não passam.
+
+### Novo — reuniões online avisadas no Telegram da Central
+- Quando a DENIA combina dia e horário de uma reunião online com o cliente (e o treinamento permite),
+  registra em `d30_reunioes` e avisa o Telegram da Central (cliente, dia, hora e assunto). Remarcar e
+  cancelar também avisam. Lembrete cerca de 1 hora antes.
+- A IA vê as reuniões já marcadas do cliente e não duplica.
+
 ## 31.9.0 — 2026-10-16
 
 ### Corrigido — o banco (D1) estourava o limite diário de leitura do plano gratuito
