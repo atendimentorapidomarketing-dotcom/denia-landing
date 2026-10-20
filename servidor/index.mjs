@@ -18,8 +18,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { timingSafeEqual, createHash } from "node:crypto";
 
 const [maior, menor] = process.versions.node.split(".").map(Number);
-if (maior < 22 || (maior === 22 && menor < 13)) {
-  console.error(`DENIA precisa do Node.js 22.13 ou mais novo (este é ${process.versions.node}). No painel da Hostinger, escolha a versão 22 ou 24.`);
+if (maior < 22 || (maior === 22 && menor < 5)) {
+  console.error(`DENIA precisa do Node.js 22.5 ou mais novo (este é ${process.versions.node}). No painel da Hostinger, escolha a versão 22 ou 24.`);
   process.exit(1);
 }
 
