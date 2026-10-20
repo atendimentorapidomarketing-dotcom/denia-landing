@@ -1,5 +1,11 @@
 # Changelog — DENIA Engine
 
+## 32.1.1 — 2026-10-20
+
+### Corrigido — Telegram da equipe na mudança para a Hostinger
+- A ligação automática do Telegram da equipe troca sozinha o endereço antigo da própria IA da Central
+  (ex.: `…workers.dev/telegram`) pelo novo (`…/ia/telegram`). O endereço de outro sistema continua intocado.
+
 ## 32.1.0 — 2026-10-20
 
 ### Mudado — Telegram da Central só para o que é urgente
