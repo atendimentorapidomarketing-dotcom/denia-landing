@@ -238,7 +238,10 @@ export async function iniciar(op = {}) {
     }
     const ehIA = (hostIA && url.hostname.toLowerCase() === hostIA) || url.pathname === prefixoIA || url.pathname.startsWith(prefixoIA + "/");
     if (ehIA) {
-      if (!hostIA || url.hostname.toLowerCase() !== hostIA) { url.pathname = url.pathname.slice(prefixoIA.length) || "/"; request = new Request(url, request); }
+      if (!hostIA || url.hostname.toLowerCase() !== hostIA) {
+        url.pathname = url.pathname.slice(prefixoIA.length) || "/"; request = new Request(url, request);
+        request.headers.set("x-denia-prefixo", prefixoIA); // a IA sabe o próprio endereço público (ex.: Telegram da equipe)
+      }
       return engine.fetch(request, envEngine, contexto());
     }
     return plataforma.fetch(request, envPlataforma, contexto());

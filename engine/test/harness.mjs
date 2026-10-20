@@ -45,7 +45,7 @@ export async function criarAmbiente({ inicio = "2026-10-07T14:00:00-03:00", env:
   const worker = mod.default;
   const amb = {
     agora: Date.parse(inicio), DB: Object.assign(new D1Fake(), { estrito: true }), KV: null,
-    enviados: [], telegram: [], llm: [], plataforma: [], crmConsultas: [], crmResposta: null, llmCliente: null, llmPrestador: null, metaFalha: null, contador: 0, transcricoes: {}
+    enviados: [], telegram: [], telegramMsgs: [], llm: [], plataforma: [], crmConsultas: [], crmResposta: null, llmCliente: null, llmPrestador: null, metaFalha: null, contador: 0, transcricoes: {}
   };
   amb.KV = new KVFake(() => amb.agora);
   amb.env = {
@@ -72,7 +72,7 @@ export async function criarAmbiente({ inicio = "2026-10-07T14:00:00-03:00", env:
       const entrada = corpo.input[0].content[0].text;
       const papel = corpo.instructions.startsWith("Você é a DENIA") ? "cliente" : corpo.instructions.startsWith("Você trabalha") ? "prestador" : "outro";
       amb.llm.push({ papel, entrada, modelo: corpo.model });
-      const fn = papel === "cliente" ? amb.llmCliente : papel === "prestador" ? amb.llmPrestador : (corpo.instructions.startsWith("Você analisa conversas") && amb.llmAprendizado) || (corpo.instructions.startsWith("Você cuida do acompanhamento") && amb.llmRevisao) || (corpo.instructions.startsWith("Você é a memória") && amb.llmMemoria) || (corpo.instructions.startsWith("Você é da equipe da Central") && amb.llmProfAgendado) || (corpo.instructions.startsWith("Você é a supervisora") && amb.llmEstudo) || (corpo.instructions.startsWith("Você é a atendente virtual do guia") && amb.llmGuia) || (() => ({ analise: "ok", descricao: "ok" }));
+      const fn = papel === "cliente" ? amb.llmCliente : papel === "prestador" ? amb.llmPrestador : (corpo.instructions.startsWith("Você analisa conversas") && amb.llmAprendizado) || (corpo.instructions.startsWith("Você cuida do acompanhamento") && amb.llmRevisao) || (corpo.instructions.startsWith("Você é a memória") && amb.llmMemoria) || (corpo.instructions.startsWith("Você é da equipe da Central") && amb.llmProfAgendado) || (corpo.instructions.startsWith("Você é a supervisora") && amb.llmEstudo) || (corpo.instructions.startsWith("Você é a atendente virtual do guia") && amb.llmGuia) || (corpo.instructions.startsWith("Você coordena a Central") && amb.llmEquipe) || (() => ({ analise: "ok", descricao: "ok" }));
       if (!fn) throw new Error("LLM não esperado: " + papel);
       const out = fn(entrada);
       if (out instanceof Error) return resp({ error: { message: out.message } }, 500);
@@ -80,7 +80,14 @@ export async function criarAmbiente({ inicio = "2026-10-07T14:00:00-03:00", env:
     }
     if (url.startsWith("https://plataforma.test/")) { amb.plataforma.push({ headers: op.headers, corpo }); return resp({ ok: true, cliente_id: 77, os_id: 88 }); }
     if (url.startsWith("https://crm.test/")) { amb.crmConsultas.push(url); return resp(amb.crmResposta || {}); }
-    if (url.includes("api.telegram.org")) { amb.telegram.push(corpo.text); return resp({ ok: true, result: { message_id: 1 } }); }
+    if (url.includes("api.telegram.org")) {
+      const metodo = url.split("/").pop();
+      if (metodo === "getWebhookInfo") return resp({ ok: true, result: { url: amb.tgWebhook || "" } });
+      if (metodo === "setWebhook") { amb.tgWebhook = corpo.url; amb.tgSegredo = corpo.secret_token; return resp({ ok: true }); }
+      const id = 9000 + amb.telegram.length;
+      amb.telegram.push(corpo.text); amb.telegramMsgs.push({ id, texto: corpo.text, responde: corpo.reply_to_message_id || null });
+      return resp({ ok: true, result: { message_id: id } });
+    }
     throw new Error("fetch inesperado: " + url);
   };
   const executar = async (req) => {
@@ -110,6 +117,12 @@ export async function criarAmbiente({ inicio = "2026-10-07T14:00:00-03:00", env:
   amb.para = tel => amb.enviados.filter(e => e.to === tel);
   amb.ultimoPara = tel => amb.para(tel).at(-1)?.texto?.replace(/\u00a0/g, " ");
   amb.avancar = ms => { amb.agora += ms; };
+  let upd = 0;
+  // A equipe escreve no grupo do Telegram da Central (opcionalmente respondendo um aviso).
+  amb.equipe = (texto, { responde = null, chat = amb.env.TELEGRAM_CHAT_ID, segredo = amb.tgSegredo, de = "Ana" } = {}) => executar(new Request("https://denia.test/telegram", {
+    method: "POST", headers: { "content-type": "application/json", "x-telegram-bot-api-secret-token": segredo || "" },
+    body: JSON.stringify({ update_id: ++upd + 1000, message: { message_id: 500 + upd, chat: { id: Number(chat), type: "supergroup" }, from: { first_name: de, is_bot: false }, text: texto, ...(responde ? { reply_to_message: { message_id: responde, text: "" } } : {}) } })
+  }));
   amb.worker = worker;
   return amb;
 }

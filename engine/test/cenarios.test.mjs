@@ -5,7 +5,7 @@ import { criarAmbiente } from "./harness.mjs";
 const CLI = "5521911112222";
 const CLI2 = "5521933334444";
 const CHAVEIRO = "5521964545279", ANDERSON_REFORMA = "5521987506366";
-const CARLOS_ESTOF = "5521983838318", CARLOS_ASSIST = "5511992197178";
+const CARLOS_ESTOF = "5521983838318", CARLOS_ASSIST = "5511992197178", MIRELLA = "5521978791765";
 
 const decisao = (o) => ({ resposta: "", intencao: "CONVERSA", novo_pedido: false, quer_orcamento_ou_atendimento: false, pronto_para_profissional: false, fatos: {}, resposta_para_profissional: "", descricao_anexos: "", comprovante_pagamento: false, precisa_humano: false, motivo_humano: "", resumo_caso: "", ...o });
 const prest = (o) => ({ tipo: "COMENTARIO", valor_centavos: 0, valor_e_final: "NAO_INFORMADO", disponibilidade: "", atende_regiao: "NAO_INFORMADO", pergunta_para_cliente: "", resposta_conhecida: "", mensagem_para_cliente: "", resumo: "", ...o });
@@ -1238,4 +1238,53 @@ test("Número sem WhatsApp e falhas repetidas: um aviso por pessoa e motivo, sem
   await a.cliente(CLI2, "manda a foto");
   for (let i = 0; i < 3; i++) await a.webhook({ statuses: [{ id: "wamid.x" + i, status: "failed", recipient_id: CLI2, errors: [{ code: 131053, title: "Media upload error" }] }] });
   assert.equal(a.telegram.filter(t => /NÃO entregue para 5521933334444/.test(t)).length, 1);
+});
+
+test("Equipe pelo Telegram: responde o aviso 'a equipe decide' e a DENIA consulta o profissional indicado", async () => {
+  const a = await criarAmbiente();
+  // Liga o Telegram da equipe (setWebhook com segredo).
+  const lig = await (await a.http("/api/telegram/conectar", { method: "POST", body: "{}" })).json();
+  assert.equal(lig.ok, true, JSON.stringify(lig));
+  assert.equal(a.tgWebhook, "https://denia.test/telegram");
+  // Sem o segredo ou de outro grupo: ignorado.
+  assert.equal((await a.equipe("oi", { segredo: "errado" })).status, 401);
+  a.llmEquipe = () => { throw new Error("não deveria chamar a IA"); };
+  await a.equipe("manda pro Carlos", { chat: "-999" });
+  // Cliente pede algo sem profissional certo: aviso "a equipe decide".
+  a.llmCliente = () => decisao({ resposta: "Vou verificar com a equipe.", intencao: "NOVO_PEDIDO", quer_orcamento_ou_atendimento: true, pronto_para_profissional: true, fatos: { servico: "lavagem de fachada", problema: "lavar a fachada de vidro do prédio, 3 andares", bairro: "Tijuca", nome: "Ana" }, categoria_confianca: "BAIXA" });
+  await a.cliente(CLI, "Preciso lavar a fachada de vidro do prédio, 3 andares, Tijuca", { nome: "Ana" });
+  const aviso = a.telegramMsgs.find(t => /a equipe decide/.test(t.texto));
+  assert.ok(aviso, a.telegram.join("\n---\n"));
+  assert.match(aviso.texto, /Responda esta mensagem para me dizer o que fazer/);
+  assert.equal(a.para(MIRELLA).length, 0);
+  // A equipe responde o aviso: "manda pro Carlos estofador".
+  let entrada = "";
+  a.llmEquipe = e => { entrada = e; return { caso_id: 0, acoes: [{ tipo: "CONSULTAR", prestador_id: "HIG-MIRELLA", categoria: "HIGIENIZACAO" }], resposta: "", pergunta: "" }; };
+  await a.equipe("isso é com a Mirella, manda pra ela", { responde: aviso.id });
+  assert.match(entrada, /AVISO QUE ELA RESPONDEU:[\s\S]*a equipe decide/);
+  assert.match(entrada, /CASO DO AVISO:\n#\d+ — cliente Ana[\s\S]*lavar a fachada de vidro/);
+  assert.match(entrada, /HIG-MIRELLA \| Mirella/);
+  assert.equal(a.para(MIRELLA).length, 1, "consulta enviada ao profissional indicado");
+  assert.match(a.para(MIRELLA)[0].texto, /lavar a fachada de vidro/);
+  const conf = a.telegramMsgs.at(-1);
+  assert.match(conf.texto, /✅ Consultei Mirella sobre o atendimento de Ana/);
+  assert.equal(conf.responde, 503, "responde a mensagem da equipe no grupo (a 3ª enviada no teste)");
+  assert.match(a.ultimoPara(CLI), /^Enviamos sua solicitação ao profissional/);
+  // Pergunta solta: só responde.
+  a.llmEquipe = () => ({ caso_id: 0, acoes: [], resposta: "Higienização: Mirella e Paulo.", pergunta: "" });
+  await a.equipe("@DeniaBot quem faz higienização?");
+  assert.equal(a.telegramMsgs.at(-1).texto, "Higienização: Mirella e Paulo.");
+  // Falar com o cliente e pausar a IA na conversa, numa mensagem só.
+  a.llmEquipe = () => ({ caso_id: 0, acoes: [{ tipo: "MENSAGEM_CLIENTE", texto: "Oi Ana! A Mirella passa amanhã às 10h para ver a fachada." }, { tipo: "PAUSAR" }], resposta: "", pergunta: "" });
+  await a.equipe("avisa a Ana que a Mirella passa amanhã 10h e deixa que eu assumo", { responde: aviso.id });
+  assert.equal(a.ultimoPara(CLI), "Oi Ana! A Mirella passa amanhã às 10h para ver a fachada.");
+  assert.match(a.telegramMsgs.at(-1).texto, /✅ Mandei para Ana[\s\S]*⏸️ Pausei a DENIA na conversa com Ana/);
+  const n = a.para(CLI).length;
+  a.llmCliente = () => decisao({ resposta: "Oi!" });
+  await a.cliente(CLI, "Combinado, obrigada");
+  assert.equal(a.para(CLI).length, n, "a DENIA fica calada enquanto a equipe assume");
+  // Ação sem saber o caso: pergunta em vez de chutar.
+  a.llmEquipe = () => ({ caso_id: 0, acoes: [{ tipo: "MENSAGEM_CLIENTE", texto: "Oi!" }], resposta: "", pergunta: "" });
+  await a.equipe("manda um oi pro cliente");
+  assert.match(a.telegramMsgs.at(-1).texto, /De qual atendimento você está falando/);
 });

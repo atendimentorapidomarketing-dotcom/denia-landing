@@ -36,8 +36,8 @@
 //       relatório diário. Nunca inicia conversa nova por conta própria.
 // ============================================================================
 
-const VERSAO = "31.12.0";
-const SCHEMA_VERSAO = "31.12.0"; // mude sempre que acrescentar tabela ou índice (senão o banco de produção não recebe)
+const VERSAO = "32.0.0";
+const SCHEMA_VERSAO = "32.0.0"; // mude sempre que acrescentar tabela ou índice (senão o banco de produção não recebe)
 const EMPRESA_ID = 1;
 const PHONE_ID_PADRAO = "473474732510163";
 const GRAPH = "v25.0";
@@ -452,6 +452,7 @@ const SQL_SCHEMA = [
   `CREATE TABLE IF NOT EXISTS d30_destinos (telefone TEXT PRIMARY KEY, motivo TEXT NOT NULL, codigo INTEGER, desde_ms INTEGER NOT NULL, ate_ms INTEGER)`,
   `CREATE TABLE IF NOT EXISTS d30_guardadas (id INTEGER PRIMARY KEY AUTOINCREMENT, telefone TEXT NOT NULL, texto TEXT NOT NULL, papel TEXT, status TEXT NOT NULL DEFAULT 'GUARDADA', criado_ms INTEGER NOT NULL, enviado_ms INTEGER)`,
   `CREATE INDEX IF NOT EXISTS d30_guardadas_tel ON d30_guardadas(telefone, status)`,
+  `CREATE TABLE IF NOT EXISTS d30_tg_msgs (message_id INTEGER PRIMARY KEY, caso_id INTEGER, telefone TEXT, texto TEXT, criado_ms INTEGER NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS d30_treinamento (versao INTEGER PRIMARY KEY AUTOINCREMENT, json TEXT NOT NULL, autor TEXT, criado_ms INTEGER NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS d30_eventos (id INTEGER PRIMARY KEY AUTOINCREMENT, caso_id INTEGER, tipo TEXT NOT NULL, descricao TEXT, dados TEXT, criado_ms INTEGER NOT NULL)`,
   `CREATE INDEX IF NOT EXISTS d30_eventos_ms ON d30_eventos(criado_ms)`,
@@ -1180,15 +1181,15 @@ async function metaBaixarMidia(env, mediaId) {
   return { buffer, mime: String(d.mime_type || arq.headers.get("content-type") || "application/octet-stream") };
 }
 
-async function telegramEnviar(env, texto) {
+async function telegramEnviar(env, texto, op = {}) {
   try {
     const r = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: String(env.TELEGRAM_CHAT_ID), text: String(texto).slice(0, 4000), disable_web_page_preview: true }),
+      body: JSON.stringify({ chat_id: String(env.TELEGRAM_CHAT_ID), text: String(texto).slice(0, 4000), disable_web_page_preview: true, ...(op.responderA ? { reply_to_message_id: Number(op.responderA), allow_sending_without_reply: true } : {}) }),
       signal: AbortSignal.timeout(15000)
     });
     const d = await r.json().catch(() => ({}));
-    return d?.ok === true ? { ok: true } : { ok: false, erro: d?.description || `HTTP ${r.status}` };
+    return d?.ok === true ? { ok: true, id: d?.result?.message_id || null } : { ok: false, erro: d?.description || `HTTP ${r.status}` };
   } catch (e) { return { ok: false, erro: String(e?.message || e) }; }
 }
 
@@ -1492,12 +1493,12 @@ function criarSaida(c) {
     bruto: (to, corpo) => controlado(to, corpo),
     midia: (to, m, info = {}) => c.sim ? simular("whatsapp-midia", to, `[${m.tipo}] ${m.legenda || ""}`, info) : controlado(to, corpoMidia(to, m.tipo, m.mediaId, m.legenda)),
     template: (to, nome, params, info = {}) => c.sim ? simular("whatsapp-template", to, `${nome}: ${params.join(" | ")}`, info) : controlado(to, corpoTemplate(env, to, nome, params)),
-    telegram: async t => {
+    telegram: async (t, op = {}) => {
       if (c.sim) return simular("telegram", "equipe", t);
       if (sobram(c) < 8) { console.warn("Telegram adiado (limite de chamadas):", String(t).slice(0, 200)); return { ok: false, erro: "limite de chamadas" }; }
       gastar(c);
       if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID) { console.warn("Telegram não configurado:", t.slice(0, 200)); return { ok: false, erro: "Telegram não configurado" }; }
-      return telegramEnviar(env, t);
+      return telegramEnviar(env, t, op);
     }
   };
 }
@@ -1548,8 +1549,10 @@ async function alertarEquipe(c, texto, chave, casoId = null) {
     if (await reservarChave(c, "alerta-teto:" + Math.floor(c.agora() / 3600000))) await c.saida.telegram(`DENIA — Muitos alertas nesta hora (${recentes}). Os próximos ficam só no registro; veja /api/saude.`);
     return;
   }
-  const r = await c.saida.telegram("DENIA — " + texto);
+  const r = await c.saida.telegram("DENIA — " + texto + (casoId ? "\n↩️ Responda esta mensagem para me dizer o que fazer." : ""));
   if (!r.ok) console.warn("Alerta não entregue:", r.erro);
+  // Guarda de que caso (ou telefone) é o aviso: quando a equipe responder no Telegram, a DENIA sabe do que se trata.
+  else if (r.id) await c.db.prepare("INSERT OR REPLACE INTO d30_tg_msgs(message_id,caso_id,telefone,texto,criado_ms) VALUES(?,?,?,?,?)").bind(Number(r.id), casoId || null, (String(texto).match(/\b55\d{10,11}\b/) || [])[0] || null, txt(texto, 1500), c.agora()).run().catch(() => { });
 }
 
 // Envio ao cliente: respeita pausa humana, idempotência e grava no histórico.
@@ -2378,27 +2381,32 @@ async function decidirCliente(c, { tel, pessoa, caso, consulta, d, chaveLote }) 
   return { texto: d.resposta };
 }
 
-async function consultarPrestador(c, caso, pessoa, chaveLote) {
-  const area = caso.fatos.categoria;
+// "escolhido": profissional indicado pela equipe (pelo Telegram). Aí a DENIA consulta exatamente ele,
+// mesmo sem categoria certa, e encerra a consulta anterior do caso.
+async function consultarPrestador(c, caso, pessoa, chaveLote, escolhido = null) {
+  const area = escolhido?.area || caso.fatos.categoria;
   const nomeCli = pessoa.nome || caso.telefone;
   if (!caso.fatos.servico && !caso.fatos.problema) return null;
-  if (area === "BALCAO") {
+  if (escolhido) {
+    await c.db.prepare(`UPDATE d30_consultas SET status='ENCERRADA', atualizado_ms=? WHERE caso_id=? AND status IN (${STATUS_CONSULTA_ABERTA.map(() => "?").join(",")})`).bind(c.agora(), caso.casoId, ...STATUS_CONSULTA_ABERTA).run();
+    await c.db.prepare("UPDATE d30_consultas SET status='ENCERRADA', atualizado_ms=? WHERE caso_id=? AND status='FALHA'").bind(c.agora(), caso.casoId).run();
+  } else if (area === "BALCAO") {
     await alertarEquipe(c, `${nomeCli} quer orçamento de balcão (caso #${caso.casoId}): ${caso.fatos.servico || caso.fatos.problema}.`, "balcao:" + caso.casoId, caso.casoId);
     return null;
   }
-  if (!area) {
+  else if (!area) {
     await alertarEquipe(c, `Caso #${caso.casoId} (${nomeCli}): não tenho certeza de qual profissional atende "${txt(caso.fatos.servico || caso.fatos.problema, 120)}". Nenhum prestador foi consultado — a equipe decide.`, "semcat:" + caso.casoId, caso.casoId);
     return null;
   }
-  if (await consultaDoCaso(c, caso.casoId)) return null; // nunca duplicar consulta
+  if (!escolhido && await consultaDoCaso(c, caso.casoId)) return null; // nunca duplicar consulta
   // Trava: a mensagem de um profissional nunca é repassada a outro profissional como se fosse de cliente.
-  if (prestadorPorTelefone(caso.telefone) || String(pessoa?.tipo || "").toUpperCase() === "TECNICO") {
+  if (!escolhido && (prestadorPorTelefone(caso.telefone) || String(pessoa?.tipo || "").toUpperCase() === "TECNICO")) {
     await mudarEtapa(c, caso, "EQUIPE");
     await alertarEquipe(c, `O caso #${caso.casoId} foi aberto por um número de PROFISSIONAL (${nomeCli}). Nenhum outro profissional foi consultado. Verifique a conversa.`, "prof-como-cliente:" + caso.casoId, caso.casoId);
     return null;
   }
   const tentados = new Set(((await c.db.prepare("SELECT prestador_id FROM d30_consultas WHERE caso_id=?").bind(caso.casoId).all())?.results || []).map(x => x.prestador_id));
-  const p = PRESTADORES.find(x => x.area === area && !tentados.has(x.id));
+  const p = escolhido || PRESTADORES.find(x => x.area === area && !tentados.has(x.id));
   if (!p) {
     await mudarEtapa(c, caso, "EQUIPE");
     await alertarEquipe(c, `Sem prestador disponível para ${CATEGORIAS[area]?.rotulo} (caso #${caso.casoId}, cliente ${nomeCli}). A equipe precisa assumir.`, "semprest:" + caso.casoId, caso.casoId);
@@ -3052,6 +3060,13 @@ async function webhookPost(request, env, ctx) {
   let payload;
   try { payload = JSON.parse(new TextDecoder().decode(bytes)); } catch { return new Response("EVENT_RECEIVED", { status: 200 }); }
   const c = criarContexto(env);
+  // Guarda o endereço público (a Meta chama aqui): o cron usa para ligar o Telegram da equipe.
+  // (Nunca atrapalha o atendimento: com o banco fora do ar, simplesmente não grava.)
+  if (Date.now() - ultimaBaseGuardada > 3600000) {
+    ultimaBaseGuardada = Date.now();
+    const base = enderecoPublico(request);
+    ctx.waitUntil((async () => { await env.DB.prepare("INSERT OR REPLACE INTO d30_meta(chave,valor) VALUES('base_publica',?)").bind(base).run(); })().catch(() => { }));
+  }
   const { mensagens, ecos } = extrairEventos(payload, env);
   const statuses = extrairStatuses(payload, env);
   if (!mensagens.length && !ecos.length && !statuses.length) return new Response("EVENT_RECEIVED", { status: 200 });
@@ -3180,6 +3195,11 @@ async function cron(c) {
   if (c.atrasadasSemResposta) await alertarEquipe(c, `${c.atrasadasSemResposta} conversa(s) ficaram sem resposta por mais tempo e a DENIA NÃO respondeu sozinha para não mandar mensagens em massa. Veja em Conversas e responda quem ainda precisa.`, "atrasadas:" + Math.floor(agora / 3600000));
   if (sobram(c) > 20) await processarAgendados(c);
   if (sobram(c) > 12) await lembrarReunioes(c).catch(e => console.error("reuniões", e?.message));
+  // Uma vez por dia: liga o Telegram da equipe à DENIA (se ainda não estiver ligado a outro sistema).
+  if (sobram(c) > 15 && c.env.TELEGRAM_BOT_TOKEN && c.env.TELEGRAM_CHAT_ID && String(c.env.TELEGRAM_EQUIPE || "").toLowerCase() !== "desligado" && await reservarChave(c, "tg-conectar:" + dataSP(agora))) {
+    const base = (await c.db.prepare("SELECT valor FROM d30_meta WHERE chave='base_publica'").first().catch(() => null))?.valor;
+    if (base) { const r = await conectarTelegramEquipe(c, base).catch(e => ({ ok: false, erro: e?.message })); await c.db.prepare("INSERT OR REPLACE INTO d30_meta(chave,valor) VALUES('telegram_equipe',?)").bind(JSON.stringify({ ...r, em: agora })).run().catch(() => { }); }
+  }
   if (sobram(c) > 20) await processarSync(c).catch(e => console.error("sync", e));
   if (sobram(c) > 25) await processarAprendizado(c).catch(e => console.error("aprendizado", e));
   if (sobram(c) > 25) await relatorioDiario(c).catch(e => console.error("relatório", e));
@@ -3191,6 +3211,8 @@ async function cron(c) {
   if (await reservarChave(c, "limpeza:" + dia)) {
     await c.db.prepare("DELETE FROM d30_fila WHERE recebido_ms < ?").bind(agora - 7 * 86400000).run();
     await c.db.prepare("DELETE FROM d30_saidas WHERE criado_ms < ?").bind(agora - 2 * 86400000).run();
+    await c.db.prepare("DELETE FROM d30_tg_msgs WHERE criado_ms < ?").bind(agora - 30 * 86400000).run().catch(() => { });
+    await c.db.prepare("DELETE FROM d30_guardadas WHERE criado_ms < ?").bind(agora - 14 * 86400000).run().catch(() => { });
     // Telefones da equipe e técnicos do D1, para a contingência nunca respondê-los.
     if (c.env.MEMORIA) {
       const eq = (await c.db.prepare(`SELECT DISTINCT p.telefone FROM pessoas p WHERE p.empresa_id=? AND (UPPER(COALESCE(p.tipo,'')) IN ('ATENDENTE','TECNICO')
@@ -3773,7 +3795,8 @@ async function saude(c, { completo = false } = {}) {
     versao: VERSAO, modelo: modelo(env),
     openai_configurado: Boolean(env.OPENAI_API_KEY), whatsapp_configurado: Boolean(env.WHATSAPP_TOKEN),
     verify_token_configurado: Boolean(env.WHATSAPP_VERIFY_TOKEN), assinatura_meta_verificada: Boolean(env.META_APP_SECRET),
-    telegram_configurado: Boolean(env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_CHAT_ID), template_prestador_configurado: Boolean(env.WHATSAPP_TEMPLATE_CONSULTA_TECNICO),
+    telegram_configurado: Boolean(env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_CHAT_ID),
+    telegram_equipe: await c.db.prepare("SELECT valor FROM d30_meta WHERE chave='telegram_equipe'").first().then(r => { try { return JSON.parse(r?.valor || "null"); } catch { return null; } }).catch(() => null), template_prestador_configurado: Boolean(env.WHATSAPP_TEMPLATE_CONSULTA_TECNICO),
     painel_protegido: Boolean(senhaPainel(env)), plataforma_cadastro_envio: Boolean(env.PLATAFORMA_API_URL), plataforma_cadastro_consulta: Boolean(env.CRM_CONSULTA_URL), janela_agrupamento_ms: janela(env), markup_percent: Number(env.MARKUP_PERCENT ?? 50)
   };
   try { await c.db.prepare("SELECT 1 AS ok").first(); r.d1 = { configurado: true, operacional: true }; }
@@ -3972,9 +3995,184 @@ async function limparTeste(env) {
 }
 
 // ============================================================================
+// EQUIPE PELO TELEGRAM — a equipe conversa com a DENIA no grupo da Central (respondendo um aviso ou
+// citando o bot) e ela executa: consultar um profissional, falar com o cliente ou com o profissional,
+// pausar/retomar a conversa, mudar a etapa ou só responder ("quem faz estofado?"). Só o grupo da
+// Central (TELEGRAM_CHAT_ID) é ouvido, e ela sempre confirma no grupo o que fez.
+// ============================================================================
+
+function segredoTelegramEngine(env) { return hashTexto("denia-tg:" + String(env.TELEGRAM_BOT_TOKEN || "")) + hashTexto(String(env.TELEGRAM_BOT_TOKEN || "") + ":central"); }
+
+const INSTRUCOES_EQUIPE = `Você coordena a Central de Atendimento junto com a EQUIPE, que fala com você pelo grupo do Telegram. Quem escreve é da equipe (não é cliente nem profissional). Leia o AVISO que ela respondeu (se houver), o CASO, o que o CLIENTE escreveu, os PROFISSIONAIS e os CASOS ABERTOS, e decida o que fazer.
+
+Responda SOMENTE com JSON:
+{"caso_id":0,"acoes":[],"resposta":"","pergunta":""}
+
+acoes (só o que a equipe pediu claramente; pode ser mais de uma):
+- {"tipo":"CONSULTAR","prestador_id":"","nome":"","telefone":"","categoria":""}: mandar o pedido do cliente para um profissional. Use prestador_id da lista quando a equipe citar alguém da lista (pelo nome ou pela área: "manda pro Carlos estofador", "quem faz higienização é a Mirella"). Se a equipe der nome e telefone de alguém fora da lista, preencha nome e telefone. categoria: uma das CATEGORIAS, se ficar claro.
+- {"tipo":"MENSAGEM_CLIENTE","texto":""}: mandar uma mensagem ao cliente do caso, em nome da Central (escreva o texto pronto, curto e educado; se a equipe ditou o texto, use o dela).
+- {"tipo":"MENSAGEM_PROFISSIONAL","texto":""}: mandar uma mensagem ao profissional que está com o caso.
+- {"tipo":"PAUSAR"}: a equipe vai assumir a conversa com o cliente (a DENIA para de responder por 12 h).
+- {"tipo":"RETOMAR"}: a DENIA volta a atender o cliente.
+- {"tipo":"ETAPA","etapa":""}: mudar a etapa (COLETANDO, AGUARDANDO_PRESTADOR, AGUARDANDO_CLIENTE, EQUIPE, AGENDADO, EM_ANDAMENTO, CONCLUIDO, CANCELADO).
+caso_id: o caso de que a equipe está falando (o do AVISO, ou o que ela citou pelo número, pelo nome do cliente ou pelo serviço, entre os CASOS ABERTOS). 0 se não for sobre um caso.
+resposta: o que você diz à equipe no Telegram, curto e direto, em português do Brasil (ex.: responder "quem faz estofado?" com os nomes da lista). Não diga que fez algo: o sistema confirma cada ação.
+pergunta: se não der para saber o caso, o profissional ou o que fazer, pergunte aqui e deixe acoes vazia. NUNCA chute caso ou profissional. Nunca invente telefone. Nunca mande valor ao cliente que a equipe não disse.`;
+
+async function casosAbertosResumo(c, limite = 10) {
+  const r = await c.db.prepare("SELECT k.*, p.nome cliente_nome FROM d30_casos k LEFT JOIN pessoas p ON p.id=k.cliente_id WHERE k.etapa NOT IN ('CONCLUIDO','CANCELADO') AND k.atualizado_ms > ? ORDER BY k.atualizado_ms DESC LIMIT ?").bind(c.agora() - 30 * 86400000, limite).all().catch(() => null);
+  return (r?.results || []).map(x => ({ ...linhaParaCaso(x), clienteNome: x.cliente_nome || "" }));
+}
+function linhaCaso(k) {
+  const f = k.fatos || {};
+  return `#${k.casoId} — ${k.clienteNome || "cliente"} (${digitos(k.telefone)})${f.bairro ? ", " + f.bairro : ""}: ${txt(f.problema || f.servico || "-", 120)} [${k.etapa}${f.categoria ? ", " + f.categoria : ""}]`;
+}
+function acharPrestador(a) {
+  const id = String(a?.prestador_id || "").trim();
+  if (id) { const p = PRESTADORES.find(x => x.id === id); if (p) return p; }
+  const tel = digitos(a?.telefone);
+  if (tel.length >= 10) { const p = prestadorPorTelefone(tel); if (p) return p; }
+  const nome = norm(a?.nome);
+  if (nome) {
+    const achados = PRESTADORES.filter(p => norm(p.nome).includes(nome) || nome.includes(norm(primeiroNome(p.nome))));
+    if (achados.length === 1) return achados[0];
+  }
+  if (tel.length >= 10) {
+    const area = CATEGORIAS[String(a?.categoria || "").toUpperCase()] ? String(a.categoria).toUpperCase() : "EQUIPE";
+    return { id: "EQ-" + tel, area, nome: txt(a?.nome, 60) || "Profissional", telefone: tel.startsWith("55") ? tel : "55" + tel };
+  }
+  return null;
+}
+
+async function processarTelegramEquipe(c, upd) {
+  const m = upd?.message;
+  if (!m || !m.text || m.from?.is_bot) return;
+  if (String(m.chat?.id) !== String(c.env.TELEGRAM_CHAT_ID)) return; // só o grupo da Central
+  if (!(await reservarChave(c, "tg-upd:" + upd.update_id))) return;
+  const responder = t => c.saida.telegram(t, { responderA: m.message_id });
+  const quem = txt([m.from?.first_name, m.from?.last_name].filter(Boolean).join(" "), 60) || "Equipe";
+  const aviso = m.reply_to_message?.message_id ? await c.db.prepare("SELECT * FROM d30_tg_msgs WHERE message_id=?").bind(Number(m.reply_to_message.message_id)).first().catch(() => null) : null;
+  const textoAviso = aviso?.texto || txt(m.reply_to_message?.text, 1500);
+  let casoAviso = aviso?.caso_id ? await carregarCasoPorId(c, aviso.caso_id) : null;
+  if (!casoAviso && aviso?.telefone) {
+    const pes = await buscarPessoa(c, aviso.telefone).catch(() => null);
+    if (pes) casoAviso = (await carregarCasos(c, pes).catch(() => ({ ativo: null })))?.ativo || null;
+  }
+  const abertos = await casosAbertosResumo(c);
+  if (casoAviso && !abertos.some(k => k.casoId === casoAviso.casoId)) abertos.unshift({ ...casoAviso, clienteNome: "" });
+  const descreverCaso = async k => {
+    if (!k) return "(nenhum caso no aviso)";
+    const cli = await c.db.prepare("SELECT nome, telefone FROM pessoas WHERE id=?").bind(k.clienteId).first().catch(() => null);
+    const consulta = await consultaDoCaso(c, k.casoId);
+    return `#${k.casoId} — cliente ${cli?.nome || "-"} (${digitos(cli?.telefone || k.telefone)}); etapa ${k.etapa}\n${formatarFatos(k.fatos)}\nResumo: ${k.resumo || "-"}\nProfissional atual: ${consulta ? `${consulta.prestador_nome} (${consulta.status})` : "nenhum"}\nO QUE O CLIENTE ESCREVEU:\n${await palavrasDoCliente(c, k) || "-"}`;
+  };
+  let d;
+  try {
+    d = await openaiJSON(c, INSTRUCOES_EQUIPE, `DATA E HORA: ${dataHoraSP(c.agora())}
+MENSAGEM DE ${quem} (equipe):
+${txt(m.text, 2000)}
+
+AVISO QUE ELA RESPONDEU:
+${textoAviso || "(não respondeu a um aviso)"}
+
+CASO DO AVISO:
+${await descreverCaso(casoAviso)}
+
+CASOS ABERTOS:
+${abertos.map(linhaCaso).join("\n") || "(nenhum)"}
+
+PROFISSIONAIS (id | nome | área | categoria):
+${PRESTADORES.map(p => `${p.id} | ${p.nome} | ${CATEGORIAS[p.area]?.rotulo || p.area} | ${p.area}`).join("\n")}
+
+CATEGORIAS: ${Object.keys(CATEGORIAS).join(", ")}
+
+Responda em JSON.`, [], 700);
+  } catch (e) { await responder(`Não consegui entender agora (${txt(e?.message, 120)}). Tente de novo em instantes.`); return; }
+
+  const acoes = Array.isArray(d?.acoes) ? d.acoes.slice(0, 4) : [];
+  const casoId = Number(d?.caso_id || 0) || casoAviso?.casoId || 0;
+  const caso = casoId ? await carregarCasoPorId(c, casoId) : null;
+  const linhas = [];
+  if (txt(d?.resposta, 1500)) linhas.push(txt(d.resposta, 1500));
+  if (!acoes.length) {
+    if (txt(d?.pergunta, 500)) linhas.push(txt(d.pergunta, 500));
+    if (linhas.length) await responder(linhas.join("\n"));
+    return;
+  }
+  if (!caso) { await responder(txt(d?.pergunta, 500) || "De qual atendimento você está falando? Responda o aviso do caso ou diga o nome do cliente."); return; }
+  const cliente = await c.db.prepare("SELECT id, nome, telefone FROM pessoas WHERE id=?").bind(caso.clienteId).first().catch(() => null);
+  const telCli = cliente?.telefone || caso.telefone, nomeCli = primeiroNome(cliente?.nome) || "o cliente";
+  const chave = "tg:" + upd.update_id;
+  for (const [i, a] of acoes.entries()) {
+    const tipo = String(a?.tipo || "").toUpperCase();
+    try {
+      if (tipo === "CONSULTAR") {
+        const p = acharPrestador(a);
+        if (!p) { linhas.push("⚠️ Não achei esse profissional na lista. Diga o nome como está cadastrado ou mande nome e telefone."); continue; }
+        if (CATEGORIAS[String(a?.categoria || "").toUpperCase()]) { caso.fatos.categoria = String(a.categoria).toUpperCase(); await salvarCaso(c, caso); }
+        const pessoa = cliente ? { ...cliente } : { id: caso.clienteId, telefone: telCli };
+        const r = await consultarPrestador(c, caso, pessoa, chave + ":" + i, p);
+        const consulta = await consultaDoCaso(c, caso.casoId);
+        if (consulta && consulta.prestador_id === p.id) {
+          linhas.push(`✅ ${consulta.status === "AGENDADA_ENVIO" ? "Consulta programada para" : "Consultei"} ${p.nome} sobre o atendimento de ${nomeCli}. Aviso aqui quando responder.`);
+          if (r?.texto && r.fixa) await enviarAoCliente(c, { tel: telCli, pessoaId: caso.clienteId, casoId: caso.casoId, texto: r.texto, chave: chave + ":cli:" + i, origem: "SISTEMA" });
+        } else linhas.push(`⚠️ Não consegui consultar ${p.nome} (veja o aviso acima).`);
+      } else if (tipo === "MENSAGEM_CLIENTE") {
+        const t = txt(a?.texto, 1500);
+        if (!t) continue;
+        // A equipe mandou: sai mesmo com a conversa em pausa (quem pausou foi a própria equipe).
+        const r = await c.saida.texto(telCli, t, { papel: "cliente" });
+        if (r.ok) { await registrarMensagem(c, { pessoaId: caso.clienteId, casoId: caso.casoId, wamid: r.id, direcao: "SAIDA", origem: "HUMANO", conteudo: t }); linhas.push(`✅ Mandei para ${nomeCli}: "${txt(t, 200)}"`); }
+        else linhas.push(r.guardada ? `🕓 ${nomeCli} não escreve há mais de 24 h: a mensagem ficou guardada e sai quando responder.` : `⚠️ Não consegui mandar para ${nomeCli}: ${txt(r.erro, 150)}`);
+      } else if (tipo === "MENSAGEM_PROFISSIONAL") {
+        const t = txt(a?.texto, 1500), consulta = await consultaDoCaso(c, caso.casoId);
+        if (!t) continue;
+        if (!consulta) { linhas.push("⚠️ Esse atendimento ainda não tem profissional. Diga para quem mandar."); continue; }
+        const r = await enviarAgoraAoPrestador(c, { consulta, caso, texto: t, chave: chave + ":pre:" + i });
+        linhas.push(r.ok ? `✅ Mandei para ${consulta.prestador_nome}: "${txt(t, 200)}"` : r.guardada ? `🕓 ${consulta.prestador_nome} não escreve há mais de 24 h: ficou guardada e sai quando responder.` : `⚠️ Não consegui mandar para ${consulta.prestador_nome}: ${txt(r.erro, 150)}`);
+      } else if (tipo === "PAUSAR") {
+        await pausar(c, telCli, 12 * 3600000, "EQUIPE_TELEGRAM");
+        linhas.push(`⏸️ Pausei a DENIA na conversa com ${nomeCli} por 12 h. A equipe assume.`);
+      } else if (tipo === "RETOMAR") {
+        await liberarPausa(c, telCli);
+        linhas.push(`▶️ A DENIA voltou a atender ${nomeCli}.`);
+      } else if (tipo === "ETAPA") {
+        const etapa = String(a?.etapa || "").toUpperCase();
+        if (!ETAPAS_REVISAO.includes(etapa)) continue;
+        await mudarEtapa(c, caso, etapa);
+        linhas.push(`📌 Atendimento de ${nomeCli} agora está em ${etapa}.`);
+      }
+    } catch (e) { linhas.push(`⚠️ Falhou ao executar ${tipo}: ${txt(e?.message, 150)}`); }
+  }
+  await evento(c, caso.casoId, "EQUIPE_TELEGRAM", `${quem}: ${txt(m.text, 300)} → ${linhas.join(" | ")}`.slice(0, 1000));
+  await responder(linhas.join("\n") || "Certo.");
+}
+
+// Liga o Telegram da Central à DENIA (setWebhook). Sem forçar, não troca um endereço já configurado por outro sistema.
+async function conectarTelegramEquipe(c, base, forcar = false) {
+  const env = c.env;
+  if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID || !base) return { ok: false, erro: "Faltam TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID ou o endereço público." };
+  const api = (metodo, corpo) => fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/${metodo}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(corpo || {}), signal: AbortSignal.timeout(15000) }).then(r => r.json()).catch(e => ({ ok: false, description: e?.message }));
+  const url = base.replace(/\/+$/, "") + "/telegram";
+  const info = await api("getWebhookInfo");
+  const atual = String(info?.result?.url || "");
+  if (atual === url) return { ok: true, url, ja: true };
+  if (atual && !forcar) return { ok: false, erro: `O bot já entrega mensagens para outro endereço (${atual}). Use "forçar" para trocar.` };
+  const r = await api("setWebhook", { url, secret_token: segredoTelegramEngine(env), allowed_updates: ["message"], drop_pending_updates: true });
+  return r?.ok ? { ok: true, url } : { ok: false, erro: r?.description || "Telegram recusou." };
+}
+
+// ============================================================================
 // ROTEADOR
 // ============================================================================
 
+// Endereço público deste motor (na Hostinger ele roda em /ia: o servidor avisa pelo cabeçalho x-denia-prefixo).
+function enderecoPublico(request) {
+  const u = new URL(request.url);
+  const prefixo = String(request.headers.get("x-denia-prefixo") || "").replace(/[^a-z0-9/_-]/gi, "").replace(/\/+$/, "");
+  return u.origin + prefixo;
+}
+let ultimaBaseGuardada = 0;
 async function rotear(request, env, ctx) {
   const url = new URL(request.url);
   const caminho = url.pathname.length > 1 ? url.pathname.replace(/\/+$/, "") : url.pathname;
@@ -3985,6 +4183,14 @@ async function rotear(request, env, ctx) {
     return new Response(ok ? url.searchParams.get("hub.challenge") || "" : "Não autorizado.", { status: ok ? 200 : 403 });
   }
   if (caminho === "/webhook" && metodo === "POST") return webhookPost(request, env, ctx);
+  // Telegram da Central (a equipe falando com a DENIA): só com o segredo combinado no setWebhook.
+  if (caminho === "/telegram" && metodo === "POST") {
+    if (!env.TELEGRAM_BOT_TOKEN || !iguaisSeguro(request.headers.get("x-telegram-bot-api-secret-token") || "", segredoTelegramEngine(env))) return new Response("não autorizado", { status: 401 });
+    const upd = await request.json().catch(() => null);
+    const c = criarContexto(env);
+    ctx.waitUntil((async () => { await garantirSchema(c); await processarTelegramEquipe(c, upd); })().catch(e => console.error("telegram equipe", e?.message)));
+    return new Response("ok");
+  }
   if (caminho.startsWith("/platform/")) return platformApi(request, env, caminho, metodo);
   if (caminho === "/favicon.ico") return new Response(null, { status: 204 });
 
@@ -3992,6 +4198,11 @@ async function rotear(request, env, ctx) {
   if (caminho === "/sair") return new Response(null, { status: 302, headers: { location: "/login", "set-cookie": "denia_sess=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict" } });
   if (!(await painelAutorizado(request, env))) return negarPainel(request);
   const c = criarContexto(env);
+  if (caminho === "/api/telegram/conectar" && metodo === "POST") {
+    await garantirSchema(c);
+    const corpo = await request.json().catch(() => ({}));
+    return json(await conectarTelegramEquipe(c, enderecoPublico(request), corpo?.forcar === true));
+  }
   if (caminho === "/" || caminho === "/chat") return paginaHTML(paginaTeste());
   if (caminho === "/treinar") return paginaHTML(paginaTreinar());
   if (caminho === "/api/saude") { const s = await saude(c); return json(s, s.ok ? 200 : 503); }
