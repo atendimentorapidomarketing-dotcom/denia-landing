@@ -36,7 +36,7 @@
 //       relatório diário. Nunca inicia conversa nova por conta própria.
 // ============================================================================
 
-const VERSAO = "32.2.0";
+const VERSAO = "32.2.1";
 const SCHEMA_VERSAO = "32.0.0"; // mude sempre que acrescentar tabela ou índice (senão o banco de produção não recebe)
 const EMPRESA_ID = 1;
 const PHONE_ID_PADRAO = "473474732510163";
@@ -2579,11 +2579,11 @@ async function consultaDaConversa(c, abertas, pessoa) {
     const outra = await c.db.prepare("SELECT 1 ok FROM mensagens WHERE empresa_id=? AND pessoa_id=? AND id > ? AND caso_id IS NOT NULL AND caso_id <> ? LIMIT 1").bind(EMPRESA_ID, pessoa.id, dele.id, dele.caso_id).first().catch(() => null);
     if (!outra) return k;
   }
-  // Acabamos de mandar a ele um atendimento (ex.: a consulta) e os outros abertos estão parados há tempo:
+  // Acabamos de mandar a ele um atendimento (ex.: a consulta) e os outros abertos estão parados há 10 min ou mais:
   // a mensagem dele é sobre esse ("qual o bairro?" logo depois do pedido).
   const ord = [...abertas].sort((a, b) => Number(b.atualizado_ms || 0) - Number(a.atualizado_ms || 0));
   const recente = ord[0];
-  if (recente && c.agora() - Number(recente.atualizado_ms || 0) < 6 * 3600000 && (!ord[1] || Number(recente.atualizado_ms) - Number(ord[1].atualizado_ms || 0) >= 30 * 60000)) return recente;
+  if (recente && c.agora() - Number(recente.atualizado_ms || 0) < 6 * 3600000 && (!ord[1] || Number(recente.atualizado_ms) - Number(ord[1].atualizado_ms || 0) >= 10 * 60000)) return recente;
   return null;
 }
 // Mensagem que o profissional quer que chegue ao cliente: os links vão inteiros (nunca cortados nem resumidos)

@@ -1332,3 +1332,26 @@ test("Profissional pergunta 'qual o bairro?' logo depois do pedido: responde sob
   assert.match(a.ultimoPara(CHAVEIRO), /É na Tijuca/);
   assert.match(entrada, /abrir porta trancada/, "a IA leu o pedido certo");
 });
+
+test("Caso do print: 4 atendimentos abertos com a Mirella, pedido novo e 'Qual o bairro?' 4 min depois", async () => {
+  const a = await criarAmbiente({ inicio: "2026-10-20T14:00:00-03:00" });
+  const pedir = async (tel, nome, problema, bairro) => {
+    a.llmCliente = () => decisao({ resposta: "Vou consultar.", intencao: "NOVO_PEDIDO", quer_orcamento_ou_atendimento: true, pronto_para_profissional: true, fatos: { servico: "higienização", problema, ...(bairro ? { bairro } : {}), nome } });
+    await a.cliente(tel, problema, { nome });
+  };
+  await pedir("5521900000001", "Thais", "lavagem e higienização de tapete", "Méier");
+  a.avancar(40 * 60000);
+  await pedir("5521900000002", "Alexandra", "limpeza e higienização do sofá", "Grajaú");
+  a.avancar(60 * 60000);
+  await pedir("5521900000003", "Maria", "higienização de sofá", "Botafogo");
+  a.avancar(15 * 60000);
+  await pedir("5521900000004", "Tiago", "limpeza de sofá retrátil de 2 m, suede", "Tijuca");
+  assert.equal(a.para(MIRELLA).length, 4);
+  a.avancar(4 * 60000);
+  let entrada = "";
+  a.llmPrestador = e => { entrada = e; return prest({ tipo: "PERGUNTA", resposta_conhecida: "É na Tijuca." }); };
+  await a.cliente(MIRELLA, "Qual o bairro?");
+  assert.doesNotMatch(a.ultimoPara(MIRELLA), /não confundir/);
+  assert.match(a.ultimoPara(MIRELLA), /É na Tijuca/);
+  assert.match(entrada, /sofá retrátil/);
+});

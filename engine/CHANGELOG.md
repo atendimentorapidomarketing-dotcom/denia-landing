@@ -1,5 +1,12 @@
 # Changelog — DENIA Engine
 
+## 32.2.1 — 2026-10-20
+
+### Ajustado
+- A pergunta do profissional fica no pedido que acabou de chegar quando os outros atendimentos com ele
+  estão parados há 10 min ou mais (antes, 30 min). Cenário do print: 4 atendimentos abertos com a
+  Mirella e "Qual o bairro?" 4 min depois do pedido do Tiago.
+
 ## 32.2.0 — 2026-10-20
 
 ### Corrigido — conversa com o profissional e pedido mais claro
