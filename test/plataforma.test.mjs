@@ -2855,3 +2855,15 @@ test("Problemas — avisos não urgentes da IA da Central aparecem na página (e
   const outra = await p.req(`/api/orgs/${nova.dados.id}/problemas`, { quem: "admin" });
   assert.equal(outra.dados.problemas.filter(x => x.area === "CENTRAL").length, 0);
 });
+
+test("Profissionais da Central: o administrador cadastra pela plataforma e a IA passa a usar", async () => {
+  const p = await criarPlataforma();
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  await p.req("/api/orgs/1/integracao", { metodo: "POST", quem: "admin", corpo: { engine_url: "https://engine.test/", token: TOKEN_ENGINE } });
+  const r = await p.req("/api/orgs/1/engine/professionals", { metodo: "POST", quem: "admin", corpo: { nome: "João Faz Tudo", telefone: "21 91111-9999", area: "PEQUENOS_REPAROS", servicos: "pendura quadros" } });
+  assert.equal(r.status, 200, JSON.stringify(r.dados));
+  const l = await p.req("/api/orgs/1/engine/professionals", { quem: "admin" });
+  assert.ok(l.dados.profissionais.some(x => x.nome === "João Faz Tudo" && x.area === "PEQUENOS_REPAROS" && x.ativo));
+  const aud = await p.req("/api/orgs/1/auditoria", { quem: "admin" });
+  assert.ok(aud.dados.eventos.some(e => /João Faz Tudo/.test(e.detalhe || "")), "fica na auditoria");
+});

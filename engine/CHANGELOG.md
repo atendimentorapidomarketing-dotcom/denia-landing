@@ -1,5 +1,24 @@
 # Changelog — DENIA Engine
 
+## 33.0.0 — 2026-10-21
+
+### Novo — profissionais editáveis pela plataforma
+- A lista de profissionais sai do código e vai para o banco (`d30_prestadores`), começando pela lista
+  atual. A empresa cadastra, troca o WhatsApp, diz o que cada um faz, muda a ordem ou desativa em
+  Plataforma → WhatsApp → Profissionais (`GET/POST /platform/professionals`, `…/<id>/delete`).
+- A IA recebe cada área com os profissionais e o que cada um faz.
+- Nova área **Pequenos reparos e instalações** (pendurar quadros e espelhos, prateleiras, cortinas,
+  suporte de TV, varal, montagem de móveis, furos). Montar/instalar algo pronto não vai mais para
+  marcenaria sob medida.
+
+### Melhorado — pensa como gente e fala pouco
+- Regra nas IAs do cliente e do profissional: antes de responder, entender quem está falando, o que
+  conversaram e o que a pessoa quer; ler comprovantes e fotos (valor, data, nome, serviço); falar o mínimo.
+- Com vários atendimentos abertos e sem pista clara, uma IA lê a mensagem (e o anexo) como uma pessoa
+  leria e escolhe o atendimento. Só se não der pergunta, em uma frase: "É sobre qual cliente: Tiago ou Thais?".
+- Novo tipo COMPROVANTE do profissional: responde "Recebido, obrigado! ✅" e avisa a equipe com o valor.
+- Pedido ao profissional mais curto.
+
 ## 32.2.1 — 2026-10-20
 
 ### Ajustado

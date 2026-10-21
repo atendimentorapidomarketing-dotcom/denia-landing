@@ -62,6 +62,8 @@ const ROTAS_ENGINE = [
   ["POST", /^cases\/\d{1,12}\/status$/, "AGENTE", "ATENDIMENTO"],
   ["POST", /^cases\/\d{1,12}\/review$/, "AGENTE", "ATENDIMENTO"],
   ["GET", /^professionals$/, "VISUALIZADOR"],
+  ["POST", /^professionals$/, "ADMIN", "PROFISSIONAIS"],
+  ["POST", /^professionals\/[\w-]{1,40}\/delete$/, "ADMIN", "PROFISSIONAIS"],
   ["GET", /^training$/, "VISUALIZADOR"],
   ["POST", /^training$/, "ADMIN", "TREINAMENTO"],
   ["GET", /^learning$/, "VISUALIZADOR"],
@@ -623,7 +625,7 @@ async function proxyEngine(request, env, sessao, orgId, papel, caminho) {
     if (lido.erro) return lido.erro;
     corpo = lido.corpo;
     const autor = sessao.usuario.nome ? `${sessao.usuario.nome} <${sessao.usuario.email}>` : sessao.usuario.email;
-    if (/^(training|learning\/suggestions\/\d+|pause|conversations\/\d+\/(type|note)|cases\/\d+\/review)$/.test(caminho)) corpo.autor = autor;
+    if (/^(training|learning\/suggestions\/\d+|pause|conversations\/\d+\/(type|note)|cases\/\d+\/review|professionals(\/[\w-]+\/delete)?)$/.test(caminho)) corpo.autor = autor;
   }
   const params = {};
   const q = new URL(request.url).searchParams;
@@ -637,6 +639,8 @@ async function proxyEngine(request, env, sessao, orgId, papel, caminho) {
         caminho === "pause" ? (corpo.ativa ? "IA pausada" : "IA retomada") :
           caminho.startsWith("learning/suggestions/") ? `${corpo.acao === "aprovar" ? "Aprovou" : "Rejeitou"} a sugestão #${caminho.split("/").pop()}` :
             caminho === "training" ? `Versão ${r.dados.versao ?? ""}` :
+              caminho === "professionals" ? `${txt(corpo.nome, 60)} (${txt(corpo.area, 30)})` :
+                caminho.startsWith("professionals/") ? `Desativou o profissional ${caminho.split("/")[1]}` :
               caminho.startsWith("cases/") ? `Caso #${caminho.split("/")[1]} → ${txt(corpo.etapa, 30)}` :
                 caminho.startsWith("conversations/") ? `Conversa #${caminho.split("/")[1]}: ${caminho.split("/")[2]}` :
                   caminho === "guide/import" ? `Guia: ${r.dados.lojas ?? 0} loja(s) importada(s)` :

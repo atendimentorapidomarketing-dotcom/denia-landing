@@ -36,8 +36,8 @@
 //       relatório diário. Nunca inicia conversa nova por conta própria.
 // ============================================================================
 
-const VERSAO = "32.2.1";
-const SCHEMA_VERSAO = "32.0.0"; // mude sempre que acrescentar tabela ou índice (senão o banco de produção não recebe)
+const VERSAO = "33.0.0";
+const SCHEMA_VERSAO = "33.0.0"; // mude sempre que acrescentar tabela ou índice (senão o banco de produção não recebe)
 const EMPRESA_ID = 1;
 const PHONE_ID_PADRAO = "473474732510163";
 const GRAPH = "v25.0";
@@ -69,7 +69,9 @@ const LIMITE_ALERTAS_HORA = 12;
 // PRESTADORES — identificados por TELEFONE + ÁREA, nunca só pelo nome.
 // A ordem dentro da área é a ordem de prioridade de consulta.
 // ----------------------------------------------------------------------------
-const PRESTADORES = [
+// Lista inicial: na primeira vez vai para o banco (d30_prestadores) e, a partir daí, a empresa edita pela
+// plataforma (Profissionais): nome, WhatsApp, área e o que cada um faz.
+const PRESTADORES_PADRAO = [
   { id: "MARC-QEZIA", area: "MARCENARIA", nome: "Qézia/Marco", telefone: "5521998652205" },
   { id: "MARC-JOAO", area: "MARCENARIA", nome: "João", telefone: "5521993781381" },
   { id: "ASSIST-CARLOS", area: "ASSISTENCIA_TECNICA", nome: "Carlos (assistência técnica)", telefone: "5511992197178" },
@@ -81,6 +83,7 @@ const PRESTADORES = [
   { id: "HIG-MIRELLA", area: "HIGIENIZACAO", nome: "Mirella", telefone: "5521978791765" },
   { id: "HIG-PAULO", area: "HIGIENIZACAO", nome: "Paulo", telefone: "5521980347727" }
 ];
+const PRESTADORES = PRESTADORES_PADRAO.map(p => ({ ...p })); // o que vale agora (carregado do banco)
 
 const CATEGORIAS = {
   MARCENARIA: { rotulo: "Marcenaria (móveis planejados/sob medida, armários, portas de madeira)", modo: "DOMICILIO" },
@@ -91,6 +94,7 @@ const CATEGORIAS = {
   CHAVEIRO: { rotulo: "Chaveiro (fechaduras, cópias, abertura de portas)", modo: "DOMICILIO" },
   ESTOFADOR: { rotulo: "Estofador (reforma/troca de tecido de sofás e poltronas)", modo: "DOMICILIO" },
   HIGIENIZACAO: { rotulo: "Higienização (limpeza de sofás, colchões, tapetes, estofados)", modo: "DOMICILIO" },
+  PEQUENOS_REPAROS: { rotulo: "Pequenos reparos e instalações (pendurar quadros e espelhos, prateleiras, cortinas e persianas, suporte de TV, varal, montagem de móveis, furos na parede, pequenos consertos da casa)", modo: "DOMICILIO" },
   BALCAO: { rotulo: "Eletrônicos no balcão da loja (computador, notebook, Apple, celular, smartwatch) — o cliente leva o equipamento", modo: "BALCAO" }
 };
 
@@ -100,6 +104,7 @@ const REGRAS_AREA = [
   ["ASSISTENCIA_TECNICA", /\b(ar[- ]?condicionado|split|geladeiras?|refrigerador|freezer|lava e seca|lava-e-seca|lavadora|maquina de lavar|secadora)\b/],
   ["ESTOFADOR", /\b(estofador|estofamento|reforma(r)? (de |do |da |o |a )?(sofa|poltrona)|troca(r)? (o |de )?tecido)\b/],
   ["HIGIENIZACAO", /\b(higieniza\w*|limpeza (de |do |da )?(sofa|colchao|estofados?|tapetes?|poltronas?|cadeiras?)|lava(r|gem) (de |do |o )?(sofa|colchao|tapete))\b/],
+  ["PEQUENOS_REPAROS", /\b(pendurar|quadros?|espelhos? na parede|cortinas?|persianas?|varal|suporte (de |da |para )?(tv|televis\w*)|montar (um |uma |o |a )?(movel|moveis|guarda[- ]roupas?|armario|estante|cama|rack|berco|mesa)|montagem (de |do |da )?(moveis?|guarda[- ]roupas?|armario|estante|cama|rack)|furar|furos?|buchas?|marido de aluguel|pequen[oa]s? (reparos?|servicos|consertos?|reformas?|instalacoes))\b/],
   ["MARCENARIA", /\b(marcenaria|marceneiro|moveis? planejad\w*|planejad[oa]s?|sob medida|armarios?|guarda[- ]roupas?|mdf|gabinete|prateleiras?|nichos?)\b/],
   ["BALCAO", /\b(notebook|computador|macbook|imac|iphone|ipad|celular|smartwatch|apple watch|relogio inteligente|placa mae|formatar|formatacao)\b/]
 ];
@@ -289,7 +294,31 @@ function variantesTel(tel) {
 }
 // Outros números de um mesmo profissional (vinculados pela equipe na plataforma). Recarregado a cada minuto.
 let TELS_EXTRAS = { em: -1, mapa: new Map() };
+// Profissionais do banco (editados pela plataforma). Na primeira vez, grava a lista inicial.
+let CACHE_PREST = { em: -1, db: null };
+async function carregarPrestadores(c, forcar) {
+  if (!forcar && CACHE_PREST.db === c.env.DB && CACHE_PREST.em >= 0 && c.agora() - CACHE_PREST.em < 60000) return;
+  try {
+    let r = (await c.db.prepare("SELECT * FROM d30_prestadores ORDER BY ordem, nome").all())?.results || [];
+    if (!r.length && !(await c.db.prepare("SELECT valor FROM d30_meta WHERE chave='prestadores_semeados'").first())) {
+      await c.db.batch(PRESTADORES_PADRAO.map((p, i) => c.db.prepare("INSERT OR IGNORE INTO d30_prestadores(id,nome,telefone,area,servicos,ordem,ativo,atualizado_ms) VALUES(?,?,?,?,?,?,1,?)").bind(p.id, p.nome, p.telefone, p.area, p.servicos || null, i, c.agora())));
+      await c.db.prepare("INSERT OR REPLACE INTO d30_meta(chave,valor) VALUES('prestadores_semeados','1')").run();
+      r = (await c.db.prepare("SELECT * FROM d30_prestadores ORDER BY ordem, nome").all())?.results || [];
+    }
+    PRESTADORES.length = 0;
+    for (const p of r) if (Number(p.ativo) === 1) PRESTADORES.push({ id: p.id, area: p.area, nome: p.nome, telefone: digitos(p.telefone), servicos: p.servicos || "" });
+    CACHE_PREST = { em: c.agora(), db: c.env.DB };
+  } catch (e) { console.warn("prestadores", e?.message); }
+}
+// Para a IA: cada área com os profissionais e o que cada um faz.
+function categoriasParaIA() {
+  return Object.entries(CATEGORIAS).map(([k, v]) => {
+    const ps = PRESTADORES.filter(p => p.area === k);
+    return `${k}: ${v.rotulo}${ps.length ? ` — profissionais: ${ps.map(p => p.nome + (p.servicos ? ` (faz: ${txt(p.servicos, 160)})` : "")).join("; ")}` : " — sem profissional cadastrado"}`;
+  }).join("\n");
+}
 async function carregarTelsExtras(c, forcar) {
+  await carregarPrestadores(c, forcar);
   if (!forcar && TELS_EXTRAS.em >= 0 && c.agora() - TELS_EXTRAS.em < 60000) return;
   try {
     const r = (await c.db.prepare("SELECT telefone, prestador_id FROM d30_prestador_tels").all())?.results || [];
@@ -328,12 +357,14 @@ function definirCategoria(fatos, sugestaoIA, confianca = "") {
     if (ia === "ELETRICA") ia = "";
     if (!areas.length && !REGRA_ASSISTENCIA.test(t)) areas = ["ELETRODOMESTICO"];
   }
+  // Montar/instalar algo pronto é pequeno reparo, não marcenaria sob medida.
+  if (areas.includes("PEQUENOS_REPAROS") && areas.includes("MARCENARIA") && /\b(montar|montagem|instalar|pendurar|fixar)\b/.test(t) && !/\b(sob medida|planejad)/.test(t)) areas = ["PEQUENOS_REPAROS"];
   if (areas.length === 1) {
     if (ia && ia !== areas[0] && certa) return ""; // IA e regras discordam: equipe decide
     return areas[0];
   }
   if (areas.length > 1) return areas.includes(ia) && certa ? ia : "";
-  if (r.generico) return ia && certa ? ia : (ia ? "" : "REFORMA");
+  if (r.generico) return ia && certa ? ia : (ia ? "" : /\bpequen[oa]s?\b/.test(t) ? "PEQUENOS_REPAROS" : "REFORMA");
   return certa ? ia : "";
 }
 
@@ -452,6 +483,7 @@ const SQL_SCHEMA = [
   `CREATE TABLE IF NOT EXISTS d30_destinos (telefone TEXT PRIMARY KEY, motivo TEXT NOT NULL, codigo INTEGER, desde_ms INTEGER NOT NULL, ate_ms INTEGER)`,
   `CREATE TABLE IF NOT EXISTS d30_guardadas (id INTEGER PRIMARY KEY AUTOINCREMENT, telefone TEXT NOT NULL, texto TEXT NOT NULL, papel TEXT, status TEXT NOT NULL DEFAULT 'GUARDADA', criado_ms INTEGER NOT NULL, enviado_ms INTEGER)`,
   `CREATE INDEX IF NOT EXISTS d30_guardadas_tel ON d30_guardadas(telefone, status)`,
+  `CREATE TABLE IF NOT EXISTS d30_prestadores (id TEXT PRIMARY KEY, nome TEXT NOT NULL, telefone TEXT NOT NULL, area TEXT NOT NULL, servicos TEXT, ordem INTEGER NOT NULL DEFAULT 0, ativo INTEGER NOT NULL DEFAULT 1, atualizado_ms INTEGER)`,
   `CREATE TABLE IF NOT EXISTS d30_tg_msgs (message_id INTEGER PRIMARY KEY, caso_id INTEGER, telefone TEXT, texto TEXT, criado_ms INTEGER NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS d30_treinamento (versao INTEGER PRIMARY KEY AUTOINCREMENT, json TEXT NOT NULL, autor TEXT, criado_ms INTEGER NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS d30_eventos (id INTEGER PRIMARY KEY AUTOINCREMENT, caso_id INTEGER, tipo TEXT NOT NULL, descricao TEXT, dados TEXT, criado_ms INTEGER NOT NULL)`,
@@ -1991,6 +2023,8 @@ function formatarFatos(f) {
 
 const INSTRUCOES_CLIENTE = `Você é a DENIA, assistente virtual responsável pelo atendimento digital da Central de Atendimento. Você conversa com CLIENTES pelo WhatsApp.
 
+PENSE COMO UMA PESSOA EXPERIENTE DA EQUIPE QUE ACABOU DE RECEBER A MENSAGEM: antes de responder, entenda quem está falando, o que vocês conversaram antes e o que a pessoa quer agora. Comprovante, foto, documento ou áudio: leia o conteúdo (valor, data, nome, serviço) e ligue ao atendimento certo, como uma atendente faria. Fale o MÍNIMO: uma frase curta resolve quase tudo; não repita o que a pessoa disse e não mande mensagem que não ajuda.
+
 ANTES DE RESPONDER, LEIA TUDO: a MEMÓRIA COMPLETA DO CLIENTE, o PERFIL, a FICHA, os OUTROS CASOS e o HISTÓRICO inteiro. Cliente que já falou com a empresa NUNCA é tratado como novo: chame pelo nome, lembre do que já foi feito ("da última vez trocamos o disjuntor, certo?"), use o endereço que ele já passou (confirme em vez de perguntar de novo) e continue de onde a conversa parou. Se houve problema ou reclamação antes, tenha ainda mais cuidado.
 BREVIDADE E JEITO HUMANO: escreva como as atendentes escrevem no WhatsApp (veja COMO A EQUIPE FALA): 1 a 2 frases curtas, no máximo 1 pergunta por mensagem, sem repetir o que o cliente acabou de dizer, sem listas, sem formalidade de robô ("Prezado", "Informamos que"). Se der para resolver em uma frase, use uma frase.
 NÚMEROS DE CASO são internos: nunca escreva "caso 210", "#210" ou qualquer número de caso para o cliente; fale do serviço ("a instalação do chuveiro", "o conserto da geladeira").
@@ -2058,8 +2092,8 @@ ${perfil || "(cliente sem atendimentos anteriores registrados)"}
 FICHA NO SISTEMA DE CADASTRO (dados oficiais):
 ${ficha || "(não disponível)"}
 
-CATEGORIAS:
-${Object.entries(CATEGORIAS).map(([k, v]) => `${k}: ${v.rotulo}`).join("\n")}
+CATEGORIAS (e quem atende cada uma):
+${categoriasParaIA()}
 
 DATA E HORA ATUAL: ${dataHoraSP(agora)} (${new Intl.DateTimeFormat("pt-BR", { timeZone: TZ, weekday: "long" }).format(new Date(agora))})
 REUNIÕES MARCADAS COM ESTE CLIENTE: ${reunioes || "(nenhuma)"}
@@ -2089,7 +2123,8 @@ ${temAnexos ? "\n(Há anexos de imagem/documento nesta mensagem; descreva-os em 
 Responda em JSON.`;
 }
 
-const INSTRUCOES_PRESTADOR = `Você trabalha na Central de Atendimento e está lendo a mensagem de um PROFISSIONAL PRESTADOR (não é cliente) sobre um caso específico. Sua tarefa é CLASSIFICAR a mensagem e extrair fatos. Não invente nada. Números de caso são internos: nunca escreva número de caso em texto para o profissional ou para o cliente; refira-se ao atendimento pelo nome do cliente, bairro e serviço.
+const INSTRUCOES_PRESTADOR = `Você trabalha na Central de Atendimento e está lendo a mensagem de um PROFISSIONAL PRESTADOR (não é cliente) sobre um caso específico. Sua tarefa é CLASSIFICAR a mensagem e extrair fatos.
+PENSE COMO UMA PESSOA EXPERIENTE DA EQUIPE QUE ACABOU DE RECEBER A MENSAGEM: antes de responder, entenda quem está falando, o que vocês conversaram antes e o que a pessoa quer agora. Comprovante, foto, documento ou áudio: leia o conteúdo (valor, data, nome, serviço) e ligue ao atendimento certo, como uma atendente faria. Fale o MÍNIMO: uma frase curta resolve quase tudo; não repita o que a pessoa disse e não mande mensagem que não ajuda. Não invente nada. Números de caso são internos: nunca escreva número de caso em texto para o profissional ou para o cliente; refira-se ao atendimento pelo nome do cliente, bairro e serviço.
 
 Responda SOMENTE com um objeto JSON:
 {"tipo":"COMENTARIO","valor_centavos":0,"valor_e_final":"NAO_INFORMADO","disponibilidade":"","atende_regiao":"NAO_INFORMADO","pergunta_para_cliente":"","resposta_conhecida":"","mensagem_para_cliente":"","resumo":""}
@@ -2102,6 +2137,7 @@ tipo:
 - CONFIRMA_AGENDAMENTO: confirma o atendimento/dia/horário combinado.
 - RESPONDE: responde a um PEDIDO PENDENTE ou PERGUNTA DO CLIENTE (ex.: "sim, o material está incluso"), ou dá um aviso claro para o cliente sobre o atendimento (atraso, horário de chegada). Escreva mensagem_para_cliente em nome da central, educada, sem gírias, sem dados pessoais, sem inventar.
 - ENCAMINHAR: ele manda algo PARA O CLIENTE (links, opções, fotos, informações, explicação) ou pede para você encaminhar/mandar/passar ao cliente ("manda pra ela", "encaminha esses links"). Escreva mensagem_para_cliente em nome da central, curta e simpática, com TODO o conteúdo que ele quer que chegue ao cliente: copie os links exatamente como ele escreveu, sem resumir nem cortar. Se ele mandou o conteúdo em mensagens anteriores (veja o HISTÓRICO) e agora só pede para encaminhar, use esse conteúdo. Valor de orçamento do serviço do profissional NÃO é ENCAMINHAR (use ACEITA).
+- COMPROVANTE: mandou comprovante de pagamento, recibo ou foto do serviço feito. Em "resumo", escreva o que é, o valor e a data que aparecem.
 - COMENTARIO: qualquer outra coisa: comentário solto, exclamação, mensagem ambígua (ex.: "Eita, Niterói"). NA DÚVIDA, use COMENTARIO.
 LEIA O CONTEXTO: o HISTÓRICO, a ÚLTIMA MENSAGEM QUE ENVIAMOS e O QUE O CLIENTE ESCREVEU mostram do que se trata. Uma pergunta como "do que se trata?" ou "qual cliente?" é PEDE_CONTEXTO. Nunca trate como novidade algo que ele já respondeu.
 Campos:
@@ -2436,7 +2472,7 @@ async function consultarPrestador(c, caso, pessoa, chaveLote, escolhido = null) 
     // O que o cliente quer, resumido pela DENIA (frases soltas copiadas do cliente confundiam o profissional).
     caso.resumo && norm(caso.resumo) !== norm(f.problema || f.servico || "") ? `Resumo do pedido: ${ocultarTelefones(txt(caso.resumo, 400))}` : (!f.problema && falas.length ? `O cliente escreveu: "${falas.at(-1)}"` : ""),
     !f.bairro && CATEGORIAS[area]?.modo === "DOMICILIO" ? "O bairro o cliente ainda não informou." : "",
-    `Você consegue pegar${f.bairro ? " e atende aí" : ""}? Se sim, me passa o valor (e se já é o valor final pro cliente ou só a sua parte) e quando você pode.`
+    `Você consegue pegar? Se sim, me passa o valor e quando pode.`
   ].filter(Boolean);
   const r = await enviarAoPrestador(c, { consulta: ins, caso, texto: linhas.join("\n"), chave: `consulta:${ins.id}`, inicial: true });
   if (r.ok) {
@@ -2605,6 +2641,30 @@ function mensagemParaEncaminhar(texto, original, autorizados) {
   return { texto: final.slice(0, 3500), removidas, links };
 }
 
+const INSTRUCOES_IDENTIFICAR = `Você identifica de qual atendimento um PROFISSIONAL parceiro da Central está falando. Pense como uma pessoa experiente da Central que acabou de receber a mensagem: quem está falando, o que vocês conversaram por último e o que ele quer agora. Use tudo: nome do cliente, bairro, endereço, serviço, valores e datas combinados, e o que aparece em fotos, comprovantes ou áudios (valor, data, nome). A conversa mais recente com ele pesa mais.
+Responda SOMENTE JSON {"caso_id":0,"confianca":"BAIXA","motivo":""}. caso_id só da lista. confianca "ALTA" ou "MEDIA" só quando der para saber com segurança; senão caso_id 0 e "BAIXA". Nunca chute.`;
+async function identificarCasoComIA(c, abertas, msgs, textoTodo, pessoa, anexos = []) {
+  if (!c.env.OPENAI_API_KEY || sobram(c) < 15) return null;
+  try {
+    const linhas = [];
+    for (const k of abertas.slice(0, 8)) {
+      const caso = await carregarCasoPorId(c, k.caso_id);
+      if (!caso) continue;
+      const cli = caso.clienteId ? await c.db.prepare("SELECT nome FROM pessoas WHERE id=?").bind(caso.clienteId).first().catch(() => null) : null;
+      const f = caso.fatos || {};
+      linhas.push(`#${caso.casoId} — cliente ${cli?.nome || "-"}${f.bairro ? ", " + f.bairro : ""}${f.endereco ? ", " + txt(f.endereco, 60) : ""}: ${txt(f.problema || f.servico || "-", 100)} | etapa ${caso.etapa}${k.valor_prestador ? ` | valor dele ${moeda(k.valor_prestador)}` : ""}${k.valor_cliente ? ` | valor ao cliente ${moeda(k.valor_cliente)}` : ""}${k.disponibilidade ? ` | combinado: ${txt(k.disponibilidade, 60)}` : ""} | atualizado ${dataHoraSP(Number(k.atualizado_ms || 0))}`);
+    }
+    const hist = pessoa?.id ? ((await c.db.prepare("SELECT caso_id, direcao, conteudo FROM mensagens WHERE empresa_id=? AND pessoa_id=? ORDER BY id DESC LIMIT 12").bind(EMPRESA_ID, pessoa.id).all().catch(() => null))?.results || []).reverse()
+      .map(m => `${String(m.direcao).toUpperCase() === "ENTRADA" ? "ELE" : "CENTRAL"}${m.caso_id ? ` [#${m.caso_id}]` : ""}: ${txt(m.conteudo, 200)}`).join("\n") : "";
+    const o = await openaiJSON(c, INSTRUCOES_IDENTIFICAR, `ATENDIMENTOS ABERTOS COM ELE:\n${linhas.join("\n")}\n\nCONVERSA RECENTE COM ELE (mais antiga primeiro):\n${hist || "-"}\n\nMENSAGEM NOVA DELE:\n${txt(textoTodo, 1500) || "(só anexo)"}${anexos.length ? "\n(há anexo: leia valor, data e nomes)" : ""}\n\nResponda em JSON.`, anexos, 200);
+    const id = Number(o?.caso_id || 0), conf = String(o?.confianca || "").toUpperCase();
+    if (!id || !["ALTA", "MEDIA"].includes(conf)) return null;
+    const escolhida = abertas.find(k => Number(k.caso_id) === id) || null;
+    if (escolhida) await evento(c, id, "CASO_IDENTIFICADO_IA", txt(o?.motivo, 300));
+    return escolhida;
+  } catch (e) { console.warn("identificar caso", e?.message); return null; }
+}
+
 async function processarPrestador(c, tel, id, msgs, { apenasRegistrar, chaveLote }) {
   const prest = id.prestador;
   const pessoa = id.pessoa || await obterPessoa(c, tel, prest?.nome || msgs[0]?.nome, "TECNICO");
@@ -2627,6 +2687,8 @@ async function processarPrestador(c, tel, id, msgs, { apenasRegistrar, chaveLote
   if (!consulta && abertas.length > 1) consulta = await consultaPeloContexto(c, abertas, msgs, textoTodo, pessoa);
   // Conversa em andamento: sem outra pista, ele continua falando do atendimento da última mensagem trocada com ele.
   if (!consulta && abertas.length > 1) consulta = await consultaDaConversa(c, abertas, pessoa);
+  // Ainda sem saber: a IA lê como uma pessoa leria (nomes, bairro, serviço, valores, datas, o comprovante) e escolhe.
+  if (!consulta && abertas.length > 1 && !msgs.every(m => !m.mediaId && ehMensagemSocial(m.conteudo))) consulta = await identificarCasoComIA(c, abertas, msgs, textoTodo, pessoa, anexos);
 
   for (const m of msgs) await registrarMensagem(c, { pessoaId: pessoa?.id, casoId: consulta?.caso_id, wamid: m.wamid, direcao: "ENTRADA", origem: "WHATSAPP", tipo: String(m.tipo || "text").toUpperCase(), conteudo: m.conteudo });
   if (apenasRegistrar || await estaPausado(c, tel)) return;
@@ -2639,12 +2701,16 @@ async function processarPrestador(c, tel, id, msgs, { apenasRegistrar, chaveLote
     const opcoes = [];
     for (const k of casos) { const r = await refCaso(c, k.casoId); opcoes.push(`${r.nome ? `de ${r.nome}` : "do cliente"}${r.bairro ? ` em ${r.bairro}` : ""}${k.fatos.problema || k.fatos.servico ? ` (${txt(k.fatos.problema || k.fatos.servico, 50)})` : ""}`); }
     const lista = opcoes.length > 1 ? opcoes.slice(0, -1).join(", ") + " ou " + opcoes.at(-1) : opcoes[0] || "";
+    // Pergunta curta: só os nomes (no máximo 3), como uma pessoa perguntaria.
+    const nomes = [];
+    for (const k of casos.slice(0, 3)) { const r = await refCaso(c, k.casoId); nomes.push((r.nome || `o de ${txt(k.fatos.problema || k.fatos.servico, 40)}`) + (r.bairro ? ` (${r.bairro})` : "")); }
+    const nomesCurtos = nomes.length > 1 ? nomes.slice(0, -1).join(", ") + " ou " + nomes.at(-1) : nomes[0] || "o atendimento";
     // Pergunta uma vez só a cada 6 h: se ele não esclareceu, quem resolve é a equipe (nada de repetir a mesma pergunta).
     if (!(await reservarChave(c, `qual:${digitos(tel)}:${Math.floor(c.agora() / (6 * 3600000))}`))) {
       await alertarEquipe(c, `${prest?.nome || pessoa?.nome || tel} mandou mensagem e não deu para saber de qual atendimento é (${lista}): "${txt(textoTodo, 300)}". Nada foi repassado. Responda a ele pelo app.`, "qual-equipe:" + chaveLote);
       return;
     }
-    await enviarAgoraAoPrestador(c, { consulta: { ...abertas[0], caso_id: null }, texto: `${primeiroNome(prest?.nome || pessoa?.nome) || "Oi"}, só pra eu não confundir: você está falando do atendimento ${lista}?`, chave: "qual:" + chaveLote });
+    await enviarAgoraAoPrestador(c, { consulta: { ...abertas[0], caso_id: null }, texto: `É sobre qual cliente: ${nomesCurtos}?`, chave: "qual:" + chaveLote });
     return;
   }
   if (!consulta) return; // mensagem solta de prestador: só registra (a equipe vê no app)
@@ -2782,6 +2848,11 @@ async function tratarRespostaPrestador(c, { caso, consulta, d, textoTodo, chaveL
     return;
   }
 
+  if (tipo === "COMPROVANTE") {
+    await responder("Recebido, obrigado! ✅", "comprov-ok");
+    await alertarEquipe(c, `Comprovante de ${consulta.prestador_nome} sobre o atendimento de ${cliente?.nome || "o cliente"} (caso #${caso.casoId}): ${txt(d?.resumo || textoTodo, 300) || "ver na conversa"}. Conferir.`, "comprovante:prest:" + chaveLote, caso.casoId);
+    return;
+  }
   if (tipo === "ENCAMINHAR") {
     const enc = mensagemParaEncaminhar(d?.mensagem_para_cliente || textoTodo, [textoTodo, ...histCaso.filter(m => String(m.direcao).toUpperCase() === "ENTRADA").slice(-6).map(m => m.conteudo)].join("\n"), await autorizadosParaCaso(c, consulta));
     if (!enc.texto) { await alertarEquipe(c, `${consulta.prestador_nome} pediu para encaminhar algo a ${cliente?.nome || "o cliente"} (caso #${caso.casoId}), mas não ficou claro o quê: "${txt(textoTodo, 300)}".`, "enc-vazio:" + chaveLote, caso.casoId); return; }
@@ -3807,7 +3878,37 @@ async function platformApi(request, env, caminho, metodo) {
     await evento(c, null, "PAUSA_GERAL", `${ativa ? "ativada" : "desativada"} por ${txt(corpo?.autor, 120) || "platform"}`);
     return json({ sucesso: true, pausa_geral: ativa });
   }
-  if (caminho === "/platform/professionals") return json({ sucesso: true, profissionais: PRESTADORES.map(p => ({ ...p, area_rotulo: CATEGORIAS[p.area]?.rotulo })) });
+  if (caminho === "/platform/professionals" && metodo === "GET") {
+    await carregarPrestadores(c, true);
+    const todos = (await c.db.prepare("SELECT * FROM d30_prestadores ORDER BY ordem, nome").all())?.results || [];
+    return json({ sucesso: true, profissionais: todos.map(p => ({ ...p, ativo: Number(p.ativo) === 1, area_rotulo: CATEGORIAS[p.area]?.rotulo })), categorias: Object.entries(CATEGORIAS).map(([id, v]) => ({ id, rotulo: v.rotulo })) });
+  }
+  // A empresa cadastra, troca o número ou desativa um profissional (sem mexer no código).
+  if (caminho === "/platform/professionals" && metodo === "POST") {
+    await carregarPrestadores(c, true);
+    const tel = digitos(corpo?.telefone), area = String(corpo?.area || "").toUpperCase(), nome = txt(corpo?.nome, 80);
+    if (!nome) return json({ sucesso: false, erro: "Escreva o nome do profissional." }, 400);
+    if (!/^55\d{10,11}$/.test(tel.startsWith("55") ? tel : "55" + tel)) return json({ sucesso: false, erro: "WhatsApp inválido. Use DDD + número, ex.: 21 99999-8888." }, 400);
+    if (!CATEGORIAS[area]) return json({ sucesso: false, erro: "Escolha a área do profissional." }, 400);
+    const telefone = tel.startsWith("55") ? tel : "55" + tel;
+    const id = /^[\w-]{1,40}$/.test(String(corpo?.id || "")) ? String(corpo.id) : `P-${area.slice(0, 4)}-${telefone.slice(-6)}-${Math.floor(c.agora() / 1000).toString(36)}`;
+    const outro = (await c.db.prepare("SELECT id, nome FROM d30_prestadores WHERE telefone=? AND id<>? AND ativo=1").bind(telefone, id).first());
+    if (outro) return json({ sucesso: false, erro: `Esse WhatsApp já é de ${outro.nome}.` }, 409);
+    const atual = await c.db.prepare("SELECT ordem FROM d30_prestadores WHERE id=?").bind(id).first();
+    const ordem = Number.isFinite(Number(corpo?.ordem)) ? Number(corpo.ordem) : atual ? Number(atual.ordem) : Number((await c.db.prepare("SELECT COALESCE(MAX(ordem),0)+1 n FROM d30_prestadores").first())?.n || 0);
+    await c.db.prepare(`INSERT INTO d30_prestadores(id,nome,telefone,area,servicos,ordem,ativo,atualizado_ms) VALUES(?,?,?,?,?,?,?,?)
+      ON CONFLICT(id) DO UPDATE SET nome=excluded.nome, telefone=excluded.telefone, area=excluded.area, servicos=excluded.servicos, ordem=excluded.ordem, ativo=excluded.ativo, atualizado_ms=excluded.atualizado_ms`)
+      .bind(id, nome, telefone, area, txt(corpo?.servicos, 400) || null, ordem, corpo?.ativo === false ? 0 : 1, c.agora()).run();
+    await evento(c, null, "PROFISSIONAL", `${atual ? "Alterado" : "Cadastrado"}: ${nome} (${area}) por ${txt(corpo?.autor, 120) || "plataforma"}`);
+    await carregarPrestadores(c, true);
+    return json({ sucesso: true, id });
+  }
+  if ((m = caminho.match(/^\/platform\/professionals\/([\w-]{1,40})\/delete$/)) && metodo === "POST") {
+    await c.db.prepare("UPDATE d30_prestadores SET ativo=0, atualizado_ms=? WHERE id=?").bind(c.agora(), m[1]).run();
+    await evento(c, null, "PROFISSIONAL", `Desativado: ${m[1]} por ${txt(corpo?.autor, 120) || "plataforma"}`);
+    await carregarPrestadores(c, true);
+    return json({ sucesso: true });
+  }
   return json({ sucesso: false, erro: "Rota não encontrada." }, 404);
 }
 
@@ -4075,6 +4176,7 @@ async function processarTelegramEquipe(c, upd) {
   if (!m || !m.text || m.from?.is_bot) return;
   if (String(m.chat?.id) !== String(c.env.TELEGRAM_CHAT_ID)) return; // só o grupo da Central
   if (!(await reservarChave(c, "tg-upd:" + upd.update_id))) return;
+  await carregarTelsExtras(c);
   const responder = t => c.saida.telegram(t, { responderA: m.message_id });
   const quem = txt([m.from?.first_name, m.from?.last_name].filter(Boolean).join(" "), 60) || "Equipe";
   const aviso = m.reply_to_message?.message_id ? await c.db.prepare("SELECT * FROM d30_tg_msgs WHERE message_id=?").bind(Number(m.reply_to_message.message_id)).first().catch(() => null) : null;
@@ -4108,7 +4210,7 @@ CASOS ABERTOS:
 ${abertos.map(linhaCaso).join("\n") || "(nenhum)"}
 
 PROFISSIONAIS (id | nome | área | categoria):
-${PRESTADORES.map(p => `${p.id} | ${p.nome} | ${CATEGORIAS[p.area]?.rotulo || p.area} | ${p.area}`).join("\n")}
+${PRESTADORES.map(p => `${p.id} | ${p.nome} | ${CATEGORIAS[p.area]?.rotulo || p.area}${p.servicos ? " — faz: " + txt(p.servicos, 120) : ""} | ${p.area}`).join("\n")}
 
 CATEGORIAS: ${Object.keys(CATEGORIAS).join(", ")}
 
