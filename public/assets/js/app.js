@@ -807,17 +807,46 @@
   // ---------------------------------------------------------------------------
 
   async function paginaProfissionais(el, _p, vivo) {
-    el.appendChild(cabeca("Profissionais", "A rede de profissionais que a IA consulta. A ordem define quem é consultado primeiro em cada área."));
+    el.appendChild(cabeca("Profissionais", "Quem a IA consulta em cada área. Cadastre, troque o WhatsApp ou desative aqui; a IA passa a usar na hora. A ordem define quem é consultado primeiro."));
     const area = h("div", {}, carregando());
     el.appendChild(area);
-    let lista;
-    try { lista = (await eng("professionals")).profissionais || []; }
+    let d;
+    try { d = await eng("professionals"); }
     catch (e) { if (vivo()) falha(area, e); return; }
     if (!vivo()) return;
-    area.replaceChildren(lista.length ? h("div", { class: "tabela-caixa" }, h("table", {},
-      h("thead", {}, h("tr", {}, h("th", { text: "Profissional" }), h("th", { text: "Área" }), h("th", { text: "WhatsApp" }))),
-      h("tbody", {}, lista.map(p => h("tr", {}, h("td", { text: p.nome }), h("td", { text: p.area_rotulo || p.area }), h("td", { text: telefone(p.telefone) })))))) : h("div", { class: "cartao vidro" }, vazio("Nenhum profissional cadastrado", "")),
-    h("p", { class: "nota", style: "margin-top:16px", text: "Para incluir ou trocar um profissional, peça ao responsável técnico: a lista fica no código do DENIA Engine, para que nenhuma mensagem vá para a pessoa errada por engano." }));
+    const lista = d.profissionais || [], cats = d.categorias || [];
+    const nomeArea = id => (cats.find(k => k.id === id)?.rotulo || id).replace(/\s*\(.*$/, "");
+    const editar = (p = {}) => {
+      const nome = h("input", { class: "entrada", maxlength: "80", value: p.nome || "", placeholder: "Ex.: João Faz Tudo" });
+      const tel = h("input", { class: "entrada", inputmode: "tel", value: p.telefone ? telefone(p.telefone) : "", placeholder: "(21) 99999-8888" });
+      const ar = h("select", { class: "entrada" }, [h("option", { value: "", text: "Escolha a área…" }), ...cats.map(k => h("option", { value: k.id, selected: k.id === p.area, text: nomeArea(k.id) }))]);
+      const serv = h("textarea", { class: "entrada", maxlength: "400", style: "min-height:70px", placeholder: "O que ele faz, em poucas palavras. Ex.: pendura quadros, instala prateleiras, cortinas e suporte de TV, monta móveis." }, p.servicos || "");
+      const ordem = h("input", { class: "entrada", type: "number", min: "0", value: p.ordem ?? "", placeholder: "1 = primeiro" });
+      return modal({ titulo: p.id ? "Editar profissional" : "Novo profissional", conteudo: [campo("Nome", nome), campo("WhatsApp", tel), campo("Área", ar), campo("O que faz (a IA lê isto para escolher)", serv), campo("Ordem na área", ordem)], confirmar: "Salvar" }).then(async ok => {
+        if (!ok) return;
+        try { await eng("professionals", { metodo: "POST", corpo: { id: p.id, nome: nome.value, telefone: tel.value, area: ar.value, servicos: serv.value, ordem: ordem.value === "" ? undefined : Number(ordem.value), ativo: true } }); aviso("Profissional salvo. A IA já usa.", "ok"); paginaProfissionaisRecarregar(); }
+        catch (e) { aviso(e.message, "erro"); }
+      });
+    };
+    const desativar = async p => {
+      if (!(await modal({ titulo: `Desativar ${p.nome}?`, conteudo: "A IA deixa de consultar este profissional. Atendimentos em andamento com ele continuam.", confirmar: "Desativar", perigo: true }))) return;
+      try { await eng(`professionals/${encodeURIComponent(p.id)}/delete`, { metodo: "POST", corpo: {} }); aviso("Profissional desativado.", "ok"); paginaProfissionaisRecarregar(); } catch (e) { aviso(e.message, "erro"); }
+    };
+    function paginaProfissionaisRecarregar() { el.replaceChildren(); paginaProfissionais(el, _p, vivo); }
+    const ativos = lista.filter(p => p.ativo), inativos = lista.filter(p => !p.ativo);
+    const grupos = cats.map(k => [k, ativos.filter(p => p.area === k.id)]);
+    area.replaceChildren(
+      pode("ADMIN") ? h("div", { class: "acoes", style: "margin-bottom:12px" }, botao("+ Novo profissional", () => editar(), "btn-primario")) : null,
+      h("div", { class: "grade" }, grupos.map(([k, ps]) => h("section", { class: "cartao vidro" },
+        h("h3", { style: "margin:0 0 4px", text: nomeArea(k.id) }),
+        h("p", { class: "sub", text: k.rotulo }),
+        ps.length ? h("ul", { class: "prb-lista" }, ps.map(p => h("li", { class: "prb-item", style: "border-color:var(--borda)" },
+          h("div", {}, h("strong", { text: p.nome }), h("p", { class: "prb-meta", text: telefone(p.telefone) }), p.servicos ? h("p", { class: "prb-detalhe", text: p.servicos }) : null,
+            pode("ADMIN") ? h("div", { class: "acoes" }, botao("Editar", () => editar(p), "btn-secundario btn-pequeno"), botao("Desativar", () => desativar(p), "btn-secundario btn-pequeno")) : null)))) :
+          h("p", { class: "prb-urgente", style: "display:inline-block", text: "Ninguém cadastrado: a IA avisa a equipe quando chegar pedido desta área." })))),
+      inativos.length ? h("details", { class: "cartao vidro", style: "margin-top:12px" }, h("summary", { text: `Desativados (${inativos.length})` }),
+        h("ul", { class: "prb-lista", style: "margin-top:8px" }, inativos.map(p => h("li", { class: "prb-item", style: "border-color:var(--borda)" }, h("div", {}, h("strong", { text: `${p.nome} — ${nomeArea(p.area)}` }), h("p", { class: "prb-meta", text: telefone(p.telefone) }),
+          pode("ADMIN") ? h("div", { class: "acoes" }, botao("Reativar", () => editar(p), "btn-secundario btn-pequeno")) : null))))) : null);
   }
 
   // ---------------------------------------------------------------------------

@@ -192,7 +192,7 @@ test("Prestador com dois casos: pergunta qual é, e resposta citando a mensagem 
   assert.equal(consultas.length, 2);
   a.llmPrestador = () => prest({ tipo: "ACEITA", valor_centavos: 20000, valor_e_final: "SIM", disponibilidade: "hoje às 18h" });
   await a.cliente(CHAVEIRO, "Faço por 200, hoje às 18h");
-  assert.match(a.ultimoPara(CHAVEIRO), /só pra eu não confundir/);
+  assert.match(a.ultimoPara(CHAVEIRO), /^É sobre qual cliente: /);
   assert.doesNotMatch(a.ultimoPara(CHAVEIRO), /caso\s*#?\d+|#\d+|número/i, "nunca pede número de caso");
   const segunda = consultas[1];
   await a.webhook({ contacts: [{ wa_id: CHAVEIRO }], messages: [{ id: "wamid.ctx.1", from: CHAVEIRO, timestamp: String(Math.floor(a.agora / 1000)), type: "text", text: { body: "Faço por 200, hoje às 18h" }, context: { id: segunda.id } }] });
@@ -451,8 +451,11 @@ test("V30.2 — categoria incerta: não consulta ninguém, equipe decide", async
   const a = await criarAmbiente();
   a.llmCliente = () => decisao({ resposta: "Entendi.", intencao: "NOVO_PEDIDO", quer_orcamento_ou_atendimento: true, pronto_para_profissional: true, categoria_confianca: "MEDIA", fatos: { servico: "instalação de suporte de TV", categoria: "REFORMA" } });
   await a.cliente(CLI, "Quero instalar um suporte de TV");
+  assert.match(a.ultimoPara(CLI), /em qual bairro/, "serviço no endereço do cliente: pede o bairro primeiro");
+  a.llmCliente = () => decisao({ resposta: "Certo.", quer_orcamento_ou_atendimento: true, pronto_para_profissional: true, fatos: { bairro: "Méier" } });
+  await a.cliente(CLI, "Méier");
   assert.equal(a.enviados.filter(e => e.to !== CLI).length, 0, "nenhum prestador consultado");
-  assert.ok(a.telegram.some(t => /não tenho certeza/.test(t)));
+  assert.ok(a.telegram.some(t => /Sem prestador disponível para Pequenos reparos/.test(t)), "agora ela sabe que é pequeno reparo; falta só cadastrar quem faz");
 });
 
 test("V30.2 — cliente antigo: perfil, histórico e jeito das atendentes entram no contexto", async () => {
@@ -1110,7 +1113,7 @@ test("Profissional sem pista de qual atendimento: pergunta uma vez só e depois 
   a.avancar(19 * 3600000); // a conversa com ele esfriou (dia seguinte, em horário comercial)
   a.llmPrestador = () => prest({ tipo: "COMENTARIO" });
   await a.cliente(CHAVEIRO, "consigo amanhã");
-  assert.match(a.ultimoPara(CHAVEIRO), /só pra eu não confundir/);
+  assert.equal(a.ultimoPara(CHAVEIRO), "É sobre qual cliente: o de abrir porta (Tijuca) ou o de troca de fechadura (Botafogo)?", "pergunta curta, só o essencial");
   const n = a.para(CHAVEIRO).length;
   await a.cliente(CHAVEIRO, "isso mesmo");
   assert.equal(a.para(CHAVEIRO).length, n, "não repete a pergunta");
@@ -1328,7 +1331,7 @@ test("Profissional pergunta 'qual o bairro?' logo depois do pedido: responde sob
   let entrada = "";
   a.llmPrestador = e => { entrada = e; return prest({ tipo: "PERGUNTA", resposta_conhecida: "É na Tijuca." }); };
   await a.cliente(CHAVEIRO, "qual o bairro?");
-  assert.doesNotMatch(a.ultimoPara(CHAVEIRO), /não confundir/, "não pergunta de qual caso é");
+  assert.doesNotMatch(a.ultimoPara(CHAVEIRO), /não confundir|qual cliente/, "não pergunta de qual caso é");
   assert.match(a.ultimoPara(CHAVEIRO), /É na Tijuca/);
   assert.match(entrada, /abrir porta trancada/, "a IA leu o pedido certo");
 });
@@ -1351,7 +1354,42 @@ test("Caso do print: 4 atendimentos abertos com a Mirella, pedido novo e 'Qual o
   let entrada = "";
   a.llmPrestador = e => { entrada = e; return prest({ tipo: "PERGUNTA", resposta_conhecida: "É na Tijuca." }); };
   await a.cliente(MIRELLA, "Qual o bairro?");
-  assert.doesNotMatch(a.ultimoPara(MIRELLA), /não confundir/);
+  assert.doesNotMatch(a.ultimoPara(MIRELLA), /não confundir|qual cliente/);
   assert.match(a.ultimoPara(MIRELLA), /É na Tijuca/);
   assert.match(entrada, /sofá retrátil/);
+});
+
+test("Profissionais editáveis: cadastrar quem pendura quadro e a DENIA já consulta essa pessoa", async () => {
+  const a = await criarAmbiente({ env: { DENIA_PLATFORM_SERVICE_TOKEN: SERVICO } });
+  const lista = await (await api(a, "/platform/professionals")).json();
+  assert.ok(lista.profissionais.some(p => p.id === "CHAV-ANDERSON"), "a lista inicial vai para o banco");
+  assert.ok(lista.categorias.some(k => k.id === "PEQUENOS_REPAROS"));
+  const JOAO = "5521911119999";
+  const r = await (await api(a, "/platform/professionals", { method: "POST", body: JSON.stringify({ nome: "João Faz Tudo", telefone: "21 91111-9999", area: "PEQUENOS_REPAROS", servicos: "pendura quadros, instala prateleiras e cortinas, monta móveis" }) })).json();
+  assert.equal(r.sucesso, true, JSON.stringify(r));
+  assert.equal((await (await api(a, "/platform/professionals", { method: "POST", body: JSON.stringify({ nome: "Outro", telefone: "21 91111-9999", area: "REFORMA" }) })).json()).sucesso, false, "o mesmo número não fica com duas pessoas");
+  let entrada = "";
+  a.llmCliente = e => { entrada = e; return decisao({ resposta: "Certo!", intencao: "NOVO_PEDIDO", quer_orcamento_ou_atendimento: true, pronto_para_profissional: true, fatos: { servico: "pendurar quadros", problema: "pendurar 3 quadros na sala", bairro: "Tijuca" } }); };
+  await a.cliente(CLI, "Preciso pendurar 3 quadros na sala, Tijuca");
+  assert.match(entrada, /PEQUENOS_REPAROS: Pequenos reparos[^\n]*profissionais: João Faz Tudo \(faz: pendura quadros/, "a IA sabe quem faz o quê");
+  assert.equal(a.para(JOAO).length, 1, "consulta o profissional cadastrado");
+  assert.match(a.para(JOAO)[0].texto, /pendurar 3 quadros na sala/);
+  // Desativar: deixa de ser consultado.
+  await api(a, `/platform/professionals/${r.id}/delete`, { method: "POST", body: "{}" });
+  assert.ok(!(await (await api(a, "/platform/professionals")).json()).profissionais.find(p => p.id === r.id).ativo);
+});
+
+test("Comprovante do profissional com vários atendimentos: a IA acha o cliente pelo conteúdo e não pergunta", async () => {
+  const a = await criarAmbiente();
+  await iniciarConsultaChaveiro(a, CLI);
+  a.llmCliente = () => decisao({ resposta: "Perfeito, vou consultar o profissional.", intencao: "NOVO_PEDIDO", quer_orcamento_ou_atendimento: true, pronto_para_profissional: true, fatos: { servico: "chaveiro", problema: "cópia de 3 chaves", bairro: "Tijuca", nome: "Bia" } });
+  await a.cliente(CLI2, "Preciso de 3 cópias de chave, Tijuca", { nome: "Bia" });
+  let lido = "";
+  a.llmIdentifica = e => { lido = e; return { caso_id: Number(e.match(/#(\d+) — cliente Bia/)[1]), confianca: "ALTA", motivo: "comprovante de R$ 45 das cópias de chave" }; };
+  a.llmPrestador = () => prest({ tipo: "COMPROVANTE", resumo: "Pix de R$ 45,00 em 07/10 — cópias de chave" });
+  await a.cliente(CHAVEIRO, "segue", { type: "image", raw: { image: { id: "media-pix-1", mime_type: "image/jpeg", caption: "segue" } } });
+  assert.match(lido, /ATENDIMENTOS ABERTOS COM ELE:[\s\S]*cliente Bia, Tijuca: cópia de 3 chaves/);
+  assert.match(lido, /há anexo/);
+  assert.equal(a.ultimoPara(CHAVEIRO), "Recebido, obrigado! ✅", "curto, sem perguntar de qual cliente");
+  assert.ok(a.telegram.some(t => /Comprovante de Anderson \(chaveiro\) sobre o atendimento de Bia[\s\S]*Pix de R\$ 45,00/.test(t)));
 });
