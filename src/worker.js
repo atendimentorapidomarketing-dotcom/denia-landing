@@ -554,7 +554,7 @@ async function validarEngineUrl(env, valor) {
   const s = txt(valor, 300).replace(/\/+$/, "");
   if (!s) return { url: "" };
   let u;
-  try { u = new URL(s); } catch { return { erro: "Endereço inválido. Exemplo: https://denia.seu-usuario.workers.dev" }; }
+  try { u = new URL(s); } catch { return { erro: "Endereço inválido. Exemplo: https://ia.suaempresa.com.br" }; }
   const local = u.protocol === "http:" && ["localhost", "127.0.0.1"].includes(u.hostname) && String(env.PERMITIR_ENGINE_LOCAL || "") === "1";
   if (!(u.protocol === "https:" || local) || u.username || u.password || (u.pathname !== "/" && u.pathname !== "") || u.search || u.hash) {
     return { erro: "Use somente o endereço base do Engine, começando com https:// (sem caminho no final)." };
@@ -1230,6 +1230,18 @@ async function rotear(request, env, ctx) {
   if (caminho.startsWith("/tp/ical/") && request.method === "GET") { await garantirSchema(env); return (await icalPublico(env, caminho)) || new Response("Não encontrado.", { status: 404 }); }
   if (caminho === "/webhook/asaas" && request.method === "POST") { await garantirSchema(env); return webhookAsaas(request, env, kitBase(env)); }
   if (!["GET", "HEAD"].includes(request.method)) return new Response("Método não permitido.", { status: 405 });
+
+  // SEO: mapa do site e robots com o endereço oficial (SITE_URL), para o Google achar as páginas públicas.
+  if (caminho === "/sitemap.xml") {
+    const base = origemPublica(env, request);
+    const paginas = [["/", "1.0", "weekly"], ["/cadastro", "0.8", "monthly"], ["/contato", "0.6", "monthly"], ["/termos", "0.3", "yearly"], ["/privacidade", "0.3", "yearly"], ["/contrato-de-dados", "0.3", "yearly"], ["/exclusao-de-dados", "0.2", "yearly"]];
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${paginas.map(([u, pr, f]) => `  <url><loc>${base}${u}</loc><changefreq>${f}</changefreq><priority>${pr}</priority></url>`).join("\n")}\n</urlset>\n`;
+    return new Response(xml, { headers: { "content-type": "application/xml; charset=utf-8", "cache-control": "public, max-age=3600" } });
+  }
+  if (caminho === "/robots.txt") {
+    const txtRobots = ["User-agent: *", "Allow: /", "Disallow: /app", "Disallow: /entrar", "Disallow: /api/", "Disallow: /recuperar", "Disallow: /redefinir", "Disallow: /ia/", "", `Sitemap: ${origemPublica(env, request)}/sitemap.xml`, ""].join("\n");
+    return new Response(txtRobots, { headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "public, max-age=3600" } });
+  }
 
   // Imagens dos posts com link assinado: o Instagram e o Facebook baixam a arte por aqui.
   if (caminho.startsWith("/m/")) { await garantirSchema(env); return servirMidiaPublica(env, kitBase(env), caminho); }
