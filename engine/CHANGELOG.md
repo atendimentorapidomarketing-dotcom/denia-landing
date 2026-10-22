@@ -1,5 +1,15 @@
 # Changelog — DENIA Engine
 
+## 33.1.0 — 2026-10-22
+
+### Melhorado — pede ajuda o mínimo e não repete o cliente
+- A IA do cliente só chama a equipe (precisa_humano) para pedido de pessoa, reclamação séria,
+  cancelamento, decisão que só a equipe toma (desconto fora da tabela, reembolso, garantia, exceção)
+  ou risco. Dúvida comum: pergunta ao cliente ou confirma com o profissional.
+- No mesmo atendimento, no máximo um aviso a cada 2 h no Telegram; o resto vai para Problemas.
+  Sempre chegam: pedido de atendente, cancelamento, agendado, reunião, desistência e falhas da conta.
+- O pedido ao profissional nunca copia frases do cliente (só o resumo).
+
 ## 33.0.0 — 2026-10-21
 
 ### Novo — profissionais editáveis pela plataforma
