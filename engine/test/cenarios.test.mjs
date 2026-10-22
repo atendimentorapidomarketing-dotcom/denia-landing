@@ -1393,3 +1393,19 @@ test("Comprovante do profissional com vários atendimentos: a IA acha o cliente 
   assert.equal(a.ultimoPara(CHAVEIRO), "Recebido, obrigado! ✅", "curto, sem perguntar de qual cliente");
   assert.ok(a.telegram.some(t => /Comprovante de Anderson \(chaveiro\) sobre o atendimento de Bia[\s\S]*Pix de R\$ 45,00/.test(t)));
 });
+
+test("Pede ajuda o mínimo: no mesmo atendimento, um aviso a cada 2 h no Telegram; pedido de atendente sempre chega", async () => {
+  const a = await criarAmbiente();
+  await iniciarConsultaChaveiro(a);
+  const base = a.telegram.length;
+  a.llmCliente = () => decisao({ resposta: "Vou ver isso.", precisa_humano: true, motivo_humano: "cliente perguntou sobre garantia estendida" });
+  await a.cliente(CLI, "tem garantia estendida?");
+  a.llmCliente = () => decisao({ resposta: "Certo.", precisa_humano: true, motivo_humano: "quer nota fiscal" });
+  await a.cliente(CLI, "e nota fiscal?");
+  const novos = a.telegram.slice(base).filter(t => /Atenção na conversa/.test(t));
+  assert.equal(novos.length, 1, "o segundo pedido de apoio do mesmo atendimento vai só para Problemas");
+  assert.ok((await a.avisos()).some(t => /quer nota fiscal/.test(t)));
+  a.llmCliente = () => decisao({ resposta: "Claro!", intencao: "FALAR_COM_HUMANO" });
+  await a.cliente(CLI, "quero falar com uma pessoa");
+  assert.ok(a.telegram.some(t => /pediu para falar com um atendente/.test(t)), "pedido de atendente sempre chega");
+});

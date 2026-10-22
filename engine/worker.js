@@ -36,7 +36,7 @@
 //       relatório diário. Nunca inicia conversa nova por conta própria.
 // ============================================================================
 
-const VERSAO = "33.0.0";
+const VERSAO = "33.1.0";
 const SCHEMA_VERSAO = "33.0.0"; // mude sempre que acrescentar tabela ou índice (senão o banco de produção não recebe)
 const EMPRESA_ID = 1;
 const PHONE_ID_PADRAO = "473474732510163";
@@ -1575,12 +1575,19 @@ async function registrarSaidaTaxa(c, to) {
 // na página Problemas da plataforma. TELEGRAM_AVISOS=todos volta a mandar tudo.
 const AVISOS_URGENTES = ["bloqueio:", "sem-confirmacao:", "limite:", "ia:", "cancel:", "humano:", "apoio:", "comprovante:", "semcat:", "semprest:", "balcao:",
   "falha-consulta:", "falha-aceite:", "falha-cli:", "valor-incerto:", "pos:", "desist:", "atraso:", "atrasadas:", "guia-humano:", "guia-ia-humano:", "agendado:", "reuniao"];
+const AVISOS_SEMPRE = ["humano:", "cancel:", "agendado:", "reuniao", "desist:", "bloqueio:", "sem-confirmacao:", "limite:", "guia-humano:"];
 function avisoUrgente(c, chave) { return String(c.env.TELEGRAM_AVISOS || "").toLowerCase() === "todos" || AVISOS_URGENTES.some(p => String(chave || "").startsWith(p)); }
 async function alertarEquipe(c, texto, chave, casoId = null) {
   if (chave && !(await reservarChave(c, "alerta:" + chave))) return;
   // O mesmo aviso (mesmo texto) nunca chega duas vezes em 6 h, venha de onde vier.
   if (!(await reservarChave(c, `alerta-txt:${hashTexto(norm(texto))}:${Math.floor(c.agora() / (6 * 3600000))}`))) return;
   if (!avisoUrgente(c, chave)) { await evento(c, casoId, "AVISO_PAINEL", texto); return; }
+  // Pedir ajuda o mínimo: no mesmo atendimento, no máximo um aviso a cada 2 h no Telegram (o resto vai para
+  // Problemas). Sempre chegam: pedido de atendente, cancelamento, agendado, reunião, desistência e falhas da conta.
+  if (casoId && !AVISOS_SEMPRE.some(p => String(chave || "").startsWith(p)) && String(c.env.TELEGRAM_AVISOS || "").toLowerCase() !== "todos") {
+    const recente = await c.db.prepare("SELECT 1 ok FROM d30_eventos WHERE caso_id=? AND tipo='ALERTA_EQUIPE' AND criado_ms > ? LIMIT 1").bind(casoId, c.agora() - 2 * 3600000).first().catch(() => null);
+    if (recente) { await evento(c, casoId, "AVISO_PAINEL", texto); return; }
+  }
   // Teto de alertas por hora: o Telegram nunca vira uma enxurrada.
   const recentes = Number((await c.db.prepare("SELECT COUNT(*) n FROM d30_eventos WHERE tipo='ALERTA_EQUIPE' AND criado_ms > ?").bind(c.agora() - 3600000).first().catch(() => null))?.n || 0);
   await evento(c, casoId, "ALERTA_EQUIPE", texto);
@@ -2035,8 +2042,8 @@ SEU PAPEL: você interpreta as mensagens e redige a resposta. Você NÃO executa
 - Nunca peça ao cliente para escolher profissional. Nunca informe telefone, CPF ou dados de profissionais ou de outras pessoas. Não peça CPF.
 - Bairro NÃO define preço: nunca diga que precisa do bairro para orçamento. Não pergunte bairro por iniciativa própria; o sistema e o profissional pedem quando for necessário. Nunca repita uma pergunta que você já fez nesta conversa, mesmo que o cliente não tenha respondido: siga em frente com o que ele disse.
 - Serviços de BALCÃO: o cliente leva o equipamento à loja; nunca pergunte bairro ou endereço.
-- Cancelamentos e reclamações: não decida; seja cordial e marque precisa_humano.
-- Se não souber algo, não invente: diga "Um momento, por favor." e marque precisa_humano.
+- Cancelamentos e reclamações sérias: não decida; seja cordial e marque precisa_humano.
+- PEÇA AJUDA À EQUIPE O MÍNIMO POSSÍVEL, como uma atendente experiente que resolve sozinha: primeiro tente com o TREINAMENTO, os FATOS e o HISTÓRICO; se falta uma informação do cliente, pergunte a ele; se é dúvida técnica do serviço e já há profissional consultado, use PERGUNTA_PARA_PROFISSIONAL. precisa_humano=true SÓ quando: o cliente pede para falar com uma pessoa, reclamação séria, cancelamento, pedido que só a equipe decide (desconto fora da tabela, reembolso, garantia, exceção às regras) ou situação de risco. Dúvida comum NÃO é motivo para chamar a equipe.
 
 CLIENTE ANTIGO: veja o PERFIL DO CLIENTE e a FICHA NO SISTEMA. Se ele já foi atendido antes, trate-o como cliente conhecido: nunca como novo, não peça dados que já constam e lembre do que já foi feito quando for útil. Dados da FICHA são oficiais; nunca os contradiga e nunca os invente.
 
@@ -2049,9 +2056,9 @@ A ARTE DE ATENDER (o padrão das melhores atendentes):
 - Espelhe o cliente: se ele escreve informal e curto, responda informal e curto ("tá", "pra", "beleza"); se escreve formal, seja mais formal. Use emoji só se ele usar, e no máximo um.
 - Varie: não comece toda mensagem do mesmo jeito ("Entendi!", "Claro!", "Perfeito!"); nada de frases prontas de robô como "Como posso ajudar?", "Fico à disposição", "Agradecemos o contato".
 - Uma coisa por vez: uma informação ou uma pergunta por mensagem, na ordem natural da conversa.
-- Cliente irritado ou com pressa: reconheça o incômodo sem se justificar e sem culpar ninguém ("Poxa, entendo sua pressa"), diga o próximo passo concreto e marque precisa_humano se for reclamação.
+- Cliente irritado ou com pressa: reconheça o incômodo sem se justificar e sem culpar ninguém ("Poxa, entendo sua pressa"), diga o próximo passo concreto e marque precisa_humano só se for reclamação séria.
 - Venda com naturalidade: destaque o que resolve a vida do cliente (rapidez, garantia, profissional de confiança) só quando for verdade no treinamento; nunca pressione; se ele disser "vou pensar", seja gentil e deixe a porta aberta.
-- Dúvida é normal, chute nunca: só afirme o que está no TREINAMENTO, nos FATOS, na FICHA, no ESTADO DO CASO ou no HISTÓRICO. Se não tiver certeza, diga que vai confirmar ("Vou confirmar isso pra você") e marque precisa_humano. Prefira perguntar a supor.
+- Dúvida é normal, chute nunca: só afirme o que está no TREINAMENTO, nos FATOS, na FICHA, no ESTADO DO CASO ou no HISTÓRICO. Se não tiver certeza, pergunte ao cliente ou confirme com o profissional; prefira perguntar a supor. Não invente.
 - Lembre que do outro lado há uma pessoa real: uma promessa errada (preço, dia, horário, que o profissional vai, que algo está incluso) causa prejuízo e transtorno de verdade ao cliente e à Central. Na dúvida, não prometa.
 - RESUMO DE LIGAÇÃO no HISTÓRICO é o que a equipe conversou por telefone com esta pessoa: vale como informação confirmada e mais recente; use naturalmente, sem dizer "conforme registro".
 - Você atende somente o que é da Central (serviços, pedidos, agendamentos, dúvidas do atendimento). Não fale de marketing, redes sociais, Google ou assuntos fora do atendimento; se perguntarem, diga com gentileza que por aqui você cuida do atendimento.
@@ -2470,7 +2477,7 @@ async function consultarPrestador(c, caso, pessoa, chaveLote, escolhido = null) 
     `${saudacaoSP(c.agora())}, ${primeiroNome(p.nome)}! Tudo bem?`,
     `Tenho um cliente${local ? ` em ${local}` : ""} precisando de ${String(f.problema || f.servico || "").replace(/[.\s]+$/, "")}${f.marca || f.modelo ? ` (${[f.marca, f.modelo].filter(Boolean).join(" ")})` : ""}.`,
     // O que o cliente quer, resumido pela DENIA (frases soltas copiadas do cliente confundiam o profissional).
-    caso.resumo && norm(caso.resumo) !== norm(f.problema || f.servico || "") ? `Resumo do pedido: ${ocultarTelefones(txt(caso.resumo, 400))}` : (!f.problema && falas.length ? `O cliente escreveu: "${falas.at(-1)}"` : ""),
+    caso.resumo && norm(caso.resumo) !== norm(f.problema || f.servico || "") ? `Resumo do pedido: ${ocultarTelefones(txt(caso.resumo, 400))}` : "",
     !f.bairro && CATEGORIAS[area]?.modo === "DOMICILIO" ? "O bairro o cliente ainda não informou." : "",
     `Você consegue pegar? Se sim, me passa o valor e quando pode.`
   ].filter(Boolean);
