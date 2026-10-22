@@ -36,7 +36,7 @@
 //       relatório diário. Nunca inicia conversa nova por conta própria.
 // ============================================================================
 
-const VERSAO = "33.1.0";
+const VERSAO = "33.2.0";
 const SCHEMA_VERSAO = "33.0.0"; // mude sempre que acrescentar tabela ou índice (senão o banco de produção não recebe)
 const EMPRESA_ID = 1;
 const PHONE_ID_PADRAO = "473474732510163";
@@ -2562,6 +2562,16 @@ async function humanizarCasos(c, texto) {
   return t.split("\n").map(l => l.replace(/[ \t]{2,}/g, " ").replace(/\s+([,.!?:])/g, "$1").trim()).filter((l, i, arr) => l || (i > 0 && arr[i - 1])).join("\n").trim();
 }
 
+// "amanhã às 10h" e "amanhã 10:00" são o mesmo horário: só muda se o dia ou a hora mudarem.
+function mesmoHorario(a, b) {
+  const partes = v => new Set(norm(v).replace(/(\d{1,2})\s*(?::\s*00|h(?:rs?|oras?|s)?)\b/g, "$1").split(/[^a-z0-9]+/)
+    .filter(w => w && !["as", "a", "o", "de", "do", "da", "dia", "h", "hs", "horas", "pelas", "umas", "por", "volta", "partir", "ate", "e", "pode", "ser", "fica", "confirmado", "confirmo", "combinado", "sim", "ok", "entao"].includes(w)));
+  const x = partes(a), y = partes(b);
+  if (!x.size || !y.size) return true;
+  const [menor, maior] = x.size <= y.size ? [x, y] : [y, x];
+  return [...menor].every(w => maior.has(w));
+}
+
 function resumoParaPrestador(caso, consulta) {
   const f = caso.fatos || {};
   return [`É o caso ${caso.casoId}: cliente${f.bairro ? ` em ${f.bairro}` : ""} precisando de ${String(f.problema || f.servico || "-").replace(/[.\s]+$/, "")}${f.marca || f.modelo ? ` (${[f.marca, f.modelo].filter(Boolean).join(" ")})` : ""}.`,
@@ -2760,7 +2770,7 @@ ${textoTodo}
 
 Responda em JSON.`, anexos, 700);
   } catch (e) {
-    await alertarEquipe(c, `Falha da IA ao ler a resposta de ${consulta.prestador_nome} (caso #${caso.casoId}): "${txt(textoTodo, 300)}". Tratar manualmente.`, "ia-prest:" + chaveLote, caso.casoId);
+    await alertarEquipe(c, `Falha da IA ao ler a resposta de ${consulta.prestador_nome} (caso #${caso.casoId}): "${txt(textoTodo, 300)}". Tratar manualmente.`, "ia:prest:" + chaveLote, caso.casoId);
     return;
   }
   await tratarRespostaPrestador(c, { caso, consulta, d, textoTodo, chaveLote, histCaso, msgs });
@@ -2851,7 +2861,9 @@ async function tratarRespostaPrestador(c, { caso, consulta, d, textoTodo, chaveL
     const pergunta = txt(d?.pergunta_para_cliente, 300);
     if (!pergunta) return;
     const r = await avisarCliente(pergunta, "pergunta");
-    if (r.ok) { await atualizarConsulta(c, consulta.id, { pergunta_pendente: pergunta }); await responder("Vou confirmar com o cliente e já retorno.", "perg-ok"); }
+    // Mesmo se a mensagem ao cliente ficou guardada ou a equipe vai repassar, o profissional sabe que foi visto.
+    if (r.ok || r.guardada) await atualizarConsulta(c, consulta.id, { pergunta_pendente: pergunta });
+    if (!r.duplicado) await responder("Vou confirmar com o cliente e já retorno.", "perg-ok");
     return;
   }
 
@@ -2881,12 +2893,12 @@ async function tratarRespostaPrestador(c, { caso, consulta, d, textoTodo, chaveL
 
   if (tipo === "CONFIRMA_AGENDAMENTO" || tipo === "ACEITA") {
     if (caso.etapa === "AGUARDANDO_CONFIRMACAO_PRESTADOR") {
-      const novaData = disp && norm(disp) !== norm(consulta.disponibilidade || "");
+      const novaData = disp && !mesmoHorario(disp, consulta.disponibilidade || "");
       if (novaData && consulta.disponibilidade) {
         // Propôs outro horário: volta ao cliente.
         await atualizarConsulta(c, consulta.id, { disponibilidade: disp, status: "RESPONDIDA" });
         const r = await avisarCliente(`O profissional propôs ${disp}. Podemos confirmar?`, "novohorario");
-        if (r.ok) await mudarEtapa(c, caso, "AGUARDANDO_CLIENTE");
+        if (r.ok) { await mudarEtapa(c, caso, "AGUARDANDO_CLIENTE"); await responder(`Combinado, vou ver com o cliente se ${disp} funciona e te retorno.`, "novohorario-ok"); }
         return;
       }
       const dataFinal = disp || consulta.disponibilidade;
@@ -2934,7 +2946,8 @@ async function tratarRespostaPrestador(c, { caso, consulta, d, textoTodo, chaveL
     return;
   }
 
-  // COMENTARIO: nenhuma ação automática.
+  // COMENTARIO: nenhuma ação automática. "Ok", "obrigado", "beleza" não precisam da equipe.
+  if (msgs.length && msgs.every(m => !m.mediaId && ehMensagemSocial(m.conteudo))) return;
   await alertarEquipe(c, `${consulta.prestador_nome} (caso #${caso.casoId}) escreveu: "${txt(textoTodo, 300)}". Nenhuma ação automática foi tomada.`, "coment:" + chaveLote, caso.casoId);
 }
 
@@ -3291,6 +3304,7 @@ async function cron(c) {
   for (const t of tels) { if (sobram(c) < 25) break; await processarPendentes(c, t.telefone); }
   if (c.atrasadasSemResposta) await alertarEquipe(c, `${c.atrasadasSemResposta} conversa(s) ficaram sem resposta por mais tempo e a DENIA NÃO respondeu sozinha para não mandar mensagens em massa. Veja em Conversas e responda quem ainda precisa.`, "atrasadas:" + Math.floor(agora / 3600000));
   if (sobram(c) > 20) await processarAgendados(c);
+  if (sobram(c) > 20) await cobrarProfissionais(c).catch(e => console.error("profissionais sem resposta", e?.message));
   if (sobram(c) > 12) await lembrarReunioes(c).catch(e => console.error("reuniões", e?.message));
   // Uma vez por dia: liga o Telegram da equipe à DENIA (se ainda não estiver ligado a outro sistema).
   if (sobram(c) > 15 && c.env.TELEGRAM_BOT_TOKEN && c.env.TELEGRAM_CHAT_ID && String(c.env.TELEGRAM_EQUIPE || "").toLowerCase() !== "desligado" && await reservarChave(c, "tg-conectar:" + dataSP(agora))) {
@@ -3406,6 +3420,42 @@ async function processarAgendados(c) {
       if (!r.viaTemplate) await encaminharMidiasAoPrestador(c, { ...consulta, message_id: r.id });
     }
     if (!r.ok && !r.guardada) await alertarEquipe(c, `Falha no envio programado ao prestador (caso #${a.caso_id}): ${r.erro}`, "falha-ag:" + a.id, a.caso_id);
+  }
+}
+
+// Profissional que não respondeu a consulta: a DENIA lembra uma vez (como uma pessoa da equipe faria) e,
+// se continuar sem resposta, passa o pedido ao próximo profissional da mesma área. O cliente nunca fica esperando à toa.
+function minutosEnv(env, nome, padrao) { const v = Number(env[nome]); return (Number.isFinite(v) && v > 0 ? v : padrao) * 60000; }
+async function cobrarProfissionais(c) {
+  if (!dentroHorarioPrestador(c)) return;
+  const agora = c.agora(), cobrarMs = minutosEnv(c.env, "PROFISSIONAL_COBRAR_MIN", 40), trocarMs = minutosEnv(c.env, "PROFISSIONAL_TROCAR_MIN", 60);
+  const paradas = (await c.db.prepare("SELECT * FROM d30_consultas WHERE status='ENVIADA' AND atualizado_ms < ? AND atualizado_ms > ? ORDER BY atualizado_ms LIMIT 5")
+    .bind(agora - cobrarMs, agora - 3 * 86400000).all())?.results || [];
+  for (const k of paradas) {
+    if (sobram(c) < 20) return;
+    const caso = await carregarCasoPorId(c, k.caso_id);
+    if (!caso || caso.etapa !== "AGUARDANDO_PRESTADOR" || await estaPausado(c, k.prestador_tel) || await estaPausado(c, caso.telefone)) continue;
+    // Ele já falou sobre este atendimento (pergunta, comentário) ou a equipe assumiu: não cobra nem troca.
+    const prest = await buscarPessoa(c, k.prestador_tel);
+    const falou = prest ? await c.db.prepare("SELECT 1 ok FROM mensagens WHERE empresa_id=? AND pessoa_id=? AND caso_id=? AND UPPER(direcao)='ENTRADA' LIMIT 1").bind(EMPRESA_ID, prest.id, k.caso_id).first().catch(() => null) : null;
+    const equipe = await c.db.prepare("SELECT 1 ok FROM mensagens WHERE empresa_id=? AND caso_id=? AND UPPER(origem)='HUMANO' LIMIT 1").bind(EMPRESA_ID, k.caso_id).first().catch(() => null);
+    if (falou || equipe) continue;
+    const cobrado = await c.db.prepare("SELECT 1 ok FROM d30_envios WHERE chave=?").bind("cobrar:" + k.id).first().catch(() => null);
+    if (!cobrado) {
+      if (!(await reservarChave(c, "cobrar:" + k.id))) continue;
+      const r = await enviarAgoraAoPrestador(c, { consulta: k, caso, texto: `${primeiroNome(k.prestador_nome) || "Oi"}, conseguiu ver o pedido de ${pessoaRef(await refCaso(c, k.caso_id))}? Se não puder pegar, sem problema, é só me avisar.`, chave: "cobrar-msg:" + k.id });
+      await atualizarConsulta(c, k.id, { status: "ENVIADA" }); // marca a hora do lembrete
+      await evento(c, k.caso_id, r.ok ? "PROFISSIONAL_LEMBRADO" : "FALHA_LEMBRETE_PROFISSIONAL", k.prestador_nome);
+      continue;
+    }
+    if (agora - Number(k.atualizado_ms || 0) < trocarMs) continue;
+    // Sem resposta depois do lembrete: passa ao próximo profissional da área (se não houver, a equipe é avisada).
+    await atualizarConsulta(c, k.id, { status: "EXPIRADA" });
+    await evento(c, k.caso_id, "PROFISSIONAL_SEM_RESPOSTA", k.prestador_nome);
+    const pessoa = await c.db.prepare("SELECT * FROM pessoas WHERE id=?").bind(caso.clienteId).first().catch(() => null) || { id: caso.clienteId, telefone: caso.telefone };
+    caso.etapa = "COLETANDO";
+    await salvarCaso(c, caso);
+    await consultarPrestador(c, caso, pessoa, "troca:" + k.id);
   }
 }
 

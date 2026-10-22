@@ -12,10 +12,10 @@
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { mkdirSync, existsSync, statSync, rmSync, readdirSync } from "node:fs";
+import { mkdirSync, existsSync, statSync, rmSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { Readable } from "node:stream";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { timingSafeEqual, createHash } from "node:crypto";
+import { timingSafeEqual, createHash, randomBytes } from "node:crypto";
 
 const [maior, menor] = process.versions.node.split(".").map(Number);
 if (maior < 22 || (maior === 22 && menor < 5)) {
@@ -112,6 +112,16 @@ export async function iniciar(op = {}) {
   const variaveisEngine = {};
   for (const [k, v] of Object.entries(ambiente)) { if (typeof v === "string") { variaveis[k] = v; variaveisEngine[k] = v; } }
   for (const [k, v] of Object.entries(ambiente)) if (k.startsWith("ENGINE_") && typeof v === "string") variaveisEngine[k.slice(7)] = v;
+  // Plataforma e IA rodam no mesmo servidor: o token entre elas é sempre o mesmo. Sem DENIA_PLATFORM_SERVICE_TOKEN
+  // nas variáveis, o servidor cria um e guarda na pasta de dados (as páginas da Central nunca ficam sem a IA).
+  let tokenIA = String(variaveisEngine.DENIA_PLATFORM_SERVICE_TOKEN || "").trim();
+  if (tokenIA.length < 16) {
+    const arq = path.join(DADOS, "token-ia.txt");
+    try { tokenIA = readFileSync(arq, "utf8").trim(); } catch { tokenIA = ""; }
+    if (tokenIA.length < 32) { tokenIA = randomBytes(32).toString("base64url"); try { writeFileSync(arq, tokenIA, { mode: 0o600 }); } catch (e) { anotarErro("token da IA", e); } }
+  }
+  variaveis.DENIA_PLATFORM_SERVICE_TOKEN = variaveisEngine.DENIA_PLATFORM_SERVICE_TOKEN = tokenIA;
+  variaveis.DENIA_IA_LOCAL = "1";
   // Fora da Cloudflare não existe o limite de 50 chamadas por execução do plano gratuito.
   if (!variaveisEngine.LIMITE_CHAMADAS) variaveisEngine.LIMITE_CHAMADAS = "900";
 

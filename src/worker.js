@@ -584,7 +584,9 @@ async function conexaoDa(env, orgId) {
   // O token pode vir da plataforma (Integrações) ou do secret DENIA_PLATFORM_SERVICE_TOKEN.
   if (env.ENGINE && typeof env.ENGINE.fetch === "function" && orgId === await primeiraEmpresa(env)) {
     const salvo = i?.token_cifrado ? await decifrar(env, i.token_cifrado) : "";
-    const token = (salvo || String(env.DENIA_PLATFORM_SERVICE_TOKEN || env.DENIA_ENGINE_SERVICE_TOKEN || "")).trim();
+    const doServidor = String(env.DENIA_PLATFORM_SERVICE_TOKEN || env.DENIA_ENGINE_SERVICE_TOKEN || "").trim();
+    // No servidor próprio (Hostinger) a IA roda junto e usa o mesmo token: um token antigo salvo em Integrações não atrapalha.
+    const token = (env.DENIA_IA_LOCAL === "1" && doServidor ? doServidor : salvo || doServidor).trim();
     return { url: "https://denia-engine.interno", token, binding: env.ENGINE, origemToken: salvo ? "plataforma" : token ? "cloudflare" : "" };
   }
   if (!i?.engine_url || !i?.token_cifrado) {
