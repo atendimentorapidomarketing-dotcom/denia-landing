@@ -1409,3 +1409,74 @@ test("Pede ajuda o mínimo: no mesmo atendimento, um aviso a cada 2 h no Telegra
   await a.cliente(CLI, "quero falar com uma pessoa");
   assert.ok(a.telegram.some(t => /pediu para falar com um atendente/.test(t)), "pedido de atendente sempre chega");
 });
+
+test("Profissional que não responde: a DENIA lembra uma vez e depois passa ao próximo da mesma área", async () => {
+  const QEZIA = "5521998652205", JOAO = "5521993781381";
+  const a = await criarAmbiente();
+  a.llmCliente = () => decisao({ resposta: "Certo!", intencao: "NOVO_PEDIDO", quer_orcamento_ou_atendimento: true, pronto_para_profissional: true, fatos: { servico: "marcenaria", problema: "armário sob medida", bairro: "Tijuca" } });
+  await a.cliente(CLI, "Quero um armário sob medida na Tijuca", { nome: "Paula" });
+  assert.equal(a.para(QEZIA).length, 1);
+
+  a.avancar(20 * 60000); await a.cron();
+  assert.equal(a.para(QEZIA).length, 1, "antes do tempo não cobra");
+  a.avancar(25 * 60000); await a.cron();
+  assert.equal(a.para(QEZIA).length, 2, "lembra uma vez");
+  assert.match(a.ultimoPara(QEZIA), /conseguiu ver o pedido de Paula \(Tijuca\)\?/);
+  assert.doesNotMatch(a.ultimoPara(QEZIA), /caso|#\d/i);
+  await a.cron();
+  assert.equal(a.para(QEZIA).length, 2, "não repete o lembrete");
+  assert.equal(a.para(JOAO).length, 0);
+
+  a.avancar(61 * 60000); await a.cron();
+  assert.equal(a.para(QEZIA).length, 2);
+  assert.equal(a.para(JOAO).length, 1, "passou ao próximo marceneiro");
+  assert.match(a.ultimoPara(JOAO), /armário sob medida/);
+  assert.equal(a.para(CLI).length, 1, "o cliente não recebe mensagens extras");
+});
+
+test("Profissional que já respondeu (mesmo com pergunta) não é cobrado nem trocado", async () => {
+  const QEZIA = "5521998652205", JOAO = "5521993781381";
+  const a = await criarAmbiente();
+  a.llmCliente = () => decisao({ resposta: "Certo!", intencao: "NOVO_PEDIDO", quer_orcamento_ou_atendimento: true, pronto_para_profissional: true, fatos: { servico: "marcenaria", problema: "armário sob medida", bairro: "Tijuca" } });
+  await a.cliente(CLI, "Quero um armário sob medida na Tijuca", { nome: "Paula" });
+  a.llmPrestador = () => prest({ tipo: "COMENTARIO" });
+  await a.cliente(QEZIA, "Vou ver aqui minha agenda e te falo");
+  const n = a.para(QEZIA).length;
+  a.avancar(3 * 3600000); await a.cron(); await a.cron();
+  assert.equal(a.para(QEZIA).length, n);
+  assert.equal(a.para(JOAO).length, 0);
+});
+
+test("Profissional confirma o mesmo horário com outras palavras: agenda direto, sem voltar ao cliente", async () => {
+  const a = await criarAmbiente();
+  a.llmCliente = () => decisao({ resposta: "Certo!", intencao: "NOVO_PEDIDO", quer_orcamento_ou_atendimento: true, pronto_para_profissional: true, fatos: { servico: "troca de tecido do sofá", bairro: "Copacabana", endereco: "Rua Barata Ribeiro, 200" } });
+  await a.cliente(CLI, "Quero trocar o tecido do sofá, Rua Barata Ribeiro, 200, Copacabana", { nome: "Maria" });
+  a.llmPrestador = () => prest({ tipo: "ACEITA", valor_centavos: 60000, valor_e_final: "SIM", disponibilidade: "amanhã às 14h" });
+  await a.cliente(CARLOS_ESTOF, "Faço, 600 final, amanhã às 14h");
+  a.llmCliente = () => decisao({ resposta: "Ótimo!", intencao: "ACEITA_PROPOSTA" });
+  await a.cliente(CLI, "Pode ser");
+  assert.match(a.ultimoPara(CARLOS_ESTOF), /Pode confirmar/);
+  a.llmPrestador = () => prest({ tipo: "CONFIRMA_AGENDAMENTO", disponibilidade: "amanhã 14:00" });
+  await a.cliente(CARLOS_ESTOF, "Confirmado amanhã 14:00");
+  assert.equal(a.DB.q("SELECT etapa FROM d30_casos")[0].etapa, "AGENDADO");
+  assert.match(a.ultimoPara(CLI), /Atendimento confirmado pelo profissional/);
+
+  // E "ok" do profissional depois não vira aviso para a equipe.
+  const antes = a.DB.q("SELECT COUNT(*) n FROM d30_eventos WHERE tipo IN ('AVISO_PAINEL','ALERTA_EQUIPE')")[0].n;
+  await a.cliente(CARLOS_ESTOF, "ok");
+  assert.equal(a.DB.q("SELECT COUNT(*) n FROM d30_eventos WHERE tipo IN ('AVISO_PAINEL','ALERTA_EQUIPE')")[0].n, antes);
+});
+
+test("Profissional propõe outro horário: vai ao cliente e o profissional sabe que estamos vendo", async () => {
+  const a = await criarAmbiente();
+  a.llmCliente = () => decisao({ resposta: "Certo!", intencao: "NOVO_PEDIDO", quer_orcamento_ou_atendimento: true, pronto_para_profissional: true, fatos: { servico: "troca de tecido do sofá", bairro: "Copacabana", endereco: "Rua Barata Ribeiro, 200" } });
+  await a.cliente(CLI, "Quero trocar o tecido do sofá, Rua Barata Ribeiro, 200, Copacabana", { nome: "Maria" });
+  a.llmPrestador = () => prest({ tipo: "ACEITA", valor_centavos: 60000, valor_e_final: "SIM", disponibilidade: "amanhã às 14h" });
+  await a.cliente(CARLOS_ESTOF, "Faço, 600 final, amanhã às 14h");
+  a.llmCliente = () => decisao({ resposta: "Ótimo!", intencao: "ACEITA_PROPOSTA" });
+  await a.cliente(CLI, "Pode ser");
+  a.llmPrestador = () => prest({ tipo: "CONFIRMA_AGENDAMENTO", disponibilidade: "sexta às 9h" });
+  await a.cliente(CARLOS_ESTOF, "Amanhã não vou conseguir, pode ser sexta às 9h?");
+  assert.match(a.ultimoPara(CLI), /propôs sexta às 9h/);
+  assert.match(a.ultimoPara(CARLOS_ESTOF), /vou ver com o cliente se sexta às 9h funciona/);
+});
