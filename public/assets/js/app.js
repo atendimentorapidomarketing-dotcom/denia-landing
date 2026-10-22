@@ -1125,7 +1125,7 @@
     if (!vivo()) return;
     const editar = pode("ADMIN");
     const direta = i.origem === "direta";
-    const url = h("input", { class: "entrada", type: "url", value: direta ? "" : i.engine_url, placeholder: "https://denia.seu-usuario.workers.dev", readOnly: !editar, autocomplete: "off", spellcheck: "false" });
+    const url = h("input", { class: "entrada", type: "url", value: direta ? "" : i.engine_url, placeholder: "https://ia.suaempresa.com.br", readOnly: !editar, autocomplete: "off", spellcheck: "false" });
     const token = h("input", { class: "entrada", type: "password", placeholder: i.token_configurado ? "Token guardado · cole aqui para trocar" : "Cole aqui o DENIA_PLATFORM_SERVICE_TOKEN do Worker \"denia\"", readOnly: !editar, autocomplete: "new-password", spellcheck: "false" });
     const resultado = h("div", {});
     const testar = async () => {
@@ -1162,7 +1162,7 @@
         h("ol", { class: "passos", style: "margin-top:12px" },
           h("li", {}, "Na Cloudflare, abra o Worker da DENIA → Settings → Variables and Secrets."),
           h("li", {}, "Crie o secret ", h("span", { class: "codigo", text: "DENIA_PLATFORM_SERVICE_TOKEN" }), " com uma senha longa (40 caracteres ou mais) e salve."),
-          h("li", {}, "Copie o endereço do Worker (termina em ", h("span", { class: "codigo", text: ".workers.dev" }), ")."),
+          h("li", {}, "Copie o endereço público da IA (o mesmo que a Meta chama no webhook, sem o /webhook no final)."),
           h("li", {}, "Cole o endereço e o mesmo token aqui, salve e clique em Testar conexão."))));
 
     const s = estado.status;
