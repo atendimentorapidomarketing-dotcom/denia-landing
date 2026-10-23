@@ -1480,3 +1480,43 @@ test("Profissional propõe outro horário: vai ao cliente e o profissional sabe 
   assert.match(a.ultimoPara(CLI), /propôs sexta às 9h/);
   assert.match(a.ultimoPara(CARLOS_ESTOF), /vou ver com o cliente se sexta às 9h funciona/);
 });
+
+test("Nome do cliente: só na primeira vez, não em toda mensagem", async () => {
+  const a = await criarAmbiente();
+  a.llmCliente = () => decisao({ resposta: "Oi, Maria! Tudo bem? Como posso ajudar?" });
+  await a.cliente(CLI, "Oi", { nome: "Maria Souza" });
+  assert.match(a.ultimoPara(CLI), /Maria/);
+  a.llmCliente = () => decisao({ resposta: "Claro, Maria, consigo te ajudar com isso. Maria, qual é o modelo?" });
+  await a.cliente(CLI, "Minha geladeira parou");
+  assert.doesNotMatch(a.ultimoPara(CLI), /Maria/);
+  assert.match(a.ultimoPara(CLI), /^Claro, consigo te ajudar com isso\. Qual é o modelo\?$/);
+  a.llmCliente = () => decisao({ resposta: "Perfeito, Maria." });
+  await a.cliente(CLI, "É uma Brastemp");
+  assert.equal(a.ultimoPara(CLI), "Perfeito.");
+});
+
+test("Vídeo do cliente: a IA recebe a fala e o que aparece nas imagens", async () => {
+  const a = await criarAmbiente({ env: { QUADROS_VIDEO: async () => [{ mime: "image/jpeg", base64: "AAAA" }] } });
+  a.transcricaoAtual = "Olha, a máquina faz esse barulho quando centrifuga";
+  let entradaCliente = "";
+  a.llmCliente = (e) => { entradaCliente = e; return decisao({ resposta: "Entendi, vou ver isso." }); };
+  await a.cliente(CLI, "", { type: "video", raw: { video: { id: "media-video-1", mime_type: "video/mp4" } } });
+  assert.match(entradaCliente, /\[Vídeo analisado\] ok \| Fala: Olha, a máquina faz esse barulho/);
+
+  const b = await criarAmbiente();
+  b.transcricaoAtual = "A torneira não para de pingar";
+  b.llmCliente = (e) => { entradaCliente = e; return decisao({ resposta: "Entendi." }); };
+  await b.cliente(CLI, "", { type: "video", raw: { video: { id: "media-video-2", mime_type: "video/mp4" } } });
+  assert.match(entradaCliente, /\[Vídeo — o que a pessoa fala no vídeo\] A torneira não para de pingar/, "sem quadros, usa a fala");
+});
+
+test("Cliente manda só 'Oi' e continua escrevendo: a DENIA espera e responde uma vez só", async () => {
+  const a = await criarAmbiente({ env: { JANELA_AGRUPAMENTO_MS: "150" } });
+  a.llmCliente = (entrada) => { assert.match(entrada, /- Oi\n- minha geladeira parou/); return decisao({ resposta: "Poxa! Qual é a marca?" }); };
+  const p1 = a.cliente(CLI, "Oi");
+  await new Promise(r => setTimeout(r, 220)); // passou a espera normal, mas "Oi" sozinho ainda não terminou
+  const p2 = a.cliente(CLI, "minha geladeira parou");
+  await Promise.all([p1, p2]);
+  assert.equal(a.llm.filter(x => x.papel === "cliente").length, 1);
+  assert.equal(a.para(CLI).length, 1);
+});

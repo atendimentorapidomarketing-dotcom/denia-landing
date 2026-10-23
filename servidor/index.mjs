@@ -28,6 +28,24 @@ const { criarArquivos } = await import("./arquivos.mjs");
 const { exportarD1, aplicarDump, importarKV } = await import("./importar.mjs");
 
 let instancias = 0;
+
+// Quadros de um vídeo do WhatsApp para a IA olhar (precisa do ffmpeg no servidor; sem ele, a IA usa só a fala do vídeo).
+let ffmpegOk = null;
+export async function quadrosDoVideo(buffer, mime) {
+  const { execFile } = await import("node:child_process");
+  const { mkdtempSync, writeFileSync: gravar, readFileSync: ler, readdirSync: listar, rmSync: apagar } = await import("node:fs");
+  const bin = process.env.FFMPEG_PATH || "ffmpeg";
+  const rodar = args => new Promise((ok, erro) => execFile(bin, args, { timeout: 20000 }, e => e ? erro(e) : ok()));
+  if (ffmpegOk === false) return [];
+  const dir = mkdtempSync(path.join(os.tmpdir(), "denia-video-"));
+  try {
+    const arq = path.join(dir, "v." + (/3gp/.test(mime) ? "3gp" : "mp4"));
+    gravar(arq, Buffer.from(buffer));
+    try { await rodar(["-loglevel", "error", "-i", arq, "-vf", "fps=1/2,scale=640:-2", "-frames:v", "4", path.join(dir, "q%d.jpg")]); ffmpegOk = true; }
+    catch (e) { if (e?.code === "ENOENT") ffmpegOk = false; return []; }
+    return listar(dir).filter(n => /^q\d+\.jpg$/.test(n)).sort().map(n => ({ mime: "image/jpeg", base64: ler(path.join(dir, n)).toString("base64") }));
+  } finally { try { apagar(dir, { recursive: true, force: true }); } catch { } }
+}
 const RAIZ = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 // Enquanto copia os dados da Cloudflare (ou se a cópia falhou), o site mostra isto no lugar da plataforma.
@@ -122,6 +140,7 @@ export async function iniciar(op = {}) {
   }
   variaveis.DENIA_PLATFORM_SERVICE_TOKEN = variaveisEngine.DENIA_PLATFORM_SERVICE_TOKEN = tokenIA;
   variaveis.DENIA_IA_LOCAL = "1";
+  variaveisEngine.DENIA_SERVIDOR_PROPRIO = "1"; // a IA pode esperar o cliente terminar de escrever (sem o limite de 30 s da Cloudflare)
   // Fora da Cloudflare não existe o limite de 50 chamadas por execução do plano gratuito.
   if (!variaveisEngine.LIMITE_CHAMADAS) variaveisEngine.LIMITE_CHAMADAS = "900";
 
@@ -135,7 +154,7 @@ export async function iniciar(op = {}) {
     waitUntil(p) { const x = Promise.resolve(p).catch(e => anotarErro("tarefa em segundo plano", e)).finally(() => pendentes.delete(x)); pendentes.add(x); },
     passThroughOnException() { }
   });
-  const envEngine = { ...variaveisEngine, DB: d1("engine"), MEMORIA: kv, ...(op.extrasEngine || {}) };
+  const envEngine = { ...variaveisEngine, DB: d1("engine"), MEMORIA: kv, QUADROS_VIDEO: quadrosDoVideo, ...(op.extrasEngine || {}) };
   const envPlataforma = {
     ...variaveis, DB: d1("plataforma"), ASSETS: criarArquivos(path.join(RAIZ, "public")),
     ENGINE: { fetch: (req, init) => engine.fetch(req instanceof Request && !init ? req : new Request(req, init), envEngine, contexto()) },
