@@ -1692,3 +1692,18 @@ test("A DENIA assume: diz que ela vai verificar, nunca joga para o profissional"
   await a.cliente(CLI, "Vocês dão garantia?");
   assert.equal(a.ultimoPara(CLI), "Boa pergunta! Vou verificar isso e já te retorno.");
 });
+
+test("Economia: tarefas internas no modelo econômico, cliente no principal, e 'ok' do profissional sem IA", async () => {
+  const a = await criarAmbiente();
+  await iniciarConsultaChaveiro(a);
+  assert.equal(a.llm.filter(x => x.papel === "cliente").at(-1).modelo, "gpt-5.6-luna", "o cliente é atendido pelo modelo principal");
+  a.llmPrestador = () => prest({ tipo: "ACEITA", valor_centavos: 25000, valor_e_final: "SIM", disponibilidade: "amanhã às 10h" });
+  await a.cliente(CHAVEIRO, "Faço sim, 250 final, amanhã às 10h");
+  assert.equal(a.llm.filter(x => x.papel === "prestador").at(-1).modelo, "gpt-5-mini", "classificar o profissional usa o modelo econômico");
+  const n = a.llm.length;
+  await a.cliente(CHAVEIRO, "ok");
+  assert.equal(a.llm.length, n, "'ok' do profissional não gasta IA");
+  // Prompt do cliente: a parte fixa (treinamento e categorias) vem antes da parte que muda (memória e histórico).
+  const entrada = a.llm.filter(x => x.papel === "cliente").at(-1).entrada;
+  assert.ok(entrada.indexOf("CATEGORIAS (e quem atende") < entrada.indexOf("MEMÓRIA COMPLETA DO CLIENTE"));
+});

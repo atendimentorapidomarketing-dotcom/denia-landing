@@ -36,7 +36,7 @@
 //       relatório diário. Nunca inicia conversa nova por conta própria.
 // ============================================================================
 
-const VERSAO = "34.5.0";
+const VERSAO = "34.6.0";
 const SCHEMA_VERSAO = "33.4.0"; // mude sempre que acrescentar tabela ou índice (senão o banco de produção não recebe)
 const EMPRESA_ID = 1;
 const PHONE_ID_PADRAO = "473474732510163";
@@ -714,7 +714,7 @@ const TEMAS_BASE = ["empatia no atendimento por WhatsApp sem soar robótica", "c
 async function pesquisaSemanal(c, { forcar = false } = {}) {
   if (!c.env.OPENAI_API_KEY || c.sim) return null;
   const dia = dataSP(c.agora());
-  if (!forcar && !(await reservarChave(c, "pesquisa:" + dia))) return null;
+  if (!forcar && (new Date(c.agora() - 3 * 3600000).getUTCDay() !== 0 || !(await reservarChave(c, "pesquisa:" + dia)))) return null; // só aos domingos
   const caderno = await lerCaderno(c);
   const escolhido = caderno.temas.shift() || { tema: TEMAS_BASE[Math.floor(c.agora() / 86400000) % TEMAS_BASE.length], motivo: "tema de base" };
   gastar(c);
@@ -1066,7 +1066,7 @@ function autorMensagem(m, papelEntrada) {
 }
 function formatarHistorico(lista, papelEntrada, ignorarWamids = new Set()) {
   const linhas = lista.filter(m => !ignorarWamids.has(m.whatsapp_message_id)).map(m =>
-    `[${String(m.criado_em || "").slice(0, 16)}]${m.caso_id ? ` (caso #${m.caso_id})` : ""} ${autorMensagem(m, papelEntrada)}: ${txt(m.conteudo, 1200)}`);
+    `[${String(m.criado_em || "").slice(0, 16)}]${m.caso_id ? ` (caso #${m.caso_id})` : ""} ${autorMensagem(m, papelEntrada)}: ${txt(m.conteudo, 500)}`);
   return linhas.length ? linhas.join("\n") : "(sem mensagens anteriores)";
 }
 
@@ -1855,17 +1855,26 @@ async function consumoDoPeriodo(c, de, ate) {
   }
   return r;
 }
+// Tarefas internas (classificar, resumir, revisar, estudar) usam o modelo econômico; o cliente usa o principal.
+function modeloEconomico(env) { return String(env.OPENAI_MODEL_ECONOMICO || "gpt-5-mini").trim(); }
+const PREFIXOS_INTERNOS = ["Você é a supervisora", "Você é a memória", "Você analisa conversas", "Descreva objetivamente", "Você identifica de qual atendimento",
+  "Você trabalha na Central", "Você é da equipe da Central", "Você cuida do acompanhamento", "Você audita"];
+const ehTarefaInterna = instrucoes => PREFIXOS_INTERNOS.some(p => String(instrucoes || "").startsWith(p));
 async function openaiJSON(c, instrucoes, entrada, anexos = [], maxTokens = 1400, modeloForcado = "") {
   const env = c.env;
   if (!env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY não configurada.");
   const content = [{ type: "input_text", text: entrada }];
   for (const a of anexos.slice(0, 3)) {
     const url = `data:${a.mime};base64,${a.base64}`;
-    if (a.mime.startsWith("image/")) content.push({ type: "input_image", image_url: url, detail: "auto" });
+    // Foto em "low" custa ~85 tokens (em "auto", até ~1.100); dá para ler o que importa. IMAGEM_DETALHE=auto volta ao antigo.
+    if (a.mime.startsWith("image/")) content.push({ type: "input_image", image_url: url, detail: String(env.IMAGEM_DETALHE || "low") === "auto" ? "auto" : "low" });
     else content.push({ type: "input_file", filename: a.nome || "documento.pdf", file_data: url });
   }
-  const corpo = { model: String(modeloForcado || "").trim() || modelo(env), instructions: instrucoes, input: [{ role: "user", content }], text: { format: { type: "json_object" } }, max_output_tokens: maxTokens, store: false };
-  if (/^(gpt-5|o\d)/i.test(corpo.model)) corpo.reasoning = { effort: "low" };
+  const interna = !modeloForcado && ehTarefaInterna(instrucoes) && String(env.OPENAI_ECONOMIA || "") !== "desligada";
+  const corpo = { model: String(modeloForcado || "").trim() || (interna ? modeloEconomico(env) : modelo(env)), instructions: instrucoes, input: [{ role: "user", content }], text: { format: { type: "json_object" } }, max_output_tokens: maxTokens, store: false,
+    // Mesma chave para o mesmo tipo de tarefa: as chamadas caem no mesmo cache (o começo repetido sai a 10%).
+    prompt_cache_key: "denia-" + hashTexto(String(instrucoes).slice(0, 200)) };
+  if (/^(gpt-5|o\d)/i.test(corpo.model)) corpo.reasoning = { effort: interna && /^gpt-5(-mini|-nano)?$/i.test(corpo.model) ? "minimal" : "low" };
   gastar(c);
   const r = await fetch("https://api.openai.com/v1/responses", {
     method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${env.OPENAI_API_KEY}` },
@@ -1874,7 +1883,7 @@ async function openaiJSON(c, instrucoes, entrada, anexos = [], maxTokens = 1400,
   const bruto = await r.text();
   if (!r.ok) { await registrarUsoIA(c, "atendimento", corpo.model, null, true); throw new Error(`OpenAI HTTP ${r.status}: ${bruto.slice(0, 300)}`); }
   const d = JSON.parse(bruto);
-  await registrarUsoIA(c, "atendimento", corpo.model, d.usage, false);
+  await registrarUsoIA(c, interna ? "tarefa_interna" : "atendimento", corpo.model, d.usage, false);
   let saida = typeof d.output_text === "string" ? d.output_text : "";
   if (!saida) for (const item of d.output || []) for (const x of item.content || []) if (typeof x.text === "string") saida += x.text;
   const obj = lerJSON(saida);
@@ -2195,8 +2204,13 @@ intencao: CONVERSA | NOVO_PEDIDO | ACEITA_PROPOSTA | RECUSA_PROPOSTA | PEDE_OUTR
 - resumo_caso: 1 ou 2 frases atualizadas sobre o caso ativo.`;
 
 function montarEntradaCliente({ agora = Date.now(), treinamento, caso, consulta, autorizados, recentes, hist, novas, temAnexos, pessoa, perfil = "", estilo = "", ficha = "", memoria = "", reunioes = "", calendario = "" }) {
+  // Ordem pensada para o cache da OpenAI: o que é igual para todos os clientes vem primeiro (treinamento,
+  // categorias, jeito da equipe) e é cobrado a 10%; o que muda por cliente vem depois.
   return `TREINAMENTO DA EMPRESA (siga sempre):
 ${formatarTreinamento(treinamento.dados)}
+
+CATEGORIAS (e quem atende cada uma):
+${categoriasParaIA()}
 
 COMO A EQUIPE FALA (mensagens reais das atendentes; imite o tom e o tamanho, não o conteúdo):
 ${estilo || "(sem exemplos ainda)"}
@@ -2209,9 +2223,6 @@ ${perfil || "(cliente sem atendimentos anteriores registrados)"}
 
 FICHA NO SISTEMA DE CADASTRO (dados oficiais):
 ${ficha || "(não disponível)"}
-
-CATEGORIAS (e quem atende cada uma):
-${categoriasParaIA()}
 
 DATA E HORA ATUAL: ${dataHoraSP(agora)} (${new Intl.DateTimeFormat("pt-BR", { timeZone: TZ, weekday: "long" }).format(new Date(agora))})
 REUNIÕES MARCADAS COM ESTE CLIENTE: ${reunioes || "(nenhuma)"}
@@ -2322,7 +2333,8 @@ async function processarCliente(c, tel, id, msgs, { apenasRegistrar, chaveLote, 
   }
   if (await estaPausado(c, tel)) return; // atendente humano na conversa
 
-  const hist = await historico(c, pessoa.id);
+  // 30 últimas mensagens bastam: o que é mais antigo já está resumido na MEMÓRIA COMPLETA do cliente.
+  const hist = await historico(c, pessoa.id, 30);
   // Atrasada: se alguém da equipe já respondeu depois dela, não responde de novo.
   if (atrasoMs) {
     // Pela ordem de gravação (não pelo relógio): alguém respondeu depois da última mensagem dela?
@@ -2854,6 +2866,12 @@ async function processarPrestador(c, tel, id, msgs, { apenasRegistrar, chaveLote
 
   const caso = await carregarCasoPorId(c, consulta.caso_id);
   if (!caso) return;
+  // "ok", "beleza", "obrigado" sem anexo: não gasta IA. Aguardando confirmação → vale como confirmação; senão só registra.
+  if (msgs.every(m => !m.mediaId && ehMensagemSocial(m.conteudo))) {
+    if (caso.etapa === "AGUARDANDO_CONFIRMACAO_PRESTADOR" && /\b(ok+|okay|blz|beleza|certo|combinado|fechado|perfeito|show|tranquilo|joia|pode deixar)\b/i.test(norm(textoTodo)))
+      await tratarRespostaPrestador(c, { caso, consulta, d: { tipo: "CONFIRMA_AGENDAMENTO" }, textoTodo, chaveLote, histCaso: (await historico(c, pessoa?.id, 20)).filter(m => m.caso_id === caso.casoId), msgs });
+    return;
+  }
   // Histórico com ele: o deste caso e o que a equipe mandou (pelo celular) sem caso ligado.
   const histPessoa = await historico(c, pessoa?.id, 40);
   const soltasDaEquipe = histPessoa.filter(m => !m.caso_id && String(m.origem).toUpperCase() === "HUMANO");
@@ -3549,7 +3567,7 @@ async function revisarCasosParados(c) {
   if (!(await reservarChave(c, "revisao-casos:" + Math.floor(agora / 1800000)))) return; // no máximo a cada 30 min
   const casos = (await c.db.prepare(`SELECT * FROM d30_casos k WHERE etapa NOT IN ('CONCLUIDO','CANCELADO') AND atualizado_ms < ? AND atualizado_ms > ?
     AND NOT EXISTS (SELECT 1 FROM d30_eventos e WHERE e.caso_id=k.caso_id AND e.tipo='REVISAO_IA' AND e.criado_ms > ?) ORDER BY atualizado_ms LIMIT 3`)
-    .bind(agora - 6 * 3600000, agora - 60 * 86400000, agora - 12 * 3600000).all().catch(() => null))?.results || [];
+    .bind(agora - 6 * 3600000, agora - 7 * 86400000, agora - 24 * 3600000).all().catch(() => null))?.results || [];
   for (const row of casos) {
     try { await revisarEtapaCaso(c, linhaParaCaso(row), { aplicar: true, autor: "revisão automática" }); }
     catch (e) { console.error("revisão de caso", row.caso_id, e?.message); }
