@@ -1646,19 +1646,34 @@ test("Diagnóstico do Telegram: mostra privacidade ligada, grupo errado e conect
   assert.ok(st.problemas.some(p => /ID -100777[\s\S]*troque TELEGRAM_CHAT_ID para -100777/.test(p)));
 });
 
-test("Vigia: cliente que ficou sem resposta (a equipe pausou e não respondeu) gera aviso urgente, uma vez", async () => {
+test("Ela é sempre a última a falar: depois que a pausa da equipe acaba, a DENIA responde o cliente que ficou esperando", async () => {
   const a = await criarAmbiente();
   await a.eco(CLI, "Oi Maria, já vejo pra você");
-  a.llmCliente = () => decisao({ resposta: "Claro!" });
+  let entrada = "";
+  a.llmCliente = (e) => { entrada = e; return decisao({ resposta: "Desculpe a demora! A troca de fechadura fica em torno de R$ 150, quer que eu veja um horário?" }); };
   await a.cliente(CLI, "E aí, qual o valor da troca da fechadura?", { nome: "Maria" });
-  assert.equal(a.para(CLI).filter(e => e.type === "text").length, 0, "pausada pela equipe: a DENIA não responde");
+  assert.equal(a.para(CLI).filter(e => e.type === "text").length, 0, "pausada pela equipe: a DENIA não atravessa a atendente");
   a.avancar(3 * 60000); await a.cron();
-  assert.ok(!a.telegram.some(t => /ainda não recebeu resposta/.test(t)), "antes de 5 min não avisa");
+  assert.equal(a.para(CLI).filter(e => e.type === "text").length, 0, "a equipe ainda pode responder");
   a.avancar(9 * 60000); await a.cron();
-  const avisos = a.telegram.filter(t => /Maria \(5521911112222\) escreveu há \d+ min e ainda não recebeu resposta: "E aí, qual o valor/.test(t));
-  assert.equal(avisos.length, 1);
+  assert.match(entrada, /pedido de desculpas breve/, "pede desculpas pela demora");
+  assert.equal(a.para(CLI).filter(e => e.type === "text").length, 1, "a DENIA respondeu");
+  assert.equal(a.DB.q("SELECT direcao FROM mensagens ORDER BY id DESC LIMIT 1")[0].direcao, "SAIDA", "a última mensagem é da DENIA");
+  assert.ok(!a.telegram.some(t => /ainda não recebeu resposta/.test(t)), "respondeu: não precisa chamar a equipe");
   a.avancar(60000); await a.cron();
-  assert.equal(a.telegram.filter(t => /ainda não recebeu resposta/.test(t)).length, 1, "um aviso só");
+  assert.equal(a.para(CLI).filter(e => e.type === "text").length, 1, "não responde duas vezes");
+});
+
+test("Ela é sempre a última a falar: 'ok' e 'obrigado' recebem um fechamento curto, sem gastar IA", async () => {
+  const a = await criarAmbiente();
+  a.llmCliente = () => decisao({ resposta: "A visita fica R$ 80." });
+  await a.cliente(CLI, "Quanto é a visita?");
+  const n = a.llm.length;
+  await a.cliente(CLI, "Obrigada");
+  assert.equal(a.ultimoPara(CLI), "Por nada! Qualquer coisa, é só me chamar.");
+  await a.cliente(CLI, "valeu");
+  assert.equal(a.ultimoPara(CLI), "Imagina! Estou por aqui se precisar.", "não repete a mesma frase");
+  assert.equal(a.llm.length, n, "sem chamada à IA");
 });
 
 test("Vigia: cliente respondido não gera aviso", async () => {

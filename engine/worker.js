@@ -36,7 +36,7 @@
 //       relatório diário. Nunca inicia conversa nova por conta própria.
 // ============================================================================
 
-const VERSAO = "34.3.0";
+const VERSAO = "34.4.0";
 const SCHEMA_VERSAO = "33.4.0"; // mude sempre que acrescentar tabela ou índice (senão o banco de produção não recebe)
 const EMPRESA_ID = 1;
 const PHONE_ID_PADRAO = "473474732510163";
@@ -2087,6 +2087,18 @@ function guardarResposta(texto, g) {
   if (final.length > 480) final = (final.slice(0, 480).match(/^.*[.!?]/)?.[0] || final.slice(0, 477) + "...");
   return { texto: final, removidas };
 }
+// Fechamento curto para "ok", "obrigado", "beleza": nunca deixa o cliente sem resposta e nunca repete a última frase.
+function respostaSocial(texto, caso, ultima = "") {
+  const t = norm(texto), etapa = caso?.etapa || "";
+  const agradeceu = /obrigad|valeu|agradec|🙏/.test(t);
+  const opcoes = etapa === "AGUARDANDO_PRESTADOR" ? ["Combinado! Assim que o profissional responder, eu te aviso.", "Certo! Te aviso assim que tiver o retorno do profissional."]
+    : etapa === "AGUARDANDO_CONFIRMACAO_PRESTADOR" ? ["Combinado! Assim que o profissional confirmar, eu te aviso.", "Certo! Te aviso assim que ele confirmar."]
+    : ["AGENDADO", "EM_ANDAMENTO"].includes(etapa) ? [agradeceu ? "Por nada! Qualquer coisa sobre o atendimento, é só me chamar." : "Combinado! Qualquer coisa sobre o atendimento, é só me chamar.", "Certo! Estou por aqui se precisar."]
+    : agradeceu ? ["Por nada! Qualquer coisa, é só me chamar.", "Imagina! Estou por aqui se precisar."]
+    : ["Combinado! Se precisar de algo, é só me chamar.", "Certo! Estou por aqui se precisar."];
+  return opcoes.find(o => norm(o) !== norm(ultima)) || opcoes[0];
+}
+
 function respostaPadraoEtapa(etapa) {
   if (etapa === "AGUARDANDO_PRESTADOR") return "Ainda aguardamos o retorno do profissional. Assim que ele responder, avisamos você.";
   if (etapa === "AGUARDANDO_CONFIRMACAO_PRESTADOR") return "Estamos aguardando a confirmação final do profissional e já retornamos.";
@@ -2306,18 +2318,25 @@ async function processarCliente(c, tel, id, msgs, { apenasRegistrar, chaveLote, 
   const hist = await historico(c, pessoa.id);
   // Atrasada: se alguém da equipe já respondeu depois dela, não responde de novo.
   if (atrasoMs) {
-    const enviadaEm = Math.max(...msgs.map(m => Number(m.ts) * 1000 || 0));
-    const respondida = hist.some(m => String(m.direcao).toUpperCase() === "SAIDA" && Date.parse(String(m.criado_em || "").replace(" ", "T") + "Z") > enviadaEm);
+    // Pela ordem de gravação (não pelo relógio): alguém respondeu depois da última mensagem dela?
+    const ids = hist.filter(m => msgs.some(x => x.wamid === m.whatsapp_message_id)).map(m => Number(m.id));
+    const idEntrada = ids.length ? Math.max(...ids) : 0;
+    const respondida = idEntrada && hist.some(m => String(m.direcao).toUpperCase() === "SAIDA" && Number(m.id) > idEntrada);
     if (respondida) return;
   }
   const novasIds = new Set(msgs.map(m => m.wamid));
 
-  // 2) "ok", "obrigado" etc. não geram resposta quando não há pergunta pendente.
+  // 2) "ok", "obrigado" etc. sem pergunta pendente: a DENIA fecha a conversa com uma frase curta (sem gastar IA).
+  // Ela é sempre a última a falar: nenhuma mensagem do cliente fica sem resposta.
   const soSocial = msgs.every(m => !m.mediaId && ehMensagemSocial(m.conteudo));
   if (soSocial) {
     const ultimaSaida = [...hist].reverse().find(m => String(m.direcao).toUpperCase() === "SAIDA" && String(m.origem).toUpperCase() !== "LIGACAO");
     const etapaPedeResposta = caso && ["AGUARDANDO_CLIENTE", "AGUARDANDO_ENDERECO"].includes(caso.etapa);
-    if (!etapaPedeResposta && !/\?\s*$/.test(String(ultimaSaida?.conteudo || "").trim())) return;
+    if (!etapaPedeResposta && !/\?\s*$/.test(String(ultimaSaida?.conteudo || "").trim())) {
+      const texto = respostaSocial(msgs.map(m => m.conteudo).join(" "), caso, ultimaSaida?.conteudo);
+      await enviarAoCliente(c, { tel, pessoaId: pessoa.id, casoId: caso?.casoId, texto, chave: chaveLote });
+      return;
+    }
   }
 
   let consulta = caso ? await consultaDoCaso(c, caso.casoId) : null;
@@ -2388,7 +2407,12 @@ async function processarCliente(c, tel, id, msgs, { apenasRegistrar, chaveLote, 
   if (!texto) return;
   const ultimaDenia = [...hist].reverse().find(m => String(m.direcao).toUpperCase() === "SAIDA" && !["HUMANO", "LIGACAO"].includes(String(m.origem).toUpperCase()));
   const ultimaHa = ultimaDenia ? Date.now() - Date.parse(String(ultimaDenia.criado_em || "").replace(" ", "T") + "Z") : Infinity;
-  if (!acao.fixa && ultimaDenia && norm(ultimaDenia.conteudo) === norm(texto) && ultimaHa < 5 * 60000) { await evento(c, caso?.casoId, "RESPOSTA_REPETIDA_EVITADA", txt(texto, 200)); return; } // não repetir a mesma frase seguida
+  // Ia sair a mesma frase de agora há pouco: em vez de calar, responde com o retorno padrão da etapa.
+  if (!acao.fixa && ultimaDenia && norm(ultimaDenia.conteudo) === norm(texto) && ultimaHa < 5 * 60000) {
+    await evento(c, caso?.casoId, "RESPOSTA_REPETIDA_EVITADA", txt(texto, 200));
+    const alt = respostaPadraoEtapa(caso?.etapa);
+    texto = norm(alt) === norm(texto) ? "Certo! Já estou verificando e te retorno em seguida." : alt;
+  }
   await enviarAoCliente(c, { tel, pessoaId: pessoa.id, casoId: caso?.casoId, texto, chave: chaveLote });
 }
 
@@ -3590,8 +3614,8 @@ async function cobrarProfissionais(c) {
   }
 }
 
-// Vigia: cliente que escreveu há 5 a 40 min e ficou sem resposta (nem da DENIA nem da equipe) → aviso urgente,
-// uma vez por mensagem. Não reenvia nada sozinho (para nunca responder duas vezes).
+// Vigia: cliente que escreveu há 5 a 40 min e ficou sem resposta (nem da DENIA nem da equipe): a DENIA responde
+// (com desculpas pela demora). Se nem assim a resposta sair, aviso urgente à equipe, uma vez por mensagem.
 async function vigiarSemResposta(c) {
   const agora = c.agora();
   const linhas = (await c.db.prepare("SELECT telefone, MAX(recebido_ms) ult FROM d30_fila WHERE recebido_ms BETWEEN ? AND ? GROUP BY telefone HAVING SUM(CASE WHEN status IN ('PENDENTE','PROCESSANDO') THEN 1 ELSE 0 END)=0 LIMIT 20")
@@ -3603,8 +3627,21 @@ async function vigiarSemResposta(c) {
     const id = await identificar(c, l.telefone).catch(() => null);
     if (!id || id.papel !== "CLIENTE" || !id.pessoa) continue;
     const ultima = await c.db.prepare("SELECT id, caso_id, direcao, conteudo FROM mensagens WHERE empresa_id=? AND pessoa_id=? ORDER BY id DESC LIMIT 1").bind(EMPRESA_ID, id.pessoa.id).first().catch(() => null);
-    if (!ultima || String(ultima.direcao).toUpperCase() !== "ENTRADA" || ehMensagemSocial(ultima.conteudo)) continue;
+    if (!ultima || String(ultima.direcao).toUpperCase() !== "ENTRADA") continue;
     const min = Math.round((agora - Number(l.ult)) / 60000);
+    // 1ª vez: a própria DENIA responde (a equipe pausou e não voltou, ou algo falhou). Ela é sempre a última a falar.
+    if (await reservarChave(c, "retomar:" + ultima.id)) {
+      const item = await c.db.prepare("SELECT payload FROM d30_fila WHERE telefone=? ORDER BY recebido_ms DESC LIMIT 1").bind(l.telefone).first().catch(() => null);
+      let msg = null; try { msg = JSON.parse(item?.payload || "null"); } catch { msg = null; }
+      if (msg) {
+        try {
+          await processarCliente(c, l.telefone, id, [msg], { apenasRegistrar: false, chaveLote: "retomar:" + ultima.id, atrasoMs: agora - Number(l.ult) });
+          await evento(c, ultima.caso_id, "CLIENTE_RETOMADO", `${min} min sem resposta: a DENIA respondeu`);
+          const depois = await c.db.prepare("SELECT direcao FROM mensagens WHERE empresa_id=? AND pessoa_id=? ORDER BY id DESC LIMIT 1").bind(EMPRESA_ID, id.pessoa.id).first().catch(() => null);
+          if (String(depois?.direcao || "").toUpperCase() === "SAIDA") continue;
+        } catch (e) { console.warn("retomar cliente", e?.message); }
+      }
+    }
     const quem = await c.db.prepare("SELECT nome FROM pessoas WHERE id=?").bind(id.pessoa.id).first().catch(() => null);
     await alertarEquipe(c, `${quem?.nome ? `${quem.nome} (${digitos(l.telefone)})` : digitos(l.telefone)} escreveu há ${min} min e ainda não recebeu resposta: "${txt(ultima.conteudo, 200)}". Responda pelo app ou responda esta mensagem.`, "sem-resposta:" + ultima.id, ultima.caso_id);
     await evento(c, ultima.caso_id, "CLIENTE_SEM_RESPOSTA", `${min} min`, { telefone: l.telefone, mensagem_id: ultima.id });
