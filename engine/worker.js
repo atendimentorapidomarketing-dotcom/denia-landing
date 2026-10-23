@@ -36,7 +36,7 @@
 //       relatório diário. Nunca inicia conversa nova por conta própria.
 // ============================================================================
 
-const VERSAO = "33.2.0";
+const VERSAO = "33.3.0";
 const SCHEMA_VERSAO = "33.0.0"; // mude sempre que acrescentar tabela ou índice (senão o banco de produção não recebe)
 const EMPRESA_ID = 1;
 const PHONE_ID_PADRAO = "473474732510163";
@@ -1822,7 +1822,7 @@ async function transcreverAudio(c, buffer, mime) {
   const f = new FormData();
   f.append("model", String(c.env.OPENAI_TRANSCRIPTION_MODEL || "gpt-4o-mini-transcribe"));
   f.append("language", "pt");
-  const ext = /mpeg|mp3/.test(mime) ? "mp3" : /wav/.test(mime) ? "wav" : /mp4|m4a|aac/.test(mime) ? "m4a" : "ogg";
+  const ext = /^video\//.test(mime) ? "mp4" : /mpeg|mp3/.test(mime) ? "mp3" : /wav/.test(mime) ? "wav" : /mp4|m4a|aac/.test(mime) ? "m4a" : "ogg";
   f.append("file", new Blob([buffer], { type: mime }), "audio." + ext);
   gastar(c);
   const r = await fetch("https://api.openai.com/v1/audio/transcriptions", { method: "POST", headers: { Authorization: `Bearer ${c.env.OPENAI_API_KEY}` }, body: f, signal: AbortSignal.timeout(20000) });
@@ -1918,17 +1918,29 @@ async function prepararMidias(c, msgs) {
   }
   return { anexos, falhas };
 }
+// Vídeo do cliente: a fala é transcrita e, quando o servidor consegue tirar quadros (ffmpeg na Hostinger ou um
+// processador externo), a IA também olha as imagens. Nada é inventado: sem quadros, fica só o que foi dito.
 async function descreverVideo(c, m) {
-  const url = String(c.env.VIDEO_PROCESSOR_URL || "").trim();
-  if (!/^https:\/\//i.test(url) || !c.env.VIDEO_PROCESSOR_TOKEN) return "";
   const a = await metaBaixarMidia(c.env, m.mediaId);
-  const r = await fetch(url, { method: "POST", headers: { "Content-Type": a.mime, Authorization: `Bearer ${c.env.VIDEO_PROCESSOR_TOKEN}` }, body: a.buffer, signal: AbortSignal.timeout(20000) });
-  if (!r.ok) throw new Error(`Processador de vídeo HTTP ${r.status}`);
-  const v = await r.json();
-  const quadros = (Array.isArray(v?.frames) ? v.frames : []).slice(0, 3).map(f => ({ mime: f.mimeType || "image/jpeg", base64: f.base64 }));
-  if (!quadros.length) return "";
-  const o = await openaiJSON(c, "Descreva objetivamente o que aparece nos quadros de um vídeo enviado para atendimento técnico. Não invente. Responda em JSON {\"descricao\":\"...\"}.", `Transcrição do áudio do vídeo: ${txt(v.transcricao, 3000)}`, quadros, 500);
-  return "[Vídeo analisado] " + txt(o.descricao, 1500);
+  let quadros = [], fala = "";
+  const url = String(c.env.VIDEO_PROCESSOR_URL || "").trim();
+  if (/^https:\/\//i.test(url) && c.env.VIDEO_PROCESSOR_TOKEN) {
+    try {
+      const r = await fetch(url, { method: "POST", headers: { "Content-Type": a.mime, Authorization: `Bearer ${c.env.VIDEO_PROCESSOR_TOKEN}` }, body: a.buffer, signal: AbortSignal.timeout(20000) });
+      if (r.ok) { const v = await r.json(); quadros = (Array.isArray(v?.frames) ? v.frames : []).slice(0, 4).map(f => ({ mime: f.mimeType || "image/jpeg", base64: f.base64 })); fala = txt(v?.transcricao, 3000); }
+    } catch (e) { console.warn("processador de vídeo", e?.message); }
+  }
+  if (!quadros.length && typeof c.env.QUADROS_VIDEO === "function") {
+    try { quadros = ((await c.env.QUADROS_VIDEO(a.buffer, a.mime)) || []).slice(0, 4); } catch (e) { console.warn("quadros do vídeo", e?.message); }
+  }
+  if (!fala) { try { fala = await transcreverAudio(c, a.buffer, a.mime); } catch { fala = ""; } } // vídeo sem fala: sem transcrição
+  const legenda = txt(m.caption, 500);
+  if (quadros.length) {
+    const o = await openaiJSON(c, "Descreva objetivamente o que aparece nos quadros de um vídeo que um cliente mandou para o atendimento (o problema, o aparelho, o local, textos visíveis). Não invente. Responda em JSON {\"descricao\":\"...\"}.", `Fala no vídeo: ${fala || "(sem fala)"}${legenda ? `\nLegenda: ${legenda}` : ""}`, quadros, 500);
+    return `[Vídeo analisado] ${txt(o?.descricao, 1500)}${fala ? ` | Fala: ${txt(fala, 1500)}` : ""}${legenda ? ` | Legenda: ${legenda}` : ""}`;
+  }
+  if (fala) return `[Vídeo — o que a pessoa fala no vídeo] ${txt(fala, 2500)}${legenda ? ` | Legenda: ${legenda}` : ""}`;
+  return "";
 }
 
 // ============================================================================
@@ -1985,6 +1997,23 @@ function fraseProibida(frase, g) {
   if (/\b(openai|gpt|cloudflare|worker|banco de dados|json|prompt|erro interno|d1|kv)\b/.test(n)) return "detalhe interno";
   return "";
 }
+// O nome do cliente aparece no máximo de vez em quando: se a DENIA ou a equipe já o usou nas últimas mensagens, sai.
+function tirarNomeRepetido(texto, nome, hist = []) {
+  const n = primeiroNome(nome);
+  if (!n || n.length < 2 || !texto) return texto;
+  const re = new RegExp(`(^|[^\\p{L}])${n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\p{L}])`, "iu");
+  if (!re.test(texto)) return texto;
+  const saidas = hist.filter(m => String(m.direcao).toUpperCase() === "SAIDA" && String(m.origem).toUpperCase() !== "LIGACAO").slice(-6);
+  if (!saidas.some(m => re.test(String(m.conteudo || "")))) return texto;
+  const nn = n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  let t = String(texto)
+    .replace(new RegExp(`,\\s*${nn}(?![\\p{L}])\\s*(?=[!?.,:;]|$)`, "giu"), "")          // "Oi, Maria!" → "Oi!"
+    .replace(new RegExp(`(^|[.!?]\\s+)${nn}(?![\\p{L}])\\s*[,!:]?\\s*`, "giu"), "$1")       // "Maria, tudo certo" → "tudo certo"
+    .replace(new RegExp(`\\s+${nn}(?![\\p{L}])`, "giu"), "");
+  t = t.replace(/\s{2,}/g, " ").replace(/\s+([!?.,:;])/g, "$1").trim();
+  return t.replace(/(^|[.!?]\s+)(\p{Ll})/gu, (_, a, b) => a + b.toUpperCase());
+}
+
 function guardarResposta(texto, g) {
   const t = String(texto || "").replace(/\s+/g, " ").trim();
   if (!t) return { texto: "", removidas: [] };
@@ -2032,7 +2061,7 @@ const INSTRUCOES_CLIENTE = `Você é a DENIA, assistente virtual responsável pe
 
 PENSE COMO UMA PESSOA EXPERIENTE DA EQUIPE QUE ACABOU DE RECEBER A MENSAGEM: antes de responder, entenda quem está falando, o que vocês conversaram antes e o que a pessoa quer agora. Comprovante, foto, documento ou áudio: leia o conteúdo (valor, data, nome, serviço) e ligue ao atendimento certo, como uma atendente faria. Fale o MÍNIMO: uma frase curta resolve quase tudo; não repita o que a pessoa disse e não mande mensagem que não ajuda.
 
-ANTES DE RESPONDER, LEIA TUDO: a MEMÓRIA COMPLETA DO CLIENTE, o PERFIL, a FICHA, os OUTROS CASOS e o HISTÓRICO inteiro. Cliente que já falou com a empresa NUNCA é tratado como novo: chame pelo nome, lembre do que já foi feito ("da última vez trocamos o disjuntor, certo?"), use o endereço que ele já passou (confirme em vez de perguntar de novo) e continue de onde a conversa parou. Se houve problema ou reclamação antes, tenha ainda mais cuidado.
+ANTES DE RESPONDER, LEIA TUDO: a MEMÓRIA COMPLETA DO CLIENTE, o PERFIL, a FICHA, os OUTROS CASOS e o HISTÓRICO inteiro. Cliente que já falou com a empresa NUNCA é tratado como novo: cumprimente pelo nome só na primeira mensagem do dia (depois, sem nome), lembre do que já foi feito ("da última vez trocamos o disjuntor, certo?"), use o endereço que ele já passou (confirme em vez de perguntar de novo) e continue de onde a conversa parou. Se houve problema ou reclamação antes, tenha ainda mais cuidado.
 BREVIDADE E JEITO HUMANO: escreva como as atendentes escrevem no WhatsApp (veja COMO A EQUIPE FALA): 1 a 2 frases curtas, no máximo 1 pergunta por mensagem, sem repetir o que o cliente acabou de dizer, sem listas, sem formalidade de robô ("Prezado", "Informamos que"). Se der para resolver em uma frase, use uma frase.
 NÚMEROS DE CASO são internos: nunca escreva "caso 210", "#210" ou qualquer número de caso para o cliente; fale do serviço ("a instalação do chuveiro", "o conserto da geladeira").
 
@@ -2287,7 +2316,7 @@ async function processarCliente(c, tel, id, msgs, { apenasRegistrar, chaveLote, 
     const g = { reuniao: Boolean(reuniao && !reuniao.recusada), etapa: caso?.etapa || "SEM_CASO", autorizados, modo: CATEGORIAS[caso?.fatos?.categoria]?.modo || "", regiaoConfirmada: caso?.fatos?.regiao_confirmada === "SIM", fatos: caso && !ETAPAS_ENCERRADAS.has(caso.etapa) ? caso.fatos : null, nome: pessoa.nome, perguntadas: perguntasRecentes(hist) };
     const r = guardarResposta(d.resposta, g);
     if (r.removidas.length) await evento(c, caso?.casoId, "RESPOSTA_CORRIGIDA", r.removidas.join(" | "));
-    texto = r.texto || respostaPadraoEtapa(caso?.etapa);
+    texto = tirarNomeRepetido(r.texto, pessoa.nome || d.fatos.nome, hist) || respostaPadraoEtapa(caso?.etapa);
   }
   // Reunião: a data dita ao cliente é sempre a que ficou registrada (nunca um dia da semana errado).
   if (reuniao?.recusada) texto = `Poxa, nesse horário não dá: ${reuniao.recusada}. ${reuniao.sugestao ? `Pode ser ${dataExtensoSP(reuniao.sugestao)}?` : "Qual outro dia fica bom pra você?"}`;
@@ -2986,7 +3015,22 @@ async function processarEco(c, eco) {
 // FILA, AGRUPAMENTO E LOTES
 // ============================================================================
 
-function janela(env) { const v = Number(env.JANELA_AGRUPAMENTO_MS ?? 15000); return Number.isFinite(v) ? Math.min(Math.max(v, 0), 20000) : 15000; }
+// Quanto a DENIA espera em silêncio antes de responder. Na Cloudflare o teto é 20 s (limite da execução);
+// no servidor próprio (Hostinger) espera mais, como uma pessoa que deixa o cliente terminar de escrever.
+function janela(env) {
+  const proprio = env.DENIA_SERVIDOR_PROPRIO === "1";
+  const padrao = proprio ? 25000 : 15000;
+  const v = Number(env.JANELA_AGRUPAMENTO_MS ?? padrao);
+  return Number.isFinite(v) ? Math.min(Math.max(v, 0), proprio ? 90000 : 20000) : padrao;
+}
+// Mensagem que claramente ainda não acabou: só "oi"/"bom dia", termina em vírgula, "...", ":" ou em "e", "mas", "que"…
+function pareceIncompleta(t) {
+  const s = norm(t).replace(/[\s]+$/, "");
+  if (!s) return false;
+  if (/^(oi+|ola|ole|opa|e ai|eai|bom dia|boa tarde|boa noite|oi,? tudo bem\??|ola,? tudo bem\??|tudo bem\??|oi boa (tarde|noite)|oi bom dia|com licenca|licenca)[!.\s]*$/.test(s)) return true;
+  if (/(,|\.\.\.|…|:|-)$/.test(s)) return true;
+  return /\b(e|mas|que|porque|pq|tipo|entao|ai|de|do|da|pra|para|com|o|a|um|uma|tambem|so que)$/.test(s);
+}
 // Enquanto o cliente continua escrevendo, a DENIA espera e responde tudo de uma vez.
 // Só não espera para sempre: depois de 3 minutos do primeiro envio, responde.
 const ESPERA_MAXIMA_LOTE_MS = 180000;
@@ -3005,8 +3049,16 @@ async function esperarSilencio(c, tel) {
 }
 async function agruparEProcessar(c, tel, wamid) {
   await sleep(janela(c.env));
-  const ult = await c.db.prepare("SELECT wamid FROM d30_fila WHERE telefone=? AND status='PENDENTE' ORDER BY recebido_ms DESC, rowid DESC LIMIT 1").bind(tel).first();
+  const ult = await c.db.prepare("SELECT wamid, payload FROM d30_fila WHERE telefone=? AND status='PENDENTE' ORDER BY recebido_ms DESC, rowid DESC LIMIT 1").bind(tel).first();
   if (ult && ult.wamid !== wamid) return; // chegou mensagem mais nova; ela cuidará do lote
+  // Parou no meio ("Oi", "é que...", "e"): espera mais um pouco antes de responder.
+  let ultima = null;
+  try { ultima = JSON.parse(ult?.payload || "null"); } catch { ultima = null; }
+  if (ultima && !ultima.mediaId && pareceIncompleta(ultima.texto)) {
+    await sleep(janela(c.env));
+    const depois = await c.db.prepare("SELECT wamid FROM d30_fila WHERE telefone=? AND status='PENDENTE' ORDER BY recebido_ms DESC, rowid DESC LIMIT 1").bind(tel).first();
+    if (depois && depois.wamid !== wamid) return;
+  }
   await processarPendentes(c, tel);
 }
 
@@ -3299,7 +3351,8 @@ async function cron(c) {
   const agora = c.agora();
   await c.db.prepare("UPDATE d30_fila SET status='PENDENTE', atualizado_ms=? WHERE status='PROCESSANDO' AND atualizado_ms < ? AND recebido_ms > ?")
     .bind(agora, agora - 180000, agora - atrasoMaximo(c.env)).run();
-  const tels = (await c.db.prepare("SELECT DISTINCT telefone FROM d30_fila WHERE status='PENDENTE' AND recebido_ms < ? LIMIT 10").bind(agora - 40000).all())?.results || [];
+  // Só conversas em que o cliente parou de escrever (a ÚLTIMA mensagem pendente já tem um tempo).
+  const tels = (await c.db.prepare("SELECT telefone FROM d30_fila WHERE status='PENDENTE' GROUP BY telefone HAVING MAX(recebido_ms) < ? LIMIT 10").bind(agora - Math.max(40000, 2 * janela(c.env) + 10000)).all())?.results || [];
   // Cada etapa só começa se ainda houver chamadas sobrando nesta execução; o resto fica para o próximo minuto.
   for (const t of tels) { if (sobram(c) < 25) break; await processarPendentes(c, t.telefone); }
   if (c.atrasadasSemResposta) await alertarEquipe(c, `${c.atrasadasSemResposta} conversa(s) ficaram sem resposta por mais tempo e a DENIA NÃO respondeu sozinha para não mandar mensagens em massa. Veja em Conversas e responda quem ainda precisa.`, "atrasadas:" + Math.floor(agora / 3600000));
@@ -3977,6 +4030,8 @@ async function saude(c, { completo = false } = {}) {
   const env = c.env;
   const r = {
     versao: VERSAO, modelo: modelo(env),
+    onde_roda: env.DENIA_SERVIDOR_PROPRIO === "1" ? "servidor próprio (Hostinger), banco SQLite sem limite diário" : "Cloudflare (D1 com limite diário no plano gratuito)",
+    video_com_imagens: typeof env.QUADROS_VIDEO === "function" || Boolean(env.VIDEO_PROCESSOR_URL),
     openai_configurado: Boolean(env.OPENAI_API_KEY), whatsapp_configurado: Boolean(env.WHATSAPP_TOKEN),
     verify_token_configurado: Boolean(env.WHATSAPP_VERIFY_TOKEN), assinatura_meta_verificada: Boolean(env.META_APP_SECRET),
     telegram_configurado: Boolean(env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_CHAT_ID),
