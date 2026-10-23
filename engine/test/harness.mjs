@@ -73,6 +73,7 @@ export async function criarAmbiente({ inicio = "2026-10-07T14:00:00-03:00", env:
       amb.llm.push({ papel: "web", entrada: String(corpo.input), modelo: corpo.model, ferramentas: corpo.tools });
       return resp({ output_text: amb.llmWeb ? amb.llmWeb(String(corpo.input)) : "- Regra de teste com tamanho suficiente." });
     }
+    if (url.includes("api.openai.com/v1/responses") && amb.openaiRecusa?.(corpo)) return resp({ error: { message: amb.openaiRecusa(corpo) } }, 400);
     if (url.includes("api.openai.com/v1/responses")) {
       const entrada = corpo.input[0].content[0].text;
       const papel = corpo.instructions.startsWith("Você é a DENIA") ? "cliente" : corpo.instructions.startsWith("Você trabalha") ? "prestador" : "outro";

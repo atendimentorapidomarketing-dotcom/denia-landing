@@ -36,7 +36,7 @@
 //       relatório diário. Nunca inicia conversa nova por conta própria.
 // ============================================================================
 
-const VERSAO = "34.6.0";
+const VERSAO = "34.6.1";
 const SCHEMA_VERSAO = "33.4.0"; // mude sempre que acrescentar tabela ou índice (senão o banco de produção não recebe)
 const EMPRESA_ID = 1;
 const PHONE_ID_PADRAO = "473474732510163";
@@ -1875,12 +1875,18 @@ async function openaiJSON(c, instrucoes, entrada, anexos = [], maxTokens = 1400,
     // Mesma chave para o mesmo tipo de tarefa: as chamadas caem no mesmo cache (o começo repetido sai a 10%).
     prompt_cache_key: "denia-" + hashTexto(String(instrucoes).slice(0, 200)) };
   if (/^(gpt-5|o\d)/i.test(corpo.model)) corpo.reasoning = { effort: interna && /^gpt-5(-mini|-nano)?$/i.test(corpo.model) ? "minimal" : "low" };
-  gastar(c);
-  const r = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${env.OPENAI_API_KEY}` },
-    body: JSON.stringify(corpo), signal: AbortSignal.timeout(18000)
-  });
-  const bruto = await r.text();
+  const chamar = async b => { gastar(c); const x = await fetch("https://api.openai.com/v1/responses", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${env.OPENAI_API_KEY}` }, body: JSON.stringify(b), signal: AbortSignal.timeout(18000) }); return { r: x, bruto: await x.text() }; };
+  let { r, bruto } = await chamar(corpo);
+  // Nunca deixa o cliente sem resposta por causa de um ajuste: se a OpenAI recusar um parâmetro ou o modelo
+  // (400/404), tenta de novo do jeito mais simples, no modelo principal; se for instabilidade (429/5xx), tenta mais uma vez.
+  if (!r.ok && [400, 404].includes(r.status)) {
+    console.warn("OpenAI recusou o pedido; tentando sem os ajustes:", bruto.slice(0, 200));
+    const simples = { ...corpo, model: modelo(env) }; delete simples.prompt_cache_key; delete simples.reasoning;
+    if (/^(gpt-5|o\d)/i.test(simples.model)) simples.reasoning = { effort: "low" };
+    ({ r, bruto } = await chamar(simples));
+    if (!r.ok && [400, 404].includes(r.status) && simples.model !== "gpt-5-mini") { simples.model = "gpt-5-mini"; simples.reasoning = { effort: "low" }; ({ r, bruto } = await chamar(simples)); }
+    if (r.ok) corpo.model = simples.model;
+  } else if (!r.ok && (r.status === 429 || r.status >= 500)) { await sleep(1500); ({ r, bruto } = await chamar(corpo)); }
   if (!r.ok) { await registrarUsoIA(c, "atendimento", corpo.model, null, true); throw new Error(`OpenAI HTTP ${r.status}: ${bruto.slice(0, 300)}`); }
   const d = JSON.parse(bruto);
   await registrarUsoIA(c, interna ? "tarefa_interna" : "atendimento", corpo.model, d.usage, false);
