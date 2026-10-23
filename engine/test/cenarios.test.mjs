@@ -1645,3 +1645,26 @@ test("Diagnóstico do Telegram: mostra privacidade ligada, grupo errado e conect
   st = await (await a.http("/platform/telegram", { headers: auth })).json();
   assert.ok(st.problemas.some(p => /ID -100777[\s\S]*troque TELEGRAM_CHAT_ID para -100777/.test(p)));
 });
+
+test("Vigia: cliente que ficou sem resposta (a equipe pausou e não respondeu) gera aviso urgente, uma vez", async () => {
+  const a = await criarAmbiente();
+  await a.eco(CLI, "Oi Maria, já vejo pra você");
+  a.llmCliente = () => decisao({ resposta: "Claro!" });
+  await a.cliente(CLI, "E aí, qual o valor da troca da fechadura?", { nome: "Maria" });
+  assert.equal(a.para(CLI).filter(e => e.type === "text").length, 0, "pausada pela equipe: a DENIA não responde");
+  a.avancar(3 * 60000); await a.cron();
+  assert.ok(!a.telegram.some(t => /ainda não recebeu resposta/.test(t)), "antes de 5 min não avisa");
+  a.avancar(9 * 60000); await a.cron();
+  const avisos = a.telegram.filter(t => /Maria \(5521911112222\) escreveu há \d+ min e ainda não recebeu resposta: "E aí, qual o valor/.test(t));
+  assert.equal(avisos.length, 1);
+  a.avancar(60000); await a.cron();
+  assert.equal(a.telegram.filter(t => /ainda não recebeu resposta/.test(t)).length, 1, "um aviso só");
+});
+
+test("Vigia: cliente respondido não gera aviso", async () => {
+  const a = await criarAmbiente();
+  a.llmCliente = () => decisao({ resposta: "Oi! Como posso ajudar?" });
+  await a.cliente(CLI, "Oi, preciso de um orçamento");
+  a.avancar(10 * 60000); await a.cron();
+  assert.ok(!a.telegram.some(t => /ainda não recebeu resposta/.test(t)));
+});

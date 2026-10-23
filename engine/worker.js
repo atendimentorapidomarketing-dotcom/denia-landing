@@ -36,7 +36,7 @@
 //       relatório diário. Nunca inicia conversa nova por conta própria.
 // ============================================================================
 
-const VERSAO = "34.2.0";
+const VERSAO = "34.3.0";
 const SCHEMA_VERSAO = "33.4.0"; // mude sempre que acrescentar tabela ou índice (senão o banco de produção não recebe)
 const EMPRESA_ID = 1;
 const PHONE_ID_PADRAO = "473474732510163";
@@ -1634,7 +1634,7 @@ async function registrarSaidaTaxa(c, to) {
 // ou o cliente escreveu, falhas de entrega, janela de 24 h, erros técnicos) fica registrado e aparece
 // na página Problemas da plataforma. TELEGRAM_AVISOS=todos volta a mandar tudo.
 const AVISOS_URGENTES = ["bloqueio:", "sem-confirmacao:", "limite:", "ia:", "cancel:", "humano:", "apoio:", "comprovante:", "semcat:", "semprest:", "balcao:",
-  "falha-consulta:", "falha-aceite:", "acomp-sem:", "falha-cli:", "valor-incerto:", "pos:", "desist:", "atraso:", "atrasadas:", "guia-humano:", "guia-ia-humano:", "agendado:", "reuniao"];
+  "falha-consulta:", "falha-aceite:", "acomp-sem:", "sem-resposta:", "falha-cli:", "valor-incerto:", "pos:", "desist:", "atraso:", "atrasadas:", "guia-humano:", "guia-ia-humano:", "agendado:", "reuniao"];
 const AVISOS_SEMPRE = ["humano:", "cancel:", "agendado:", "reuniao", "desist:", "bloqueio:", "sem-confirmacao:", "limite:", "guia-humano:"];
 function avisoUrgente(c, chave) { return String(c.env.TELEGRAM_AVISOS || "").toLowerCase() === "todos" || AVISOS_URGENTES.some(p => String(chave || "").startsWith(p)); }
 async function alertarEquipe(c, texto, chave, casoId = null) {
@@ -2287,7 +2287,8 @@ async function autorizadosParaCaso(c, consulta) {
 
 async function processarCliente(c, tel, id, msgs, { apenasRegistrar, chaveLote, atrasoMs = 0 }) {
   const nome = msgs.map(m => m.nome).filter(Boolean).pop() || "";
-  const pessoa = id.pessoa || await obterPessoa(c, tel, nome, "CLIENTE");
+  // Sem nome guardado (ex.: a equipe falou primeiro): guarda o nome do perfil do WhatsApp.
+  const pessoa = id.pessoa && (id.pessoa.nome || !nome) ? id.pessoa : await obterPessoa(c, tel, nome, "CLIENTE");
   let { ativo: caso, recentes } = await carregarCasos(c, pessoa);
   const { anexos, falhas } = await prepararMidias(c, msgs);
 
@@ -2386,7 +2387,8 @@ async function processarCliente(c, tel, id, msgs, { apenasRegistrar, chaveLote, 
   else if (reuniao?.nova && reuniao.quando_ms && !confereDataNoTexto(texto, reuniao.quando_ms)) texto = `Prontinho! Sua reunião online ficou marcada para ${dataExtensoSP(reuniao.quando_ms)}. A equipe vai te enviar o link. 😊`;
   if (!texto) return;
   const ultimaDenia = [...hist].reverse().find(m => String(m.direcao).toUpperCase() === "SAIDA" && !["HUMANO", "LIGACAO"].includes(String(m.origem).toUpperCase()));
-  if (!acao.fixa && ultimaDenia && norm(ultimaDenia.conteudo) === norm(texto)) return; // não repetir a mesma frase
+  const ultimaHa = ultimaDenia ? Date.now() - Date.parse(String(ultimaDenia.criado_em || "").replace(" ", "T") + "Z") : Infinity;
+  if (!acao.fixa && ultimaDenia && norm(ultimaDenia.conteudo) === norm(texto) && ultimaHa < 5 * 60000) { await evento(c, caso?.casoId, "RESPOSTA_REPETIDA_EVITADA", txt(texto, 200)); return; } // não repetir a mesma frase seguida
   await enviarAoCliente(c, { tel, pessoaId: pessoa.id, casoId: caso?.casoId, texto, chave: chaveLote });
 }
 
@@ -3138,6 +3140,8 @@ async function processarPendentes(c, tel) {
     // Sem chamadas suficientes nesta execução: deixa na fila; o cron (a cada minuto) responde com a execução zerada.
     if (sobram(c) < 18) return;
     const lote = crypto.randomUUID(), agora = c.agora();
+    // Presas em PROCESSANDO há mais de 2,5 min (o servidor reiniciou no meio): voltam e entram neste lote.
+    await c.db.prepare("UPDATE d30_fila SET status='PENDENTE', lote=NULL WHERE telefone=? AND status='PROCESSANDO' AND atualizado_ms < ?").bind(tel, agora - 150000).run().catch(() => {});
     const itens = (await c.db.prepare(`UPDATE d30_fila SET status='PROCESSANDO', lote=?, atualizado_ms=? WHERE telefone=? AND status='PENDENTE'
       AND NOT EXISTS (SELECT 1 FROM d30_fila f2 WHERE f2.telefone=? AND f2.status='PROCESSANDO' AND f2.atualizado_ms > ?) RETURNING wamid, payload, recebido_ms`)
       .bind(lote, agora, tel, tel, agora - 120000).all())?.results || [];
@@ -3430,6 +3434,7 @@ async function cron(c) {
   if (sobram(c) > 20) await processarAgendados(c);
   if (sobram(c) > 20) await cobrarProfissionais(c).catch(e => console.error("profissionais sem resposta", e?.message));
   if (sobram(c) > 20) await acompanharServicos(c).catch(e => console.error("acompanhamento de serviços", e?.message));
+  if (sobram(c) > 20) await vigiarSemResposta(c).catch(e => console.error("vigia de clientes sem resposta", e?.message));
   if (sobram(c) > 12) await lembrarReunioes(c).catch(e => console.error("reuniões", e?.message));
   // A cada hora: confere se o Telegram da equipe está ligado à DENIA e liga (se não estiver ligado a outro sistema).
   if (sobram(c) > 15 && c.env.TELEGRAM_BOT_TOKEN && c.env.TELEGRAM_CHAT_ID && String(c.env.TELEGRAM_EQUIPE || "").toLowerCase() !== "desligado" && await reservarChave(c, "tg-conectar:" + Math.floor(agora / 3600000))) {
@@ -3582,6 +3587,27 @@ async function cobrarProfissionais(c) {
     caso.etapa = "COLETANDO";
     await salvarCaso(c, caso);
     await consultarPrestador(c, caso, pessoa, "troca:" + k.id);
+  }
+}
+
+// Vigia: cliente que escreveu há 5 a 40 min e ficou sem resposta (nem da DENIA nem da equipe) → aviso urgente,
+// uma vez por mensagem. Não reenvia nada sozinho (para nunca responder duas vezes).
+async function vigiarSemResposta(c) {
+  const agora = c.agora();
+  const linhas = (await c.db.prepare("SELECT telefone, MAX(recebido_ms) ult FROM d30_fila WHERE recebido_ms BETWEEN ? AND ? GROUP BY telefone HAVING SUM(CASE WHEN status IN ('PENDENTE','PROCESSANDO') THEN 1 ELSE 0 END)=0 LIMIT 20")
+    .bind(agora - 40 * 60000, agora - 5 * 60000).all().catch(() => null))?.results || [];
+  for (const l of linhas) {
+    const ult = await c.db.prepare("SELECT MAX(recebido_ms) m FROM d30_fila WHERE telefone=?").bind(l.telefone).first().catch(() => null);
+    if (Number(ult?.m || 0) > Number(l.ult)) continue; // escreveu de novo: o lote novo cuida
+    if (prestadorPorTelefone(l.telefone) || await estaPausado(c, l.telefone) || await pausaGeralAtiva(c).catch(() => false)) continue;
+    const id = await identificar(c, l.telefone).catch(() => null);
+    if (!id || id.papel !== "CLIENTE" || !id.pessoa) continue;
+    const ultima = await c.db.prepare("SELECT id, caso_id, direcao, conteudo FROM mensagens WHERE empresa_id=? AND pessoa_id=? ORDER BY id DESC LIMIT 1").bind(EMPRESA_ID, id.pessoa.id).first().catch(() => null);
+    if (!ultima || String(ultima.direcao).toUpperCase() !== "ENTRADA" || ehMensagemSocial(ultima.conteudo)) continue;
+    const min = Math.round((agora - Number(l.ult)) / 60000);
+    const quem = await c.db.prepare("SELECT nome FROM pessoas WHERE id=?").bind(id.pessoa.id).first().catch(() => null);
+    await alertarEquipe(c, `${quem?.nome ? `${quem.nome} (${digitos(l.telefone)})` : digitos(l.telefone)} escreveu há ${min} min e ainda não recebeu resposta: "${txt(ultima.conteudo, 200)}". Responda pelo app ou responda esta mensagem.`, "sem-resposta:" + ultima.id, ultima.caso_id);
+    await evento(c, ultima.caso_id, "CLIENTE_SEM_RESPOSTA", `${min} min`, { telefone: l.telefone, mensagem_id: ultima.id });
   }
 }
 
@@ -3954,7 +3980,10 @@ async function platformApi(request, env, caminho, metodo) {
   // Avisos que não foram ao Telegram (não urgentes): a plataforma mostra na página Problemas.
   if (caminho === "/platform/avisos" && metodo === "GET") {
     const ev = (await c.db.prepare("SELECT id, caso_id, descricao, criado_ms FROM d30_eventos WHERE tipo='AVISO_PAINEL' AND criado_ms > ? ORDER BY id DESC LIMIT 60").bind(c.agora() - 7 * 86400000).all().catch(() => null))?.results || [];
-    return json({ sucesso: true, avisos: ev.map(e => ({ id: e.id, caso_id: e.caso_id, texto: e.descricao, em: e.criado_ms })) });
+    const fixos = [];
+    if (/^(desligadas|0|false|nao|não)$/i.test(String(c.env.DENIA_TAREFAS || ""))) fixos.push({ id: -1, caso_id: null, texto: "As tarefas automáticas da IA estão desligadas (variável DENIA_TAREFAS=desligadas na Hostinger). Sem elas, mensagens que ficam na fila não são respondidas, os profissionais não são cobrados e os serviços não são acompanhados. Apague a variável e reinicie o app.", em: c.agora() });
+    if (String(c.env.DENIA_PAUSADA || "").toLowerCase() === "true") fixos.push({ id: -2, caso_id: null, texto: "A IA está pausada pela variável ENGINE_DENIA_PAUSADA=true na Hostinger: ela não responde ninguém. Apague a variável e reinicie o app.", em: c.agora() });
+    return json({ sucesso: true, avisos: [...fixos, ...ev.map(e => ({ id: e.id, caso_id: e.caso_id, texto: e.descricao, em: e.criado_ms }))] });
   }
   if (caminho === "/platform/study" && metodo === "GET") {
     const ev = (await c.db.prepare("SELECT tipo, descricao, dados, criado_ms FROM d30_eventos WHERE tipo IN ('ESTUDO_DIARIO','PESQUISA_SEMANAL') ORDER BY id DESC LIMIT 14").all().catch(() => null))?.results || [];

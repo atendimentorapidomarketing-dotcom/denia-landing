@@ -287,6 +287,9 @@ export async function iniciar(op = {}) {
       return json({ ok: false, erro: "Rota desconhecida." }, 404);
     }
     if (importando || importacaoFalhou) return paginaAguarde(importacaoFalhou ? situacao.importacao.erro : situacao.importacao.etapa, importacaoFalhou);
+    // A hospedagem pode adormecer o app quando fica sem visitas (o relógio para). Cada pedido que chega
+    // (o WhatsApp, o painel) acorda as tarefas atrasadas: nenhuma mensagem fica presa na fila.
+    if (!desligadas && !op.semRelogio && Date.now() - situacao.tiques.engine > 90000 && !rodando.engine) tique("pedido").catch(e => anotarErro("tique", e));
     const ehIA = (hostIA && url.hostname.toLowerCase() === hostIA) || url.pathname === prefixoIA || url.pathname.startsWith(prefixoIA + "/");
     if (ehIA) {
       if (!hostIA || url.hostname.toLowerCase() !== hostIA) {
