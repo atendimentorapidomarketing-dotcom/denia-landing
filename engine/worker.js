@@ -36,7 +36,7 @@
 //       relatório diário. Nunca inicia conversa nova por conta própria.
 // ============================================================================
 
-const VERSAO = "34.4.0";
+const VERSAO = "34.5.0";
 const SCHEMA_VERSAO = "33.4.0"; // mude sempre que acrescentar tabela ou índice (senão o banco de produção não recebe)
 const EMPRESA_ID = 1;
 const PHONE_ID_PADRAO = "473474732510163";
@@ -2077,6 +2077,13 @@ function tirarNomeRepetido(texto, nome, hist = []) {
   return t.replace(/(^|[.!?]\s+)(\p{Ll})/gu, (_, a, b) => a + b.toUpperCase());
 }
 
+// "Vou verificar com o profissional" vira "Vou verificar": a DENIA assume a responsabilidade, não passa para o técnico.
+function semJogarParaProfissional(texto) {
+  return String(texto || "")
+    .replace(/\b(verificar|confirmar|consultar|ver|checar|conferir|falar|perguntar|alinhar)(\s+(isso|aqui|tudo|certinho))?\s+(com|junto (a|ao|à))\s+(o|a|nosso|nossa)?\s*(profissional|t[ée]cnico|t[ée]cnica|prestador|prestadora|parceiro)\b/gi, "$1$2")
+    .replace(/\s+([,.!?])/g, "$1");
+}
+
 function guardarResposta(texto, g) {
   const t = String(texto || "").replace(/\s+/g, " ").trim();
   if (!t) return { texto: "", removidas: [] };
@@ -2091,8 +2098,8 @@ function guardarResposta(texto, g) {
 function respostaSocial(texto, caso, ultima = "") {
   const t = norm(texto), etapa = caso?.etapa || "";
   const agradeceu = /obrigad|valeu|agradec|🙏/.test(t);
-  const opcoes = etapa === "AGUARDANDO_PRESTADOR" ? ["Combinado! Assim que o profissional responder, eu te aviso.", "Certo! Te aviso assim que tiver o retorno do profissional."]
-    : etapa === "AGUARDANDO_CONFIRMACAO_PRESTADOR" ? ["Combinado! Assim que o profissional confirmar, eu te aviso.", "Certo! Te aviso assim que ele confirmar."]
+  const opcoes = etapa === "AGUARDANDO_PRESTADOR" ? ["Combinado! Assim que eu tiver o retorno, te aviso.", "Certo! Já estou verificando e te aviso em seguida."]
+    : etapa === "AGUARDANDO_CONFIRMACAO_PRESTADOR" ? ["Combinado! Assim que estiver confirmado, te aviso.", "Certo! Te aviso assim que confirmar."]
     : ["AGENDADO", "EM_ANDAMENTO"].includes(etapa) ? [agradeceu ? "Por nada! Qualquer coisa sobre o atendimento, é só me chamar." : "Combinado! Qualquer coisa sobre o atendimento, é só me chamar.", "Certo! Estou por aqui se precisar."]
     : agradeceu ? ["Por nada! Qualquer coisa, é só me chamar.", "Imagina! Estou por aqui se precisar."]
     : ["Combinado! Se precisar de algo, é só me chamar.", "Certo! Estou por aqui se precisar."];
@@ -2100,8 +2107,8 @@ function respostaSocial(texto, caso, ultima = "") {
 }
 
 function respostaPadraoEtapa(etapa) {
-  if (etapa === "AGUARDANDO_PRESTADOR") return "Ainda aguardamos o retorno do profissional. Assim que ele responder, avisamos você.";
-  if (etapa === "AGUARDANDO_CONFIRMACAO_PRESTADOR") return "Estamos aguardando a confirmação final do profissional e já retornamos.";
+  if (etapa === "AGUARDANDO_PRESTADOR") return "Ainda estou verificando. Assim que tiver o retorno, te aviso.";
+  if (etapa === "AGUARDANDO_CONFIRMACAO_PRESTADOR") return "Estou finalizando a confirmação e já te retorno.";
   return "Um momento, por favor.";
 }
 
@@ -2116,7 +2123,7 @@ function descreverEtapa(caso, consulta) {
     case "COLETANDO": return "Atendimento em andamento. O profissional AINDA NÃO foi consultado.";
     case "AGUARDANDO_PRESTADOR": return consulta?.status === "AGENDADA_ENVIO"
       ? "A consulta ao profissional será enviada no início do próximo expediente (a partir das 8h)."
-      : "A solicitação JÁ foi enviada ao profissional e aguardamos o retorno dele. Se o cliente perguntar, diga que ainda aguardamos o retorno.";
+      : "A solicitação JÁ foi enviada ao profissional e aguardamos o retorno dele. Se o cliente perguntar, diga que ainda está verificando e já retorna (sem citar o profissional).";
     case "AGUARDANDO_CLIENTE": return `Enviamos ao cliente a proposta do profissional (${prop || "sem detalhes"}). Aguardamos o cliente aceitar, recusar ou pedir outro horário.`;
     case "AGUARDANDO_ENDERECO": return "O cliente aceitou a proposta. Falta o endereço completo para confirmarmos com o profissional.";
     case "AGUARDANDO_CONFIRMACAO_PRESTADOR": return `O cliente aceitou (${prop}). Aguardamos a confirmação FINAL do profissional. Não diga que está confirmado.`;
@@ -2153,7 +2160,7 @@ CLIENTE ANTIGO: veja o PERFIL DO CLIENTE e a FICHA NO SISTEMA. Se ele já foi at
 
 MEMÓRIA: o HISTÓRICO pode conter mensagens de outros casos do mesmo cliente (marcadas com #número); use as do caso ativo e só fale de outro caso se o cliente se referir a ele. Leia o ESTADO DO CASO, os FATOS e o HISTÓRICO antes de responder. Nunca pergunte algo que já está nos fatos ou no histórico. A informação mais recente vale mais. Uma resposta curta normalmente responde à última pergunta feita. Mensagens do ATENDENTE HUMANO fazem parte da conversa: continue de onde ele parou, sem repetir o que já foi combinado. Se o caso está AGENDADO ou concluído, não recomece a coleta; só é pedido novo quando o cliente pede claramente outro serviço.
 
-ESTILO: escreva como as atendentes da equipe (veja COMO A EQUIPE FALA): humana, gentil e com empatia — se o cliente está com um problema, mostre que entende ("Poxa, imagino o transtorno") sem exagero; português do Brasil natural; responda primeiro ao que o cliente perguntou; mensagens CURTAS, 1 ou 2 frases; no máximo uma pergunta; retribua cumprimentos; não repita o nome do cliente, o bairro nem o que ele acabou de dizer; sem listas, sem markdown; nunca seco ou grosseiro; não mencione sistema, banco de dados ou modelo de IA. Não se apresente como robô ou assistente virtual por iniciativa própria. Se o cliente perguntar com sinceridade se está falando com um robô ou com uma IA, não negue: responda de forma leve e humana, por exemplo "Sou a assistente virtual da Central, e tem uma equipe aqui comigo acompanhando seu atendimento 😊", e siga ajudando.
+ESTILO: escreva como as atendentes da equipe (veja COMO A EQUIPE FALA): humana, gentil e com empatia — se o cliente está com um problema, mostre que entende ("Poxa, imagino o transtorno") sem exagero; português do Brasil natural; responda primeiro ao que o cliente perguntou; mensagens CURTAS, 1 ou 2 frases; no máximo uma pergunta; retribua cumprimentos; não repita o nome do cliente, o bairro nem o que ele acabou de dizer; quando precisar checar algo, diga só que VOCÊ vai verificar ("Vou verificar e já te retorno"), nunca "vou verificar com o profissional" nem jogue a responsabilidade para o profissional ou o técnico; sem listas, sem markdown; nunca seco ou grosseiro; não mencione sistema, banco de dados ou modelo de IA. Não se apresente como robô ou assistente virtual por iniciativa própria. Se o cliente perguntar com sinceridade se está falando com um robô ou com uma IA, não negue: responda de forma leve e humana, por exemplo "Sou a assistente virtual da Central, e tem uma equipe aqui comigo acompanhando seu atendimento 😊", e siga ajudando.
 
 A ARTE DE ATENDER (o padrão das melhores atendentes):
 - Escute de verdade: antes de pedir qualquer coisa, mostre que entendeu o problema com palavras suas, numa frase curta e específica ao caso (não genérica).
@@ -2178,7 +2185,7 @@ Responda SOMENTE com um objeto JSON neste formato:
 intencao: CONVERSA | NOVO_PEDIDO | ACEITA_PROPOSTA | RECUSA_PROPOSTA | PEDE_OUTRO_HORARIO | PEDE_ALTERACAO | PERGUNTA_PARA_PROFISSIONAL | PEDE_CANCELAMENTO | PERGUNTA_STATUS | AGRADECIMENTO | FALAR_COM_HUMANO.
 - ACEITA_PROPOSTA/RECUSA_PROPOSTA/PEDE_OUTRO_HORARIO: só quando o cliente responde à proposta enviada (etapa AGUARDANDO_CLIENTE).
 - PEDE_ALTERACAO: pedido de mudança em atendimento já combinado (ex.: chegar mais tarde, mudar o dia).
-- PERGUNTA_PARA_PROFISSIONAL: o caso já tem PROFISSIONAL CONSULTADO e o cliente faz uma pergunta que só o profissional sabe responder (material incluso, garantia, tempo de serviço, como é feito, se faz algo a mais, valor de um item extra, detalhes técnicos) e a resposta NÃO está nos fatos, no histórico nem no treinamento. Junte TODAS as perguntas das mensagens novas em resposta_para_profissional, em uma frase objetiva. Na "resposta", diga só que vai confirmar com o profissional. A ponte cliente ↔ profissional continua enquanto o cliente tiver dúvidas.
+- PERGUNTA_PARA_PROFISSIONAL: o caso já tem PROFISSIONAL CONSULTADO e o cliente faz uma pergunta que só o profissional sabe responder (material incluso, garantia, tempo de serviço, como é feito, se faz algo a mais, valor de um item extra, detalhes técnicos) e a resposta NÃO está nos fatos, no histórico nem no treinamento. Junte TODAS as perguntas das mensagens novas em resposta_para_profissional, em uma frase objetiva. Na "resposta", diga só que vai verificar e já retorna (sem citar o profissional: a responsabilidade é sua). A ponte cliente ↔ profissional continua enquanto o cliente tiver dúvidas.
 - novo_pedido=true somente se o cliente pede um serviço DIFERENTE do caso ativo.
 - fatos: apenas o que foi informado nas mensagens novas (ou correção); deixe "" o que não mudou.
 - categoria: uma das CATEGORIAS, escolhida seguindo o TREINAMENTO DA EMPRESA (o treinamento manda). Aparelho ou eletrodoméstico com defeito (inclusive queimado por ligar em 110/220 V) NUNCA é ELETRICA. categoria_confianca: ALTA só quando não há nenhuma dúvida; senão MEDIA ou BAIXA (o caso vai para a equipe, sem errar o profissional).
@@ -2399,7 +2406,7 @@ async function processarCliente(c, tel, id, msgs, { apenasRegistrar, chaveLote, 
     const g = { reuniao: Boolean(reuniao && !reuniao.recusada), etapa: caso?.etapa || "SEM_CASO", autorizados, modo: CATEGORIAS[caso?.fatos?.categoria]?.modo || "", regiaoConfirmada: caso?.fatos?.regiao_confirmada === "SIM", fatos: caso && !ETAPAS_ENCERRADAS.has(caso.etapa) ? caso.fatos : null, nome: pessoa.nome, perguntadas: perguntasRecentes(hist) };
     const r = guardarResposta(d.resposta, g);
     if (r.removidas.length) await evento(c, caso?.casoId, "RESPOSTA_CORRIGIDA", r.removidas.join(" | "));
-    texto = tirarNomeRepetido(r.texto, pessoa.nome || d.fatos.nome, hist) || respostaPadraoEtapa(caso?.etapa);
+    texto = semJogarParaProfissional(tirarNomeRepetido(r.texto, pessoa.nome || d.fatos.nome, hist)) || respostaPadraoEtapa(caso?.etapa);
   }
   // Reunião: a data dita ao cliente é sempre a que ficou registrada (nunca um dia da semana errado).
   if (reuniao?.recusada) texto = `Poxa, nesse horário não dá: ${reuniao.recusada}. ${reuniao.sugestao ? `Pode ser ${dataExtensoSP(reuniao.sugestao)}?` : "Qual outro dia fica bom pra você?"}`;
@@ -2496,7 +2503,7 @@ async function decidirCliente(c, { tel, pessoa, caso, consulta, d, chaveLote }) 
   // Resposta do cliente a uma pergunta do profissional.
   if (consulta?.pergunta_pendente && d.resposta_para_profissional) {
     const r = await enviarAoPrestador(c, { consulta, caso, texto: `${primeiroNome(consulta.prestador_nome) || "Oi"}, o cliente respondeu: ${d.resposta_para_profissional} (caso ${caso.casoId})`, chave: "resp:" + chaveLote });
-    if (r.ok || r.agendado || r.guardada) { await atualizarConsulta(c, consulta.id, { pergunta_pendente: null }); return { texto: "Obrigado! Vamos repassar ao profissional.", fixa: true }; }
+    if (r.ok || r.agendado || r.guardada) { await atualizarConsulta(c, consulta.id, { pergunta_pendente: null }); return { texto: "Obrigado! Vou verificar e já te retorno.", fixa: true }; }
     await alertarEquipe(c, `Não foi possível repassar ao profissional a resposta do cliente (caso #${caso.casoId}): ${r.erro}`, "falha-resp:" + chaveLote, caso.casoId);
     return { texto: "Um momento, por favor.", fixa: true };
   }
@@ -2523,7 +2530,7 @@ async function decidirCliente(c, { tel, pessoa, caso, consulta, d, chaveLote }) 
       if (r.ok || r.agendado || r.guardada) {
         await atualizarConsulta(c, consulta.id, { status: "ENVIADA", pedido_pendente: `outro horário: ${pref}` });
         await mudarEtapa(c, caso, "AGUARDANDO_PRESTADOR");
-        return { texto: r.agendado ? "Certo! Verificamos outro horário com o profissional a partir das 8h e retornamos." : "Certo! Vamos verificar outro horário com o profissional e retornamos.", fixa: true };
+        return { texto: r.agendado ? "Certo! Vou verificar outro horário a partir das 8h e te retorno." : "Certo! Vou verificar outro horário e já te retorno.", fixa: true };
       }
       return { texto: "Um momento, por favor.", fixa: true };
     }
@@ -2535,7 +2542,7 @@ async function decidirCliente(c, { tel, pessoa, caso, consulta, d, chaveLote }) 
   if (d.intencao === "PEDE_ALTERACAO" && consulta && ["AGENDADO", "AGUARDANDO_CONFIRMACAO_PRESTADOR"].includes(caso.etapa)) {
     const pedido = d.resposta_para_profissional || "o cliente pediu uma alteração no atendimento";
     const r = await enviarAoPrestador(c, { consulta, caso, texto: `${primeiroNome(consulta.prestador_nome) || "Oi"}, sobre o caso ${caso.casoId}: ${pedido}. Consegue?`, chave: "alter:" + chaveLote });
-    if (r.ok || r.agendado || r.guardada) { await atualizarConsulta(c, consulta.id, { pedido_pendente: pedido }); return { texto: "Vamos verificar com o profissional e já retornamos.", fixa: true }; }
+    if (r.ok || r.agendado || r.guardada) { await atualizarConsulta(c, consulta.id, { pedido_pendente: pedido }); return { texto: "Vou verificar e já te retorno.", fixa: true }; }
     return { texto: "Um momento, por favor.", fixa: true };
   }
 
@@ -2545,7 +2552,7 @@ async function decidirCliente(c, { tel, pessoa, caso, consulta, d, chaveLote }) 
   if (caso.etapa === "COLETANDO" && d.quer && d.pronto) {
     // Atendimento no endereço do cliente: pergunta o bairro uma vez antes de chamar o profissional.
     if (CATEGORIAS[caso.fatos.categoria]?.modo === "DOMICILIO" && !caso.fatos.bairro && await reservarChave(c, "pede-bairro:" + caso.casoId))
-      return { texto: "Perfeito! Pra eu já passar ao profissional certo: em qual bairro é o atendimento?", fixa: true };
+      return { texto: "Perfeito! Em qual bairro é o atendimento?", fixa: true };
     const r = await consultarPrestador(c, caso, pessoa, chaveLote);
     if (r) return r;
   }
@@ -2601,12 +2608,12 @@ async function consultarPrestador(c, caso, pessoa, chaveLote, escolhido = null) 
     await mudarEtapa(c, caso, "AGUARDANDO_PRESTADOR");
     if (!r.viaTemplate) await encaminharMidiasAoPrestador(c, { ...ins, message_id: r.id });
     await evento(c, caso.casoId, "CONSULTA_ENVIADA", `${p.nome} (${p.area})`, { messageId: r.id });
-    return { texto: "Enviamos sua solicitação ao profissional. Assim que ele responder, retornamos com o valor e a disponibilidade.", fixa: true };
+    return { texto: "Vou verificar o valor e a disponibilidade e já te retorno.", fixa: true };
   }
   if (r.agendado) {
     await atualizarConsulta(c, ins.id, { status: "AGENDADA_ENVIO" });
     await mudarEtapa(c, caso, "AGUARDANDO_PRESTADOR");
-    return { texto: "Vamos consultar o profissional no início do próximo expediente, a partir das 8h, e retornamos com o valor e a disponibilidade.", fixa: true };
+    return { texto: "Vou verificar o valor e a disponibilidade no início do próximo expediente, a partir das 8h, e te retorno.", fixa: true };
   }
   await atualizarConsulta(c, ins.id, { status: "FALHA" });
   const semTemplate = foraDaJanela(r) && !c.env.WHATSAPP_TEMPLATE_CONSULTA_TECNICO;
@@ -2618,7 +2625,7 @@ async function clienteAceitou(c, caso, consulta, chaveLote) {
   if (!consulta) return { texto: "Um momento, por favor.", fixa: true };
   if (CATEGORIAS[consulta.area]?.modo === "DOMICILIO" && !caso.fatos.endereco) {
     await mudarEtapa(c, caso, "AGUARDANDO_ENDERECO");
-    return { texto: "Ótimo! Para confirmarmos com o profissional, qual é o endereço completo do atendimento?", fixa: true };
+    return { texto: "Ótimo! Qual é o endereço completo do atendimento?", fixa: true };
   }
   const partes = [`${primeiroNome(consulta.prestador_nome) || "Oi"}, o cliente do caso ${caso.casoId} aprovou`];
   if (consulta.valor_prestador) partes.push(`o valor de ${moeda(consulta.valor_prestador)}`);
@@ -2628,7 +2635,7 @@ async function clienteAceitou(c, caso, consulta, chaveLote) {
   if (r.ok || r.agendado || r.guardada) {
     await atualizarConsulta(c, consulta.id, { status: "AGUARDANDO_CONFIRMACAO" });
     await mudarEtapa(c, caso, "AGUARDANDO_CONFIRMACAO_PRESTADOR");
-    return { texto: r.agendado ? "Perfeito! Confirmamos com o profissional a partir das 8h e retornamos." : "Perfeito! Vamos confirmar com o profissional e já retornamos.", fixa: true };
+    return { texto: r.agendado ? "Perfeito! Vou confirmar a partir das 8h e te retorno." : "Perfeito! Vou confirmar e já te retorno.", fixa: true };
   }
   await alertarEquipe(c, `Cliente aprovou o caso #${caso.casoId}, mas a confirmação não chegou ao profissional (${r.erro}). Fazer manualmente.`, "falha-aceite:" + chaveLote, caso.casoId);
   return { texto: "Um momento, por favor.", fixa: true };
@@ -2952,7 +2959,7 @@ async function tratarRespostaPrestador(c, { caso, consulta, d, textoTodo, chaveL
         await c.db.prepare("UPDATE d30_acompanhamentos SET status='FEITO', atualizado_ms=? WHERE caso_id=?").bind(c.agora(), caso.casoId).run().catch(() => {});
         await evento(c, caso.casoId, "SERVICO_CONCLUIDO", `Informado por ${consulta.prestador_nome}: ${txt(textoTodo, 200)}`);
         await responder(resposta || "Perfeito, obrigada! 🙏", "feito");
-        await avisarCliente("Que bom! O profissional avisou que o serviço foi concluído. Ficou tudo certo por aí? 😊", "feito-cli");
+        await avisarCliente("Que bom, o serviço foi concluído! Ficou tudo certo por aí? 😊", "feito-cli");
         await alertarEquipe(c, `Serviço concluído: ${consulta.prestador_nome} avisou que terminou o atendimento de ${cliente?.nome || "o cliente"} (caso #${caso.casoId}).`, "concluido:" + caso.casoId, caso.casoId);
         return;
       }
@@ -3023,7 +3030,7 @@ async function tratarRespostaPrestador(c, { caso, consulta, d, textoTodo, chaveL
       if (novaData && consulta.disponibilidade) {
         // Propôs outro horário: volta ao cliente.
         await atualizarConsulta(c, consulta.id, { disponibilidade: disp, status: "RESPONDIDA" });
-        const r = await avisarCliente(`O profissional propôs ${disp}. Podemos confirmar?`, "novohorario");
+        const r = await avisarCliente(`O horário disponível é ${disp}. Podemos confirmar?`, "novohorario");
         if (r.ok) { await mudarEtapa(c, caso, "AGUARDANDO_CLIENTE"); await responder(`Combinado, vou ver com o cliente se ${disp} funciona e te retorno.`, "novohorario-ok"); }
         return;
       }
@@ -3031,12 +3038,12 @@ async function tratarRespostaPrestador(c, { caso, consulta, d, textoTodo, chaveL
       if (!dataFinal) { await responder(`Combinado! Só me confirma o dia e o horário certinho, por favor (caso ${caso.casoId}).`, "qualdata"); return; }
       if (!consulta.disponibilidade && disp && tipo === "ACEITA") {
         await atualizarConsulta(c, consulta.id, { disponibilidade: disp, status: "RESPONDIDA" });
-        const r = await avisarCliente(`O profissional pode atender ${disp}. Podemos confirmar?`, "data");
+        const r = await avisarCliente(`Temos disponibilidade ${disp}. Podemos confirmar?`, "data");
         if (r.ok) await mudarEtapa(c, caso, "AGUARDANDO_CLIENTE");
         return;
       }
       await atualizarConsulta(c, consulta.id, { status: "CONFIRMADA", disponibilidade: dataFinal });
-      const r = await avisarCliente(`Atendimento confirmado pelo profissional: ${dataFinal}.${consulta.valor_cliente ? ` Valor: ${moeda(consulta.valor_cliente)}.` : ""}`, "confirmado");
+      const r = await avisarCliente(`Atendimento confirmado: ${dataFinal}.${consulta.valor_cliente ? ` Valor: ${moeda(consulta.valor_cliente)}.` : ""}`, "confirmado");
       await mudarEtapa(c, caso, "AGENDADO");
       await responder("Obrigado! Agendamento confirmado com o cliente.", "conf-ok");
       await alertarEquipe(c, [
@@ -3063,7 +3070,7 @@ async function tratarRespostaPrestador(c, { caso, consulta, d, textoTodo, chaveL
     const markup = Math.max(0, Number(c.env.MARKUP_PERCENT ?? 50));
     const valorCliente = valorPrest ? (composicao === "SIM" ? valorPrest : Math.round(valorPrest * (1 + markup / 100))) : 0;
     const partes = [];
-    if (dispFinal) partes.push(`O profissional pode atender ${dispFinal}.`);
+    if (dispFinal) partes.push(`Temos disponibilidade ${dispFinal}.`);
     if (valorCliente) partes.push(`O valor fica ${moeda(valorCliente)}.`);
     partes.push(dispFinal ? "Podemos confirmar?" : "Podemos seguir com esse valor?");
     await atualizarConsulta(c, consulta.id, { valor_prestador: valorPrest || null, valor_cliente: valorCliente || null, valor_final: composicao || null, disponibilidade: dispFinal || null, status: "RESPONDIDA" });
