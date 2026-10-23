@@ -1510,6 +1510,30 @@
     if (!itens.some(i => i[0] === "erro")) itens.push(["ok", `Motor funcionando${st.enviadas_24h != null ? `: ${numero(st.enviadas_24h)} resposta(s) da IA nas últimas 24 h` : ""}${st.ultima_recebida_ms ? `, última mensagem recebida em ${quando(st.ultima_recebida_ms)}` : ""}.${st.teste_whatsapp && st.teste_whatsapp.ok ? ` Token do WhatsApp válido (${st.teste_whatsapp.numero || "número ok"}).` : ""}${st.teste_openai && st.teste_openai.ok ? " Chave da OpenAI válida." : ""}`]);
     return itens;
   }
+  // Telegram da equipe: para onde o bot entrega, se lê o grupo e o que impede a DENIA de responder.
+  async function cartaoTelegram(caixa) {
+    caixa.replaceChildren(h("section", { class: "cartao vidro" }, carregando()));
+    let st;
+    try { st = await eng("telegram", { fresco: true }); }
+    catch (e) { caixa.replaceChildren(h("section", { class: "cartao vidro" }, h("p", { class: "nota" + (e.status === 404 ? "" : " nota-alerta"), text: e.status === 404 ? "Atualize o motor para ver o diagnóstico do Telegram." : e.message }))); return; }
+    const conectar = forcar => async (_e, b) => {
+      if (forcar && !(await modal({ titulo: "Forçar a ligação do Telegram?", conteudo: "O bot passa a entregar as mensagens do grupo para a DENIA. Se outro sistema usa esse mesmo bot, ele deixa de receber.", confirmar: "Forçar", perigo: true }))) return;
+      b.textContent = "Conectando…";
+      try { const r = await eng("telegram/connect", { metodo: "POST", corpo: { forcar } }); aviso(r.ok ? "Telegram conectado à DENIA." : (r.erro || "Não foi possível conectar."), r.ok ? "ok" : "erro"); }
+      catch (e) { aviso(e.message, "erro"); }
+      await cartaoTelegram(caixa);
+    };
+    const linha = (rot, val) => h("p", { class: "nota", text: `${rot}: ${val}` });
+    caixa.replaceChildren(h("section", { class: "cartao vidro" },
+      h("div", { class: "sugestao-topo" }, h("h3", { style: "margin:0", text: "Telegram da equipe" }),
+        h("div", { class: "acoes" }, botao("Conectar agora", conectar(false), "btn-primario btn-pequeno"), botao("Forçar", conectar(true), "btn-secundario btn-pequeno"), botao("Verificar de novo", () => cartaoTelegram(caixa), "btn-secundario btn-pequeno"))),
+      !st.configurado ? null : h("div", {},
+        linha("Bot", st.bot || "—"), linha("Grupo", st.grupo || "não encontrado"),
+        linha("Ligado à DENIA", st.conectado ? "sim ✅" : "não ⛔"), linha("Lê todas as mensagens do grupo", st.le_todo_o_grupo ? "sim ✅" : "não (só respostas e menções)"),
+        st.pendentes ? linha("Mensagens esperando entrega", String(st.pendentes)) : null),
+      (st.problemas || []).length ? h("div", {}, (st.problemas || []).map(t => h("p", { class: "nota nota-alerta", text: "⚠️ " + t })))
+        : h("p", { class: "nota", text: "✅ Tudo certo. Escreva no grupo da Central (ou responda uma mensagem da DENIA) e ela responde em alguns segundos." })));
+  }
   function cartaoDiagnostico(inicial) {
     const lista = h("div", { class: "grade" });
     const desenhar = st => lista.replaceChildren(...diagnosticar(st).map(([nivel, texto]) => h("p", { class: "nota" + (nivel === "erro" ? " nota-alerta diag-erro" : nivel === "alerta" ? " nota-alerta" : ""), text: (nivel === "erro" ? "⛔ " : nivel === "alerta" ? "⚠️ " : nivel === "ok" ? "✅ " : "ℹ️ ") + texto })));
@@ -4061,7 +4085,7 @@ Botão só com texto = resposta.` })),
     el.appendChild(area);
     const de = isoLocal(new Date(Date.now() - (f.dias - 1) * 86400000)), ate = isoLocal(new Date());
     try {
-      if (atual === "diagnostico") { const st = await eng("status", { fresco: true }).catch(() => null); if (vivo()) trocar(area, cartaoDiagnostico(st)); return; }
+      if (atual === "diagnostico") { const st = await eng("status", { fresco: true }).catch(() => null); const tg = h("div", {}); if (vivo()) { trocar(area, cartaoDiagnostico(st), tg); if (pode("ADMIN")) cartaoTelegram(tg).catch(() => {}); } return; }
       if (atual === "conexao") return await abaConexaoZap(area, vivo);
       let m;
       try { m = await eng(`metrics?de=${de}&ate=${ate}`, { fresco: true }); }

@@ -36,7 +36,7 @@
 //       relatório diário. Nunca inicia conversa nova por conta própria.
 // ============================================================================
 
-const VERSAO = "34.0.0";
+const VERSAO = "34.1.0";
 const SCHEMA_VERSAO = "33.4.0"; // mude sempre que acrescentar tabela ou índice (senão o banco de produção não recebe)
 const EMPRESA_ID = 1;
 const PHONE_ID_PADRAO = "473474732510163";
@@ -3300,7 +3300,7 @@ async function webhookPost(request, env, ctx) {
   if (Date.now() - ultimaBaseGuardada > 3600000) {
     ultimaBaseGuardada = Date.now();
     const base = enderecoPublico(request);
-    ctx.waitUntil((async () => { await env.DB.prepare("INSERT OR REPLACE INTO d30_meta(chave,valor) VALUES('base_publica',?)").bind(base).run(); })().catch(() => { }));
+    ctx.waitUntil((async () => { await env.DB.prepare("INSERT OR REPLACE INTO d30_meta(chave,valor) VALUES('base_publica',?)").bind(base).run(); })().catch(() => { ultimaBaseGuardada = 0; })); // tabela ainda não criada: tenta na próxima
   }
   const { mensagens, ecos } = extrairEventos(payload, env);
   const statuses = extrairStatuses(payload, env);
@@ -3433,9 +3433,9 @@ async function cron(c) {
   if (sobram(c) > 20) await cobrarProfissionais(c).catch(e => console.error("profissionais sem resposta", e?.message));
   if (sobram(c) > 20) await acompanharServicos(c).catch(e => console.error("acompanhamento de serviços", e?.message));
   if (sobram(c) > 12) await lembrarReunioes(c).catch(e => console.error("reuniões", e?.message));
-  // Uma vez por dia: liga o Telegram da equipe à DENIA (se ainda não estiver ligado a outro sistema).
-  if (sobram(c) > 15 && c.env.TELEGRAM_BOT_TOKEN && c.env.TELEGRAM_CHAT_ID && String(c.env.TELEGRAM_EQUIPE || "").toLowerCase() !== "desligado" && await reservarChave(c, "tg-conectar:" + dataSP(agora))) {
-    const base = (await c.db.prepare("SELECT valor FROM d30_meta WHERE chave='base_publica'").first().catch(() => null))?.valor;
+  // A cada hora: confere se o Telegram da equipe está ligado à DENIA e liga (se não estiver ligado a outro sistema).
+  if (sobram(c) > 15 && c.env.TELEGRAM_BOT_TOKEN && c.env.TELEGRAM_CHAT_ID && String(c.env.TELEGRAM_EQUIPE || "").toLowerCase() !== "desligado" && await reservarChave(c, "tg-conectar:" + Math.floor(agora / 3600000))) {
+    const base = (await c.db.prepare("SELECT valor FROM d30_meta WHERE chave='base_publica'").first().catch(() => null))?.valor || String(c.env.ENDERECO_PUBLICO_IA || "");
     if (base) { const r = await conectarTelegramEquipe(c, base).catch(e => ({ ok: false, erro: e?.message })); await c.db.prepare("INSERT OR REPLACE INTO d30_meta(chave,valor) VALUES('telegram_equipe',?)").bind(JSON.stringify({ ...r, em: agora })).run().catch(() => { }); }
   }
   if (sobram(c) > 20) await processarSync(c).catch(e => console.error("sync", e));
@@ -3963,6 +3963,13 @@ async function platformApi(request, env, caminho, metodo) {
     const treino = await carregarTreinamento(c);
     return json({ sucesso: true, caderno: await lerCaderno(c), licoes: String(treino.dados?.licoes_diarias || ""), relatorios: ev.map(e => { let d = null; try { d = JSON.parse(e.dados || "null"); } catch { d = null; } return { tipo: e.tipo, descricao: e.descricao, em: e.criado_ms, ...(d || {}) }; }) });
   }
+  if (caminho === "/platform/telegram" && metodo === "GET") return json({ sucesso: true, ...(await situacaoTelegram(c)) });
+  if (caminho === "/platform/telegram/connect" && metodo === "POST") {
+    const base = (await c.db.prepare("SELECT valor FROM d30_meta WHERE chave='base_publica'").first().catch(() => null))?.valor || String(c.env.ENDERECO_PUBLICO_IA || "");
+    const r = await conectarTelegramEquipe(c, base, corpo?.forcar === true);
+    await c.db.prepare("INSERT OR REPLACE INTO d30_meta(chave,valor) VALUES('telegram_equipe',?)").bind(JSON.stringify({ ...r, em: c.agora() })).run().catch(() => { });
+    return json({ sucesso: r.ok, ...r, situacao: await situacaoTelegram(c) });
+  }
   if (caminho === "/platform/study/run" && metodo === "POST") {
     const r = String(corpo?.tipo || "") === "pesquisa" ? await pesquisaSemanal(c, { forcar: true }) : await estudoDiario(c, { forcar: true });
     return json({ sucesso: true, resultado: r });
@@ -4435,7 +4442,11 @@ function acharPrestador(a) {
 async function processarTelegramEquipe(c, upd) {
   const m = upd?.message;
   if (!m || !m.text || m.from?.is_bot) return;
-  if (String(m.chat?.id) !== String(c.env.TELEGRAM_CHAT_ID)) return; // só o grupo da Central
+  if (String(m.chat?.id) !== String(c.env.TELEGRAM_CHAT_ID)) {
+    // Só o grupo da Central. Guarda de onde veio para o diagnóstico mostrar o ID certo, se for o caso.
+    await c.db.prepare("INSERT OR REPLACE INTO d30_meta(chave,valor) VALUES('tg_ignorado',?)").bind(JSON.stringify({ chat: String(m.chat?.id || ""), titulo: txt(m.chat?.title || m.chat?.first_name || "", 80), tipo: m.chat?.type || "", em: c.agora() })).run().catch(() => { });
+    return;
+  }
   if (!(await reservarChave(c, "tg-upd:" + upd.update_id))) return;
   await carregarTelsExtras(c);
   const responder = t => c.saida.telegram(t, { responderA: m.message_id });
@@ -4560,6 +4571,38 @@ async function conectarTelegramEquipe(c, base, forcar = false) {
   if (atual && !forcar && !daCentral) return { ok: false, erro: `O bot já entrega mensagens para outro endereço (${atual}). Use "forçar" para trocar.` };
   const r = await api("setWebhook", { url, secret_token: segredoTelegramEngine(env), allowed_updates: ["message"], drop_pending_updates: true });
   return r?.ok ? { ok: true, url } : { ok: false, erro: r?.description || "Telegram recusou." };
+}
+
+// Diagnóstico do Telegram da equipe: para onde o bot entrega, se ele lê o grupo e o que impede a DENIA de responder.
+async function situacaoTelegram(c) {
+  const env = c.env;
+  if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_CHAT_ID) return { configurado: false, problemas: ["Faltam TELEGRAM_BOT_TOKEN e TELEGRAM_CHAT_ID nas variáveis da Hostinger."] };
+  const api = metodo => fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/${metodo}`, { signal: AbortSignal.timeout(10000) }).then(r => r.json()).catch(e => ({ ok: false, description: e?.message }));
+  const base = (await c.db.prepare("SELECT valor FROM d30_meta WHERE chave='base_publica'").first().catch(() => null))?.valor || String(c.env.ENDERECO_PUBLICO_IA || "");
+  const [info, eu, grupo] = await Promise.all([api("getWebhookInfo"), api("getMe"), api(`getChat?chat_id=${encodeURIComponent(env.TELEGRAM_CHAT_ID)}`)]);
+  let ignorado = null;
+  try { ignorado = JSON.parse((await c.db.prepare("SELECT valor FROM d30_meta WHERE chave='tg_ignorado'").first().catch(() => null))?.valor || "null"); } catch { ignorado = null; }
+  const esperado = base ? base.replace(/\/+$/, "") + "/telegram" : "";
+  const atual = String(info?.result?.url || "");
+  const r = {
+    configurado: true, bot: eu?.result?.username ? "@" + eu.result.username : "", grupo: grupo?.ok ? txt(grupo.result?.title || "", 80) : "",
+    endereco_atual: atual, endereco_esperado: esperado, conectado: Boolean(esperado && atual === esperado),
+    le_todo_o_grupo: eu?.result?.can_read_all_group_messages === true, pendentes: Number(info?.result?.pending_update_count || 0),
+    ultimo_erro: txt(info?.result?.last_error_message, 200), ultimo_erro_em: info?.result?.last_error_date ? Number(info.result.last_error_date) * 1000 : null,
+    tarefas_ligadas: !/^(desligadas|0|false|nao|não)$/i.test(String(env.DENIA_TAREFAS || "")), problemas: []
+  };
+  const p = r.problemas;
+  if (!eu?.ok) p.push("O token do bot (TELEGRAM_BOT_TOKEN) foi recusado pelo Telegram. Confira a variável na Hostinger.");
+  if (eu?.ok && !grupo?.ok) p.push("O bot não está no grupo de TELEGRAM_CHAT_ID (ou o ID está errado). Adicione o bot ao grupo da Central.");
+  if (!esperado) p.push("A DENIA ainda não sabe o próprio endereço público: confira SITE_URL na Hostinger (https://denia-ai.com) ou mande uma mensagem no WhatsApp da Central e toque em Conectar.");
+  else if (!atual) p.push("O bot não está ligado a nenhum endereço. Toque em \"Conectar agora\".");
+  else if (atual !== esperado) p.push(`O bot entrega as mensagens em outro endereço (${atual}). Toque em "Conectar agora"; se for de outro sistema, use "Forçar" (o outro sistema deixa de receber).`);
+  if (eu?.ok && !r.le_todo_o_grupo) p.push("O modo de privacidade do bot está ligado: no grupo ele só recebe mensagens que RESPONDEM a uma mensagem dele ou que citam o bot. Para a DENIA ler tudo: no Telegram abra @BotFather → /setprivacy → escolha o bot → Disable. Depois remova o bot do grupo e adicione de novo.");
+  if (r.ultimo_erro && r.ultimo_erro_em && c.agora() - r.ultimo_erro_em < 86400000) p.push(`O Telegram não conseguiu entregar a última mensagem: ${r.ultimo_erro}.`);
+  if (!r.tarefas_ligadas) p.push("As tarefas automáticas estão desligadas (variável DENIA_TAREFAS=desligadas na Hostinger). Apague essa variável e reinicie: sem elas a DENIA não acompanha serviços, não cobra profissionais e não liga o Telegram sozinha.");
+  if (String(env.DENIA_PAUSADA || "").toLowerCase() === "true") p.push("A IA está pausada pela variável ENGINE_DENIA_PAUSADA=true na Hostinger. Apague essa variável e reinicie.");
+  if (ignorado?.chat && ignorado.chat !== String(env.TELEGRAM_CHAT_ID) && c.agora() - Number(ignorado.em || 0) < 7 * 86400000) p.push(`Chegou mensagem de "${ignorado.titulo || ignorado.chat}" (ID ${ignorado.chat}, ${ignorado.tipo === "private" ? "conversa direta com o bot" : "grupo"}), mas o grupo configurado é outro (TELEGRAM_CHAT_ID). ${ignorado.tipo === "private" ? "A DENIA só responde no grupo da Central." : `Se esse é o grupo da Central, troque TELEGRAM_CHAT_ID para ${ignorado.chat} na Hostinger.`}`);
+  return r;
 }
 
 // ============================================================================

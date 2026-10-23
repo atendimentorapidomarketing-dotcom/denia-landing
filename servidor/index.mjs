@@ -140,7 +140,9 @@ export async function iniciar(op = {}) {
   }
   variaveis.DENIA_PLATFORM_SERVICE_TOKEN = variaveisEngine.DENIA_PLATFORM_SERVICE_TOKEN = tokenIA;
   variaveis.DENIA_IA_LOCAL = "1";
-  variaveisEngine.DENIA_SERVIDOR_PROPRIO = "1"; // a IA pode esperar o cliente terminar de escrever (sem o limite de 30 s da Cloudflare)
+  variaveisEngine.DENIA_SERVIDOR_PROPRIO = "1";
+  // Endereço público da IA (ex.: https://denia-ai.com/ia): usado para ligar o Telegram da equipe.
+  { const site = String(ambiente.SITE_URL || "").trim().replace(/\/+$/, ""); if (/^https:\/\/[^/\s]+$/.test(site) && !variaveisEngine.ENDERECO_PUBLICO_IA) variaveisEngine.ENDERECO_PUBLICO_IA = site + "/" + String(ambiente.ENGINE_PREFIXO || "ia").replace(/^\/+|\/+$/g, ""); } // a IA pode esperar o cliente terminar de escrever (sem o limite de 30 s da Cloudflare)
   // Fora da Cloudflare não existe o limite de 50 chamadas por execução do plano gratuito.
   if (!variaveisEngine.LIMITE_CHAMADAS) variaveisEngine.LIMITE_CHAMADAS = "900";
 
