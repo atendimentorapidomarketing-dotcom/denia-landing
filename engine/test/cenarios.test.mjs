@@ -1520,3 +1520,106 @@ test("Cliente manda só 'Oi' e continua escrevendo: a DENIA espera e responde um
   assert.equal(a.llm.filter(x => x.papel === "cliente").length, 1);
   assert.equal(a.para(CLI).length, 1);
 });
+
+test("Serviço agendado: depois do horário a DENIA pergunta ao profissional; feito → conclui e pergunta ao cliente", async () => {
+  const a = await criarAmbiente();
+  a.llmCliente = () => decisao({ resposta: "Certo!", intencao: "NOVO_PEDIDO", quer_orcamento_ou_atendimento: true, pronto_para_profissional: true, fatos: { servico: "troca de tecido do sofá", bairro: "Copacabana", endereco: "Rua Barata Ribeiro, 200" } });
+  await a.cliente(CLI, "Quero trocar o tecido do sofá, Rua Barata Ribeiro, 200, Copacabana", { nome: "Maria" });
+  a.llmPrestador = () => prest({ tipo: "ACEITA", valor_centavos: 60000, valor_e_final: "SIM", disponibilidade: "amanhã às 14h" });
+  await a.cliente(CARLOS_ESTOF, "Faço, 600 final, amanhã às 14h");
+  a.llmCliente = () => decisao({ resposta: "Ótimo!", intencao: "ACEITA_PROPOSTA" });
+  await a.cliente(CLI, "Pode ser");
+  a.llmPrestador = () => prest({ tipo: "CONFIRMA_AGENDAMENTO" });
+  await a.cliente(CARLOS_ESTOF, "Confirmado");
+  assert.equal(a.DB.q("SELECT etapa FROM d30_casos")[0].etapa, "AGENDADO");
+  await a.cron();
+  const acomp = a.DB.q("SELECT * FROM d30_acompanhamentos")[0];
+  assert.equal(acomp.status, "AGUARDANDO");
+  assert.equal(new Date(acomp.quando_ms).toISOString(), "2026-10-08T17:00:00.000Z", "amanhã às 14h (Brasília)");
+
+  const antes = a.para(CARLOS_ESTOF).length;
+  a.agora = Date.parse("2026-10-08T15:30:00-03:00"); await a.cron();
+  assert.equal(a.para(CARLOS_ESTOF).length, antes, "antes do horário + 2 h não pergunta");
+  a.agora = Date.parse("2026-10-08T16:30:00-03:00"); await a.cron();
+  assert.match(a.ultimoPara(CARLOS_ESTOF), /deu tudo certo no atendimento de Maria \(Copacabana\)\? Já ficou pronto\?/);
+  await a.cron();
+  assert.equal(a.para(CARLOS_ESTOF).length, antes + 1, "pergunta uma vez só");
+
+  a.llmPrestador = () => prest({ tipo: "COMENTARIO" });
+  a.llmProfAgendado = () => ({ resposta: "Perfeito, obrigada! 🙏", precisa_equipe: false, servico: "FEITO" });
+  await a.cliente(CARLOS_ESTOF, "Terminei agora, ficou ótimo");
+  assert.equal(a.DB.q("SELECT etapa FROM d30_casos")[0].etapa, "CONCLUIDO");
+  assert.match(a.ultimoPara(CLI), /serviço foi concluído\. Ficou tudo certo/);
+  assert.equal(a.DB.q("SELECT status FROM d30_acompanhamentos")[0].status, "FEITO");
+});
+
+test("Serviço agendado sem resposta do profissional: a equipe é avisada no Telegram", async () => {
+  const a = await criarAmbiente();
+  a.llmCliente = () => decisao({ resposta: "Certo!", intencao: "NOVO_PEDIDO", quer_orcamento_ou_atendimento: true, pronto_para_profissional: true, fatos: { servico: "troca de tecido do sofá", bairro: "Copacabana", endereco: "Rua Barata Ribeiro, 200" } });
+  await a.cliente(CLI, "Quero trocar o tecido do sofá, Rua Barata Ribeiro, 200, Copacabana", { nome: "Maria" });
+  a.llmPrestador = () => prest({ tipo: "ACEITA", valor_centavos: 60000, valor_e_final: "SIM", disponibilidade: "sexta às 9h" });
+  await a.cliente(CARLOS_ESTOF, "Faço, 600 final, sexta às 9h");
+  a.llmCliente = () => decisao({ resposta: "Ótimo!", intencao: "ACEITA_PROPOSTA" });
+  await a.cliente(CLI, "Pode ser");
+  a.llmPrestador = () => prest({ tipo: "CONFIRMA_AGENDAMENTO" });
+  await a.cliente(CARLOS_ESTOF, "Confirmado");
+  await a.cron();
+  assert.equal(new Date(a.DB.q("SELECT quando_ms FROM d30_acompanhamentos")[0].quando_ms).toISOString(), "2026-10-09T12:00:00.000Z", "sexta às 9h");
+  a.agora = Date.parse("2026-10-09T11:30:00-03:00"); await a.cron();
+  assert.match(a.ultimoPara(CARLOS_ESTOF), /deu tudo certo/);
+  a.agora = Date.parse("2026-10-09T16:00:00-03:00"); await a.cron();
+  assert.ok(a.telegram.some(t => /Perguntei a Carlos \(estofador\) se o serviço de Maria \(Copacabana\)[\s\S]*não respondeu/.test(t)));
+});
+
+test("Equipe ensina a DENIA pelo Telegram: vira pedido para o administrador aprovar, e só depois vale", async () => {
+  const TOKEN = "token-da-plataforma-123456";
+  const a = await criarAmbiente({ env: { DENIA_PLATFORM_SERVICE_TOKEN: TOKEN } });
+  await a.http("/api/telegram/conectar", { method: "POST", body: "{}" });
+  a.llmEquipe = () => ({ caso_id: 0, acoes: [{ tipo: "INSTRUCAO", titulo: "Sem emoji com cliente novo", conteudo: "Não use emojis na primeira conversa com um cliente novo." }], resposta: "", pergunta: "" });
+  await a.equipe("Denia, não usa emoji com cliente novo, fica estranho");
+  assert.match(a.telegram.at(-1), /Anotei[\s\S]*administrador aprovar/);
+  const s = a.DB.q("SELECT * FROM d30_sugestoes")[0];
+  assert.equal(s.tipo, "INSTRUCAO_EQUIPE");
+  assert.equal(s.status, "PENDENTE");
+  assert.match(s.evidencia, /Ana no Telegram/);
+  let entrada = "";
+  a.llmCliente = (e) => { entrada = e; return decisao({ resposta: "Oi!" }); };
+  await a.cliente(CLI, "Oi, preciso de ajuda com a geladeira");
+  assert.doesNotMatch(entrada, /Não use emojis/, "antes de aprovar não vale");
+  await a.http("/platform/learning/suggestions/" + s.id, { method: "POST", headers: { authorization: "Bearer " + TOKEN }, body: JSON.stringify({ acao: "aprovar", autor: "admin" }) });
+  await a.cliente(CLI, "É uma Brastemp, parou de gelar");
+  assert.match(entrada, /Não use emojis na primeira conversa/, "depois de aprovado entra no atendimento");
+});
+
+test("Estudo: a DENIA leva dúvidas às atendentes, escolhe o que estudar e o que aprende vai para aprovação", async () => {
+  const TOKEN = "token-da-plataforma-123456";
+  const a = await criarAmbiente({ env: { DENIA_PLATFORM_SERVICE_TOKEN: TOKEN } });
+  await a.http("/api/telegram/conectar", { method: "POST", body: "{}" });
+  a.llmCliente = () => decisao({ resposta: "Certo!" });
+  await a.cliente(CLI, "Vocês dão desconto à vista?");
+  a.llmEstudo = () => ({ nota: 8, resumo: "Ok.", erros: [], licoes: [], conhecimento: [],
+    duvidas: [{ situacao: "Cliente pediu desconto à vista.", pergunta: "Posso oferecer desconto para pagamento à vista? Quanto?" }],
+    estudar: [{ tema: "como responder pedido de desconto sem perder a venda", motivo: "não soube responder desconto" }] });
+  await a.http("/platform/study/run", { method: "POST", headers: { authorization: "Bearer " + TOKEN }, body: "{}" });
+  assert.ok(a.telegram.some(t => /DÚVIDA DA DENIA[\s\S]*desconto para pagamento à vista/.test(t)));
+
+  a.llmWeb = (entrada) => { assert.match(entrada, /como responder pedido de desconto sem perder a venda/); return "- Mostre o que está incluso no serviço antes de falar de preço.\n- Ofereça parcelamento em vez de desconto quando a empresa permitir."; };
+  await a.http("/platform/study/run", { method: "POST", headers: { authorization: "Bearer " + TOKEN }, body: JSON.stringify({ tipo: "pesquisa" }) });
+  const web = a.llm.find(x => x.papel === "web");
+  assert.equal(web.ferramentas[0].type, "web_search");
+  const s = a.DB.q("SELECT * FROM d30_sugestoes WHERE tipo='ESTUDO'")[0];
+  assert.equal(s.status, "PENDENTE");
+  assert.match(s.conteudo, /Mostre o que está incluso/);
+  const st = await (await a.http("/platform/study", { headers: { authorization: "Bearer " + TOKEN } })).json();
+  assert.equal(st.caderno.estudados[0].tema, "como responder pedido de desconto sem perder a venda");
+  assert.equal(st.caderno.temas.length, 0);
+  // A atendente responde a dúvida no Telegram: vira pedido para aprovar.
+  const duvida = a.telegramMsgs.find(m => /DÚVIDA DA DENIA/.test(m.texto));
+  a.llmEquipe = (e) => { assert.match(e, /DÚVIDA DA DENIA/); return { caso_id: 0, acoes: [{ tipo: "INSTRUCAO", titulo: "Desconto à vista", conteudo: "Para pagamento à vista no Pix, ofereça 5% de desconto." }], resposta: "", pergunta: "" }; };
+  await a.equipe("Pode dar 5% no pix", { responde: duvida.id });
+  assert.equal(a.DB.q("SELECT COUNT(*) n FROM d30_sugestoes WHERE tipo='INSTRUCAO_EQUIPE' AND status='PENDENTE'")[0].n, 1);
+  // Aprovar o estudo transforma as regras em lições.
+  await a.http("/platform/learning/suggestions/" + s.id, { method: "POST", headers: { authorization: "Bearer " + TOKEN }, body: JSON.stringify({ acao: "aprovar", autor: "admin" }) });
+  const st2 = await (await a.http("/platform/study", { headers: { authorization: "Bearer " + TOKEN } })).json();
+  assert.match(st2.licoes, /Mostre o que está incluso/);
+});

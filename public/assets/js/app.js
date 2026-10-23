@@ -928,7 +928,7 @@
   // Aprendizados (histórico de 6 meses → sugestões com aprovação)
   // ---------------------------------------------------------------------------
 
-  const TIPOS = { RESPOSTA_PADRAO: ["Resposta padrão", "info"], PRECO_PRATICADO: ["Preço praticado", "alerta"], QUEM_ATENDE: ["Quem atende", "info"], REGRA: ["Regra", ""], ESTILO: ["Jeito de falar", "ok"], INFORMACAO: ["Informação", ""] };
+  const TIPOS = { RESPOSTA_PADRAO: ["Resposta padrão", "info"], PRECO_PRATICADO: ["Preço praticado", "alerta"], QUEM_ATENDE: ["Quem atende", "info"], REGRA: ["Regra", ""], ESTILO: ["Jeito de falar", "ok"], INFORMACAO: ["Informação", ""], INSTRUCAO_EQUIPE: ["Pedido da equipe (Telegram)", "alerta"], ESTUDO: ["Estudo da DENIA", "ok"] };
   let timerAprendizado = null;
 
   // Estudo diário: toda noite a DENIA relê o dia, encontra os próprios erros e escreve lições que valem no dia seguinte.
@@ -944,14 +944,24 @@
       h("div", { class: "cabeca-grafico" }, h("h3", { style: "margin:0", text: "Estudo diário da DENIA" }),
         pode("ADMIN") ? h("div", { class: "acoes" },
           botao("Estudar o dia agora", async (_e, b) => { b.textContent = "Estudando…"; try { await eng("study/run", { metodo: "POST", corpo: {} }); aviso("Estudo concluído.", "ok"); await blocoEstudo(caixa); } catch (e) { aviso(e.message, "erro"); b.textContent = "Estudar o dia agora"; } }, "btn-primario btn-pequeno"),
-          botao("Pesquisar boas práticas", async (_e, b) => { b.textContent = "Pesquisando na internet…"; try { await eng("study/run", { metodo: "POST", corpo: { tipo: "pesquisa" } }); aviso("Pesquisa concluída.", "ok"); await blocoEstudo(caixa); } catch (e) { aviso(e.message, "erro"); b.textContent = "Pesquisar boas práticas"; } }, "btn-secundario btn-pequeno")) : null),
-      h("p", { class: "sub", text: "Toda noite ela relê as conversas do dia, aponta os próprios erros e escreve lições que já valem no atendimento seguinte. Uma vez por semana pesquisa na internet boas práticas de atendimento com empatia." }),
+          botao("Estudar um tema agora", async (_e, b) => { b.textContent = "Estudando na internet…"; try { await eng("study/run", { metodo: "POST", corpo: { tipo: "pesquisa" } }); aviso("Estudo concluído. O que ela aprendeu está em Aprendizados para você aprovar.", "ok"); await blocoEstudo(caixa); } catch (e) { aviso(e.message, "erro"); b.textContent = "Estudar um tema agora"; } }, "btn-secundario btn-pequeno")) : null),
+      h("p", { class: "sub", text: "Toda noite ela relê as conversas do dia, aponta os próprios erros e escreve lições que já valem no atendimento seguinte. Ela mesma escolhe o que estudar, pesquisa cursos e guias na internet e manda o que aprendeu para você aprovar aqui embaixo. Quando não sabe como agir, pergunta às atendentes no Telegram." }),
       ultimo ? h("section", { class: "grade grade-3" }, metrica("Nota do último dia", ultimo.nota != null ? `${String(ultimo.nota).replace(".", ",")}/10` : "—", ultimo.dia ? dataCompleta(ultimo.dia) : ""), metrica("Conversas estudadas", numero(ultimo.conversas || 0), ""), metrica("Lições que ela segue", numero(licoes.length), `${numero(ultimo.licoes_novas || 0)} nova(s) no último estudo`)) : h("p", { class: "nota", text: "Ainda não houve estudo. Ele acontece sozinho depois das 21h, ou clique em \"Estudar o dia agora\"." }),
       notas.length > 1 ? h("div", { style: "margin-top:10px" }, h("h4", { style: "margin:0 0 4px", text: "Nota por dia" }), graficoLinha(notas.map(n => ({ chave: n.data, rotulo: dataCompleta(n.data), curto: dataCurta(n.data), valor: n.v })), null, "Nota do dia", "")) : null,
       ultimo && ultimo.resumo ? h("p", { style: "margin:10px 0 0", text: ultimo.resumo }) : null,
       ultimo && (ultimo.erros || []).length ? h("details", {}, h("summary", { text: `Erros que ela encontrou no último dia (${ultimo.erros.length})` }),
         h("ul", { class: "lista-saude" }, ultimo.erros.map(e => h("li", {}, h("span", {}, h("strong", { text: e.erro }), h("span", { class: "sub", text: "Como deveria ser: " + e.correcao })))))) : null,
-      licoes.length ? h("details", { open: true }, h("summary", { text: `Lições que ela segue (${licoes.length})` }), h("ol", { class: "passos" }, licoes.map(l => h("li", { text: l })))) : null));
+      licoes.length ? h("details", { open: true }, h("summary", { text: `Lições que ela segue (${licoes.length})` }), h("ol", { class: "passos" }, licoes.map(l => h("li", { text: l })))) : null,
+      blocoCaderno(st.caderno)));
+  }
+  // Caderno: o que ela decidiu estudar, o que já estudou e as dúvidas que levou às atendentes.
+  function blocoCaderno(k) {
+    if (!k || !((k.temas || []).length || (k.estudados || []).length || (k.duvidas || []).length)) return null;
+    const quando = ms => ms ? new Date(ms).toLocaleDateString("pt-BR") : "";
+    return h("details", {}, h("summary", { text: "Caderno de estudos da DENIA" }),
+      (k.temas || []).length ? h("div", {}, h("h4", { style: "margin:8px 0 4px", text: "Quer estudar" }), h("ul", { class: "lista-saude" }, k.temas.map(t => h("li", {}, h("span", {}, h("strong", { text: t.tema }), t.motivo ? h("span", { class: "sub", text: "Por quê: " + t.motivo }) : null))))) : null,
+      (k.estudados || []).length ? h("div", {}, h("h4", { style: "margin:8px 0 4px", text: "Já estudou" }), h("ul", { class: "lista-saude" }, k.estudados.slice(0, 10).map(t => h("li", {}, h("span", { text: `${t.tema} — ${quando(t.em)}${t.regras ? ` (${t.regras} regra${t.regras > 1 ? "s" : ""} para aprovar)` : ""}` }))))) : null,
+      (k.duvidas || []).length ? h("div", {}, h("h4", { style: "margin:8px 0 4px", text: "Dúvidas que levou às atendentes" }), h("ul", { class: "lista-saude" }, k.duvidas.slice(0, 10).map(d => h("li", {}, h("span", {}, h("strong", { text: d.pergunta }), h("span", { class: "sub", text: [d.situacao, quando(d.em)].filter(Boolean).join(" · ") })))))) : null);
   }
   async function paginaAprendizados(el, param, vivo) {
     clearTimeout(timerAprendizado);

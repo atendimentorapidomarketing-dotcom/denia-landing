@@ -36,8 +36,8 @@
 //       relatório diário. Nunca inicia conversa nova por conta própria.
 // ============================================================================
 
-const VERSAO = "33.3.0";
-const SCHEMA_VERSAO = "33.0.0"; // mude sempre que acrescentar tabela ou índice (senão o banco de produção não recebe)
+const VERSAO = "34.0.0";
+const SCHEMA_VERSAO = "33.4.0"; // mude sempre que acrescentar tabela ou índice (senão o banco de produção não recebe)
 const EMPRESA_ID = 1;
 const PHONE_ID_PADRAO = "473474732510163";
 const GRAPH = "v25.0";
@@ -484,6 +484,8 @@ const SQL_SCHEMA = [
   `CREATE TABLE IF NOT EXISTS d30_guardadas (id INTEGER PRIMARY KEY AUTOINCREMENT, telefone TEXT NOT NULL, texto TEXT NOT NULL, papel TEXT, status TEXT NOT NULL DEFAULT 'GUARDADA', criado_ms INTEGER NOT NULL, enviado_ms INTEGER)`,
   `CREATE INDEX IF NOT EXISTS d30_guardadas_tel ON d30_guardadas(telefone, status)`,
   `CREATE TABLE IF NOT EXISTS d30_prestadores (id TEXT PRIMARY KEY, nome TEXT NOT NULL, telefone TEXT NOT NULL, area TEXT NOT NULL, servicos TEXT, ordem INTEGER NOT NULL DEFAULT 0, ativo INTEGER NOT NULL DEFAULT 1, atualizado_ms INTEGER)`,
+  `CREATE TABLE IF NOT EXISTS d30_acompanhamentos (caso_id INTEGER PRIMARY KEY, consulta_id INTEGER, quando_ms INTEGER, status TEXT NOT NULL, perguntado_ms INTEGER, atualizado_ms INTEGER NOT NULL)`,
+  `CREATE INDEX IF NOT EXISTS d30_acomp_status ON d30_acompanhamentos(status, quando_ms)`,
   `CREATE TABLE IF NOT EXISTS d30_tg_msgs (message_id INTEGER PRIMARY KEY, caso_id INTEGER, telefone TEXT, texto TEXT, criado_ms INTEGER NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS d30_treinamento (versao INTEGER PRIMARY KEY AUTOINCREMENT, json TEXT NOT NULL, autor TEXT, criado_ms INTEGER NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS d30_eventos (id INTEGER PRIMARY KEY AUTOINCREMENT, caso_id INTEGER, tipo TEXT NOT NULL, descricao TEXT, dados TEXT, criado_ms INTEGER NOT NULL)`,
@@ -620,7 +622,9 @@ const INSTRUCOES_ESTUDO = `Você é a supervisora de qualidade da Central de Ate
 Procure: perguntas repetidas ou desnecessárias; contexto ignorado (cliente antigo tratado como novo, endereço já informado pedido de novo, serviço já agendado pela equipe e a DENIA agindo como se não estivesse); informação inventada; resposta longa, fria ou robótica; demora; chamar a equipe quando dava para resolver; não chamar quando precisava; erro com profissional (pedir valor de algo já combinado, confundir atendimentos).
 Depois escreva LIÇÕES curtas e acionáveis, no imperativo, que corrijam esses erros e que valham para qualquer conversa (sem nomes, telefones ou dados pessoais). Exemplo: "Antes de pedir valor ao profissional, confira se a equipe já combinou o serviço por fora."
 Conhecimento NOVO sobre a empresa que apareceu nas conversas (preço praticado, serviço, quem atende, regra) vai em "conhecimento", nunca em lições.
-Responda em JSON: {"nota":0-10,"resumo":"2 frases sobre o dia","erros":[{"erro":"o que aconteceu","correcao":"como deveria ter sido"}],"licoes":["..."],"conhecimento":[{"tipo":"RESPOSTA_PADRAO|PRECO_PRATICADO|QUEM_ATENDE|REGRA|INFORMACAO","titulo":"","conteudo":""}]}`;
+DÚVIDAS: situações de hoje em que NÃO dá para saber qual era o jeito certo de agir sem perguntar a quem conhece a empresa (política, preço, quem chamar, o que prometer). No máximo 2, como perguntas curtas e concretas para as atendentes (sem nomes nem telefones).
+ESTUDAR: até 3 temas que a DENIA deve estudar para melhorar, escolhidos a partir dos erros e das conversas de hoje (ex.: "como responder objeção de preço sem dar desconto", "como acalmar cliente irritado com atraso"). Temas de habilidade (empatia, vendas, atendimento, comunicação), nunca dados da empresa.
+Responda em JSON: {"nota":0-10,"resumo":"2 frases sobre o dia","erros":[{"erro":"o que aconteceu","correcao":"como deveria ter sido"}],"licoes":["..."],"conhecimento":[{"tipo":"RESPOSTA_PADRAO|PRECO_PRATICADO|QUEM_ATENDE|REGRA|INFORMACAO","titulo":"","conteudo":""}],"duvidas":[{"situacao":"","pergunta":""}],"estudar":[{"tema":"","motivo":""}]}`;
 const MAX_LICOES = 30;
 async function incorporarLicoes(c, novas, autor) {
   const limpas = novas.map(x => ocultarTelefones(txt(x, 280))).filter(x => x.length > 12);
@@ -665,31 +669,71 @@ async function estudoDiario(c, { forcar = false } = {}) {
       .bind(hash, tipo, titulo, conteudo, "Estudo diário de " + dia.split("-").reverse().join("/"), agora).run().catch(() => {});
     conhecimentos++;
   }
-  const relatorio = { dia, conversas: porPessoa.size, nota: Number.isFinite(Number(o?.nota)) ? Math.max(0, Math.min(10, Number(o.nota))) : null, resumo: txt(o?.resumo, 500),
+  // Caderno: o que ela decidiu estudar (o estudo da noite escolhe daqui).
+  const caderno = await lerCaderno(c);
+  for (const e of (Array.isArray(o?.estudar) ? o.estudar : []).slice(0, 3)) {
+    const tema = ocultarTelefones(txt(e?.tema, 140));
+    if (tema && !caderno.temas.some(x => norm(x.tema) === norm(tema)) && !caderno.estudados.some(x => norm(x.tema) === norm(tema))) caderno.temas.push({ tema, motivo: ocultarTelefones(txt(e?.motivo, 200)), em: agora });
+  }
+  caderno.temas = caderno.temas.slice(-12);
+  // Dúvidas: pergunta às atendentes no Telegram (no máximo 2 por dia); a resposta vira sugestão para aprovar.
+  const duvidas = [];
+  for (const q of (Array.isArray(o?.duvidas) ? o.duvidas : []).slice(0, 2)) {
+    const pergunta = ocultarTelefones(txt(q?.pergunta, 300)), situacao = ocultarTelefones(txt(q?.situacao, 300));
+    if (!pergunta) continue;
+    duvidas.push({ pergunta, situacao, em: agora });
+    if (c.env.TELEGRAM_BOT_TOKEN && c.env.TELEGRAM_CHAT_ID && await reservarChave(c, `duvida:${dia}:${hashTexto(norm(pergunta))}`)) {
+      const texto = `🤔 DÚVIDA DA DENIA\n${situacao ? situacao + "\n" : ""}${pergunta}\n↩️ Responda esta mensagem para me ensinar. O que você disser vai para o administrador aprovar.`;
+      const r = await c.saida.telegram(texto).catch(() => null);
+      if (r?.id) await c.db.prepare("INSERT OR REPLACE INTO d30_tg_msgs(message_id,caso_id,telefone,texto,criado_ms) VALUES(?,?,?,?,?)").bind(Number(r.id), null, null, txt(texto, 1500), agora).run().catch(() => { });
+    }
+  }
+  caderno.duvidas = [...duvidas, ...caderno.duvidas].slice(0, 20);
+  await salvarCaderno(c, caderno);
+  const relatorio = { dia, conversas: porPessoa.size, duvidas, estudar: caderno.temas.slice(-3), nota: Number.isFinite(Number(o?.nota)) ? Math.max(0, Math.min(10, Number(o.nota))) : null, resumo: txt(o?.resumo, 500),
     erros: (Array.isArray(o?.erros) ? o.erros : []).slice(0, 10).map(e => ({ erro: ocultarTelefones(txt(e?.erro, 300)), correcao: ocultarTelefones(txt(e?.correcao, 300)) })), licoes, licoes_novas: novas, conhecimentos };
   await evento(c, null, "ESTUDO_DIARIO", relatorio.resumo || "Estudo do dia", relatorio);
   if (!forcar && String(c.env.TELEGRAM_AVISOS || "").toLowerCase() === "todos") await c.saida.telegram(`DENIA — estudo do dia (${porPessoa.size} conversas): nota ${relatorio.nota ?? "-"}/10. ${relatorio.resumo}${novas ? ` ${novas} lição(ões) nova(s) já valem amanhã.` : ""}${conhecimentos ? ` ${conhecimentos} conhecimento(s) para aprovar em Aprendizados.` : ""}`).catch(() => {});
   return relatorio;
 }
-// Uma vez por semana: pesquisa na internet boas práticas de atendimento com empatia e vira lição.
+// Caderno de estudos da DENIA: temas que ela escolheu estudar, o que já estudou e as dúvidas que levou à equipe.
+async function lerCaderno(c) {
+  const v = await c.db.prepare("SELECT valor FROM d30_meta WHERE chave='caderno'").first().catch(() => null);
+  let o = null; try { o = JSON.parse(v?.valor || "null"); } catch { o = null; }
+  return { temas: Array.isArray(o?.temas) ? o.temas : [], estudados: Array.isArray(o?.estudados) ? o.estudados : [], duvidas: Array.isArray(o?.duvidas) ? o.duvidas : [] };
+}
+async function salvarCaderno(c, k) {
+  await c.db.prepare("INSERT OR REPLACE INTO d30_meta(chave,valor) VALUES('caderno',?)").bind(JSON.stringify({ temas: k.temas.slice(-12), estudados: k.estudados.slice(0, 30), duvidas: k.duvidas.slice(0, 20) })).run();
+}
+const TEMAS_BASE = ["empatia no atendimento por WhatsApp sem soar robótica", "como conduzir o cliente até fechar o serviço sem pressionar",
+  "como responder objeção de preço com valor, não com desconto", "como escrever mensagens curtas e naturais como uma atendente brasileira",
+  "como acalmar cliente irritado com atraso ou problema", "como acompanhar o cliente depois do serviço para ele voltar e indicar",
+  "como se comunicar com profissionais parceiros de forma clara e sem ruído"];
+// Toda noite (22 h) a DENIA estuda UM tema que ela mesma escolheu (ou um tema base), pesquisando cursos, guias e
+// estudos na internet. O que aprendeu vira sugestão em Aprendizados: só passa a valer com aprovação do administrador.
 async function pesquisaSemanal(c, { forcar = false } = {}) {
   if (!c.env.OPENAI_API_KEY || c.sim) return null;
-  const semana = Math.floor(c.agora() / (7 * 86400000));
-  if (!forcar && !(await reservarChave(c, "pesquisa:" + semana))) return null;
+  const dia = dataSP(c.agora());
+  if (!forcar && !(await reservarChave(c, "pesquisa:" + dia))) return null;
+  const caderno = await lerCaderno(c);
+  const escolhido = caderno.temas.shift() || { tema: TEMAS_BASE[Math.floor(c.agora() / 86400000) % TEMAS_BASE.length], motivo: "tema de base" };
   gastar(c);
   const r = await fetch("https://api.openai.com/v1/responses", {
     method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${c.env.OPENAI_API_KEY}` }, signal: AbortSignal.timeout(60000),
-    body: JSON.stringify({ model: modelo(c.env), tools: [{ type: "web_search" }], max_output_tokens: 1200, store: false,
-      input: "Pesquise na internet (cursos, guias e estudos recentes de atendimento ao cliente) as melhores práticas para atender clientes e profissionais parceiros pelo WhatsApp com empatia, rapidez e linguagem humana, para uma central de serviços residenciais no Brasil. Responda SÓ com até 8 regras práticas, uma por linha começando com \"- \", no imperativo, específicas e acionáveis (nada genérico como \"seja educado\")." })
+    body: JSON.stringify({ model: modelo(c.env), tools: [{ type: "web_search" }], max_output_tokens: 1400, store: false,
+      input: `Você é a DENIA, atendente virtual de uma central de serviços no Brasil, estudando para atender melhor pelo WhatsApp. Tema de hoje: "${escolhido.tema}"${escolhido.motivo ? ` (por quê: ${escolhido.motivo})` : ""}.\nPesquise na internet cursos, guias e estudos sérios sobre esse tema. Depois responda SÓ com até 6 regras práticas que você vai seguir, uma por linha começando com "- ", no imperativo, específicas, com um exemplo curto de frase quando ajudar. Nada genérico ("seja educada"), nada que faça você fingir ser humana ou prometer o que a empresa não oferece.` })
   });
   const d = await r.json().catch(() => ({}));
-  if (!r.ok) return { erro: d?.error?.message || `HTTP ${r.status}` };
+  await registrarUsoIA(c, "estudo_internet", modelo(c.env), d?.usage, !r.ok).catch(() => {});
+  if (!r.ok) { if (escolhido.motivo !== "tema de base") { caderno.temas.unshift(escolhido); await salvarCaderno(c, caderno); } return { erro: d?.error?.message || `HTTP ${r.status}` }; }
   let texto = typeof d.output_text === "string" ? d.output_text : "";
   if (!texto) for (const it of d.output || []) for (const x of it.content || []) if (typeof x.text === "string") texto += x.text;
-  const regras = texto.split("\n").map(l => l.replace(/^[-•*\d.)\s]+/, "").replace(/\[[^\]]*\]\([^)]*\)/g, "").trim()).filter(l => l.length > 15).slice(0, 8).map(l => "Boa prática: " + l);
-  const novas = await incorporarLicoes(c, regras, "pesquisa semanal de boas práticas (automático)");
-  await evento(c, null, "PESQUISA_SEMANAL", `${novas} boa(s) prática(s) nova(s)`, { regras });
-  return { regras, novas };
+  const regras = texto.split("\n").map(l => l.replace(/^[-•*\d.)\s]+/, "").replace(/\[[^\]]*\]\([^)]*\)/g, "").replace(/\(\s*\)/g, "").trim()).filter(l => l.length > 15).slice(0, 6);
+  if (regras.length) await guardarSugestao(c, { tipo: "ESTUDO", titulo: "Estudo: " + escolhido.tema, conteudo: regras.map(l => "- " + l).join("\n"), evidencia: `Estudou sozinha na internet em ${dia.split("-").reverse().join("/")}${escolhido.motivo ? ` — motivo: ${escolhido.motivo}` : ""}` });
+  caderno.estudados.unshift({ tema: escolhido.tema, em: c.agora(), regras: regras.length });
+  await salvarCaderno(c, caderno);
+  await evento(c, null, "PESQUISA_SEMANAL", `Estudou "${escolhido.tema}": ${regras.length} regra(s) para aprovar`, { tema: escolhido.tema, regras, novas: 0 });
+  return { tema: escolhido.tema, regras };
 }
 
 // ============================================================================
@@ -814,7 +858,16 @@ async function fichaOnline(c, tel) {
 // gratuito. Nada entra no treinamento sem aprovação.
 
 const LOTE_APRENDIZADO = 220;
-const TIPOS_SUGESTAO = ["RESPOSTA_PADRAO", "PRECO_PRATICADO", "QUEM_ATENDE", "REGRA", "ESTILO", "INFORMACAO"];
+const TIPOS_SUGESTAO = ["RESPOSTA_PADRAO", "PRECO_PRATICADO", "QUEM_ATENDE", "REGRA", "ESTILO", "INFORMACAO", "INSTRUCAO_EQUIPE", "ESTUDO"];
+// Sugestão que só entra no treinamento depois que o administrador aprova (vem do Telegram, do estudo, do histórico).
+async function guardarSugestao(c, { tipo, titulo, conteudo, evidencia }) {
+  titulo = ocultarTelefones(txt(titulo, 140)); conteudo = ocultarTelefones(txt(conteudo, 1200));
+  if (!titulo || !conteudo || /\b(cpf|rg)\b/i.test(conteudo)) return null;
+  const hash = await hmacHex("sugestao", tipo + "|" + norm(titulo));
+  await c.db.prepare(`INSERT INTO d30_sugestoes(hash,tipo,titulo,conteudo,evidencia,ocorrencias,status,criado_ms) VALUES(?,?,?,?,?,1,'PENDENTE',?) ON CONFLICT(hash) DO UPDATE SET ocorrencias=d30_sugestoes.ocorrencias+1, conteudo=excluded.conteudo`)
+    .bind(hash, tipo, titulo, conteudo, ocultarTelefones(txt(evidencia, 300)), c.agora()).run();
+  return true;
+}
 
 async function iniciarAprendizado(c) {
   const fim = Number((await c.db.prepare("SELECT COALESCE(MAX(id),0) n FROM mensagens").first())?.n || 0);
@@ -878,7 +931,14 @@ async function decidirSugestao(c, id, acao, texto, autor) {
     await c.db.prepare("UPDATE d30_sugestoes SET status='REJEITADA', decidido_ms=?, decidido_por=? WHERE id=?").bind(c.agora(), autor, id).run();
     return { ok: true };
   }
-  const conteudo = txt(texto || s.conteudo, 800);
+  const conteudo = String(texto || s.conteudo || "").trim().slice(0, 1500);
+  // O que ela estudou vira lição que ela segue em toda conversa.
+  if (s.tipo === "ESTUDO") {
+    const regras = conteudo.split("\n").map(l => l.replace(/^[-•]\s*/, "").trim()).filter(l => l.length > 12);
+    await incorporarLicoes(c, regras, `${autor} (estudo aprovado #${id})`);
+    await c.db.prepare("UPDATE d30_sugestoes SET status='APROVADA', conteudo=?, decidido_ms=?, decidido_por=? WHERE id=?").bind(conteudo, c.agora(), autor, id).run();
+    return { ok: true };
+  }
   const atual = await carregarTreinamento(c);
   const campo = s.tipo === "ESTILO" ? "exemplos" : "aprendizados";
   const linha = s.tipo === "ESTILO" ? `Atendente: ${conteudo}` : `- [${s.tipo.replace("_", " ").toLowerCase()}] ${s.titulo}: ${conteudo}`;
@@ -1574,7 +1634,7 @@ async function registrarSaidaTaxa(c, to) {
 // ou o cliente escreveu, falhas de entrega, janela de 24 h, erros técnicos) fica registrado e aparece
 // na página Problemas da plataforma. TELEGRAM_AVISOS=todos volta a mandar tudo.
 const AVISOS_URGENTES = ["bloqueio:", "sem-confirmacao:", "limite:", "ia:", "cancel:", "humano:", "apoio:", "comprovante:", "semcat:", "semprest:", "balcao:",
-  "falha-consulta:", "falha-aceite:", "falha-cli:", "valor-incerto:", "pos:", "desist:", "atraso:", "atrasadas:", "guia-humano:", "guia-ia-humano:", "agendado:", "reuniao"];
+  "falha-consulta:", "falha-aceite:", "acomp-sem:", "falha-cli:", "valor-incerto:", "pos:", "desist:", "atraso:", "atrasadas:", "guia-humano:", "guia-ia-humano:", "agendado:", "reuniao"];
 const AVISOS_SEMPRE = ["humano:", "cancel:", "agendado:", "reuniao", "desist:", "bloqueio:", "sem-confirmacao:", "limite:", "guia-humano:"];
 function avisoUrgente(c, chave) { return String(c.env.TELEGRAM_AVISOS || "").toLowerCase() === "todos" || AVISOS_URGENTES.some(p => String(chave || "").startsWith(p)); }
 async function alertarEquipe(c, texto, chave, casoId = null) {
@@ -2811,7 +2871,8 @@ const INSTRUCOES_PROFISSIONAL_AGENDADO = `Você é da equipe da Central e fala c
 - Se ele confirma, agradece ou avisa que vai: responda curto ("Perfeito, obrigada! Qualquer coisa me chama.") ou deixe resposta vazia se nem precisa responder.
 - Se pergunta algo que está nos fatos/histórico (endereço, horário, valor, o que fazer): responda com o dado certo.
 - Se ele quer remarcar, cancelar, mudar valor, relata problema no local ou algo que você não sabe: precisa_equipe=true e responda que vai verificar e já retorna.
-Nunca invente dado. Responda em JSON {"resposta":"","precisa_equipe":false,"motivo":""}`;
+- servico: "FEITO" se ele diz que o serviço/visita já foi feito ou concluído ("já fiz", "terminei", "ficou pronto", "tudo certo, finalizado"); "NAO_FEITO" se não aconteceu (cliente não estava, faltou material, não deu tempo, vai voltar outro dia) — aí precisa_equipe=true; senão "".
+Nunca invente dado. Responda em JSON {"resposta":"","precisa_equipe":false,"motivo":"","servico":""}`;
 
 async function tratarRespostaPrestador(c, { caso, consulta, d, textoTodo, chaveLote, histCaso = [], msgs = [] }) {
   let tipo = String(d?.tipo || "COMENTARIO").toUpperCase();
@@ -2861,6 +2922,18 @@ async function tratarRespostaPrestador(c, { caso, consulta, d, textoTodo, chaveL
         o = await openaiJSON(c, INSTRUCOES_PROFISSIONAL_AGENDADO, `ETAPA: ${caso.etapa}\nFATOS DO SERVIÇO:\n${formatarFatos(caso.fatos)}\nCliente: ${cliente?.nome || "-"}\nData/horário combinado: ${consulta.disponibilidade || caso.fatos?.preferencia_horario || "-"}\nValor ao cliente: ${consulta.valor_cliente ? moeda(consulta.valor_cliente) : "-"}; parte do profissional: ${consulta.valor_prestador ? moeda(consulta.valor_prestador) : "-"}\nResumo: ${caso.resumo || "-"}\n\nHISTÓRICO COM O PROFISSIONAL:\n${formatarHistorico(histCaso, "PROFISSIONAL", new Set(msgs.map(m => m.wamid)))}\n\nMENSAGEM NOVA DO PROFISSIONAL:\n${textoTodo}\n\nResponda em JSON.`, [], 400);
       } catch (e) { console.warn("resposta ao profissional", e?.message); }
       const resposta = txt(o?.resposta, 600);
+      const servico = String(o?.servico || "").toUpperCase();
+      if (servico === "FEITO") {
+        await mudarEtapa(c, caso, "CONCLUIDO");
+        await c.db.prepare("UPDATE d30_acompanhamentos SET status='FEITO', atualizado_ms=? WHERE caso_id=?").bind(c.agora(), caso.casoId).run().catch(() => {});
+        await evento(c, caso.casoId, "SERVICO_CONCLUIDO", `Informado por ${consulta.prestador_nome}: ${txt(textoTodo, 200)}`);
+        await responder(resposta || "Perfeito, obrigada! 🙏", "feito");
+        await avisarCliente("Que bom! O profissional avisou que o serviço foi concluído. Ficou tudo certo por aí? 😊", "feito-cli");
+        await alertarEquipe(c, `Serviço concluído: ${consulta.prestador_nome} avisou que terminou o atendimento de ${cliente?.nome || "o cliente"} (caso #${caso.casoId}).`, "concluido:" + caso.casoId, caso.casoId);
+        return;
+      }
+      if (servico === "NAO_FEITO") { await c.db.prepare("UPDATE d30_acompanhamentos SET status='PROBLEMA', atualizado_ms=? WHERE caso_id=?").bind(c.agora(), caso.casoId).run().catch(() => {}); o.precisa_equipe = true; }
+      else await c.db.prepare("UPDATE d30_acompanhamentos SET status='RESPONDIDO', atualizado_ms=? WHERE caso_id=? AND status='PERGUNTADO'").bind(c.agora(), caso.casoId).run().catch(() => {});
       if (resposta) await responder(resposta, "agendado-resp");
       if (!o || o.precisa_equipe === true) await alertarEquipe(c, `${consulta.prestador_nome} escreveu sobre o serviço já agendado de ${cliente?.nome || "um cliente"}: "${txt(textoTodo, 300)}"${o?.motivo ? ` — ${txt(o.motivo, 200)}` : ""}. Confira.`, "pos:" + chaveLote, caso.casoId);
       return;
@@ -3358,6 +3431,7 @@ async function cron(c) {
   if (c.atrasadasSemResposta) await alertarEquipe(c, `${c.atrasadasSemResposta} conversa(s) ficaram sem resposta por mais tempo e a DENIA NÃO respondeu sozinha para não mandar mensagens em massa. Veja em Conversas e responda quem ainda precisa.`, "atrasadas:" + Math.floor(agora / 3600000));
   if (sobram(c) > 20) await processarAgendados(c);
   if (sobram(c) > 20) await cobrarProfissionais(c).catch(e => console.error("profissionais sem resposta", e?.message));
+  if (sobram(c) > 20) await acompanharServicos(c).catch(e => console.error("acompanhamento de serviços", e?.message));
   if (sobram(c) > 12) await lembrarReunioes(c).catch(e => console.error("reuniões", e?.message));
   // Uma vez por dia: liga o Telegram da equipe à DENIA (se ainda não estiver ligado a outro sistema).
   if (sobram(c) > 15 && c.env.TELEGRAM_BOT_TOKEN && c.env.TELEGRAM_CHAT_ID && String(c.env.TELEGRAM_EQUIPE || "").toLowerCase() !== "desligado" && await reservarChave(c, "tg-conectar:" + dataSP(agora))) {
@@ -3371,6 +3445,7 @@ async function cron(c) {
   if (sobram(c) > 10) await vigiarEntregas(c).catch(e => console.error("entregas", e));
   if (sobram(c) > 30) await prepararMemorias(c, 1).catch(e => console.error("memórias", e));
   if (sobram(c) > 30) await estudoDiario(c).catch(e => console.error("estudo", e?.message));
+  if (sobram(c) > 30 && horaSP(agora) >= 22) await pesquisaSemanal(c).catch(e => console.error("estudo na internet", e?.message));
   const dia = dataSP(agora);
   if (await reservarChave(c, "limpeza:" + dia)) {
     await c.db.prepare("DELETE FROM d30_fila WHERE recebido_ms < ?").bind(agora - 7 * 86400000).run();
@@ -3509,6 +3584,79 @@ async function cobrarProfissionais(c) {
     caso.etapa = "COLETANDO";
     await salvarCaso(c, caso);
     await consultarPrestador(c, caso, pessoa, "troca:" + k.id);
+  }
+}
+
+// Data e hora do serviço a partir do que foi combinado ("amanhã às 14h", "sexta 9h", "25/10 às 10:30").
+// Sem dia reconhecível: null (o acompanhamento usa 24 h depois do agendamento).
+function dataDoServico(texto, referencia) {
+  const t = norm(texto);
+  if (!t) return null;
+  const hoje = dataSP(referencia);
+  const meioDia = d => Date.parse(`${d}T12:00:00-03:00`);
+  const somar = (d, n) => dataSP(meioDia(d) + n * 86400000);
+  let dia = null;
+  const dm = t.match(/\b(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?\b/);
+  if (/depois de amanha/.test(t)) dia = somar(hoje, 2);
+  else if (/\bamanha\b/.test(t)) dia = somar(hoje, 1);
+  else if (/\bhoje\b/.test(t)) dia = hoje;
+  else if (dm) {
+    const ano = dm[3] ? (dm[3].length === 2 ? "20" + dm[3] : dm[3]) : hoje.slice(0, 4);
+    dia = `${ano}-${dm[2].padStart(2, "0")}-${dm[1].padStart(2, "0")}`;
+    if (!dm[3] && dia < hoje) dia = `${Number(ano) + 1}${dia.slice(4)}`;
+  } else {
+    const sem = t.match(/\b(domingo|segunda|terca|quarta|quinta|sexta|sabado)\b/);
+    const dd = t.match(/\bdia (\d{1,2})\b/);
+    if (sem) {
+      const alvo = ["domingo", "segunda", "terca", "quarta", "quinta", "sexta", "sabado"].indexOf(sem[1]);
+      const atual = new Date(meioDia(hoje)).getUTCDay();
+      dia = somar(hoje, (alvo - atual + 7) % 7 || 7);
+    } else if (dd) {
+      let [a, m] = hoje.split("-").map(Number);
+      if (Number(dd[1]) < Number(hoje.slice(8))) { m += 1; if (m > 12) { m = 1; a += 1; } }
+      dia = `${a}-${String(m).padStart(2, "0")}-${dd[1].padStart(2, "0")}`;
+    }
+  }
+  if (!dia || !/^\d{4}-\d{2}-\d{2}$/.test(dia)) return null;
+  const h = t.match(/\b(\d{1,2})\s*(?:h|:)\s*(\d{2})?/) || t.match(/\bas (\d{1,2})\b/);
+  const hora = h && Number(h[1]) <= 23 ? Number(h[1]) : /\bmanha\b/.test(t) ? 9 : /\btarde\b/.test(t) ? 14 : /\bnoite\b/.test(t) ? 19 : 12;
+  const min = h && h[2] ? Math.min(59, Number(h[2])) : 0;
+  const ms = Date.parse(`${dia}T${String(hora).padStart(2, "0")}:${String(min).padStart(2, "0")}:00-03:00`);
+  return Number.isFinite(ms) ? ms : null;
+}
+// Serviço agendado nunca fica esquecido: depois do horário combinado, a DENIA pergunta ao profissional se
+// foi feito. Feito → conclui e pergunta ao cliente se ficou tudo certo. Sem resposta → a equipe é avisada.
+async function acompanharServicos(c) {
+  const agora = c.agora();
+  const novos = (await c.db.prepare("SELECT caso_id, atualizado_ms FROM d30_casos k WHERE etapa IN ('AGENDADO','EM_ANDAMENTO') AND atualizado_ms > ? AND NOT EXISTS (SELECT 1 FROM d30_acompanhamentos a WHERE a.caso_id=k.caso_id) LIMIT 10")
+    .bind(agora - 30 * 86400000).all().catch(() => null))?.results || [];
+  for (const k of novos) {
+    const consulta = await c.db.prepare("SELECT * FROM d30_consultas WHERE caso_id=? AND status IN ('CONFIRMADA','AGUARDANDO_CONFIRMACAO','RESPONDIDA') ORDER BY id DESC LIMIT 1").bind(k.caso_id).first().catch(() => null);
+    const caso = await carregarCasoPorId(c, k.caso_id);
+    const quando = dataDoServico(consulta?.disponibilidade || caso?.fatos?.preferencia_horario || "", Number(consulta?.atualizado_ms || k.atualizado_ms || agora)) || Number(k.atualizado_ms || agora) + 86400000;
+    await c.db.prepare("INSERT OR IGNORE INTO d30_acompanhamentos(caso_id,consulta_id,quando_ms,status,atualizado_ms) VALUES(?,?,?,'AGUARDANDO',?)").bind(k.caso_id, consulta?.id || null, quando, agora).run();
+  }
+  await c.db.prepare("UPDATE d30_acompanhamentos SET status='EXPIRADO', atualizado_ms=? WHERE status='AGUARDANDO' AND quando_ms < ?").bind(agora, agora - 7 * 86400000).run().catch(() => {});
+  // Perguntou e ele não respondeu em 4 h (de expediente): a equipe confere.
+  const semResposta = (await c.db.prepare("SELECT * FROM d30_acompanhamentos WHERE status='PERGUNTADO' AND perguntado_ms < ? LIMIT 5").bind(agora - 4 * 3600000).all().catch(() => null))?.results || [];
+  for (const a of semResposta) {
+    const caso = await carregarCasoPorId(c, a.caso_id);
+    await c.db.prepare("UPDATE d30_acompanhamentos SET status='SEM_RESPOSTA', atualizado_ms=? WHERE caso_id=?").bind(agora, a.caso_id).run();
+    if (!caso || !["AGENDADO", "EM_ANDAMENTO"].includes(caso.etapa)) continue;
+    const k = await consultaDoCaso(c, a.caso_id);
+    await alertarEquipe(c, `Perguntei a ${k?.prestador_nome || "o profissional"} se o serviço de ${pessoaRef(await refCaso(c, a.caso_id))} (caso #${a.caso_id}) foi feito e ele não respondeu. Confirme com ele.`, "acomp-sem:" + a.caso_id, a.caso_id);
+  }
+  if (!dentroHorarioPrestador(c)) return;
+  const vencidos = (await c.db.prepare("SELECT * FROM d30_acompanhamentos WHERE status='AGUARDANDO' AND quando_ms < ? ORDER BY quando_ms LIMIT 5").bind(agora - 2 * 3600000).all().catch(() => null))?.results || [];
+  for (const a of vencidos) {
+    if (sobram(c) < 20) return;
+    const caso = await carregarCasoPorId(c, a.caso_id);
+    const k = caso ? await consultaDoCaso(c, a.caso_id) : null;
+    if (!caso || !k || !["AGENDADO", "EM_ANDAMENTO"].includes(caso.etapa)) { await c.db.prepare("UPDATE d30_acompanhamentos SET status='ENCERRADO', atualizado_ms=? WHERE caso_id=?").bind(agora, a.caso_id).run(); continue; }
+    if (await estaPausado(c, k.prestador_tel)) continue;
+    const r = await enviarAgoraAoPrestador(c, { consulta: k, caso, texto: `${primeiroNome(k.prestador_nome) || "Oi"}, deu tudo certo no atendimento de ${pessoaRef(await refCaso(c, a.caso_id))}? Já ficou pronto?`, chave: "acomp:" + a.caso_id });
+    await c.db.prepare("UPDATE d30_acompanhamentos SET status='PERGUNTADO', perguntado_ms=?, atualizado_ms=? WHERE caso_id=?").bind(agora, agora, a.caso_id).run();
+    await evento(c, a.caso_id, r.ok || r.guardada ? "ACOMPANHAMENTO_PERGUNTADO" : "FALHA_ACOMPANHAMENTO", k.prestador_nome);
   }
 }
 
@@ -3813,7 +3961,7 @@ async function platformApi(request, env, caminho, metodo) {
   if (caminho === "/platform/study" && metodo === "GET") {
     const ev = (await c.db.prepare("SELECT tipo, descricao, dados, criado_ms FROM d30_eventos WHERE tipo IN ('ESTUDO_DIARIO','PESQUISA_SEMANAL') ORDER BY id DESC LIMIT 14").all().catch(() => null))?.results || [];
     const treino = await carregarTreinamento(c);
-    return json({ sucesso: true, licoes: String(treino.dados?.licoes_diarias || ""), relatorios: ev.map(e => { let d = null; try { d = JSON.parse(e.dados || "null"); } catch { d = null; } return { tipo: e.tipo, descricao: e.descricao, em: e.criado_ms, ...(d || {}) }; }) });
+    return json({ sucesso: true, caderno: await lerCaderno(c), licoes: String(treino.dados?.licoes_diarias || ""), relatorios: ev.map(e => { let d = null; try { d = JSON.parse(e.dados || "null"); } catch { d = null; } return { tipo: e.tipo, descricao: e.descricao, em: e.criado_ms, ...(d || {}) }; }) });
   }
   if (caminho === "/platform/study/run" && metodo === "POST") {
     const r = String(corpo?.tipo || "") === "pesquisa" ? await pesquisaSemanal(c, { forcar: true }) : await estudoDiario(c, { forcar: true });
@@ -4254,6 +4402,7 @@ acoes (só o que a equipe pediu claramente; pode ser mais de uma):
 - {"tipo":"PAUSAR"}: a equipe vai assumir a conversa com o cliente (a DENIA para de responder por 12 h).
 - {"tipo":"RETOMAR"}: a DENIA volta a atender o cliente.
 - {"tipo":"ETAPA","etapa":""}: mudar a etapa (COLETANDO, AGUARDANDO_PRESTADOR, AGUARDANDO_CLIENTE, EQUIPE, AGENDADO, EM_ANDAMENTO, CONCLUIDO, CANCELADO).
+- {"tipo":"INSTRUCAO","titulo":"","conteudo":""}: a equipe está ENSINANDO ou corrigindo a DENIA para as próximas conversas (jeito de falar, regra, o que fazer em tal situação, preço, quem atende) ou respondendo a uma DÚVIDA DA DENIA. titulo: 3 a 8 palavras. conteudo: a orientação pronta, no imperativo, válida para qualquer conversa, sem nomes nem telefones (ex.: "Não use emojis com clientes novos."). Não precisa de caso_id. Não vale na hora: vai para o administrador aprovar.
 caso_id: o caso de que a equipe está falando (o do AVISO, ou o que ela citou pelo número, pelo nome do cliente ou pelo serviço, entre os CASOS ABERTOS). 0 se não for sobre um caso.
 resposta: o que você diz à equipe no Telegram, curto e direto, em português do Brasil (ex.: responder "quem faz estofado?" com os nomes da lista). Não diga que fez algo: o sistema confirma cada ação.
 pergunta: se não der para saber o caso, o profissional ou o que fazer, pergunte aqui e deixe acoes vazia. NUNCA chute caso ou profissional. Nunca invente telefone. Nunca mande valor ao cliente que a equipe não disse.`;
@@ -4329,17 +4478,24 @@ CATEGORIAS: ${Object.keys(CATEGORIAS).join(", ")}
 Responda em JSON.`, [], 700);
   } catch (e) { await responder(`Não consegui entender agora (${txt(e?.message, 120)}). Tente de novo em instantes.`); return; }
 
-  const acoes = Array.isArray(d?.acoes) ? d.acoes.slice(0, 4) : [];
-  const casoId = Number(d?.caso_id || 0) || casoAviso?.casoId || 0;
-  const caso = casoId ? await carregarCasoPorId(c, casoId) : null;
+  const todas = Array.isArray(d?.acoes) ? d.acoes.slice(0, 5) : [];
   const linhas = [];
   if (txt(d?.resposta, 1500)) linhas.push(txt(d.resposta, 1500));
+  // A equipe ensinou algo: vira sugestão para o administrador aprovar em Aprendizados (não muda nada sozinho).
+  for (const a of todas.filter(x => String(x?.tipo || "").toUpperCase() === "INSTRUCAO")) {
+    const ok = await guardarSugestao(c, { tipo: "INSTRUCAO_EQUIPE", titulo: a?.titulo, conteudo: a?.conteudo, evidencia: `Pedido por ${quem} no Telegram em ${dataHoraSP(c.agora())}${textoAviso ? ` (respondendo: ${txt(textoAviso, 120)})` : ""}` }).catch(() => null);
+    linhas.push(ok ? `📝 Anotei: "${txt(a?.conteudo, 200)}". Vai para o administrador aprovar em Aprendizados; depois de aprovado eu passo a seguir.` : "⚠️ Não consegui anotar essa orientação. Escreva de novo, por favor.");
+    if (ok) await evento(c, null, "INSTRUCAO_EQUIPE", `${quem}: ${txt(a?.conteudo, 300)}`);
+  }
+  const acoes = todas.filter(x => String(x?.tipo || "").toUpperCase() !== "INSTRUCAO");
+  const casoId = Number(d?.caso_id || 0) || casoAviso?.casoId || 0;
+  const caso = casoId ? await carregarCasoPorId(c, casoId) : null;
   if (!acoes.length) {
     if (txt(d?.pergunta, 500)) linhas.push(txt(d.pergunta, 500));
     if (linhas.length) await responder(linhas.join("\n"));
     return;
   }
-  if (!caso) { await responder(txt(d?.pergunta, 500) || "De qual atendimento você está falando? Responda o aviso do caso ou diga o nome do cliente."); return; }
+  if (!caso) { linhas.push(txt(d?.pergunta, 500) || "De qual atendimento você está falando? Responda o aviso do caso ou diga o nome do cliente."); await responder(linhas.join("\n")); return; }
   const cliente = await c.db.prepare("SELECT id, nome, telefone FROM pessoas WHERE id=?").bind(caso.clienteId).first().catch(() => null);
   const telCli = cliente?.telefone || caso.telefone, nomeCli = primeiroNome(cliente?.nome) || "o cliente";
   const chave = "tg:" + upd.update_id;
