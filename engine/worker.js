@@ -36,7 +36,7 @@
 //       relatório diário. Nunca inicia conversa nova por conta própria.
 // ============================================================================
 
-const VERSAO = "34.1.0";
+const VERSAO = "34.2.0";
 const SCHEMA_VERSAO = "33.4.0"; // mude sempre que acrescentar tabela ou índice (senão o banco de produção não recebe)
 const EMPRESA_ID = 1;
 const PHONE_ID_PADRAO = "473474732510163";
@@ -2563,16 +2563,12 @@ async function consultarPrestador(c, caso, pessoa, chaveLote, escolhido = null) 
   const f = caso.fatos;
   const falas = ((await c.db.prepare("SELECT conteudo FROM mensagens WHERE caso_id=? AND direcao='ENTRADA' ORDER BY id DESC LIMIT 4").bind(caso.casoId).all())?.results || [])
     .map(x => ocultarTelefones(txt(x.conteudo, 200))).filter(t => t && !ehMensagemSocial(t)).reverse();
-  // Escrita como uma pessoa da equipe escreveria no WhatsApp (sem cara de formulário).
-  const local = [f.bairro, f.cidade].filter(Boolean).join(", ");
+  // Breve: só a necessidade do cliente e o bairro (o resto o profissional pergunta, se precisar).
+  const necessidade = txt(String(f.problema || f.servico || "").replace(/[.\s]+$/, ""), 140);
   const linhas = [
-    `${saudacaoSP(c.agora())}, ${primeiroNome(p.nome)}! Tudo bem?`,
-    `Tenho um cliente${local ? ` em ${local}` : ""} precisando de ${String(f.problema || f.servico || "").replace(/[.\s]+$/, "")}${f.marca || f.modelo ? ` (${[f.marca, f.modelo].filter(Boolean).join(" ")})` : ""}.`,
-    // O que o cliente quer, resumido pela DENIA (frases soltas copiadas do cliente confundiam o profissional).
-    caso.resumo && norm(caso.resumo) !== norm(f.problema || f.servico || "") ? `Resumo do pedido: ${ocultarTelefones(txt(caso.resumo, 400))}` : "",
-    !f.bairro && CATEGORIAS[area]?.modo === "DOMICILIO" ? "O bairro o cliente ainda não informou." : "",
-    `Você consegue pegar? Se sim, me passa o valor e quando pode.`
-  ].filter(Boolean);
+    `${saudacaoSP(c.agora())}, ${primeiroNome(p.nome)}! Cliente${f.bairro ? ` em ${f.bairro}` : ""} precisando de ${necessidade}${f.marca || f.modelo ? ` (${[f.marca, f.modelo].filter(Boolean).join(" ")})` : ""}.`,
+    "Consegue pegar? Se sim, me passa o valor e quando pode."
+  ];
   const r = await enviarAoPrestador(c, { consulta: ins, caso, texto: linhas.join("\n"), chave: `consulta:${ins.id}`, inicial: true });
   if (r.ok) {
     await atualizarConsulta(c, ins.id, { status: "ENVIADA", message_id: r.id });
@@ -2666,9 +2662,8 @@ function mesmoHorario(a, b) {
 
 function resumoParaPrestador(caso, consulta) {
   const f = caso.fatos || {};
-  return [`É o caso ${caso.casoId}: cliente${f.bairro ? ` em ${f.bairro}` : ""} precisando de ${String(f.problema || f.servico || "-").replace(/[.\s]+$/, "")}${f.marca || f.modelo ? ` (${[f.marca, f.modelo].filter(Boolean).join(" ")})` : ""}.`,
-    caso.resumo && norm(caso.resumo) !== norm(f.problema || "") ? `Resumo: ${txt(caso.resumo, 400)}` : "",
-    consulta.status === "ENVIADA" && !["AGENDADO", "EM_ANDAMENTO", "CONCLUIDO"].includes(caso.etapa) ? "Você consegue pegar? Se sim, me passa o valor e quando pode." : ["AGENDADO", "EM_ANDAMENTO"].includes(caso.etapa) && consulta.disponibilidade ? `Está agendado para ${consulta.disponibilidade}.` : ""].filter(Boolean).join("\n");
+  return [`É o caso ${caso.casoId}: cliente${f.bairro ? ` em ${f.bairro}` : ""} precisando de ${txt(String(f.problema || f.servico || "-").replace(/[.\s]+$/, ""), 140)}${f.marca || f.modelo ? ` (${[f.marca, f.modelo].filter(Boolean).join(" ")})` : ""}.`,
+    consulta.status === "ENVIADA" && !["AGENDADO", "EM_ANDAMENTO", "CONCLUIDO"].includes(caso.etapa) ? "Consegue pegar? Se sim, me passa o valor e quando pode." : ["AGENDADO", "EM_ANDAMENTO"].includes(caso.etapa) && consulta.disponibilidade ? `Está agendado para ${consulta.disponibilidade}.` : ""].filter(Boolean).join("\n");
 }
 
 async function consultaPeloContexto(c, abertas, msgs, textoTodo, pessoaPrest) {

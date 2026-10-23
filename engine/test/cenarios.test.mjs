@@ -341,7 +341,7 @@ test("Simulador do painel roda o fluxo sem enviar nada pela Meta", async () => {
   a.llmCliente = () => decisao({ resposta: "Ok", intencao: "NOVO_PEDIDO", quer_orcamento_ou_atendimento: true, pronto_para_profissional: true, fatos: { servico: "chaveiro", problema: "cópia de chave", bairro: "Centro" } });
   const r = await (await a.http("/api/teste", { method: "POST", body: JSON.stringify({ remetente: "cliente", texto: "Preciso de cópia de chave" }) })).json();
   assert.equal(a.enviados.length, 0);
-  assert.ok(r.saidas.some(s => s.papel === "prestador" && /Você consegue pegar/i.test(s.texto)));
+  assert.ok(r.saidas.some(s => s.papel === "prestador" && /Consegue pegar/i.test(s.texto)));
   assert.ok(r.saidas.some(s => s.papel === "cliente" && /^Enviamos/.test(s.texto)));
   a.llmPrestador = () => prest({ tipo: "ACEITA", valor_centavos: 3000, valor_e_final: "SIM", disponibilidade: "hoje" });
   const r2 = await (await a.http("/api/teste", { method: "POST", body: JSON.stringify({ remetente: "CHAV-ANDERSON", texto: "faço por 30, hoje" }) })).json();
@@ -1088,7 +1088,7 @@ test("Profissional com dois atendimentos: segue a conversa em andamento, encamin
   await a.cliente(CHAVEIRO, "o da Bia na Tijuca, do que se trata?");
   assert.match(entrada, /O QUE O CLIENTE ESCREVEU[\s\S]*3 cópias de chave, na Tijuca/);
   assert.match(entrada, /RESUMO DO ATENDIMENTO: Bia quer 3 cópias/);
-  assert.match(a.ultimoPara(CHAVEIRO), /Tijuca[\s\S]*Resumo: Bia quer 3 cópias/);
+  assert.match(a.ultimoPara(CHAVEIRO), /Tijuca[\s\S]*cópia de 3 chaves/);
   // Mesma pergunta de novo, sem citar ninguém: segue a conversa (Bia) e não repete a mesma mensagem.
   const n = a.para(CHAVEIRO).length;
   await a.cliente(CHAVEIRO, "não entendi, do que se trata?");
@@ -1213,7 +1213,7 @@ test("Fora da janela de 24 h: um aviso só, sem novas tentativas; a mensagem fic
   a.llmPrestador = () => prest({ tipo: "COMENTARIO" });
   await a.cliente(CHAVEIRO, "Bom dia, vi agora");
   const novas = a.para(CHAVEIRO).slice(antes).map(e => e.texto).join("\n");
-  assert.match(novas, /Tenho um cliente em Botafogo/);
+  assert.match(novas, /Cliente em Botafogo precisando de/);
   assert.match(novas, /A fechadura nova está inclusa no valor\?/);
 });
 
@@ -1316,8 +1316,8 @@ test("Pedido sem bairro: pergunta o bairro antes de chamar o profissional; o ped
   a.llmCliente = () => decisao({ resposta: "Obrigada!", quer_orcamento_ou_atendimento: true, pronto_para_profissional: true, fatos: { bairro: "Tijuca" } });
   await a.cliente(CLI, "Tijuca");
   const pedido = a.para(MIRELLA)[0]?.texto || "";
-  assert.match(pedido, /Tenho um cliente em Tijuca precisando de lavar sofá de 3 lugares/);
-  assert.match(pedido, /Resumo do pedido: Cliente quer lavar um sofá de 3 lugares de tecido, com manchas de café/);
+  assert.match(pedido, /Cliente em Tijuca precisando de lavar sofá de 3 lugares\.\nConsegue pegar\? Se sim, me passa o valor e quando pode\.$/);
+  assert.doesNotMatch(pedido, /Resumo|manchas de café/, "breve: só a necessidade e o bairro");
   assert.doesNotMatch(pedido, /não é pra usar produto forte|O cliente me contou/, "não copia frases soltas do cliente");
 });
 
