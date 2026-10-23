@@ -2867,3 +2867,52 @@ test("Profissionais da Central: o administrador cadastra pela plataforma e a IA 
   const aud = await p.req("/api/orgs/1/auditoria", { quem: "admin" });
   assert.ok(aud.dados.eventos.some(e => /João Faz Tudo/.test(e.detalhe || "")), "fica na auditoria");
 });
+
+test("Chatbot — relatório semanal: planilha com clientes, por dia e categorias, enviada por e-mail na segunda; painel conta clientes", async () => {
+  const p = await criarPlataforma({ RESEND_API_KEY: "re_teste", EMAIL_REMETENTE: "DENIA <nao-responda@denia.test>" });
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  await p.req("/api/orgs/1/zap/stats", { quem: "admin" }); // cria as tabelas do chatbot
+  const db = p.env.DB, exec = (sql, ...a) => db.prepare(sql).bind(...a).run();
+  const ms = s => Date.parse(s);
+  await exec("INSERT INTO plt_zap_contas(org_id,phone_number_id,config,modo,ativo,atualizado_ms) VALUES(1,'555000111','{}','BOTOES',1,?)", ms("2026-10-01T12:00:00Z"));
+  await exec("INSERT INTO plt_zap_contatos(org_id,telefone,nome,ultimo_ms) VALUES(1,'5521911110001','Ana Lima',0),(1,'5521911110002','Beto',0)");
+  // Beto já tinha falado antes da semana (recorrente); Ana é nova e volta na quarta.
+  await exec("INSERT INTO plt_zap_msgs(org_id,telefone,direcao,origem,texto,criado_ms) VALUES(1,'5521911110002','E','CLIENTE','oi',?)", ms("2026-09-20T15:00:00Z"));
+  for (const [tel, quando] of [["5521911110001", "2026-10-12T13:05:00Z"], ["5521911110001", "2026-10-12T13:06:00Z"], ["5521911110002", "2026-10-12T18:30:00Z"], ["5521911110001", "2026-10-14T20:10:00Z"]])
+    await exec("INSERT INTO plt_zap_msgs(org_id,telefone,direcao,origem,texto,criado_ms) VALUES(1,?,'E','CLIENTE','oi',?)", tel, ms(quando));
+  for (const [tel, cam, quando] of [["5521911110001", "Serviços › Celular", "2026-10-12T13:06:30Z"], ["5521911110002", "Serviços › Celular", "2026-10-12T18:31:00Z"], ["5521911110001", "Produtos › Roupas", "2026-10-14T20:11:00Z"]])
+    await exec("INSERT INTO plt_zap_buscas(org_id,telefone,caminho,titulo,tipo,via,resultados,criado_ms) VALUES(1,?,?,?,'LISTA','BOTAO',1,?)", tel, cam, cam.split(" › ").pop(), ms(quando));
+  p.env.__agora = () => ms("2026-10-20T14:00:00Z"); // terça: a semana passada é 12 a 18/10
+  const r = (await p.req("/api/orgs/1/zap/relatorio", { quem: "admin" })).dados;
+  assert.equal(r.de, "2026-10-12"); assert.equal(r.ate, "2026-10-18");
+  assert.deepEqual(r.totais, { clientes: 2, conversas: 3, novos: 1, recorrentes: 1, voltaram_na_semana: 1, buscas: 3 });
+  assert.deepEqual(r.por_dia.map(d => d.clientes), [2, 0, 1, 0, 0, 0, 0]);
+  assert.equal(r.categorias[0].categoria, "Serviços › Celular"); assert.equal(r.categorias[0].buscas, 2); assert.equal(r.categorias[0].clientes, 2);
+  const ana = r.conversas[0];
+  assert.equal(ana.nome, "Ana Lima"); assert.equal(ana.vezes, 2); assert.equal(ana.recorrente, false); assert.deepEqual(ana.buscas, ["Serviços › Celular"]);
+  assert.equal(r.conversas[1].recorrente, true, "Beto já era cliente");
+  // Planilha Excel de verdade (zip com as 4 abas).
+  const x = (await p.req("/api/orgs/1/zap/relatorio?formato=xlsx", { quem: "admin" })).dados;
+  const bytes = Buffer.from(x.base64, "base64");
+  assert.equal(bytes.subarray(0, 2).toString(), "PK");
+  const txtZip = bytes.toString("latin1");
+  for (const aba of ["Clientes", "Por dia", "Categorias", "Resumo"]) assert.match(txtZip, new RegExp(`name="${aba}"`));
+  assert.match(txtZip, /Ana Lima/); assert.match(txtZip, /TOTAL DA SEMANA/); assert.match(txtZip, /12\/10\/2026/); assert.match(txtZip, /10:05/, "hora de Brasília");
+  // Painel: clientes e conversas, não só mensagens.
+  const st = (await p.req("/api/orgs/1/zap/stats?de=2026-10-12&ate=2026-10-18", { quem: "admin" })).dados;
+  assert.equal(st.contatos, 2); assert.equal(st.conversas, 3); assert.equal(st.novos, 1);
+  // Segunda de manhã: e-mail com a planilha para os administradores e os e-mails extras, uma vez só.
+  await p.req("/api/orgs/1/zap/config", { metodo: "POST", quem: "admin", corpo: { relatorio_emails: "gerente@loja.test, invalido" } });
+  const mod = await import(new URL("../src/worker.js?t=rel" + Math.random(), import.meta.url).href);
+  p.env.__agora = () => ms("2026-10-19T09:30:00Z"); // segunda 06:30 em Brasília: ainda não
+  await mod.default.scheduled({}, p.env, { waitUntil: pr => pr }); await new Promise(r => setTimeout(r, 50));
+  assert.equal(p.emails.length, 0);
+  p.env.__agora = () => ms("2026-10-19T11:30:00Z"); // segunda 08:30
+  await mod.default.scheduled({}, p.env, { waitUntil: pr => pr }); await new Promise(r => setTimeout(r, 50));
+  assert.deepEqual(p.emails.map(e => e.to[0]).sort(), [ADMIN, "gerente@loja.test"].sort());
+  assert.match(p.emails[0].subject, /12\/10\/2026 a 18\/10\/2026/);
+  assert.match(p.emails[0].text, /Clientes diferentes: 2 \(1 novos, 1 recorrentes\)/);
+  assert.equal(p.emails[0].attachments[0].filename, "clientes-2026-10-12-a-2026-10-18.xlsx");
+  await mod.default.scheduled({}, p.env, { waitUntil: pr => pr }); await new Promise(r => setTimeout(r, 50));
+  assert.equal(p.emails.length, 2, "não repete na mesma segunda");
+});
