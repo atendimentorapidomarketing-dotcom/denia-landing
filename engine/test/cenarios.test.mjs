@@ -1623,3 +1623,25 @@ test("Estudo: a DENIA leva dúvidas às atendentes, escolhe o que estudar e o qu
   const st2 = await (await a.http("/platform/study", { headers: { authorization: "Bearer " + TOKEN } })).json();
   assert.match(st2.licoes, /Mostre o que está incluso/);
 });
+
+test("Diagnóstico do Telegram: mostra privacidade ligada, grupo errado e conecta pelo painel", async () => {
+  const TOKEN = "token-da-plataforma-123456";
+  const a = await criarAmbiente({ env: { DENIA_PLATFORM_SERVICE_TOKEN: TOKEN } });
+  const auth = { authorization: "Bearer " + TOKEN };
+  a.llmCliente = () => decisao({ resposta: "Oi!" });
+  await a.cliente(CLI, "Oi"); // a Meta chama o webhook: a DENIA aprende o próprio endereço
+  await a.cliente(CLI, "tudo bem?");
+  a.tgPrivacidade = true;
+  let st = await (await a.http("/platform/telegram", { headers: auth })).json();
+  assert.equal(st.conectado, false);
+  assert.ok(st.problemas.some(p => /não está ligado a nenhum endereço/.test(p)), JSON.stringify(st.problemas));
+  assert.ok(st.problemas.some(p => /BotFather → \/setprivacy/.test(p)));
+  const r = await (await a.http("/platform/telegram/connect", { method: "POST", headers: auth, body: "{}" })).json();
+  assert.equal(r.ok, true);
+  assert.equal(a.tgWebhook, "https://denia.test/telegram");
+  assert.equal(r.situacao.conectado, true);
+  // Mensagem de outro grupo: ignorada, mas o diagnóstico mostra o ID certo.
+  await a.equipe("oi denia", { chat: "-100777" });
+  st = await (await a.http("/platform/telegram", { headers: auth })).json();
+  assert.ok(st.problemas.some(p => /ID -100777[\s\S]*troque TELEGRAM_CHAT_ID para -100777/.test(p)));
+});

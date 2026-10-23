@@ -88,6 +88,8 @@ export async function criarAmbiente({ inicio = "2026-10-07T14:00:00-03:00", env:
     if (url.includes("api.telegram.org")) {
       const metodo = url.split("/").pop();
       if (metodo === "getWebhookInfo") return resp({ ok: true, result: { url: amb.tgWebhook || "" } });
+      if (metodo === "getMe") return resp({ ok: true, result: { username: "denia_central_bot", can_read_all_group_messages: !amb.tgPrivacidade } });
+      if (metodo.startsWith("getChat")) return resp({ ok: true, result: { title: "Central" } });
       if (metodo === "setWebhook") { amb.tgWebhook = corpo.url; amb.tgSegredo = corpo.secret_token; return resp({ ok: true }); }
       const id = 9000 + amb.telegram.length;
       amb.telegram.push(corpo.text); amb.telegramMsgs.push({ id, texto: corpo.text, responde: corpo.reply_to_message_id || null });

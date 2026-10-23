@@ -75,6 +75,8 @@ const ROTAS_ENGINE = [
   ["GET", /^import\/clients$/, "VISUALIZADOR"],
   ["POST", /^import\/clients$/, "ADMIN", "IMPORTACAO"],
   ["POST", /^pause$/, "ADMIN", "PAUSA_GERAL"],
+  ["GET", /^telegram$/, "ADMIN"],
+  ["POST", /^telegram\/connect$/, "ADMIN", "TELEGRAM"],
   // Guia de lojas (motor em MODO=guia, ex.: shopping)
   ["GET", /^guide$/, "VISUALIZADOR"],
   ["GET", /^guide\/stats$/, "VISUALIZADOR"],
@@ -641,6 +643,7 @@ async function proxyEngine(request, env, sessao, orgId, papel, caminho) {
         caminho === "pause" ? (corpo.ativa ? "IA pausada" : "IA retomada") :
           caminho.startsWith("learning/suggestions/") ? `${corpo.acao === "aprovar" ? "Aprovou" : "Rejeitou"} a sugestão #${caminho.split("/").pop()}` :
             caminho === "training" ? `Versão ${r.dados.versao ?? ""}` :
+              caminho === "telegram/connect" ? (corpo.forcar ? "Conectou o Telegram (forçado)" : "Conectou o Telegram") :
               caminho === "professionals" ? `${txt(corpo.nome, 60)} (${txt(corpo.area, 30)})` :
                 caminho.startsWith("professionals/") ? `Desativou o profissional ${caminho.split("/")[1]}` :
               caminho.startsWith("cases/") ? `Caso #${caminho.split("/")[1]} → ${txt(corpo.etapa, 30)}` :
