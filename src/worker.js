@@ -27,7 +27,7 @@ import { comOrgUso, comRecurso, descarregarUso } from "./uso.js";
 import { DDL_TEMPORADA, ALTERS_TEMPORADA, rotasTemporada, icalPublico, webhookChannex, sincronizarTemporada, desligarInadimplentes, lembrarEstoque, limpezaPublica, avaliacoesDoCron } from "./temporada.js";
 import { openaiBruto } from "./marketing.js";
 import { DDL_PROBLEMAS, rotasProblemas, registrarProblema, resolverProblema, limparProblemas } from "./problemas.js";
-import { DDL_ZAP, webhookZap, rotasZap, webhookTelegram, segredoTelegram, tokenTelegramPlataforma, processarCampanhas, lembrarAgenda } from "./zap.js";
+import { DDL_ZAP, webhookZap, rotasZap, webhookTelegram, segredoTelegram, tokenTelegramPlataforma, processarCampanhas, lembrarAgenda, relatoriosSemanaisZap } from "./zap.js";
 import { lerPlanos, acessoDa, recursoDaRota, planoMinimo, rotasPlano, webhookAsaas, lembretesDePlano, TESTE_DIAS, STATUS as STATUS_PLANO, PLANOS_PADRAO, RECURSOS } from "./planos.js";
 
 const VERSAO = "3.12.0";
@@ -428,12 +428,12 @@ async function cadastrar(request, env) {
 // (redefinição de senha e avisos de contato). Sem eles, nada é enviado.
 // ---------------------------------------------------------------------------
 function emailConfigurado(env) { return Boolean(String(env.RESEND_API_KEY || "").trim() && emailValido(String(env.EMAIL_REMETENTE || "").replace(/^.*<|>$/g, ""))); }
-async function enviarEmail(env, para, assunto, texto) {
+async function enviarEmail(env, para, assunto, texto, anexos = []) {
   if (!emailConfigurado(env)) return false;
   try {
     const r = await fetch("https://api.resend.com/emails", {
       method: "POST", headers: { authorization: `Bearer ${String(env.RESEND_API_KEY).trim()}`, "content-type": "application/json" },
-      body: JSON.stringify({ from: String(env.EMAIL_REMETENTE).trim(), to: [para], subject: assunto, text: texto }), signal: AbortSignal.timeout(15000)
+      body: JSON.stringify({ from: String(env.EMAIL_REMETENTE).trim(), to: [para], subject: assunto, text: texto, ...(anexos.length ? { attachments: anexos.map(a => ({ filename: a.nome, content: a.base64 })) } : {}) }), signal: AbortSignal.timeout(20000)
     });
     return r.ok;
   } catch (e) { console.error("e-mail", e?.message); return false; }
@@ -666,7 +666,9 @@ async function kitZap(env, base) {
   const url = base || String((await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave='base_url'").first().catch(() => null))?.valor || "").replace(/\/+$/, "");
   return {
     ...kitBase(env), comIA, base: url,
-    alertarEmail: async (orgId, assunto, texto) => { let ok = false; for (const para of await responsaveisDa(env, orgId)) if (await enviarEmail(env, para, assunto, texto)) ok = true; return ok; }
+    alertarEmail: async (orgId, assunto, texto) => { let ok = false; for (const para of await responsaveisDa(env, orgId)) if (await enviarEmail(env, para, assunto, texto)) ok = true; return ok; },
+    enviarEmail: (para, assunto, texto, anexos) => enviarEmail(env, para, assunto, texto, anexos), emailConfigurado: () => emailConfigurado(env), emailValido,
+    responsaveis: orgId => responsaveisDa(env, orgId)
   };
 }
 
@@ -1327,6 +1329,7 @@ export default {
       await sincronizarTemporada(env, await kitZap(env)).catch(e => console.error("temporada", e?.message));
       await processarCampanhas(env, await kitZap(env)).catch(e => console.error("campanhas", e?.message));
       await lembrarAgenda(env, await kitZap(env)).catch(e => console.error("agenda", e?.message));
+      await relatoriosSemanaisZap(env, await kitZap(env)).catch(e => console.error("relatório semanal do chatbot", e?.message));
       await lembrarEstoque(env, await kitZap(env)).catch(e => console.error("estoque", e?.message));
       await avaliacoesDoCron(env, { ...(await kitZap(env)) }).catch(e => console.error("avaliações temporada", e?.message));
       if (await aCada(env, "temporada_inadimplentes", 20 * 3600000)) {

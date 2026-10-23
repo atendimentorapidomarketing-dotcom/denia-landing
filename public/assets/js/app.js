@@ -2070,9 +2070,9 @@
       }, "btn-primario") : null));
   }
   async function abaZapVisao(area, vivo) {
-    const f = estado.zapF = estado.zapF || { dias: 30, metrica: "buscas" };
+    const f = estado.zapF = estado.zapF || { dias: 30, metrica: "clientes" };
     const de = isoLocal(new Date(Date.now() - (f.dias - 1) * 86400000)), ate = isoLocal(new Date());
-    const [st, conta, itens] = await Promise.all([zap(`stats?de=${de}&ate=${ate}`), zap("conta"), zap("itens")]);
+    const [st, conta, itens, cfgR] = await Promise.all([zap(`stats?de=${de}&ate=${ate}`), zap("conta"), zap("itens"), zap("config").catch(() => ({ config: {} }))]);
     if (!vivo()) return;
     const passos = [];
     if (!conta.conectada) passos.push(["Conectar o número do WhatsApp", "Cole o ID do número e o token da Meta. Leva 5 minutos.", "#/chatbot/conexao"]);
@@ -2081,20 +2081,21 @@
     const dias = [];
     for (let t = Date.parse(de + "T12:00:00Z"); t <= Date.parse(ate + "T12:00:00Z"); t += 86400000) dias.push(new Date(t).toISOString().slice(0, 10));
     const mapa = l => new Map((l || []).map(x => [x.dia, Number(x.n || 0)]));
-    const mb = mapa(st.buscas_por_dia), mm = mapa(st.mensagens_por_dia);
-    const diario = dias.map(d => ({ data: d, buscas: mb.get(d) || 0, mensagens: mm.get(d) || 0 }));
+    const mb = mapa(st.buscas_por_dia), mm = mapa(st.mensagens_por_dia), mc = mapa(st.clientes_por_dia);
+    const diario = dias.map(d => ({ data: d, clientes: mc.get(d) || 0, buscas: mb.get(d) || 0, mensagens: mm.get(d) || 0 }));
     const via = Object.fromEntries((st.por_via || []).map(x => [x.via, Number(x.n || 0)]));
     const tot = st.total_buscas || 0, ms = st.mensagens || {}, en = st.entregas || {};
     const semLoja = (st.por_opcao || []).reduce((s, x) => s + Number(x.sem || 0), 0);
     const pontos = agruparSerie(diario, dias.length <= 92 ? "dia" : "semana", f.metrica);
-    const nomeM = f.metrica === "buscas" ? "Buscas no menu" : "Mensagens recebidas";
-    const csv = () => baixarCsv(`chatbot-${de}-a-${ate}.csv`, [["Dia", "Buscas", "Mensagens recebidas"], ...diario.map(d => [dataCompleta(d.data), d.buscas, d.mensagens]), [], ["Opção", "Buscas", "Sem contato cadastrado"], ...(st.por_opcao || []).map(x => [x.caminho, x.n, x.sem || 0])]);
+    const nomeM = f.metrica === "buscas" ? "Buscas no menu" : f.metrica === "mensagens" ? "Mensagens recebidas" : "Clientes (conversas)";
+    const csv = () => baixarCsv(`chatbot-${de}-a-${ate}.csv`, [["Dia", "Clientes", "Buscas", "Mensagens recebidas"], ...diario.map(d => [dataCompleta(d.data), d.clientes, d.buscas, d.mensagens]), [], ["Opção", "Buscas", "Sem contato cadastrado"], ...(st.por_opcao || []).map(x => [x.caminho, x.n, x.sem || 0])]);
     trocar(area,
       passos.length ? h("section", { class: "grade grade-3" }, passos.map(([t, d, l], i) => passoInicial(String(i + 1).padStart(2, "0"), t, d, l))) : null,
       h("section", { class: "cartao vidro filtros-desempenho" }, h("div", { class: "abas abas-chips", role: "group", "aria-label": "Período" },
         [[1, "Hoje"], [7, "7 dias"], [30, "30 dias"], [90, "90 dias"], [180, "6 meses"], [365, "12 meses"]].map(([v, n]) => h("button", { type: "button", class: "aba" + (f.dias === v ? " ativo" : ""), "aria-pressed": f.dias === v ? "true" : "false", onclick: () => { f.dias = v; navegar(); } }, n)))),
       h("section", { class: "grade grade-4" },
-        h("button", { type: "button", class: "metrica vidro metrica-botao" + (f.metrica === "mensagens" ? " ativo" : ""), onclick: () => { f.metrica = "mensagens"; navegar(); } }, h("span", { text: "Mensagens recebidas" }), h("strong", { text: numero(ms.recebidas || 0) }), h("small", { text: `${numero(st.contatos || 0)} clientes diferentes` })),
+        h("button", { type: "button", class: "metrica vidro metrica-botao" + (f.metrica === "clientes" ? " ativo" : ""), onclick: () => { f.metrica = "clientes"; navegar(); } }, h("span", { text: "Clientes que entraram em contato" }), h("strong", { text: numero(st.contatos || 0) }), h("small", { text: `${numero(st.novos || 0)} novos · ${numero(Math.max(0, (st.contatos || 0) - (st.novos || 0)))} recorrentes · ${numero(st.conversas || 0)} conversas` })),
+        h("button", { type: "button", class: "metrica vidro metrica-botao" + (f.metrica === "mensagens" ? " ativo" : ""), onclick: () => { f.metrica = "mensagens"; navegar(); } }, h("span", { text: "Mensagens recebidas" }), h("strong", { text: numero(ms.recebidas || 0) }), h("small", { text: `${st.contatos ? String(Math.round((ms.recebidas || 0) / st.contatos * 10) / 10).replace(".", ",") : "0"} por cliente` })),
         h("button", { type: "button", class: "metrica vidro metrica-botao" + (f.metrica === "buscas" ? " ativo" : ""), onclick: () => { f.metrica = "buscas"; navegar(); } }, h("span", { text: "Buscas no menu" }), h("strong", { text: numero(tot) }), h("small", { text: `${numero(Math.round((tot / (dias.length || 1)) * 10) / 10)} por dia` })),
         metrica("Sem gastar IA", tot ? `${Math.round((((via.BOTAO || 0) + (via.PALAVRA || 0)) / tot) * 100)}%` : "—", `${numero(ms.robo || 0)} respostas do robô · ${numero(ms.ia || 0)} da IA`),
         metrica("Taxa de entrega", en.taxa != null ? String(en.taxa).replace(".", ",") + "%" : "—", `${numero(en.lidas || 0)} lidas · ${numero(en.falhas || 0)} não chegaram`)),
@@ -2106,7 +2107,46 @@
         h("div", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Como o cliente chegou à resposta" }), barras(["BOTAO", "PALAVRA", "IA"].map(k => ({ rotulo: NOME_VIA_ZAP[k], valor: via[k] || 0 }))),
           h("p", { class: "sub", style: "margin:10px 0 0", text: "Só a última linha gasta IA. Palavras-chave nas opções do menu fazem o robô achar sem IA." }),
           h("h3", { text: "Quem respondeu" }), barras([{ rotulo: "Robô (botões)", valor: ms.robo || 0 }, { rotulo: "IA", valor: ms.ia || 0 }, { rotulo: "Equipe", valor: ms.equipe || 0 }]))),
-      h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Horários com mais mensagens" }), mapaHorarios(st.horarios || Array.from({ length: 7 }, () => Array(24).fill(0)))));
+      h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Horários com mais mensagens" }), mapaHorarios(st.horarios || Array.from({ length: 7 }, () => Array(24).fill(0)))),
+      cartaoRelatorioZap(cfgR.config || {}, de, ate),
+      cartaoCustoMeta(de, ate));
+  }
+  // Planilha de clientes: semana passada (enviada toda segunda por e-mail) ou o período escolhido.
+  function cartaoRelatorioZap(cfg, de, ate) {
+    const baixar = async (q, b) => {
+      const t = b.textContent; b.textContent = "Gerando…";
+      try {
+        const r = await zap("relatorio?formato=xlsx" + q);
+        const bin = atob(r.base64), bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        const url = URL.createObjectURL(new Blob([bytes], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }));
+        const a = h("a", { href: url, download: r.nome }); document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 5000);
+      } catch (e) { aviso(e.message, "erro"); } finally { b.textContent = t; }
+    };
+    const emails = h("input", { class: "entrada", type: "text", value: cfg.relatorio_emails || "", placeholder: "outro@empresa.com, gerente@empresa.com", disabled: !pode("AGENTE") });
+    const ligado = h("input", { type: "checkbox", checked: cfg.relatorio_semanal !== false, disabled: !pode("AGENTE") });
+    return h("section", { class: "cartao vidro" },
+      h("div", { class: "cabeca-grafico" }, h("h3", { style: "margin:0", text: "Relatório de clientes (planilha)" }),
+        h("div", { class: "acoes" }, botao("Semana passada (Excel)", (_e, b) => baixar("", b), "btn-primario btn-pequeno"), botao("Este período (Excel)", (_e, b) => baixar(`&de=${de}&ate=${ate}`, b), "btn-secundario btn-pequeno"))),
+      h("p", { class: "sub", text: "Cada linha é um cliente num dia: nome, telefone, data e hora do contato, o que buscou, se voltou mais de uma vez na semana e se já era cliente. Também vem o total por dia e na semana, e as categorias mais buscadas em ordem." }),
+      h("label", { class: "guia-cat" }, ligado, h("span", { text: " Mandar por e-mail toda segunda-feira de manhã (semana anterior), para os administradores da empresa" })),
+      h("div", { class: "campo" }, h("label", { text: "Mandar também para (opcional, separe por vírgula)" }), emails),
+      pode("AGENTE") ? h("div", { class: "acoes" },
+        botao("Salvar", async () => { try { await zap("config", { metodo: "POST", corpo: { relatorio_semanal: ligado.checked, relatorio_emails: emails.value.trim() } }); aviso("Relatório salvo.", "ok"); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno"),
+        botao("Enviar a semana passada para o meu e-mail", async (_e, b) => { b.textContent = "Enviando…"; try { const r = await zap("relatorio/enviar", { metodo: "POST", corpo: {} }); aviso(r.ok ? `Enviado para ${r.para}.` : "O e-mail não foi aceito. Confira o domínio no Resend.", r.ok ? "ok" : "erro"); } catch (e) { aviso(e.message, "erro"); } finally { b.textContent = "Enviar a semana passada para o meu e-mail"; } }, "btn-secundario btn-pequeno")) : null);
+  }
+  // Quanto a Meta cobrou pelo WhatsApp no período (com o token desta empresa).
+  function cartaoCustoMeta(de, ate) {
+    const caixa = h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Custo do WhatsApp (cobrado pela Meta)" }), carregando());
+    const NOMES = { MARKETING: "Marketing", UTILITY: "Utilidade", AUTHENTICATION: "Autenticação", SERVICE: "Atendimento", AUTHENTICATION_INTERNATIONAL: "Autenticação internacional", MARKETING_LITE: "Marketing (lite)" };
+    zap(`custos?de=${de}&ate=${ate}`).then(c => {
+      const moeda = v => new Intl.NumberFormat(LOCALE, { style: "currency", currency: c.moeda || "USD" }).format(v || 0);
+      caixa.replaceChildren(h("h3", { style: "margin-top:0", text: "Custo do WhatsApp (cobrado pela Meta)" }),
+        h("section", { class: "grade grade-3" }, metrica("Total no período", moeda(c.total), c.moeda || ""), metrica("Mensagens pagas", numero(c.pagas || 0), "modelos fora da janela de 24 h"), metrica("Mensagens grátis", numero(c.gratis || 0), "respostas dentro da janela e outras grátis")),
+        Object.keys(c.por_categoria || {}).length ? barras(Object.entries(c.por_categoria).map(([k, v]) => ({ rotulo: `${NOMES[k] || k} — ${moeda(v.custo)}`, valor: v.volume }))) : h("p", { class: "nota", text: "Nenhuma cobrança da Meta neste período." }),
+        h("p", { class: "sub", text: "Valores informados pela Meta (pricing analytics), com o token do WhatsApp desta empresa. Responder o cliente dentro de 24 h é grátis; modelos (campanhas e lembretes) são cobrados." }));
+    }).catch(e => caixa.replaceChildren(h("h3", { style: "margin-top:0", text: "Custo do WhatsApp (cobrado pela Meta)" }), h("p", { class: "nota" + (e.status === 409 ? "" : " nota-alerta"), text: e.message })));
+    return caixa;
   }
   async function abaZapConversas(area, vivo) {
     const r = await zap("conversas");
@@ -2752,7 +2792,16 @@ Botão só com texto = resposta.` })),
           botao("📋 Colar roteiro", () => roteiro(false), "btn-secundario btn-pequeno"),
           botao("✨ Criar com a IA", () => criarComIA(false), "btn-secundario btn-pequeno"))) : null,
       h("section", { class: "cartao vidro fx-quadro" },
-        h("div", { class: "fx-barra" }, h("div", {}, h("h3", { style: "margin:0" }, "Fluxo do WhatsApp · ", h("span", { class: "fx-empresa-nome", text: (estado.org && estado.org.nome) || "" })), h("p", { class: "sub", style: "margin:2px 0 0", text: "Toque num botão para abrir o próximo cartão. Tudo salva sozinho." })),
+        h("div", { class: "fx-barra" }, h("div", {}, h("h3", { style: "margin:0" }, "Fluxo do WhatsApp · ", h("span", { class: "fx-empresa-nome", text: (estado.org && estado.org.nome) || "" })), h("p", { class: "sub", style: "margin:2px 0 0", text: "Toque num botão para abrir o próximo cartão. Tudo salva sozinho." }),
+          h("details", { class: "fx-ajuda" }, h("summary", { text: "❓ Como editar (passo a passo)" }), h("ol", { class: "passos" }, [
+            "Mensagem de boas-vindas: no cartão Início, edite o texto do topo.",
+            "Mudar o nome de um botão: toque no botão no cartão, troque o nome (pode usar emoji) e saia do campo. Salva sozinho.",
+            "Novo botão: no fim da lista do cartão, escreva o nome em \"Nome do botão\", escolha o que acontece quando o cliente toca (abrir outro menu, mostrar um texto, mostrar lojas/contatos ou chamar a equipe) e toque em Adicionar.",
+            "Trocar um link: abra o botão que mostra o texto, e em \"Botão de link\" cole o novo endereço (site, Instagram, mapa, cardápio). Para link de loja, abra a loja em Contatos e lojas e troque o link lá.",
+            "Mudar a ordem: use as setas ↑ ↓ ao lado do botão.",
+            "Tirar um botão ou mudar o tipo dele: toque em ⋯ ao lado do botão (lá tem \"Excluir este botão\").",
+            "Antes de mostrar aos clientes: toque em Testar e converse com o robô como se fosse um cliente."
+          ].map(t => h("li", { text: t }))))),
           h("div", { class: "acoes" }, statusSalvo, verPrevia, podeEditar ? botao("📥 Importar (Botpress, Typebot…)", () => roteiro(true), "btn-primario btn-pequeno") : null, botao("📋 Roteiro", () => roteiro(false), "btn-secundario btn-pequeno"), botao("🔔 Avisos no Telegram", avisos, "btn-secundario btn-pequeno"), h("a", { class: "btn btn-primario btn-pequeno", href: "#/chatbot/testar" }, "▶ Testar"),
             podeEditar && d.itens.length ? botao("✨ Refazer com a IA", () => criarComIA(true), "btn-secundario btn-pequeno") : null)),
         trilha, h("div", { class: "fx-palco-grade" }, palco)));
