@@ -27,7 +27,8 @@ import { comOrgUso, comRecurso, descarregarUso } from "./uso.js";
 import { DDL_TEMPORADA, ALTERS_TEMPORADA, rotasTemporada, icalPublico, webhookChannex, sincronizarTemporada, desligarInadimplentes, lembrarEstoque, limpezaPublica, avaliacoesDoCron } from "./temporada.js";
 import { openaiBruto } from "./marketing.js";
 import { DDL_PROBLEMAS, rotasProblemas, registrarProblema, resolverProblema, limparProblemas } from "./problemas.js";
-import { DDL_ZAP, webhookZap, rotasZap, webhookTelegram, segredoTelegram, tokenTelegramPlataforma, processarCampanhas, lembrarAgenda, relatoriosSemanaisZap } from "./zap.js";
+import { DDL_ZAP, webhookZap, rotasZap, webhookTelegram, segredoTelegram, tokenTelegramPlataforma, processarCampanhas, lembrarAgenda, brutoRelatorioZap } from "./zap.js";
+import { montarRelatorio, planilhaRelatorio, textoRelatorio, base64, ultimos7Dias, lerConfigRelatorio, horaDeEnviar, diaBR, dataBR, DIAS_SEMANA, inicioDoDia as inicioDoDiaBR } from "./relatorio.js";
 import { lerPlanos, acessoDa, recursoDaRota, planoMinimo, rotasPlano, webhookAsaas, lembretesDePlano, TESTE_DIAS, STATUS as STATUS_PLANO, PLANOS_PADRAO, RECURSOS } from "./planos.js";
 
 const VERSAO = "3.12.0";
@@ -763,6 +764,100 @@ async function vigiarWhatsapp(env) {
 // recentes que ficaram para trás. Assim nada depende do cron do próprio motor (que a empresa pode deixar
 // desligado). O motor só responde o que é recente e nunca manda em massa.
 // Roda no máximo uma vez a cada "ms" (guardado no banco, vale entre execuções do cron).
+// ---------------------------------------------------------------------------
+// Relatório de clientes (planilha) de cada empresa: junta o chatbot e a IA da empresa, se ela tiver os dois.
+// ---------------------------------------------------------------------------
+async function brutoRelatorio(env, orgId, ini, fim) {
+  const bruto = { entradas: [], buscas: [], nomes: {}, antigos: [] }, fontes = [];
+  const juntar = b => { bruto.entradas.push(...(b.entradas || [])); bruto.buscas.push(...(b.buscas || [])); Object.assign(bruto.nomes, b.nomes || {}); bruto.antigos.push(...(b.antigos || [])); };
+  const zap = await env.DB.prepare("SELECT phone_number_id FROM plt_zap_contas WHERE org_id=?").bind(orgId).first().catch(() => null);
+  if (zap?.phone_number_id) { juntar(await brutoRelatorioZap(env, orgId, ini, fim)); fontes.push("chatbot"); }
+  const con = await conexaoDa(env, orgId).catch(() => null);
+  if (con?.token && con?.url) {
+    const r = await chamarEngine(con, "GET", "report", null, { ini: String(ini), fim: String(fim) }).catch(e => ({ status: 0, erro: e?.message }));
+    if (r?.dados?.sucesso) { juntar(r.dados); fontes.push("ia"); }
+    else fontes.push("ia-indisponivel");
+  }
+  return { bruto, fontes };
+}
+async function configRelatorio(env, orgId) {
+  return lerConfigRelatorio((await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave=?").bind("relatorio_" + orgId).first().catch(() => null))?.valor);
+}
+async function gerarRelatorioOrg(env, orgId, ini, fim) {
+  const org = await env.DB.prepare("SELECT nome FROM plt_organizacoes WHERE id=?").bind(orgId).first().catch(() => null);
+  const { bruto, fontes } = await brutoRelatorio(env, orgId, ini, fim);
+  const d = montarRelatorio(bruto, ini, fim);
+  return { d, fontes, empresa: org?.nome || "", arquivo: { nome: `relatorio-clientes-${d.de}-a-${d.ate}.xlsx`, base64: base64(planilhaRelatorio(d, org?.nome || "")) } };
+}
+async function enviarRelatorioOrg(env, orgId, ini, fim, para = null) {
+  const cfg = await configRelatorio(env, orgId);
+  const g = await gerarRelatorioOrg(env, orgId, ini, fim);
+  const extras = cfg.emails.split(/[,;\s]+/).map(e => e.trim()).filter(emailValido);
+  const destinos = para ? [para] : [...new Set([...(await responsaveisDa(env, orgId)), ...extras])].slice(0, 10);
+  let enviados = 0;
+  for (const e of destinos) if (await enviarEmail(env, e, `Relatório de atendimento ${g.empresa ? "- " + g.empresa + " " : ""}(${dataBR(g.d.de)} a ${dataBR(g.d.ate)})`, textoRelatorio(g.d, g.empresa), [g.arquivo])) enviados++;
+  return { enviados, destinos: destinos.length, totais: g.d.totais, fontes: g.fontes };
+}
+// A cada 5 min: empresa cujo dia e hora de envio chegaram recebe os últimos 7 dias (uma vez por dia escolhido).
+async function relatoriosAgendados(env) {
+  if (!emailConfigurado(env)) return;
+  const t = agora(env);
+  const orgs = (await env.DB.prepare("SELECT id FROM plt_organizacoes").all().catch(() => null))?.results || [];
+  for (const { id } of orgs) {
+    const cfg = await configRelatorio(env, id);
+    if (!horaDeEnviar(cfg, t)) continue;
+    const chave = `relatorio_enviado_${id}_${diaBR(t)}`;
+    if (await env.DB.prepare("SELECT 1 FROM plt_meta WHERE chave=?").bind(chave).first().catch(() => null)) continue;
+    const temFonte = await env.DB.prepare("SELECT 1 FROM plt_zap_contas WHERE org_id=? AND phone_number_id IS NOT NULL").bind(id).first().catch(() => null) || await conexaoDa(env, id).catch(() => null);
+    if (!temFonte) continue;
+    await env.DB.prepare("INSERT OR IGNORE INTO plt_meta(chave,valor) VALUES(?,?)").bind(chave, String(t)).run();
+    const { ini, fim } = ultimos7Dias(t);
+    try { await enviarRelatorioOrg(env, id, ini, fim); } catch (e) { console.error("relatório", id, e?.message); }
+  }
+}
+async function rotasRelatorio(request, env, sessao, orgId, papel, resto) {
+  const metodo = request.method, q = new URL(request.url).searchParams, t = agora(env);
+  if (resto === "relatorio/config" && metodo === "GET") return json({ config: await configRelatorio(env, orgId), email_configurado: emailConfigurado(env), dias: DIAS_SEMANA });
+  if (resto === "relatorio/config" && metodo === "POST") {
+    if (!pode(papel, "ADMIN")) return json({ erro: "Só administradores mudam o envio do relatório." }, 403);
+    const lido = await lerCorpo(request, 4000); if (lido.erro) return lido.erro;
+    const c = lido.corpo || {};
+    const emails = String(c.emails || "").split(/[,;\s]+/).map(e => e.trim()).filter(Boolean);
+    const invalidos = emails.filter(e => !emailValido(e));
+    if (invalidos.length) return json({ erro: `E-mail inválido: ${invalidos.slice(0, 3).join(", ")}` }, 400);
+    const cfg = lerConfigRelatorio(JSON.stringify({ ativo: c.ativo !== false, dia: Number(c.dia), hora: Number(c.hora), emails: emails.slice(0, 8).join(", ") }));
+    await env.DB.prepare("INSERT OR REPLACE INTO plt_meta(chave,valor) VALUES(?,?)").bind("relatorio_" + orgId, JSON.stringify(cfg)).run();
+    await auditar(env, request, sessao, orgId, "RELATORIO", cfg.ativo ? `Envio do relatório: ${DIAS_SEMANA[cfg.dia]} às ${cfg.hora}h` : "Envio do relatório desligado");
+    return json({ ok: true, config: cfg });
+  }
+  if (resto === "relatorio" && metodo === "GET") {
+    if (!pode(papel, "AGENTE")) return json({ erro: "Seu perfil não pode ver os dados dos clientes." }, 403);
+    const de = q.get("de"), ate = q.get("ate"), u = ultimos7Dias(t);
+    const ini = /^\d{4}-\d{2}-\d{2}$/.test(de || "") ? Date.parse(de + "T03:00:00Z") : u.ini;
+    const fim = /^\d{4}-\d{2}-\d{2}$/.test(ate || "") ? Math.min(t + 1, Date.parse(ate + "T03:00:00Z") + 86400000) : u.fim;
+    if (fim <= ini || fim - ini > 92 * 86400000) return json({ erro: "Escolha um período de até 3 meses." }, 400);
+    // Resumo do painel: últimas 24 h, hoje e os últimos 7 dias até agora (uma leitura só).
+    if (q.get("resumo") === "1") {
+      const i7 = inicioDoDiaBR(t) - 6 * 86400000;
+      const { bruto, fontes } = await brutoRelatorio(env, orgId, i7, t + 1);
+      const sete = montarRelatorio(bruto, i7, t + 1);
+      return json({ fontes, ultimas_24h: montarRelatorio(bruto, t - 86400000, t + 1).totais, hoje: montarRelatorio(bruto, inicioDoDiaBR(t), t + 1).totais, sete_dias: sete.totais, por_dia: sete.por_dia, categorias: sete.categorias.slice(0, 5) });
+    }
+    const g = await gerarRelatorioOrg(env, orgId, ini, fim);
+    if (q.get("formato") === "xlsx") return json({ nome: g.arquivo.nome, base64: g.arquivo.base64, totais: g.d.totais });
+    return json({ ...g.d, fontes: g.fontes });
+  }
+  if (resto === "relatorio/enviar" && metodo === "POST") {
+    if (!pode(papel, "AGENTE")) return json({ erro: "Seu perfil não pode enviar relatórios." }, 403);
+    if (!emailConfigurado(env)) return json({ erro: "O envio de e-mail ainda não está configurado (RESEND_API_KEY e EMAIL_REMETENTE)." }, 409);
+    const { ini, fim } = ultimos7Dias(t);
+    const r = await enviarRelatorioOrg(env, orgId, ini, fim, sessao.usuario.email);
+    await auditar(env, request, sessao, orgId, "RELATORIO", "Enviou o relatório dos últimos 7 dias para o próprio e-mail");
+    return json({ ok: r.enviados > 0, ...r, para: sessao.usuario.email });
+  }
+  return null;
+}
+
 async function aCada(env, nome, ms) {
   const t = agora(env);
   const r = await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave=?").bind("acada_" + nome).first().catch(() => null);
@@ -887,6 +982,7 @@ async function apiOrg(request, env, sessao, orgId, resto) {
     };
     return (await rotasProblemas(request, env, orgId, papel, resto, pode(papel, "AGENTE"), sessao.usuario.email, avisosCentral)) || json({ erro: "Rota não encontrada." }, 404);
   }
+  if (resto === "relatorio" || resto.startsWith("relatorio/")) return (await rotasRelatorio(request, env, sessao, orgId, papel, resto)) || json({ erro: "Rota não encontrada." }, 404);
   if (resto === "zap" || resto.startsWith("zap/")) return rotasZap(request, env, { ...(await kitZap(env, new URL(request.url).origin)), sessao, acesso: sessao.usuario.super_admin ? { ...acesso, recursos: Object.keys(RECURSOS) } : acesso }, orgId, papel, resto);
   if (resto === "ia/chave" && metodo === "GET") {
     const k = await chaveIA(env, orgId);
@@ -1329,7 +1425,7 @@ export default {
       await sincronizarTemporada(env, await kitZap(env)).catch(e => console.error("temporada", e?.message));
       await processarCampanhas(env, await kitZap(env)).catch(e => console.error("campanhas", e?.message));
       await lembrarAgenda(env, await kitZap(env)).catch(e => console.error("agenda", e?.message));
-      await relatoriosSemanaisZap(env, await kitZap(env)).catch(e => console.error("relatório semanal do chatbot", e?.message));
+      await relatoriosAgendados(env).catch(e => console.error("relatórios agendados", e?.message));
       await lembrarEstoque(env, await kitZap(env)).catch(e => console.error("estoque", e?.message));
       await avaliacoesDoCron(env, { ...(await kitZap(env)) }).catch(e => console.error("avaliações temporada", e?.message));
       if (await aCada(env, "temporada_inadimplentes", 20 * 3600000)) {
