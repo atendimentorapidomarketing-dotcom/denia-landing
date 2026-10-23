@@ -10,7 +10,7 @@ import { acessoDa, lerPlanos } from "./planos.js";
 
 const GRAPH = "https://graph.facebook.com/v21.0";
 import { registrarProblema, resolverProblema, quandoBR } from "./problemas.js";
-import { gerarXlsx } from "./planilha.js";
+import { contarConversas, inicioDoDia } from "./relatorio.js";
 export const DDL_ZAP = [
   `CREATE TABLE IF NOT EXISTS plt_zap_contas (org_id INTEGER PRIMARY KEY, phone_number_id TEXT UNIQUE, waba_id TEXT, numero TEXT, nome_verificado TEXT, token_cifrado TEXT, segredo_cifrado TEXT, telegram_cifrado TEXT, ativo INTEGER NOT NULL DEFAULT 1, modo TEXT NOT NULL DEFAULT 'BOTOES', config TEXT, atualizado_ms INTEGER)`,
   `CREATE TABLE IF NOT EXISTS plt_zap_itens (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, pai_id INTEGER NOT NULL DEFAULT 0, tipo TEXT NOT NULL, titulo TEXT NOT NULL, descricao TEXT, texto TEXT, palavras TEXT, ordem INTEGER NOT NULL DEFAULT 0, ativo INTEGER NOT NULL DEFAULT 1)`,
@@ -62,10 +62,7 @@ export const ZAP_PADRAO = {
   rotulo_menu: "🏠 Menu inicial", rotulo_voltar: "⬅️ Voltar", rotulo_fim: "✅ Finalizar",
   lead_titulo: "🔔 NOVO CLIENTE!",
   lead_tags: "",
-  imagem_inicio: "",
-  // Relatório semanal em planilha (toda segunda de manhã, por e-mail): clientes, o que buscaram, por dia e categorias.
-  relatorio_semanal: true,
-  relatorio_emails: ""
+  imagem_inicio: ""
 };
 const TIPOS = ["MENU", "RESPOSTA", "LISTA", "HUMANO"];
 const PAUSA_HUMANO_MS = 12 * 3600000;
@@ -1395,29 +1392,6 @@ export async function rotasZap(request, env, k, orgId, papel, resto) {
     await auditar(env, request, sessao, orgId, "CHATBOT", `Planilha importada: ${total} contato(s), ${novas} opção(ões) nova(s)`);
     return json({ ok: true, contatos: total, opcoes_novas: novas });
   }
-  if (r === "relatorio" && metodo === "GET") {
-    const q = new URL(request.url).searchParams;
-    const de = q.get("de"), ate = q.get("ate");
-    const s = semanaAnterior(agora);
-    const ini = /^\d{4}-\d{2}-\d{2}$/.test(de || "") ? Date.parse(de + "T03:00:00Z") : s.ini;
-    const fim = /^\d{4}-\d{2}-\d{2}$/.test(ate || "") ? Date.parse(ate + "T03:00:00Z") + 86400000 : s.fim;
-    if (fim <= ini || fim - ini > 92 * 86400000) return json({ erro: "Escolha um período de até 3 meses." }, 400);
-    const d = await dadosRelatorio(env, orgId, ini, fim);
-    if (q.get("formato") === "xlsx") {
-      const org = await env.DB.prepare("SELECT nome FROM plt_organizacoes WHERE id=?").bind(orgId).first().catch(() => null);
-      return json({ nome: `clientes-${d.de}-a-${d.ate}.xlsx`, base64: b64(planilhaRelatorio(d, org?.nome || "")), totais: d.totais });
-    }
-    return json(d);
-  }
-  if (r === "relatorio/enviar" && metodo === "POST") {
-    const negado = precisa("AGENTE"); if (negado) return negado;
-    if (!k.emailConfigurado || !k.emailConfigurado()) return json({ erro: "O envio de e-mail ainda não está configurado (RESEND_API_KEY e EMAIL_REMETENTE)." }, 409);
-    const s = semanaAnterior(agora);
-    // Envio de teste: só para quem pediu (nunca dispara para a lista toda).
-    const res = await enviarRelatorioZap(env, k, orgId, { ...s, para: sessao?.usuario?.email });
-    await auditar(env, request, sessao, orgId, "CHATBOT", "Enviou o relatório semanal do chatbot para o próprio e-mail");
-    return json({ ok: res.enviados > 0, ...res, para: sessao?.usuario?.email });
-  }
   if (r === "stats" && metodo === "GET") {
     const q = new URL(request.url).searchParams;
     const de = q.get("de"), ate = q.get("ate");
@@ -1444,7 +1418,10 @@ export async function rotasZap(request, env, k, orgId, papel, resto) {
     const enviadas = Object.values(E).reduce((s, n) => s + n, 0);
     return json({
       buscas_por_dia: porDia?.results || [], mensagens_por_dia: msgsDia?.results || [], clientes_por_dia: clientesDia?.results || [],
-      conversas: (clientesDia?.results || []).reduce((t, x) => t + Number(x.n || 0), 0), novos: Number(novos?.results?.[0]?.n || 0), por_opcao: porItem?.results || [], por_via: porVia?.results || [], contatos: Number(contatos?.results?.[0]?.n || 0), horarios,
+      conversas: contarConversas(((await env.DB.prepare("SELECT telefone, criado_ms ms FROM plt_zap_msgs WHERE org_id=? AND direcao='E' AND criado_ms>=? AND criado_ms<?").bind(orgId, ini, fim).all())?.results || [])).length,
+      novos: Number(novos?.results?.[0]?.n || 0),
+      ultimas_24h: await (async () => { const l = (await env.DB.prepare("SELECT telefone, criado_ms ms FROM plt_zap_msgs WHERE org_id=? AND direcao='E' AND criado_ms>=?").bind(orgId, agora - 86400000).all())?.results || []; return { clientes: new Set(l.map(x => x.telefone)).size, mensagens: l.length }; })(),
+      hoje: Number((await env.DB.prepare("SELECT COUNT(DISTINCT telefone) n FROM plt_zap_msgs WHERE org_id=? AND direcao='E' AND criado_ms>=?").bind(orgId, inicioDoDia(agora)).first())?.n || 0), por_opcao: porItem?.results || [], por_via: porVia?.results || [], contatos: Number(contatos?.results?.[0]?.n || 0), horarios,
       mensagens: { recebidas: M["E:CLIENTE"] || 0, robo: M["S:ROBO"] || 0, ia: M["S:IA"] || 0, equipe: M["S:EQUIPE"] || 0 },
       entregas: { enviadas, entregues: (E.DELIVERED || 0) + (E.READ || 0), lidas: E.READ || 0, falhas: (E.FAILED || 0) + (E.FALHOU || 0), taxa: enviadas ? Math.round((((E.DELIVERED || 0) + (E.READ || 0)) / enviadas) * 1000) / 10 : null },
       total_buscas: (porDia?.results || []).reduce((s, x) => s + x.n, 0)
@@ -1632,112 +1609,20 @@ export async function webhookTelegram(request, env, k) {
 }
 
 // Para o painel: empresas que usam o chatbot da plataforma.
-// ---------------------------------------------------------------------------
-// Relatório de clientes do chatbot: cada CONVERSA (um cliente num dia) é uma linha, com o que buscou,
-// se voltou na mesma semana e se já era cliente antes. Abas: Clientes, Por dia e Categorias.
-// ---------------------------------------------------------------------------
-const FUSO_MS = 3 * 3600000; // Brasília (UTC−3, sem horário de verão)
-const DIAS_SEMANA = ["domingo", "segunda", "terça", "quarta", "quinta", "sexta", "sábado"];
-const diaBR = ms => new Date(ms - FUSO_MS).toISOString().slice(0, 10);
-const dataBR = d => d.split("-").reverse().join("/");
-const horaBR = ms => new Date(ms - FUSO_MS).toISOString().slice(11, 16);
-const semanaBR = d => DIAS_SEMANA[new Date(d + "T12:00:00Z").getUTCDay()];
-// Semana anterior completa (segunda 00:00 até segunda 00:00, horário de Brasília).
-export function semanaAnterior(agoraMs) {
-  const hoje = diaBR(agoraMs), dow = new Date(hoje + "T12:00:00Z").getUTCDay();
-  const segundaAtual = Date.parse(hoje + "T00:00:00Z") + FUSO_MS - ((dow + 6) % 7) * 86400000;
-  return { ini: segundaAtual - 7 * 86400000, fim: segundaAtual };
-}
-export async function dadosRelatorio(env, orgId, ini, fim) {
-  const entradas = (await env.DB.prepare("SELECT telefone, criado_ms FROM plt_zap_msgs WHERE org_id=? AND direcao='E' AND criado_ms>=? AND criado_ms<? ORDER BY criado_ms").bind(orgId, ini, fim).all())?.results || [];
-  const buscas = (await env.DB.prepare("SELECT telefone, caminho, titulo, criado_ms FROM plt_zap_buscas WHERE org_id=? AND criado_ms>=? AND criado_ms<? ORDER BY criado_ms").bind(orgId, ini, fim).all())?.results || [];
+// Dados brutos do relatório de clientes (o cálculo fica em relatorio.js): mensagens recebidas, buscas no menu,
+// nomes e quem já tinha falado antes do período.
+export async function brutoRelatorioZap(env, orgId, ini, fim) {
+  const entradas = ((await env.DB.prepare("SELECT telefone, criado_ms ms FROM plt_zap_msgs WHERE org_id=? AND direcao='E' AND criado_ms>=? AND criado_ms<?").bind(orgId, ini, fim).all())?.results || []);
+  const buscas = ((await env.DB.prepare("SELECT telefone, caminho, titulo, criado_ms ms FROM plt_zap_buscas WHERE org_id=? AND criado_ms>=? AND criado_ms<?").bind(orgId, ini, fim).all())?.results || [])
+    .map(b => ({ telefone: b.telefone, ms: b.ms, o: b.caminho || b.titulo || "", categoria: b.caminho || b.titulo || "" }));
   const tels = [...new Set(entradas.map(x => x.telefone))];
-  const nomes = new Map(), antigos = new Set();
+  const nomes = {}, antigos = [];
   for (let i = 0; i < tels.length; i += 80) {
     const lote = tels.slice(i, i + 80), q = lote.map(() => "?").join(",");
-    for (const c of (await env.DB.prepare(`SELECT telefone, nome FROM plt_zap_contatos WHERE org_id=? AND telefone IN (${q})`).bind(orgId, ...lote).all())?.results || []) nomes.set(c.telefone, c.nome || "");
-    for (const c of (await env.DB.prepare(`SELECT DISTINCT telefone FROM plt_zap_msgs WHERE org_id=? AND direcao='E' AND criado_ms<? AND telefone IN (${q})`).bind(orgId, ini, ...lote).all())?.results || []) antigos.add(c.telefone);
+    for (const c of (await env.DB.prepare(`SELECT telefone, nome FROM plt_zap_contatos WHERE org_id=? AND telefone IN (${q})`).bind(orgId, ...lote).all())?.results || []) nomes[c.telefone] = c.nome || "";
+    for (const c of (await env.DB.prepare(`SELECT DISTINCT telefone FROM plt_zap_msgs WHERE org_id=? AND direcao='E' AND criado_ms<? AND telefone IN (${q})`).bind(orgId, ini, ...lote).all())?.results || []) antigos.push(c.telefone);
   }
-  for (const b of buscas) if (b.telefone && !nomes.has(b.telefone)) nomes.set(b.telefone, "");
-  // Conversa = um cliente num dia.
-  const conversas = new Map();
-  for (const m of entradas) {
-    const k = m.telefone + "|" + diaBR(m.criado_ms);
-    const c = conversas.get(k) || { telefone: m.telefone, dia: diaBR(m.criado_ms), primeira: m.criado_ms, mensagens: 0, buscas: [] };
-    c.mensagens++; conversas.set(k, c);
-  }
-  for (const b of buscas) { const c = conversas.get(b.telefone + "|" + diaBR(b.criado_ms)); const o = b.caminho || b.titulo; if (c && o && !c.buscas.includes(o)) c.buscas.push(o); }
-  const diasPorTel = new Map();
-  for (const c of conversas.values()) diasPorTel.set(c.telefone, (diasPorTel.get(c.telefone) || 0) + 1);
-  const lista = [...conversas.values()].sort((a, b) => a.primeira - b.primeira).map(c => ({ ...c, nome: nomes.get(c.telefone) || "", vezes: diasPorTel.get(c.telefone), recorrente: antigos.has(c.telefone) }));
-  const dias = [];
-  for (let t = ini; t < fim; t += 86400000) dias.push(diaBR(t + 12 * 3600000));
-  const porDia = dias.map(d => {
-    const doDia = lista.filter(c => c.dia === d);
-    return { dia: d, clientes: doDia.length, novos: doDia.filter(c => !c.recorrente).length, recorrentes: doDia.filter(c => c.recorrente).length, buscas: buscas.filter(b => diaBR(b.criado_ms) === d).length };
-  });
-  const cat = new Map();
-  for (const b of buscas) { const o = b.caminho || b.titulo || "(sem nome)"; const x = cat.get(o) || { categoria: o, buscas: 0, clientes: new Set() }; x.buscas++; if (b.telefone) x.clientes.add(b.telefone); cat.set(o, x); }
-  const categorias = [...cat.values()].map(x => ({ categoria: x.categoria, buscas: x.buscas, clientes: x.clientes.size })).sort((a, b) => b.buscas - a.buscas || b.clientes - a.clientes);
-  const clientes = new Set(lista.map(c => c.telefone));
-  return {
-    de: diaBR(ini), ate: diaBR(fim - 1), conversas: lista, por_dia: porDia, categorias,
-    totais: { clientes: clientes.size, conversas: lista.length, novos: [...clientes].filter(t => !antigos.has(t)).length, recorrentes: [...clientes].filter(t => antigos.has(t)).length, voltaram_na_semana: [...diasPorTel.values()].filter(n => n > 1).length, buscas: buscas.length }
-  };
-}
-export function planilhaRelatorio(d, empresa = "") {
-  const fone = t => { const x = digitos(t); return x.length >= 12 ? `+${x.slice(0, 2)} (${x.slice(2, 4)}) ${x.slice(4, -4)}-${x.slice(-4)}` : x; };
-  return gerarXlsx([
-    { nome: "Clientes", larguras: [12, 10, 7, 26, 20, 44, 11, 22, 18],
-      linhas: [["Data", "Dia", "Hora", "Nome", "Telefone", "O que buscou", "Mensagens", "Contatos na semana", "Cliente recorrente"],
-        ...d.conversas.map(c => [dataBR(c.dia), semanaBR(c.dia), horaBR(c.primeira), c.nome || "(sem nome)", fone(c.telefone), c.buscas.join("; ") || "(não escolheu opção)", c.mensagens,
-          c.vezes > 1 ? `Sim — ${c.vezes} dias` : "Não", c.recorrente ? "Sim (já tinha falado antes)" : "Não (novo)"])] },
-    { nome: "Por dia", larguras: [12, 10, 10, 9, 12, 9],
-      linhas: [["Data", "Dia", "Clientes", "Novos", "Recorrentes", "Buscas"],
-        ...d.por_dia.map(x => [dataBR(x.dia), semanaBR(x.dia), x.clientes, x.novos, x.recorrentes, x.buscas]),
-        [], ["TOTAL DA SEMANA", "", d.totais.clientes, d.totais.novos, d.totais.recorrentes, d.totais.buscas],
-        ["Conversas (cliente por dia)", "", d.totais.conversas], ["Voltaram mais de uma vez na semana", "", d.totais.voltaram_na_semana]] },
-    { nome: "Categorias", larguras: [9, 50, 10, 18],
-      linhas: [["Posição", "Categoria", "Buscas", "Clientes diferentes"], ...d.categorias.map((x, i) => [i + 1, x.categoria, x.buscas, x.clientes])] },
-    { nome: "Resumo", larguras: [34, 40],
-      linhas: [["Relatório do chatbot", empresa], ["Período", `${dataBR(d.de)} a ${dataBR(d.ate)}`], ["Clientes diferentes", d.totais.clientes], ["Novos", d.totais.novos],
-        ["Recorrentes (já tinham falado antes)", d.totais.recorrentes], ["Voltaram mais de uma vez na semana", d.totais.voltaram_na_semana], ["Conversas", d.totais.conversas], ["Buscas no menu", d.totais.buscas],
-        ["Mais buscado", d.categorias[0] ? `${d.categorias[0].categoria} (${d.categorias[0].buscas})` : "—"]] }
-  ]);
-}
-const b64 = bytes => { let s = ""; for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000)); return btoa(s); };
-function textoRelatorio(d, empresa) {
-  const top = d.categorias.slice(0, 5).map((x, i) => `${i + 1}. ${x.categoria} — ${x.buscas}`).join("\n") || "—";
-  return `Relatório semanal do chatbot${empresa ? " — " + empresa : ""}\nPeríodo: ${dataBR(d.de)} a ${dataBR(d.ate)}\n\nClientes diferentes: ${d.totais.clientes} (${d.totais.novos} novos, ${d.totais.recorrentes} recorrentes)\nVoltaram mais de uma vez na semana: ${d.totais.voltaram_na_semana}\nBuscas no menu: ${d.totais.buscas}\n\nClientes por dia:\n${d.por_dia.map(x => `${semanaBR(x.dia)} ${dataBR(x.dia)}: ${x.clientes}`).join("\n")}\n\nMais buscados:\n${top}\n\nA planilha completa (nome, telefone, data, hora e o que cada cliente buscou) está em anexo.`;
-}
-async function destinatariosRelatorio(env, k, orgId, cfg) {
-  const extras = String(cfg.relatorio_emails || "").split(/[,;\s]+/).map(e => e.trim()).filter(e => k.emailValido ? k.emailValido(e) : /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e));
-  return [...new Set([...(k.responsaveis ? await k.responsaveis(orgId) : []), ...extras])].slice(0, 8);
-}
-export async function enviarRelatorioZap(env, k, orgId, { ini, fim, para = null } = {}) {
-  const conta = await contaDa(env, orgId), cfg = lerConfig(conta);
-  const org = await env.DB.prepare("SELECT nome FROM plt_organizacoes WHERE id=?").bind(orgId).first().catch(() => null);
-  const d = await dadosRelatorio(env, orgId, ini, fim);
-  const arquivo = { nome: `clientes-${d.de}-a-${d.ate}.xlsx`, base64: b64(planilhaRelatorio(d, org?.nome || "")) };
-  const destinos = para ? [para] : await destinatariosRelatorio(env, k, orgId, cfg);
-  let enviados = 0;
-  for (const e of destinos) if (await k.enviarEmail(e, `Relatório semanal do chatbot — ${dataBR(d.de)} a ${dataBR(d.ate)}`, textoRelatorio(d, org?.nome || ""), [arquivo])) enviados++;
-  return { enviados, destinos: destinos.length, totais: d.totais };
-}
-// Toda segunda-feira a partir das 8 h: manda a semana anterior para quem tem chatbot com o relatório ligado.
-export async function relatoriosSemanaisZap(env, k) {
-  if (!k.emailConfigurado || !k.emailConfigurado()) return;
-  const agora = k.agora(env), hoje = diaBR(agora);
-  if (new Date(hoje + "T12:00:00Z").getUTCDay() !== 1 || new Date(agora - FUSO_MS).getUTCHours() < 8) return;
-  const { ini, fim } = semanaAnterior(agora);
-  for (const orgId of await orgsComChatbot(env)) {
-    const cfg = lerConfig(await contaDa(env, orgId));
-    if (cfg.relatorio_semanal === false) continue;
-    const chave = `zap_relatorio_${orgId}_${hoje}`;
-    const r = await env.DB.prepare("INSERT OR IGNORE INTO plt_meta(chave,valor) VALUES(?,?)").bind(chave, String(agora)).run().catch(() => null);
-    if (!Number(r?.meta?.changes || 0)) continue;
-    try { await enviarRelatorioZap(env, k, orgId, { ini, fim }); } catch (e) { console.error("relatório semanal", orgId, e?.message); }
-  }
+  return { entradas, buscas, nomes, antigos };
 }
 
 export async function orgsComChatbot(env) {

@@ -2868,51 +2868,78 @@ test("Profissionais da Central: o administrador cadastra pela plataforma e a IA 
   assert.ok(aud.dados.eventos.some(e => /João Faz Tudo/.test(e.detalhe || "")), "fica na auditoria");
 });
 
-test("Chatbot — relatório semanal: planilha com clientes, por dia e categorias, enviada por e-mail na segunda; painel conta clientes", async () => {
+test("Relatórios — conversas pela janela de 24 h, planilha profissional e envio no dia e horário escolhidos", async () => {
   const p = await criarPlataforma({ RESEND_API_KEY: "re_teste", EMAIL_REMETENTE: "DENIA <nao-responda@denia.test>" });
   await p.entrar("admin", ADMIN, SENHA_ADMIN);
-  await p.req("/api/orgs/1/zap/stats", { quem: "admin" }); // cria as tabelas do chatbot
+  const nova = await p.req("/api/admin/organizacoes", { metodo: "POST", quem: "admin", corpo: { nome: "Loja Chatbot", segmento: "Varejo" } });
+  const inf = nova.dados.id;
+  assert.ok(inf, JSON.stringify(nova.dados));
+  await p.req(`/api/orgs/${inf}/zap/stats`, { quem: "admin" }); // cria as tabelas do chatbot
   const db = p.env.DB, exec = (sql, ...a) => db.prepare(sql).bind(...a).run();
   const ms = s => Date.parse(s);
-  await exec("INSERT INTO plt_zap_contas(org_id,phone_number_id,config,modo,ativo,atualizado_ms) VALUES(1,'555000111','{}','BOTOES',1,?)", ms("2026-10-01T12:00:00Z"));
-  await exec("INSERT INTO plt_zap_contatos(org_id,telefone,nome,ultimo_ms) VALUES(1,'5521911110001','Ana Lima',0),(1,'5521911110002','Beto',0)");
-  // Beto já tinha falado antes da semana (recorrente); Ana é nova e volta na quarta.
-  await exec("INSERT INTO plt_zap_msgs(org_id,telefone,direcao,origem,texto,criado_ms) VALUES(1,'5521911110002','E','CLIENTE','oi',?)", ms("2026-09-20T15:00:00Z"));
-  for (const [tel, quando] of [["5521911110001", "2026-10-12T13:05:00Z"], ["5521911110001", "2026-10-12T13:06:00Z"], ["5521911110002", "2026-10-12T18:30:00Z"], ["5521911110001", "2026-10-14T20:10:00Z"]])
-    await exec("INSERT INTO plt_zap_msgs(org_id,telefone,direcao,origem,texto,criado_ms) VALUES(1,?,'E','CLIENTE','oi',?)", tel, ms(quando));
+  await exec("INSERT INTO plt_zap_contas(org_id,phone_number_id,config,modo,ativo,atualizado_ms) VALUES(?,'555000111','{}','BOTOES',1,?)", inf, ms("2026-10-01T12:00:00Z"));
+  await exec("INSERT INTO plt_zap_contatos(org_id,telefone,nome,ultimo_ms) VALUES(?,'5521911110001','Ana Lima',0),(?,'5521911110002','Beto',0)", inf, inf);
+  // Beto já tinha falado antes (recorrente). Ana: 3 mensagens na segunda de manhã (1 conversa), volta na quarta (2ª conversa).
+  await exec("INSERT INTO plt_zap_msgs(org_id,telefone,direcao,origem,texto,criado_ms) VALUES(?,'5521911110002','E','CLIENTE','oi',?)", inf, ms("2026-09-20T15:00:00Z"));
+  for (const [tel, quando] of [["5521911110001", "2026-10-12T13:05:00Z"], ["5521911110001", "2026-10-12T13:06:00Z"], ["5521911110001", "2026-10-12T22:00:00Z"], ["5521911110002", "2026-10-12T18:30:00Z"], ["5521911110001", "2026-10-14T20:10:00Z"]])
+    await exec("INSERT INTO plt_zap_msgs(org_id,telefone,direcao,origem,texto,criado_ms) VALUES(?,?,'E','CLIENTE','oi',?)", inf, tel, ms(quando));
   for (const [tel, cam, quando] of [["5521911110001", "Serviços › Celular", "2026-10-12T13:06:30Z"], ["5521911110002", "Serviços › Celular", "2026-10-12T18:31:00Z"], ["5521911110001", "Produtos › Roupas", "2026-10-14T20:11:00Z"]])
-    await exec("INSERT INTO plt_zap_buscas(org_id,telefone,caminho,titulo,tipo,via,resultados,criado_ms) VALUES(1,?,?,?,'LISTA','BOTAO',1,?)", tel, cam, cam.split(" › ").pop(), ms(quando));
-  p.env.__agora = () => ms("2026-10-20T14:00:00Z"); // terça: a semana passada é 12 a 18/10
-  const r = (await p.req("/api/orgs/1/zap/relatorio", { quem: "admin" })).dados;
+    await exec("INSERT INTO plt_zap_buscas(org_id,telefone,caminho,titulo,tipo,via,resultados,criado_ms) VALUES(?,?,?,?,'LISTA','BOTAO',1,?)", inf, tel, cam, cam.split(" › ").pop(), ms(quando));
+  p.env.__agora = () => ms("2026-10-19T14:00:00Z"); // segunda: últimos 7 dias = 12 a 18/10
+  const r = (await p.req(`/api/orgs/${inf}/relatorio`, { quem: "admin" })).dados;
   assert.equal(r.de, "2026-10-12"); assert.equal(r.ate, "2026-10-18");
-  assert.deepEqual(r.totais, { clientes: 2, conversas: 3, novos: 1, recorrentes: 1, voltaram_na_semana: 1, buscas: 3 });
+  assert.deepEqual(r.totais, { clientes: 2, conversas: 3, novos: 1, recorrentes: 1, voltaram: 1, buscas: 3 }, "3 conversas, não 5 mensagens");
   assert.deepEqual(r.por_dia.map(d => d.clientes), [2, 0, 1, 0, 0, 0, 0]);
-  assert.equal(r.categorias[0].categoria, "Serviços › Celular"); assert.equal(r.categorias[0].buscas, 2); assert.equal(r.categorias[0].clientes, 2);
+  assert.equal(r.categorias[0].categoria, "Serviços › Celular"); assert.equal(r.categorias[0].clientes, 2);
   const ana = r.conversas[0];
-  assert.equal(ana.nome, "Ana Lima"); assert.equal(ana.vezes, 2); assert.equal(ana.recorrente, false); assert.deepEqual(ana.buscas, ["Serviços › Celular"]);
+  assert.equal(ana.nome, "Ana Lima"); assert.equal(ana.mensagens, 3); assert.equal(ana.vezes, 2); assert.equal(ana.recorrente, false); assert.deepEqual(ana.buscas, ["Serviços › Celular"]);
   assert.equal(r.conversas[1].recorrente, true, "Beto já era cliente");
-  // Planilha Excel de verdade (zip com as 4 abas).
-  const x = (await p.req("/api/orgs/1/zap/relatorio?formato=xlsx", { quem: "admin" })).dados;
-  const bytes = Buffer.from(x.base64, "base64");
-  assert.equal(bytes.subarray(0, 2).toString(), "PK");
-  const txtZip = bytes.toString("latin1");
-  for (const aba of ["Clientes", "Por dia", "Categorias", "Resumo"]) assert.match(txtZip, new RegExp(`name="${aba}"`));
-  assert.match(txtZip, /Ana Lima/); assert.match(txtZip, /TOTAL DA SEMANA/); assert.match(txtZip, /12\/10\/2026/); assert.match(txtZip, /10:05/, "hora de Brasília");
-  // Painel: clientes e conversas, não só mensagens.
-  const st = (await p.req("/api/orgs/1/zap/stats?de=2026-10-12&ate=2026-10-18", { quem: "admin" })).dados;
-  assert.equal(st.contatos, 2); assert.equal(st.conversas, 3); assert.equal(st.novos, 1);
-  // Segunda de manhã: e-mail com a planilha para os administradores e os e-mails extras, uma vez só.
-  await p.req("/api/orgs/1/zap/config", { metodo: "POST", quem: "admin", corpo: { relatorio_emails: "gerente@loja.test, invalido" } });
+  // Planilha Excel.
+  const x = (await p.req(`/api/orgs/${inf}/relatorio?formato=xlsx`, { quem: "admin" })).dados;
+  const z = Buffer.from(x.base64, "base64");
+  assert.equal(z.subarray(0, 2).toString(), "PK");
+  const t = z.toString("utf8");
+  for (const aba of ["Resumo", "Por dia", "Clientes", "Categorias"]) assert.match(t, new RegExp(`name="${aba}"`));
+  assert.match(t, /Ana Lima/); assert.match(t, /Total do período/); assert.match(t, /10:05/, "hora de Brasília"); assert.match(t, /segunda-feira/);
+  assert.doesNotMatch(t, /[\u{1F300}-\u{1FAFF}]/u, "sem emoji na planilha");
+  // Painel: últimas 24 h e chatbot contando conversas.
+  p.env.__agora = () => ms("2026-10-15T12:00:00Z");
+  const res = (await p.req(`/api/orgs/${inf}/relatorio?resumo=1`, { quem: "admin" })).dados;
+  assert.equal(res.ultimas_24h.clientes, 1); assert.equal(res.ultimas_24h.conversas, 1);
+  const st = (await p.req(`/api/orgs/${inf}/zap/stats?de=2026-10-12&ate=2026-10-18`, { quem: "admin" })).dados;
+  assert.equal(st.contatos, 2); assert.equal(st.conversas, 3);
+  // Envio: o administrador escolhe quarta às 10h.
+  assert.equal((await p.req(`/api/orgs/${inf}/relatorio/config`, { metodo: "POST", quem: "admin", corpo: { ativo: true, dia: 3, hora: 10, emails: "gerente@loja.test, invalido" } })).status, 400, "e-mail inválido é recusado");
+  const cfg = await p.req(`/api/orgs/${inf}/relatorio/config`, { metodo: "POST", quem: "admin", corpo: { ativo: true, dia: 3, hora: 10, emails: "gerente@loja.test" } });
+  assert.deepEqual(cfg.dados.config, { ativo: true, dia: 3, hora: 10, emails: "gerente@loja.test" });
   const mod = await import(new URL("../src/worker.js?t=rel" + Math.random(), import.meta.url).href);
-  p.env.__agora = () => ms("2026-10-19T09:30:00Z"); // segunda 06:30 em Brasília: ainda não
-  await mod.default.scheduled({}, p.env, { waitUntil: pr => pr }); await new Promise(r => setTimeout(r, 50));
-  assert.equal(p.emails.length, 0);
-  p.env.__agora = () => ms("2026-10-19T11:30:00Z"); // segunda 08:30
-  await mod.default.scheduled({}, p.env, { waitUntil: pr => pr }); await new Promise(r => setTimeout(r, 50));
-  assert.deepEqual(p.emails.map(e => e.to[0]).sort(), [ADMIN, "gerente@loja.test"].sort());
-  assert.match(p.emails[0].subject, /12\/10\/2026 a 18\/10\/2026/);
-  assert.match(p.emails[0].text, /Clientes diferentes: 2 \(1 novos, 1 recorrentes\)/);
-  assert.equal(p.emails[0].attachments[0].filename, "clientes-2026-10-12-a-2026-10-18.xlsx");
-  await mod.default.scheduled({}, p.env, { waitUntil: pr => pr }); await new Promise(r => setTimeout(r, 50));
-  assert.equal(p.emails.length, 2, "não repete na mesma segunda");
+  const rodar = async () => { await mod.default.scheduled({}, p.env, { waitUntil: pr => pr }); await new Promise(r => setTimeout(r, 50)); };
+  p.env.__agora = () => ms("2026-10-19T11:30:00Z"); await rodar(); // segunda: não é o dia escolhido
+  p.env.__agora = () => ms("2026-10-21T12:30:00Z"); await rodar(); // quarta 09:30: antes do horário
+  const daLoja = () => p.emails.filter(e => /Loja Chatbot/.test(e.subject));
+  assert.equal(daLoja().length, 0);
+  p.env.__agora = () => ms("2026-10-21T13:10:00Z"); await rodar(); // quarta 10:10
+  assert.deepEqual(daLoja().map(e => e.to[0]).sort(), [ADMIN, "gerente@loja.test"].sort());
+  assert.match(daLoja()[0].subject, /14\/10\/2026 a 20\/10\/2026/, "os 7 dias anteriores ao envio");
+  assert.match(daLoja()[0].text, /Clientes que entraram em contato: 1/);
+  assert.equal(daLoja()[0].attachments[0].filename, "relatorio-clientes-2026-10-14-a-2026-10-20.xlsx");
+  await rodar();
+  assert.equal(daLoja().length, 2, "uma vez só no dia");
+});
+
+test("Relatórios — empresa com IA: clientes da IA entram na planilha, profissionais não", async () => {
+  const p = await criarPlataforma();
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  await p.req("/api/orgs/1/integracao", { metodo: "POST", quem: "admin", corpo: { engine_url: "https://engine.test", token: TOKEN_ENGINE } });
+  p.engine.agora = Date.now() - 60000; // o banco grava a hora real nas mensagens: o relógio do motor acompanha
+  p.engine.llmCliente = () => ({ resposta: "Certo!", intencao: "NOVO_PEDIDO", quer_orcamento_ou_atendimento: true, pronto_para_profissional: false, fatos: { servico: "chaveiro", problema: "troca de fechadura", categoria: "CHAVEIRO" }, categoria_confianca: "ALTA" });
+  await p.engine.cliente("5521911112222", "Preciso trocar a fechadura", { nome: "Marta" });
+  await p.engine.cliente("5521964545279", "Bom dia"); // profissional (chaveiro): não conta como cliente
+  const hoje = new Date(Date.now() - 3 * 3600000).toISOString().slice(0, 10);
+  const r = (await p.req(`/api/orgs/1/relatorio?de=2026-10-01&ate=${hoje}`, { quem: "admin" })).dados;
+  assert.ok(r.fontes.includes("ia"), JSON.stringify(r.fontes));
+  assert.equal(r.totais.clientes, 1);
+  assert.equal(r.conversas[0].nome, "Marta");
+  assert.match(r.conversas[0].buscas[0], /^Chaveiro: troca de fechadura/);
+  assert.equal(r.categorias[0].categoria, "Chaveiro");
 });

@@ -221,6 +221,7 @@
     painel: { titulo: "Painel", render: paginaPainel },
     denia: { titulo: "DENIA por voz", render: paginaDenia },
     problemas: { titulo: "Problemas", render: paginaProblemas },
+    relatorios: { titulo: "Relatórios", render: paginaRelatorios },
     conversas: { titulo: "Conversas", render: paginaConversas },
     atendimentos: { titulo: "Atendimentos", render: paginaAtendimentos },
     profissionais: { titulo: "Profissionais", render: paginaProfissionais },
@@ -462,6 +463,73 @@
   // Painel
   // ---------------------------------------------------------------------------
 
+  // Clientes que entraram em contato: últimas 24 h, hoje e últimos 7 dias (chatbot e IA somados).
+  async function faixaClientes(caixa) {
+    const r = await org("relatorio?resumo=1");
+    caixa.replaceChildren(h("section", { class: "grade grade-4" },
+      metrica("Clientes nas últimas 24 horas", numero(r.ultimas_24h.clientes), `${numero(r.ultimas_24h.conversas)} conversas · ${numero(r.ultimas_24h.novos)} novos`),
+      metrica("Clientes hoje", numero(r.hoje.clientes), `${numero(r.hoje.novos)} novos · ${numero(r.hoje.recorrentes)} recorrentes`),
+      metrica("Clientes nos últimos 7 dias", numero(r.sete_dias.clientes), `${numero(r.sete_dias.conversas)} conversas · ${numero(r.sete_dias.voltaram)} voltaram`),
+      h("a", { class: "metrica vidro metrica-botao", href: "#/relatorios" }, h("span", { text: "Mais procurado nos 7 dias" }), h("strong", { text: r.categorias[0] ? r.categorias[0].categoria : "Sem dados" }), h("small", { text: "Abrir relatórios" }))));
+  }
+  // Relatórios: números do período, planilha para baixar e o envio automático por e-mail.
+  async function paginaRelatorios(el, _p, vivo) {
+    el.appendChild(cabeca("Relatórios", "Clientes que entraram em contato, conversas e o que procuraram. Cada conversa começa na primeira mensagem do cliente e vale por 24 horas, como a Meta conta."));
+    const f = estado.relF = estado.relF || { dias: 7 };
+    const ate = isoLocal(new Date(Date.now() - 86400000)), de = isoLocal(new Date(Date.now() - f.dias * 86400000));
+    const topo = h("div", {}, carregando()), corpo = h("div", {}, carregando()), envio = h("div", {});
+    el.append(topo,
+      h("section", { class: "cartao vidro filtros-desempenho" }, h("div", { class: "abas abas-chips", role: "group", "aria-label": "Período" },
+        [[7, "Últimos 7 dias"], [30, "Últimos 30 dias"], [90, "Últimos 90 dias"]].map(([v, n]) => h("button", { type: "button", class: "aba" + (f.dias === v ? " ativo" : ""), "aria-pressed": f.dias === v ? "true" : "false", onclick: () => { f.dias = v; navegar(); } }, n)))),
+      corpo, envio);
+    faixaClientes(topo).catch(e => { if (vivo()) falha(topo, e); });
+    blocoEnvioRelatorio(envio).catch(e => { if (vivo()) falha(envio, e); });
+    let r;
+    try { r = await org(`relatorio?de=${de}&ate=${ate}`); } catch (e) { if (vivo()) falha(corpo, e); return; }
+    if (!vivo()) return;
+    const t = r.totais || {};
+    const baixar = async b => {
+      const txt0 = b.textContent; b.textContent = "Gerando planilha…";
+      try {
+        const x = await org(`relatorio?de=${de}&ate=${ate}&formato=xlsx`);
+        const bin = atob(x.base64), bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        const url = URL.createObjectURL(new Blob([bytes], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }));
+        const a = h("a", { href: url, download: x.nome }); document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 5000);
+      } catch (e) { aviso(e.message, "erro"); } finally { b.textContent = txt0; }
+    };
+    const fone = tel => { const x = String(tel || "").replace(/\D/g, ""); return x.length >= 12 ? `(${x.slice(2, 4)}) ${x.slice(4, -4)}-${x.slice(-4)}` : x; };
+    trocar(corpo,
+      h("section", { class: "grade grade-4" }, metrica("Clientes", numero(t.clientes || 0), `${dataCompleta(r.de)} a ${dataCompleta(r.ate)}`), metrica("Conversas", numero(t.conversas || 0), "janela de 24 horas"),
+        metrica("Novos", numero(t.novos || 0), `${numero(t.recorrentes || 0)} recorrentes`), metrica("Voltaram no período", numero(t.voltaram || 0), "mais de uma conversa")),
+      h("section", { class: "cartao vidro" }, h("div", { class: "cabeca-grafico" }, h("h3", { style: "margin:0", text: "Clientes por dia" }), botao("Baixar planilha (Excel)", (_e, b) => baixar(b), "btn-primario btn-pequeno")),
+        graficoLinha((r.por_dia || []).map(d => ({ chave: d.dia, rotulo: dataCompleta(d.dia), curto: dataCurta(d.dia), valor: d.clientes })), null, "Clientes", ""),
+        tabelaDados([["dia", "Data", v => dataCompleta(v)], ["clientes", "Clientes", numero, { num: true }], ["conversas", "Conversas", numero, { num: true }], ["novos", "Novos", numero, { num: true }], ["recorrentes", "Recorrentes", numero, { num: true }], ["buscas", "Buscas", numero, { num: true }]], r.por_dia || [], { titulo: "Total por dia", arquivo: `clientes-por-dia-${r.de}-a-${r.ate}.csv` })),
+      h("section", { class: "grade grade-2" },
+        h("div", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Categorias mais procuradas" }), (r.categorias || []).length ? barras(r.categorias.slice(0, 12).map(x => ({ rotulo: x.categoria, valor: x.buscas }))) : vazio("Sem buscas no período", "")),
+        h("div", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Últimos contatos" }),
+          (r.conversas || []).length ? h("ul", { class: "lista-saude" }, r.conversas.slice(-12).reverse().map(c => h("li", {}, h("span", {}, h("strong", { text: `${c.nome || "Sem nome"} · ${fone(c.telefone)}` }),
+            h("span", { class: "sub", text: `${dataCompleta(c.dia)} às ${new Date(c.inicio).toLocaleTimeString(LOCALE, { hour: "2-digit", minute: "2-digit", timeZone: "America/Sao_Paulo" })} · ${c.buscas.join("; ") || "Não informou"} · ${c.recorrente ? "Recorrente" : "Novo"}` }))))) : vazio("Nenhum contato no período", ""))),
+      (r.fontes || []).includes("ia-indisponivel") ? h("p", { class: "nota nota-alerta", text: "A IA desta empresa não respondeu agora: os números acima podem estar sem as conversas da IA." }) : "");
+  }
+  async function blocoEnvioRelatorio(caixa) {
+    const r = await org("relatorio/config");
+    const c = r.config, admin = pode("ADMIN");
+    const ativo = h("input", { type: "checkbox", checked: c.ativo, disabled: !admin });
+    const dia = h("select", { class: "entrada", disabled: !admin }, (r.dias || []).map((n, i) => h("option", { value: String(i), selected: c.dia === i, text: n.charAt(0).toUpperCase() + n.slice(1) })));
+    const hora = h("select", { class: "entrada", disabled: !admin }, Array.from({ length: 24 }, (_, i) => h("option", { value: String(i), selected: c.hora === i, text: String(i).padStart(2, "0") + ":00" })));
+    const emails = h("input", { class: "entrada", type: "text", value: c.emails || "", placeholder: "gerente@empresa.com.br, diretoria@empresa.com.br", disabled: !admin });
+    caixa.replaceChildren(h("section", { class: "cartao vidro" },
+      h("h3", { style: "margin-top:0", text: "Envio automático por e-mail" }),
+      h("p", { class: "sub", text: "No dia e horário escolhidos, os administradores da empresa (e os e-mails abaixo) recebem a planilha dos últimos 7 dias: clientes, data e horário do contato, telefone, o que procuraram, quem voltou e quem já era cliente, o total por dia e as categorias mais procuradas." }),
+      r.email_configurado ? null : h("p", { class: "nota nota-alerta", text: "O envio de e-mail ainda não está configurado na plataforma (RESEND_API_KEY e EMAIL_REMETENTE)." }),
+      h("label", { class: "guia-cat" }, ativo, h("span", { text: " Enviar o relatório automaticamente" })),
+      h("div", { class: "grade grade-2" }, h("div", { class: "campo" }, h("label", { text: "Dia da semana" }), dia), h("div", { class: "campo" }, h("label", { text: "Horário (Brasília)" }), hora)),
+      h("div", { class: "campo" }, h("label", { text: "Enviar também para (separe por vírgula)" }), emails),
+      h("div", { class: "acoes" },
+        admin ? botao("Salvar", async () => { try { await org("relatorio/config", { metodo: "POST", corpo: { ativo: ativo.checked, dia: Number(dia.value), hora: Number(hora.value), emails: emails.value.trim() } }); aviso("Envio do relatório salvo.", "ok"); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario") : null,
+        pode("AGENTE") ? botao("Enviar os últimos 7 dias para o meu e-mail", async (_e, b) => { const t0 = b.textContent; b.textContent = "Enviando…"; try { const x = await org("relatorio/enviar", { metodo: "POST", corpo: {} }); aviso(x.ok ? `Relatório enviado para ${x.para}.` : "O e-mail não foi aceito. Confira o domínio no Resend.", x.ok ? "ok" : "erro"); } catch (e) { aviso(e.message, "erro"); } finally { b.textContent = t0; } }, "btn-secundario") : null)));
+  }
   async function paginaPainel(el, _p, vivo) {
     const u = estado.eu.usuario;
     const hora = new Date().getHours();
@@ -475,6 +543,7 @@
         !estado.org.conectada && estado.org.chatbot ? h("a", { class: "btn btn-primario", href: "#/chatbot/conversas" }, "Ver conversas") : estado.org.conectada ? h("a", { class: "btn btn-primario", href: "#/conversas" }, "Ver conversas") : h("a", { class: "btn btn-primario", href: "#/chatbot" }, "Montar o chatbot"),
         !estado.org.conectada && estado.org.chatbot ? h("a", { class: "btn btn-secundario", href: "#/chatbot/menu" }, "Editar o menu") : modoGuia() ? h("a", { class: "btn btn-secundario", href: "#/guia" }, "Guia de lojas") : h("a", { class: "btn btn-secundario", href: "#/treinamento" }, "Treinar a IA"))));
 
+    if (estado.org.conectada || estado.org.chatbot) { const faixa = h("div", {}); el.appendChild(faixa); faixaClientes(faixa).catch(() => faixa.remove()); }
     if (!estado.org.conectada && estado.org.chatbot) {
       const area = h("div", { class: "grade" }, carregando());
       el.appendChild(area);
@@ -688,7 +757,7 @@
     };
     const acoes = h("div", { class: "acoes" },
       quem,
-      pode("AGENTE") ? botao("📞 Registrar ligação", registrarLigacao, "btn-secundario btn-pequeno") : null,
+      pode("AGENTE") ? botao("Registrar ligação", registrarLigacao, "btn-secundario btn-pequeno") : null,
       h("a", { class: "btn btn-secundario btn-pequeno", href: "#/conversas" }, "Voltar"),
       pode("AGENTE") ? (d.ia_pausada
         ? botao("Devolver para a IA", async () => { try { await eng(`conversations/${id}/release`, { metodo: "POST", corpo: {} }); aviso("A IA voltou a atender esta conversa.", "ok"); abrirConversa(painel, id, vivo); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno")
@@ -766,7 +835,7 @@
     area.replaceChildren(
       h("section", { class: "cartao vidro" }, chips,
         h("div", { class: "acoes", style: "margin-top:10px" }, h("div", { style: "flex:1;min-width:240px" }, busca),
-          pode("AGENTE") && conta(parado) ? botao(`✦ Revisar com IA os ${numero(Math.min(30, conta(parado)))} casos parados`, revisarVarios, "btn-primario") : null),
+          pode("AGENTE") && conta(parado) ? botao(`Revisar com IA os ${numero(Math.min(30, conta(parado)))} casos parados`, revisarVarios, "btn-primario") : null),
         progresso),
       lista.length ? listaEl : h("div", { class: "cartao vidro" }, vazio("Nenhum caso com esse filtro", "", ICONES.caixa)), mais);
   }
@@ -795,10 +864,10 @@
       h("div", { class: "acoes" },
         h("a", { class: "btn btn-secundario btn-pequeno", href: "#/conversas/" + c.clienteId }, "Abrir conversa"),
         pode("AGENTE") && sugestao ? botao(`Aceitar: ${NOME_ETAPA[sugestao.etapa_sugerida] || sugestao.etapa_sugerida}`, async () => { try { await eng(`cases/${c.casoId}/status`, { metodo: "POST", corpo: { etapa: sugestao.etapa_sugerida } }); aviso("Etapa atualizada.", "ok"); navegar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario btn-pequeno") : null,
-        pode("AGENTE") ? botao("✦ Atualizar com IA", async (_e, b) => {
+        pode("AGENTE") ? botao("Atualizar com IA", async (_e, b) => {
           b.textContent = "Lendo o caso…";
           try { const r = await eng(`cases/${c.casoId}/review`, { metodo: "POST", corpo: { aplicar: true } }); aviso(r.aplicada ? `Movido para "${NOME_ETAPA[r.etapa_sugerida] || r.etapa_sugerida}": ${r.motivo}` : `A IA sugere "${NOME_ETAPA[r.etapa_sugerida] || r.etapa_sugerida}" (confiança ${r.confianca.toLowerCase()}): ${r.motivo}`, "ok"); navegar(); }
-          catch (e) { aviso(e.message, "erro"); } finally { b.textContent = "✦ Atualizar com IA"; }
+          catch (e) { aviso(e.message, "erro"); } finally { b.textContent = "Atualizar com IA"; }
         }, "btn-secundario btn-pequeno") : null, sel));
   }
 
@@ -1149,7 +1218,7 @@
     const origemToken = { plataforma: "salvo aqui na plataforma", cloudflare: "secret DENIA_PLATFORM_SERVICE_TOKEN do Worker denia-landing" }[i.token_origem] || "";
     const engine = h("section", { class: "cartao vidro formulario" },
       h("div", { class: "sugestao-topo" }, h("h3", { style: "margin:0;margin-right:auto", text: "DENIA Engine (a IA do WhatsApp)" }), direta || (i.token_configurado && i.engine_url) ? selo(direta ? "Ligação direta" : "Conectado", "ok") : selo("Não conectado", "alerta")),
-      h("p", { style: "margin:0;color:var(--texto-2);font-size:14px", text: direta ? "A Central está ligada direto ao Worker \"denia\" da Cloudflare, por dentro da Cloudflare. Só falta o token: ele precisa ser exatamente o mesmo DENIA_PLATFORM_SERVICE_TOKEN que está no Worker \"denia\"." : "É o Worker da Cloudflare que atende o WhatsApp desta empresa. A plataforma conversa com ele de servidor para servidor; o token fica cifrado e nunca aparece no navegador." }),
+      h("p", { style: "margin:0;color:var(--texto-2);font-size:14px", text: direta ? "A IA da Central roda no mesmo servidor da plataforma e já está ligada a ela; o token entre as duas é criado sozinho." : "É o servidor da IA que atende o WhatsApp desta empresa. A plataforma conversa com ele de servidor para servidor; o token fica cifrado e nunca aparece no navegador." }),
       direta ? null : campo("Endereço do Engine", url),
       campo("Token de serviço", token, direta ? "Copie o valor do secret DENIA_PLATFORM_SERVICE_TOKEN do Worker \"denia\" (Settings → Variables and Secrets) e cole aqui." : ""),
       direta && i.token_configurado ? h("p", { class: "nota", text: `Token em uso: termina em …${i.token_final} (${i.token_tamanho} caracteres) · ${origemToken}.` }) : null,
@@ -1170,7 +1239,7 @@
       resultado,
       direta ? null : h("details", {}, h("summary", { style: "cursor:pointer;font-weight:600;font-size:14px", text: "Como conectar (passo a passo)" }),
         h("ol", { class: "passos", style: "margin-top:12px" },
-          h("li", {}, "Na Cloudflare, abra o Worker da DENIA → Settings → Variables and Secrets."),
+          h("li", {}, "Na Hostinger, abra o site → Variáveis de ambiente."),
           h("li", {}, "Crie o secret ", h("span", { class: "codigo", text: "DENIA_PLATFORM_SERVICE_TOKEN" }), " com uma senha longa (40 caracteres ou mais) e salve."),
           h("li", {}, "Copie o endereço público da IA (o mesmo que a Meta chama no webhook, sem o /webhook no final)."),
           h("li", {}, "Cole o endereço e o mesmo token aqui, salve e clique em Testar conexão."))));
@@ -1191,7 +1260,7 @@
       h("div", { class: "sugestao-topo" }, h("h3", { style: "margin:0;margin-right:auto", text: "Inteligência da DENIA (OpenAI)" }), k.configurada ? selo("Ligada", "ok") : selo("Desligada", "erro")),
       h("p", { style: "margin:0;color:var(--texto-2);font-size:14px", text: "Cole uma única vez: liga a criação de posts e imagens, a conversa por voz ao vivo e os comandos da DENIA. Fica guardada para sempre (cifrada) e vale também para as outras empresas da plataforma." }),
       campo("Chave da OpenAI", chaveIn, "Em platform.openai.com → API keys → Create new secret key. Copie e cole aqui."),
-      k.configurada ? h("p", { class: "nota", text: `Chave em uso${k.final ? ": termina em …" + k.final : ""} · ${({ plataforma: "salva aqui na plataforma, vale para sempre", central: "a mesma da Central de Atendimento", cloudflare: "secret OPENAI_API_KEY da Cloudflare" })[k.origem] || ""}.` }) : null,
+      k.configurada ? h("p", { class: "nota", text: `Chave em uso${k.final ? ": termina em …" + k.final : ""} · ${({ plataforma: "salva aqui na plataforma, vale para sempre", central: "a mesma da Central de Atendimento", cloudflare: "variável OPENAI_API_KEY da Hostinger" })[k.origem] || ""}.` }) : null,
       editar ? h("div", { class: "acoes" },
         botao("Salvar chave", async () => {
           try { await org("ia/chave", { metodo: "POST", corpo: { chave: chaveIn.value } }); chaveIn.value = ""; aviso("Chave salva.", "ok"); estado.iaLigada = true; await navegar(); setTimeout(() => { const b = document.querySelector("#cartao-openai .btn-testar-ia"); if (b) b.click(); }, 50); }
@@ -1433,7 +1502,7 @@
       }, "btn-primario")));
     let senha;
     if (u.super_admin && !u.tem_senha) {
-      senha = h("section", { class: "cartao vidro formulario" }, h("h3", { style: "margin:0", text: "Senha" }), h("p", { class: "nota", text: "A senha do administrador geral é o secret PLATFORM_ADMIN_PASSWORD, na Cloudflare (Workers → denia-platform → Settings → Variables and Secrets)." }));
+      senha = h("section", { class: "cartao vidro formulario" }, h("h3", { style: "margin:0", text: "Senha" }), h("p", { class: "nota", text: "A senha do administrador geral é a variável PLATFORM_ADMIN_PASSWORD, na Hostinger (site → Variáveis de ambiente)." }));
     } else {
       const atual = h("input", { class: "entrada", type: "password", autocomplete: "current-password" });
       const nova = h("input", { class: "entrada", type: "password", autocomplete: "new-password", minlength: "10" });
@@ -1978,7 +2047,7 @@
           a.detalhes ? h("p", { class: "prb-detalhe", text: a.detalhes }) : null,
           h("div", { class: "acoes" },
             h("a", { class: "btn btn-secundario btn-pequeno", href: "#/chatbot/conversas" }, "Abrir conversa"),
-            pode("AGENTE") && !a.visto_ms && a.status !== "CONCLUIDO" ? botao("✔ Vi", (_e, b) => acao(a, "visto", b), "btn-primario btn-pequeno") : null,
+            pode("AGENTE") && !a.visto_ms && a.status !== "CONCLUIDO" ? botao("Vi", (_e, b) => acao(a, "visto", b), "btn-primario btn-pequeno") : null,
             pode("AGENTE") && a.status === "MARCADO" ? botao("Concluído", (_e, b) => acao(a, "concluir", b), "btn-secundario btn-pequeno") : null,
             pode("AGENTE") && a.status === "MARCADO" ? botao("Cancelar", (_e, b) => acao(a, "cancelar", b), "btn-secundario btn-pequeno") : null,
             pode("AGENTE") && a.status !== "MARCADO" ? botao("Reabrir", (_e, b) => acao(a, "reabrir", b), "btn-secundario btn-pequeno") : null)));
@@ -2072,7 +2141,7 @@
   async function abaZapVisao(area, vivo) {
     const f = estado.zapF = estado.zapF || { dias: 30, metrica: "clientes" };
     const de = isoLocal(new Date(Date.now() - (f.dias - 1) * 86400000)), ate = isoLocal(new Date());
-    const [st, conta, itens, cfgR] = await Promise.all([zap(`stats?de=${de}&ate=${ate}`), zap("conta"), zap("itens"), zap("config").catch(() => ({ config: {} }))]);
+    const [st, conta, itens] = await Promise.all([zap(`stats?de=${de}&ate=${ate}`), zap("conta"), zap("itens")]);
     if (!vivo()) return;
     const passos = [];
     if (!conta.conectada) passos.push(["Conectar o número do WhatsApp", "Cole o ID do número e o token da Meta. Leva 5 minutos.", "#/chatbot/conexao"]);
@@ -2108,32 +2177,9 @@
           h("p", { class: "sub", style: "margin:10px 0 0", text: "Só a última linha gasta IA. Palavras-chave nas opções do menu fazem o robô achar sem IA." }),
           h("h3", { text: "Quem respondeu" }), barras([{ rotulo: "Robô (botões)", valor: ms.robo || 0 }, { rotulo: "IA", valor: ms.ia || 0 }, { rotulo: "Equipe", valor: ms.equipe || 0 }]))),
       h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Horários com mais mensagens" }), mapaHorarios(st.horarios || Array.from({ length: 7 }, () => Array(24).fill(0)))),
-      cartaoRelatorioZap(cfgR.config || {}, de, ate),
+      h("section", { class: "cartao vidro" }, h("div", { class: "cabeca-grafico" }, h("h3", { style: "margin:0", text: "Relatório de clientes" }), h("a", { class: "btn btn-secundario btn-pequeno", href: "#/relatorios" }, "Abrir relatórios")),
+        h("p", { class: "sub", text: "Planilha com cada cliente, o que procurou, o total por dia e as categorias, enviada por e-mail no dia e horário que você escolher." })),
       cartaoCustoMeta(de, ate));
-  }
-  // Planilha de clientes: semana passada (enviada toda segunda por e-mail) ou o período escolhido.
-  function cartaoRelatorioZap(cfg, de, ate) {
-    const baixar = async (q, b) => {
-      const t = b.textContent; b.textContent = "Gerando…";
-      try {
-        const r = await zap("relatorio?formato=xlsx" + q);
-        const bin = atob(r.base64), bytes = new Uint8Array(bin.length);
-        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-        const url = URL.createObjectURL(new Blob([bytes], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }));
-        const a = h("a", { href: url, download: r.nome }); document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 5000);
-      } catch (e) { aviso(e.message, "erro"); } finally { b.textContent = t; }
-    };
-    const emails = h("input", { class: "entrada", type: "text", value: cfg.relatorio_emails || "", placeholder: "outro@empresa.com, gerente@empresa.com", disabled: !pode("AGENTE") });
-    const ligado = h("input", { type: "checkbox", checked: cfg.relatorio_semanal !== false, disabled: !pode("AGENTE") });
-    return h("section", { class: "cartao vidro" },
-      h("div", { class: "cabeca-grafico" }, h("h3", { style: "margin:0", text: "Relatório de clientes (planilha)" }),
-        h("div", { class: "acoes" }, botao("Semana passada (Excel)", (_e, b) => baixar("", b), "btn-primario btn-pequeno"), botao("Este período (Excel)", (_e, b) => baixar(`&de=${de}&ate=${ate}`, b), "btn-secundario btn-pequeno"))),
-      h("p", { class: "sub", text: "Cada linha é um cliente num dia: nome, telefone, data e hora do contato, o que buscou, se voltou mais de uma vez na semana e se já era cliente. Também vem o total por dia e na semana, e as categorias mais buscadas em ordem." }),
-      h("label", { class: "guia-cat" }, ligado, h("span", { text: " Mandar por e-mail toda segunda-feira de manhã (semana anterior), para os administradores da empresa" })),
-      h("div", { class: "campo" }, h("label", { text: "Mandar também para (opcional, separe por vírgula)" }), emails),
-      pode("AGENTE") ? h("div", { class: "acoes" },
-        botao("Salvar", async () => { try { await zap("config", { metodo: "POST", corpo: { relatorio_semanal: ligado.checked, relatorio_emails: emails.value.trim() } }); aviso("Relatório salvo.", "ok"); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno"),
-        botao("Enviar a semana passada para o meu e-mail", async (_e, b) => { b.textContent = "Enviando…"; try { const r = await zap("relatorio/enviar", { metodo: "POST", corpo: {} }); aviso(r.ok ? `Enviado para ${r.para}.` : "O e-mail não foi aceito. Confira o domínio no Resend.", r.ok ? "ok" : "erro"); } catch (e) { aviso(e.message, "erro"); } finally { b.textContent = "Enviar a semana passada para o meu e-mail"; } }, "btn-secundario btn-pequeno")) : null);
   }
   // Quanto a Meta cobrou pelo WhatsApp no período (com o token desta empresa).
   function cartaoCustoMeta(de, ate) {
@@ -2270,7 +2316,7 @@
         plano = r.plano; desenharPlano();
       } catch (e) { trocar(area); aviso(e.message, "erro"); }
     };
-    const fechar = gaveta("✨ Criar o chatbot com a IA", [
+    const fechar = gaveta("Criar o chatbot com a IA", [
       h("p", { text: "Conte com suas palavras como é o negócio e como quer atender. A IA monta o menu, as mensagens, as palavras-chave e o treinamento — e pergunta só o essencial." }),
       campo("Sobre o seu negócio", desc), h("div", { class: "acoes" }, botao("Montar com a IA", () => gerar(), "btn-primario")), area]);
   }
@@ -2752,7 +2798,7 @@
         podeEditar ? h("div", { class: "fx-botpress" }, h("div", {}, h("strong", { text: "Vem de outra plataforma?" }),
           h("p", { class: "fx-nota", text: "Botpress: Bot → Exportar (arquivo .bpz). Typebot: ⋯ → Exportar (arquivo .json). Escolha o arquivo e a DENIA monta o mesmo fluxo, na mesma ordem." }),
           h("p", { class: "fx-nota", text: "ManyChat, BotConversa, Blip e outras não exportam o fluxo: copie os textos para o roteiro abaixo (é só seguir o “Como escrever”) ou use “Criar com a IA” descrevendo o atendimento." })),
-          botao("📥 Escolher o arquivo", () => arquivoBp.click(), "btn-primario btn-pequeno"), arquivoBp) : null,
+          botao("Escolher o arquivo", () => arquivoBp.click(), "btn-primario btn-pequeno"), arquivoBp) : null,
         h("p", { class: "sub", text: "O fluxo inteiro em texto, como num documento. Copie para guardar, ou cole um roteiro para montar todos os botões de uma vez." }),
         h("details", { class: "fx-ajuda" }, h("summary", { text: "Como escrever" }), h("pre", { text:
 `BOAS-VINDAS: primeira mensagem (vai sozinha)
@@ -2786,14 +2832,14 @@ Botão só com texto = resposta.` })),
       comecar = !d.itens.length && podeEditar ? h("section", { class: "cartao vidro fx-comecar" },
         h("div", {}, h("h3", { style: "margin:0", text: "Comece seu fluxo" }), h("p", { class: "sub", style: "margin:4px 0 0", text: "Escreva a primeira mensagem e adicione os botões no cartão Início. Ou use um atalho:" })),
         h("div", { class: "acoes" },
-          botao("🛍️ Modelo Shopping", async () => { try { await zap("modelo", { metodo: "POST", corpo: { tipo: "shopping" } }); await recarregar(); aviso("Modelo criado. Ajuste do seu jeito.", "ok"); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno"),
-          botao("🔧 Modelo Serviços", async () => { try { await zap("modelo", { metodo: "POST", corpo: { tipo: "servicos" } }); await recarregar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno"),
-          botao("📥 Importar (Botpress, Typebot…)", () => roteiro(true), "btn-primario btn-pequeno"),
-          botao("📋 Colar roteiro", () => roteiro(false), "btn-secundario btn-pequeno"),
-          botao("✨ Criar com a IA", () => criarComIA(false), "btn-secundario btn-pequeno"))) : null,
+          botao("Modelo Shopping", async () => { try { await zap("modelo", { metodo: "POST", corpo: { tipo: "shopping" } }); await recarregar(); aviso("Modelo criado. Ajuste do seu jeito.", "ok"); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno"),
+          botao("Modelo Serviços", async () => { try { await zap("modelo", { metodo: "POST", corpo: { tipo: "servicos" } }); await recarregar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno"),
+          botao("Importar (Botpress, Typebot…)", () => roteiro(true), "btn-primario btn-pequeno"),
+          botao("Colar roteiro", () => roteiro(false), "btn-secundario btn-pequeno"),
+          botao("Criar com a IA", () => criarComIA(false), "btn-secundario btn-pequeno"))) : null,
       h("section", { class: "cartao vidro fx-quadro" },
         h("div", { class: "fx-barra" }, h("div", {}, h("h3", { style: "margin:0" }, "Fluxo do WhatsApp · ", h("span", { class: "fx-empresa-nome", text: (estado.org && estado.org.nome) || "" })), h("p", { class: "sub", style: "margin:2px 0 0", text: "Toque num botão para abrir o próximo cartão. Tudo salva sozinho." }),
-          h("details", { class: "fx-ajuda" }, h("summary", { text: "❓ Como editar (passo a passo)" }), h("ol", { class: "passos" }, [
+          h("details", { class: "fx-ajuda" }, h("summary", { text: "Guia de edição do menu" }), h("ol", { class: "passos" }, [
             "Mensagem de boas-vindas: no cartão Início, edite o texto do topo.",
             "Mudar o nome de um botão: toque no botão no cartão, troque o nome (pode usar emoji) e saia do campo. Salva sozinho.",
             "Novo botão: no fim da lista do cartão, escreva o nome em \"Nome do botão\", escolha o que acontece quando o cliente toca (abrir outro menu, mostrar um texto, mostrar lojas/contatos ou chamar a equipe) e toque em Adicionar.",
@@ -2802,8 +2848,8 @@ Botão só com texto = resposta.` })),
             "Tirar um botão ou mudar o tipo dele: toque em ⋯ ao lado do botão (lá tem \"Excluir este botão\").",
             "Antes de mostrar aos clientes: toque em Testar e converse com o robô como se fosse um cliente."
           ].map(t => h("li", { text: t }))))),
-          h("div", { class: "acoes" }, statusSalvo, verPrevia, podeEditar ? botao("📥 Importar (Botpress, Typebot…)", () => roteiro(true), "btn-primario btn-pequeno") : null, botao("📋 Roteiro", () => roteiro(false), "btn-secundario btn-pequeno"), botao("🔔 Avisos no Telegram", avisos, "btn-secundario btn-pequeno"), h("a", { class: "btn btn-primario btn-pequeno", href: "#/chatbot/testar" }, "▶ Testar"),
-            podeEditar && d.itens.length ? botao("✨ Refazer com a IA", () => criarComIA(true), "btn-secundario btn-pequeno") : null)),
+          h("div", { class: "acoes" }, statusSalvo, verPrevia, podeEditar ? botao("Importar (Botpress, Typebot…)", () => roteiro(true), "btn-primario btn-pequeno") : null, botao("Roteiro", () => roteiro(false), "btn-secundario btn-pequeno"), botao("Avisos no Telegram", avisos, "btn-secundario btn-pequeno"), h("a", { class: "btn btn-primario btn-pequeno", href: "#/chatbot/testar" }, "▶ Testar"),
+            podeEditar && d.itens.length ? botao("Refazer com a IA", () => criarComIA(true), "btn-secundario btn-pequeno") : null)),
         trilha, h("div", { class: "fx-palco-grade" }, palco)));
     palco.replaceChildren(colunas, previa);
     foco = caminho.length;
@@ -3043,7 +3089,7 @@ Botão só com texto = resposta.` })),
     chatbot: "chatbot", temporada: "temporada", estudio: "marketing", calendario: "marketing", aprovacoes: "marketing", marcas: "marketing", instagram: "marketing", facebook: "marketing", google: "marketing", social: "marketing", denia: "voz"
   };
   window.DENIA_RECURSOS = window.DENIA_RECURSOS || { chatbot: "Chatbot do WhatsApp com botões e listas", chatbot_ia: "IA no chatbot", ia_completa: "IA completa de atendimento (atende como uma pessoa, com memória)", marketing: "Instagram, Facebook e Google: posts, artes, comentários e avaliações", voz: "DENIA por voz, ao vivo", multiempresa: "Várias empresas, marcas e unidades", temporada: "Locação por temporada" };
-  const ROTAS_LIVRES = ["plano", "conta", "equipe", "auditoria", "empresas", "contatos", "painel", "integracoes", "consumo", "problemas"];
+  const ROTAS_LIVRES = ["plano", "conta", "equipe", "auditoria", "empresas", "contatos", "painel", "integracoes", "consumo", "problemas", "relatorios"];
   const acessoAtual = () => (estado.org && estado.org.acesso) || { liberado: true, recursos: [], status: "?" };
   const temRecurso = r => !r || estado.eu.usuario.super_admin || (acessoAtual().liberado && (acessoAtual().recursos || []).includes(r));
   const NOME_STATUS_PLANO = { TESTE: "Teste grátis", ATIVO: "Ativo", ATRASADO: "Pagamento pendente", CANCELADO: "Cancelado (usa até o fim do período)", CORTESIA: "Cortesia — acesso total", BLOQUEADO: "Bloqueado", TESTE_ACABOU: "Teste encerrado" };
@@ -4319,7 +4365,7 @@ Botão só com texto = resposta.` })),
     const canais = h("div", { class: "checks-linha" }, ["instagram", "facebook", "google"].map(c => h("label", {}, h("input", { type: "checkbox", value: c, checked: canaisPadrao.includes(c) }), NOME_CANAL[c])));
     const comArtes = h("input", { type: "checkbox", checked: true });
     const progresso = h("p", { class: "nota oculto" });
-    const criarSemana = botao("✦ Criar posts da semana com IA", async (_e, b) => {
+    const criarSemana = botao("Criar posts da semana com IA", async (_e, b) => {
       const escolhidos = [...canais.querySelectorAll("input:checked")].map(i => i.value);
       if (!escolhidos.length) { aviso("Marque pelo menos um canal.", "erro"); return; }
       const inicio = isoLocal(somarDias(segundaDe(new Date()), Number(semana.value)));
@@ -4341,12 +4387,12 @@ Botão só com texto = resposta.` })),
         estado.semanaCalendario = inicio; atualizarAprovacoes();
         if (!piloto.ativo) recarregar ? recarregar() : (location.hash = "#/calendario");
       } catch (e) { estado.resultadoCriador = { erro: e.message }; aviso(e.message, "erro"); }
-      finally { b.textContent = "✦ Criar posts da semana com IA"; progresso.classList.add("oculto"); }
+      finally { b.textContent = "Criar posts da semana com IA"; progresso.classList.add("oculto"); }
     }, "btn-primario");
     const ideia = h("textarea", { class: "entrada", maxlength: "1000", placeholder: "Ex.: técnico sorrindo consertando uma geladeira numa cozinha clara, com o texto \"Orçamento grátis hoje\"", style: "min-height:90px" });
     const formatoImg = h("select", { class: "entrada" }, h("option", { value: "post", text: "Quadrada (feed e Google)" }), h("option", { value: "story", text: "Vertical (story e reels)" }));
     const resultado = h("div", { class: "criador-resultado" });
-    const criarImagem = botao("✦ Criar imagem com IA", async (_e, b) => {
+    const criarImagem = botao("Criar imagem com IA", async (_e, b) => {
       if (!ideia.value.trim()) { aviso("Descreva a imagem que a DENIA deve criar.", "erro"); ideia.focus(); return; }
       b.textContent = "Criando e conferindo a imagem… (até 2 minutos)";
       try {
@@ -4360,7 +4406,7 @@ Botão só com texto = resposta.` })),
               try { const n = await mk("posts", { metodo: "POST", corpo }); editorPost({ ...corpo, id: n.id, status: "RASCUNHO" }, lista, recarregar || (() => navegar())); } catch (e) { aviso(e.message, "erro"); }
             }, "btn-primario btn-pequeno")));
         aviso("Imagem criada.", "ok");
-      } catch (e) { aviso(e.message, "erro"); } finally { b.textContent = "✦ Criar imagem com IA"; }
+      } catch (e) { aviso(e.message, "erro"); } finally { b.textContent = "Criar imagem com IA"; }
     }, "btn-primario");
     const novo = botao("+ Novo post", () => editorPost({ data: isoLocal(new Date()), marca_id: marcaSemana.value, canais: canaisPadrao, formato: canalFixo === "google" ? "google" : "post", hora: "18:00" }, lista, recarregar || (() => navegar())), "btn-secundario");
     const nomeCanal = canalFixo ? NOME_CANAL[canalFixo] : "as redes sociais";
@@ -4536,7 +4582,7 @@ Botão só com texto = resposta.` })),
       p.midia_id ? h("a", { class: "btn btn-secundario", href: `/api/orgs/${estado.org.id}/mk/midias/${p.midia_id}`, download: `denia-post-${p.id}.jpg` }, "Baixar arte") : null,
       pode("ADMIN") && p.id ? botao("Excluir", async () => { if (!(await modal({ titulo: "Excluir este post?", conteudo: "A arte também é apagada.", confirmar: "Excluir", perigo: true }))) return; try { await mk(`posts/${p.id}/acao`, { metodo: "POST", corpo: { acao: "excluir" } }); fechar(); recarregar && recarregar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-perigo") : null);
     const ia = editar ? h("div", { class: "acoes ia-acoes" },
-      botao("✦ Escrever com IA", async (_e, b) => {
+      botao("Escrever com IA", async (_e, b) => {
         const tema = h("input", { class: "entrada", value: tituloP.value, placeholder: "Ex.: dica de manutenção do ar-condicionado no verão" });
         if (!(await modal({ titulo: "Sobre o que é o post?", conteudo: [tema], confirmar: "Escrever" }))) return;
         b.textContent = "Escrevendo…";
@@ -4544,9 +4590,9 @@ Botão só com texto = resposta.` })),
           const r = (await mk("ia/legenda", { metodo: "POST", corpo: { marca_id: marca.value, tema: tema.value, formato: formato.value, canal: (dados().canais[0] || "instagram") } })).sugestao;
           tituloP.value = r.titulo; legenda.value = r.legenda; hashtags.value = r.hashtags; chamada.value = r.chamada; textoArte.value = r.texto_arte || ""; ideia.value = r.ideia_imagem;
           aviso("Texto criado. Revise e salve.", "ok");
-        } catch (e) { aviso(e.message, "erro"); } finally { b.textContent = "✦ Escrever com IA"; }
+        } catch (e) { aviso(e.message, "erro"); } finally { b.textContent = "Escrever com IA"; }
       }),
-      botao("✦ Criar arte com IA", async (_e, b) => {
+      botao("Criar arte com IA", async (_e, b) => {
         b.textContent = "Criando e conferindo a arte… (até 2 minutos)";
         try {
           await salvar(true);
@@ -4554,12 +4600,12 @@ Botão só com texto = resposta.` })),
           p.midia_id = r.midia_id;
           imagem.replaceChildren(miniatura(p, "post-arte-img"));
           avisoConferencia(r.conferencia); recarregar && recarregar();
-        } catch (e) { aviso(e.message, "erro"); } finally { b.textContent = "✦ Criar arte com IA"; }
+        } catch (e) { aviso(e.message, "erro"); } finally { b.textContent = "Criar arte com IA"; }
       }),
-      botao("✦ Revisar com IA", async (_e, b) => {
+      botao("Revisar com IA", async (_e, b) => {
         b.textContent = "Revisando…";
         try { await salvar(true); const r = await mk(`posts/${p.id}/acao`, { metodo: "POST", corpo: { acao: "revisar" } }); revisao.replaceChildren(h("p", { class: "nota" + (r.revisao.nota >= 8 ? "" : " nota-alerta"), text: `Revisão da IA: nota ${r.revisao.nota}/10 — ${r.revisao.comentario}` })); }
-        catch (e) { aviso(e.message, "erro"); } finally { b.textContent = "✦ Revisar com IA"; }
+        catch (e) { aviso(e.message, "erro"); } finally { b.textContent = "Revisar com IA"; }
       })) : null;
     const fechar = gaveta(p.id ? `Post #${p.id}` : "Novo post", [
       h("div", { class: "sugestao-topo" }, p.status ? seloStatus(p.status) : selo("Novo"), p.aprovado_por ? h("span", { class: "selo", text: "Aprovado por " + p.aprovado_por }) : null, p.criado_por ? h("span", { class: "selo", text: "Criado por " + p.criado_por }) : null),
@@ -4611,7 +4657,7 @@ Botão só com texto = resposta.` })),
     if (meta.erro) { aviso(meta.erro, "erro"); return; }
     if (meta.configurada === false && meta.faltando && meta.faltando.length) {
       await modal({ titulo: "Falta configurar a Meta", soInformar: true, conteudo: [
-        `Na Cloudflare, no Worker denia-landing, falta: ${meta.faltando.join(" e ")}.`,
+        `Nas variáveis de ambiente da Hostinger, falta: ${meta.faltando.join(" e ")}.`,
         "Vá em Workers e Pages → denia-landing → Settings → Variables and Secrets → Add, escolha o tipo Secret, crie com o nome exato e clique em Deploy. Depois volte aqui e clique em Conectar de novo."] });
       return;
     }
@@ -4620,7 +4666,7 @@ Botão só com texto = resposta.` })),
         "Para a DENIA publicar sozinha, a plataforma precisa do aplicativo da Meta (é feito uma vez só):",
         "1. Em developers.facebook.com, crie um app do tipo Empresa ligado ao portfólio empresarial da Central.",
         "2. Adicione os produtos Login do Facebook para Empresas e API do Instagram, e informe as páginas de privacidade, termos e exclusão de dados do site.",
-        "3. Na Cloudflare, no Worker denia-landing, crie os secrets META_APP_ID e META_APP_SECRET (e META_CONFIG_ID, se usar o Login do Facebook para Empresas).",
+        "3. Na Hostinger (Variáveis de ambiente), crie META_APP_ID e META_APP_SECRET (e META_CONFIG_ID, se usar o Login do Facebook para Empresas).",
         "4. Volte aqui e clique em Conectar Instagram e Facebook."] });
       return;
     }
@@ -4668,8 +4714,8 @@ Botão só com texto = resposta.` })),
     if (g.erro) { aviso(g.erro, "erro"); return; }
     if (!g.configurada) {
       await modal({ titulo: "Falta configurar o Google", soInformar: true, conteudo: [
-        `Na Cloudflare, no Worker denia-landing, falta: ${(g.faltando || ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"]).join(" e ")}.`,
-        "No Google Cloud, crie o cliente OAuth (Aplicativo da Web) com o URI de redirecionamento do site terminado em /api/google/retorno. Depois, na Cloudflare, vá em Workers e Pages → denia-landing → Settings → Variables and Secrets → Add, escolha o tipo Secret, crie com o nome exato e clique em Deploy."] });
+        `Nas variáveis de ambiente da Hostinger, falta: ${(g.faltando || ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"]).join(" e ")}.`,
+        "No Google Cloud, crie o cliente OAuth (Aplicativo da Web) com o URI de redirecionamento do site terminado em /api/google/retorno. Depois, na Hostinger, abra o site → Variáveis de ambiente, crie cada variável com o nome exato, salve e reimplante."] });
       return;
     }
     const atual = contaGoogleDa(g, marca.id), ja = String((atual && atual.escopos) || "");
@@ -4968,7 +5014,7 @@ Botão só com texto = resposta.` })),
           const [tn, tt] = NOME_TIPO_COMENTARIO[s.tipo] || ["", "info"];
           trocar(dica, h("p", { class: "sub", style: "margin:4px 0 0" }, selo(tn, tt), " ", `Sugestão: ${NOME_ACAO_COMENTARIO[s.acao] || s.acao}. ${s.motivo || ""}${s.precisa_humano ? " Uma pessoa deve olhar antes." : ""}`));
         } catch (e) { aviso(e.message, "erro"); }
-        finally { if (b) b.textContent = "✦ Sugerir com IA"; }
+        finally { if (b) b.textContent = "Sugerir com IA"; }
       };
       const el = h("article", { class: "cartao vidro comentario-cartao" + (c.oculto ? " cor-cinza" : !c.respondido ? " cor-amarelo" : " cor-verde") },
         h("div", { class: "midia-topo" }, h("strong", { text: (canal === "instagram" ? "@" : "") + c.autor }), h("span", { class: "sub", text: dataHoraCurta(c.quando) }), c.oculto ? selo("Oculto", "alerta") : c.respondido ? selo("Respondido", "ok") : selo("Sem resposta", "info")),
@@ -4977,7 +5023,7 @@ Botão só com texto = resposta.` })),
         c.respostas.length ? h("div", { class: "respostas-comentario" }, c.respostas.map(x => h("p", { class: x.da_marca ? "resposta-publicada" : "sub", text: `${x.da_marca ? "Marca" : (canal === "instagram" ? "@" : "") + x.autor}: ${x.texto}` }))) : null,
         pode("AGENTE") ? h("div", { class: "formulario", style: "margin-top:8px" }, caixa, dica,
           h("div", { class: "acoes" },
-            botao("✦ Sugerir com IA", (_e, b) => sugerir(b), "btn-secundario btn-pequeno"),
+            botao("Sugerir com IA", (_e, b) => sugerir(b), "btn-secundario btn-pequeno"),
             botao("Publicar resposta", async () => { if (!caixa.value.trim()) return aviso("Escreva a resposta.", "erro"); try { await mk(`social/comentarios/${encodeURIComponent(c.id)}/responder`, { metodo: "POST", corpo: { marca_id: marcaId, canal, texto: caixa.value } }); aviso("Resposta publicada.", "ok"); c.respondido = true; c.respostas.push({ texto: caixa.value, da_marca: true }); el.replaceWith(cartao(c)); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario btn-pequeno"),
             botao(c.oculto ? "Mostrar de novo" : "Ocultar", async () => { try { const x = await mk(`social/comentarios/${encodeURIComponent(c.id)}/ocultar`, { metodo: "POST", corpo: { marca_id: marcaId, canal, ocultar: !c.oculto } }); c.oculto = x.oculto; aviso(c.oculto ? "Comentário ocultado: só a pessoa e os amigos dela veem." : "Comentário visível de novo.", "ok"); el.replaceWith(cartao(c)); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno"),
             botao("Apagar", async () => { if (!window.confirm("Apagar este comentário? Não dá para desfazer.")) return; try { await mk(`social/comentarios/${encodeURIComponent(c.id)}/apagar`, { metodo: "POST", corpo: { marca_id: marcaId, canal } }); aviso("Comentário apagado.", "ok"); el.remove(); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno"))) : null);
@@ -4988,7 +5034,7 @@ Botão só com texto = resposta.` })),
     const desenhar = () => { cartoes.clear(); const vis = todos.filter(filtroDe); trocar(lista, ...(vis.length ? vis.map(cartao) : [h("div", { class: "cartao vidro" }, vazio(f.filtro === "SEM_RESPOSTA" ? "Nenhum comentário esperando resposta" : "Nenhum comentário aqui", "A DENIA lê os comentários das 15 publicações mais recentes."))])); };
     const chips = h("div", { class: "abas abas-chips" }, [["SEM_RESPOSTA", "Sem resposta"], ["TODOS", "Todos"], ["RESPONDIDOS", "Respondidos"], ["OCULTOS", "Ocultos"]].map(([k, n]) => h("button", { type: "button", class: "aba" + (f.filtro === k ? " ativo" : ""), onclick: e => { f.filtro = k; chips.querySelectorAll(".aba").forEach(x => x.classList.toggle("ativo", x === e.currentTarget)); desenhar(); } }, `${n} (${numero(contagem[k])})`)));
     const barra = h("section", { class: "cartao vidro filtros-desempenho" }, h("div", { class: "linha-filtros" }, chips,
-      pode("AGENTE") && contagem.SEM_RESPOSTA ? botao(`✦ Sugerir respostas para os ${numero(contagem.SEM_RESPOSTA)} sem resposta`, async (_e, b) => {
+      pode("AGENTE") && contagem.SEM_RESPOSTA ? botao(`Sugerir respostas para os ${numero(contagem.SEM_RESPOSTA)} sem resposta`, async (_e, b) => {
         const alvo = todos.filter(c => !c.respondido && !c.oculto);
         let n = 0;
         for (const c of alvo) { b.textContent = `Pensando… ${++n} de ${alvo.length}`; const elc = cartoes.get(c.id); if (elc) await elc.sugerir(); }
@@ -5242,7 +5288,7 @@ Botão só com texto = resposta.` })),
     if (contas.configurado === false) {
       const instrucoes = () => trocar(area, h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Ligar o Google Ads na DENIA (uma vez, para todas as empresas)" }),
         h("ol", { class: "passos" }, h("li", {}, "Em ads.google.com, abra a sua conta gerente (MCC) → Administrador → Central de API e peça o token de desenvolvedor (acesso básico)."), h("li", {}, "No Google Cloud do mesmo projeto do login do Google, ative a Google Ads API."),
-          h("li", {}, "Na Cloudflare → Worker denia-landing → Variables and Secrets, crie o secret GOOGLE_ADS_DEVELOPER_TOKEN com o token."), h("li", {}, "Volte aqui e toque em Ligar o Google Ads.")), h("p", { class: "sub", text: "Enquanto o Google não aprova o acesso básico, o token funciona só com contas de teste." })));
+          h("li", {}, "Na Hostinger → Variáveis de ambiente, crie GOOGLE_ADS_DEVELOPER_TOKEN com o token e reimplante."), h("li", {}, "Volte aqui e toque em Ligar o Google Ads.")), h("p", { class: "sub", text: "Enquanto o Google não aprova o acesso básico, o token funciona só com contas de teste." })));
       trocar(area, h("section", { class: "grade grade-4" }, ["Gasto", "Cliques", "Custo por clique", "Conversões"].map(n => metrica(n, "R$ 0,00", "últimos 30 dias"))), h("section", { class: "cartao vidro", style: "min-height:260px" }, h("h3", { text: "Campanhas" }), vazio("—", "")));
       telaEmBreve(area, "Google Ads dentro da DENIA", "Gasto, campanhas, termos de pesquisa e recomendações do Google, com pausar, ajustar orçamento e negativar palavras. Estamos concluindo a aprovação do Google.", instrucoes);
       return;
@@ -5337,7 +5383,7 @@ Botão só com texto = resposta.` })),
           if (busca.value.trim().length < 3) return aviso("Escreva a busca.", "erro");
           estado.ultimaBuscaConc = busca.value.trim(); b.textContent = "Pesquisando…";
           try { desenhar(await mk("google/concorrentes", { metodo: "POST", corpo: { marca_id: marcaId, busca: busca.value.trim() } })); } catch (e) { aviso(e.message, "erro"); } finally { b.textContent = "Pesquisar no Google Maps"; }
-        }, "btn-primario")) : h("p", { class: "nota nota-alerta", text: "Para ligar: crie uma chave da Places API (New) no Google Cloud e salve na Cloudflare como o secret GOOGLE_PLACES_API_KEY (Worker denia-landing). O Google cobra cada pesquisa (cerca de US$ 0,035)." })),
+        }, "btn-primario")) : h("p", { class: "nota nota-alerta", text: "Para ligar: crie uma chave da Places API (New) no Google Cloud e salve na Hostinger como a variável GOOGLE_PLACES_API_KEY (Variáveis de ambiente). O Google cobra cada pesquisa (cerca de US$ 0,035)." })),
       res,
       porBusca.size ? h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Evolução da posição" }),
         h("div", { class: "tabela-caixa" }, h("table", {}, h("thead", {}, h("tr", {}, h("th", { text: "Busca" }), h("th", { text: "Última" }), h("th", { text: "Antes" }), h("th", { text: "Medições" }))),
@@ -5416,7 +5462,7 @@ Botão só com texto = resposta.` })),
           h("button", { type: "button", class: "semaforo-item sem-amarelo", onclick: () => { filtro.cor = "AMARELO"; navegar(); } }, h("b", { text: numero(res.amarelas || 0) }), h("span", { text: "🟡 Amarelas: neutras ou com crítica" })),
           h("button", { type: "button", class: "semaforo-item sem-verde", onclick: () => { filtro.cor = "VERDE"; navegar(); } }, h("b", { text: numero(res.verdes || 0) }), h("span", { text: "🟢 Verdes: elogios" })),
           h("button", { type: "button", class: "semaforo-item sem-cinza", onclick: () => { filtro.cor = "SEM"; navegar(); } }, h("b", { text: numero(res.nao_lidas || 0) }), h("span", { text: "⚪ Ainda não lidas pela IA" }))),
-        res.nao_lidas && pode("AGENTE") ? h("div", { class: "acoes", style: "margin-top:10px" }, botao(`✦ Ler as ${numero(res.nao_lidas)} com IA (dar cor e sugerir resposta)`, async (_e, b) => {
+        res.nao_lidas && pode("AGENTE") ? h("div", { class: "acoes", style: "margin-top:10px" }, botao(`Ler as ${numero(res.nao_lidas)} com IA (dar cor e sugerir resposta)`, async (_e, b) => {
           b.disabled = true;
           try {
             for (let volta = 0; volta < 600; volta++) {
@@ -5454,19 +5500,19 @@ Botão só com texto = resposta.` })),
         const x = lida(a), corCartao = !x ? "cor-cinza" : (x.sentimento === "GRAVE" || x.precisa_humano || x.viola_politica) ? "cor-vermelho" : ["OTIMA", "POSITIVA"].includes(x.sentimento) ? "cor-verde" : "cor-amarelo";
         let tri = null; try { tri = JSON.parse(a.triagem || "null"); } catch { tri = null; }
         const plano = h("div", {}, Number(a.nota) <= 3 ? planoAvaliacao(a, tri, x) : null);
-        const botaoPlano = pode("AGENTE") && Number(a.nota) <= 3 && !tri ? botao("✦ O que fazer com esta avaliação?", async (_e, b) => {
+        const botaoPlano = pode("AGENTE") && Number(a.nota) <= 3 && !tri ? botao("Sugerir o que fazer", async (_e, b) => {
           b.textContent = "Analisando…";
           try {
             const r = await mk("avaliacoes/triagem", { metodo: "POST", corpo: { marca_id: marcaId, ids: [a.id], lote: String(Date.now()) } });
             const t = r.resultados && r.resultados[a.id];
             plano.replaceChildren(planoAvaliacao(a, t, x) || h("p", { class: "nota", text: "Sem recomendação agora." })); b.remove();
-          } catch (e) { aviso(e.message, "erro"); b.textContent = "✦ O que fazer com esta avaliação?"; }
+          } catch (e) { aviso(e.message, "erro"); b.textContent = "Sugerir o que fazer"; }
         }, "btn-primario btn-pequeno") : null;
         return h("article", { class: "sugestao vidro " + corCartao + (precisaDeVoce(a) ? " sugestao-alerta" : "") },
           h("div", { class: "sugestao-topo" }, h("strong", { text: a.autor || "Cliente" }), h("span", { class: "estrelas", text: "★".repeat(a.nota) + "☆".repeat(5 - a.nota) }), a.data ? h("span", { class: "sub", text: dataCompleta(a.data) }) : null, a.status === "RESPONDIDA" ? selo("Respondida", "ok") : selo("Sem resposta", Number(a.nota) <= 3 ? "erro" : "alerta")),
           h("p", { style: "margin:0;color:var(--texto-2)", text: a.texto || "(sem texto)" }), analise, plano, resp,
           pode("AGENTE") ? h("div", { class: "acoes" }, botaoPlano,
-            botao("✦ Analisar e sugerir resposta", async (_e, b) => { b.textContent = "Lendo a avaliação…"; try { const r = await mk(`avaliacoes/${a.id}/sugerir`, { metodo: "POST", corpo: {} }); resp.value = r.resposta; analise.replaceChildren(blocoAnalise(r.analise) || ""); } catch (e) { aviso(e.message, "erro"); } finally { b.textContent = "✦ Analisar e sugerir resposta"; } }, "btn-secundario btn-pequeno"),
+            botao("Analisar e sugerir resposta", async (_e, b) => { b.textContent = "Lendo a avaliação…"; try { const r = await mk(`avaliacoes/${a.id}/sugerir`, { metodo: "POST", corpo: {} }); resp.value = r.resposta; analise.replaceChildren(blocoAnalise(r.analise) || ""); } catch (e) { aviso(e.message, "erro"); } finally { b.textContent = "Analisar e sugerir resposta"; } }, "btn-secundario btn-pequeno"),
             botao(a.google_id ? "Publicar resposta no Google" : "Salvar resposta", async () => { try { const r = await mk(`avaliacoes/${a.id}/responder`, { metodo: "POST", corpo: { resposta: resp.value } }); aviso(r.publicada_google ? "Resposta publicada no Google." : "Resposta salva. Publique no Google (ou automaticamente, após a conexão).", "ok"); navegar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario btn-pequeno"),
             botao("Copiar", () => copiar(resp.value), "btn-secundario btn-pequeno")) : null);
     }
@@ -5533,7 +5579,7 @@ Botão só com texto = resposta.` })),
       const editor = h("div", { class: "oculto" });
       const caixa = h("textarea", { class: "entrada", value: a.resposta || a.resposta_sugerida || "", style: "min-height:90px", placeholder: "Resposta pública da empresa" });
       editor.append(caixa, h("div", { class: "acoes" },
-        botao("✦ Sugerir com IA", async (_e, b) => { b.textContent = "Escrevendo…"; try { caixa.value = (await mk(`avaliacoes/${a.id}/sugerir`, { metodo: "POST", corpo: {} })).resposta; } catch (e) { aviso(e.message, "erro"); } finally { b.textContent = "✦ Sugerir com IA"; } }, "btn-secundario btn-pequeno"),
+        botao("Sugerir com IA", async (_e, b) => { b.textContent = "Escrevendo…"; try { caixa.value = (await mk(`avaliacoes/${a.id}/sugerir`, { metodo: "POST", corpo: {} })).resposta; } catch (e) { aviso(e.message, "erro"); } finally { b.textContent = "Sugerir com IA"; } }, "btn-secundario btn-pequeno"),
         botao(a.google_id ? "Publicar no Google" : "Salvar resposta", async () => { try { const r = await mk(`avaliacoes/${a.id}/responder`, { metodo: "POST", corpo: { resposta: caixa.value } }); aviso(r.publicada_google ? "Resposta publicada no Google." : "Resposta salva.", "ok"); navegar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario btn-pequeno")));
       return h("article", { class: "sugestao vidro" + (t && t.veredito === "PROVAVEL_FALSA" ? " sugestao-alerta" : "") },
         h("div", { class: "sugestao-topo" }, pode("AGENTE") ? marca : null, h("strong", { text: a.autor || "Cliente" }), h("span", { class: "estrelas", text: "★".repeat(a.nota) + "☆".repeat(5 - a.nota) }),
@@ -5554,9 +5600,9 @@ Botão só com texto = resposta.` })),
           !d && !(t && t.categoria) ? botao("Já denunciei", () => marcarLote([a.id], "DENUNCIADA"), "btn-secundario btn-pequeno") : null,
           d && d.status === "DENUNCIADA" ? botao("O Google recusou", () => marcarLote([a.id], "RECUSADA"), "btn-secundario btn-pequeno") : null,
           d ? botao("Desfazer marcação", () => marcarLote([a.id], ""), "btn-secundario btn-pequeno") : null,
-          botao(temResposta ? "Editar resposta" : "✦ Escrever resposta", () => editor.classList.toggle("oculto"), "btn-secundario btn-pequeno"),
+          botao(temResposta ? "Editar resposta" : "Escrever resposta", () => editor.classList.toggle("oculto"), "btn-secundario btn-pequeno"),
           temResposta && pode("ADMIN") ? botao("Apagar resposta", async () => { if (!(await modal({ titulo: "Apagar esta resposta?", conteudo: a.google_id ? "A resposta é apagada também no Google." : "A resposta é apagada.", confirmar: "Apagar", perigo: true }))) return; try { await mk(`avaliacoes/${a.id}/apagar-resposta`, { metodo: "POST", corpo: {} }); aviso("Resposta apagada.", "ok"); navegar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-perigo btn-pequeno") : null,
-          botao(t ? "Analisar de novo" : "✦ Analisar esta", (_e, b) => analisar(b, [a.id]), "btn-secundario btn-pequeno"),
+          botao(t ? "Analisar de novo" : "Analisar esta", (_e, b) => analisar(b, [a.id]), "btn-secundario btn-pequeno"),
           t && t.justificativa ? botao("Copiar justificativa", () => copiar(t.justificativa), "btn-secundario btn-pequeno") : null) : null);
     }
 
@@ -5586,7 +5632,7 @@ Botão só com texto = resposta.` })),
     marcarTodas.addEventListener("change", () => { listaEl.querySelectorAll('input[type="checkbox"]').forEach(c => { if (c.checked !== marcarTodas.checked) { c.checked = marcarTodas.checked; c.dispatchEvent(new Event("change")); } }); });
     const lote = pode("AGENTE") ? h("section", { class: "cartao vidro barra-lote" }, h("label", { class: "acoes", style: "gap:8px" }, marcarTodas, h("span", { text: "Selecionar todas as carregadas" })), contador,
       h("div", { class: "acoes" },
-        botao("✦ Analisar selecionadas", (_e, b) => selecionadas.size ? analisar(b, [...selecionadas]) : aviso("Selecione pelo menos uma avaliação.", "erro"), "btn-secundario btn-pequeno"),
+        botao("Analisar selecionadas", (_e, b) => selecionadas.size ? analisar(b, [...selecionadas]) : aviso("Selecione pelo menos uma avaliação.", "erro"), "btn-secundario btn-pequeno"),
         botao("Marcar como denunciadas", () => marcarLote([...selecionadas], "DENUNCIADA"), "btn-secundario btn-pequeno"),
         botao("Marcar como recusadas", () => marcarLote([...selecionadas], "RECUSADA"), "btn-secundario btn-pequeno"),
         botao("Limpar marcação", () => marcarLote([...selecionadas], ""), "btn-secundario btn-pequeno"))) : null;
@@ -5601,7 +5647,7 @@ Botão só com texto = resposta.` })),
         h("p", { style: "margin:6px 0 0;color:var(--texto-2);font-size:14px", text: "A DENIA confere se quem avaliou está na sua base de clientes, procura avaliações em sequência, textos repetidos e conteúdo fora do tema, e indica o tópico de denúncia do Google. A denúncia em si é um toque no Google (ele não permite denúncia automática); o botão \"Denunciar no Google\" já abre o perfil e copia o nome para você achar a avaliação." }),
         h("div", { class: "acoes", style: "margin-top:12px" },
           conectada && pode("AGENTE") ? botao("Buscar todas no Google", buscarTodas, "btn-secundario") : null,
-          pode("AGENTE") && res.sem_triagem ? botao(`✦ Analisar as ${numero(res.sem_triagem)} que faltam`, (_e, b) => analisar(b, null), "btn-primario") : null,
+          pode("AGENTE") && res.sem_triagem ? botao(`Analisar as ${numero(res.sem_triagem)} que faltam`, (_e, b) => analisar(b, null), "btn-primario") : null,
           conectada ? botao("Abrir o perfil no Google Maps", abrirPerfil, "btn-secundario") : null),
         progresso),
       h("section", { class: "grade grade-4" },
@@ -5621,7 +5667,7 @@ Botão só com texto = resposta.` })),
     const atual = lista[0];
     trocar(area, h("section", { class: "cartao vidro" },
       h("div", { class: "sugestao-topo" }, h("h3", { style: "margin:0", text: atual ? `Relatório da semana de ${dataCurta(atual.semana)}` : "Relatório semanal" }),
-        pode("AGENTE") ? botao("✦ Gerar relatório agora", async (_e, b) => { b.textContent = "Analisando os dados…"; try { await mk("relatorios/gerar", { metodo: "POST", corpo: { marca_id: marcaId } }); navegar(); } catch (e) { aviso(e.message, "erro"); } finally { b.textContent = "✦ Gerar relatório agora"; } }, "btn-primario btn-pequeno") : null),
+        pode("AGENTE") ? botao("Gerar relatório agora", async (_e, b) => { b.textContent = "Analisando os dados…"; try { await mk("relatorios/gerar", { metodo: "POST", corpo: { marca_id: marcaId } }); navegar(); } catch (e) { aviso(e.message, "erro"); } finally { b.textContent = "Gerar relatório agora"; } }, "btn-primario btn-pequeno") : null),
       atual ? h("div", { class: "relatorio-texto", text: atual.texto }) : vazio("Nenhum relatório ainda", "Toda segunda-feira a DENIA analisa o Google e as redes de cada marca conectada e escreve o relatório com o plano da semana. Você também pode gerar agora.", ICONES.caixa)),
       lista.length > 1 ? h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Semanas anteriores" }),
         lista.slice(1).map(r => h("details", {}, h("summary", { text: `Semana de ${dataCurta(r.semana)}` }), h("div", { class: "relatorio-texto", text: r.texto })))) : null);

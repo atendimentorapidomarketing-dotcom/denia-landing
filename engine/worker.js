@@ -1750,17 +1750,19 @@ async function metricasAtendimento(c, de, ate) {
   const ms = t => Date.parse(String(t || "").replace(" ", "T") + "Z");
   const tempos = { IA: [], EQUIPE: [] }, porHora = Array.from({ length: 7 }, () => Array(24).fill(0));
   const saidas = { IA: 0, EQUIPE: 0, SISTEMA: 0 }, contatos = new Set(), clientes = new Set(), profissionais = new Set();
-  let semResposta = 0, entradas = 0;
+  let semResposta = 0, entradas = 0, conversasCli = 0;
   const diaSemana = x => { const d = new Date(x - 3 * 3600000); return [d.getUTCDay(), d.getUTCHours()]; }; // horário de Brasília
   let i = 0;
   while (i < msgs.length) {
     const pid = msgs[i].pessoa_id; let j = i;
     while (j < msgs.length && msgs[j].pessoa_id === pid) j++;
-    let espera = null;
+    let espera = null, inicioConversa = null;
     for (let k = i; k < j; k++) {
       const m = msgs[k], t = ms(m.t);
       if (m.d === "ENTRADA") {
         entradas++; contatos.add(pid);
+        // Conversa: começa na primeira mensagem do cliente e vale 24 h (como a Meta conta).
+        if (m.tipo !== "TECNICO" && (inicioConversa === null || t - inicioConversa >= 86400000)) { inicioConversa = t; conversasCli++; }
         if (m.tipo === "TECNICO") profissionais.add(pid); else clientes.add(pid);
         const [w, h] = diaSemana(t); if (Number.isFinite(w)) porHora[w][h]++;
         if (espera === null) espera = t; // começo de uma vez em que a pessoa ficou esperando resposta
@@ -1805,7 +1807,8 @@ async function metricasAtendimento(c, de, ate) {
   const funil = { abertos: casos.length, com_profissional: casos.filter(k => casosComProf.has(k.caso_id)).length, agendados: (porEtapa.AGENDADO || 0) + (porEtapa.EM_ANDAMENTO || 0) + (porEtapa.CONCLUIDO || 0), concluidos: porEtapa.CONCLUIDO || 0, cancelados: porEtapa.CANCELADO || 0 };
   return {
     de, ate,
-    conversas: { contatos: contatos.size, clientes: clientes.size, profissionais: profissionais.size, novos, recorrentes: Math.max(0, clientes.size - novos), mensagens_recebidas: entradas, sem_resposta: semResposta },
+    conversas: { conversas: conversasCli, contatos: contatos.size, clientes: clientes.size,
+      clientes_24h: Number((await c.db.prepare("SELECT COUNT(DISTINCT m.pessoa_id) n FROM mensagens m LEFT JOIN pessoas p ON p.id=m.pessoa_id WHERE m.empresa_id=? AND UPPER(m.direcao)='ENTRADA' AND m.criado_em >= ? AND UPPER(COALESCE(p.tipo,''))<>'TECNICO'").bind(EMPRESA_ID, new Date(c.agora() - 86400000).toISOString().slice(0, 19).replace("T", " ")).first().catch(() => null))?.n || 0), profissionais: profissionais.size, novos, recorrentes: Math.max(0, clientes.size - novos), mensagens_recebidas: entradas, sem_resposta: semResposta },
     respostas: { ia: saidas.IA + saidas.SISTEMA, equipe: saidas.EQUIPE, parte_ia: (saidas.IA + saidas.SISTEMA + saidas.EQUIPE) ? Math.round(((saidas.IA + saidas.SISTEMA) / (saidas.IA + saidas.SISTEMA + saidas.EQUIPE)) * 1000) / 10 : null,
       tempo_ia_s: mediana(tempos.IA), tempo_ia_p90_s: p90(tempos.IA), tempo_equipe_s: mediana(tempos.EQUIPE), tempo_equipe_p90_s: p90(tempos.EQUIPE) },
     horarios: porHora,
@@ -3962,6 +3965,32 @@ async function platformApi(request, env, caminho, metodo) {
     const ev = (await c.db.prepare("SELECT tipo, descricao, dados, criado_ms FROM d30_eventos WHERE tipo IN ('ESTUDO_DIARIO','PESQUISA_SEMANAL') ORDER BY id DESC LIMIT 14").all().catch(() => null))?.results || [];
     const treino = await carregarTreinamento(c);
     return json({ sucesso: true, caderno: await lerCaderno(c), licoes: String(treino.dados?.licoes_diarias || ""), relatorios: ev.map(e => { let d = null; try { d = JSON.parse(e.dados || "null"); } catch { d = null; } return { tipo: e.tipo, descricao: e.descricao, em: e.criado_ms, ...(d || {}) }; }) });
+  }
+  // Relatório de clientes (a plataforma monta a planilha): mensagens recebidas de clientes, pedidos, nomes e
+  // quem já tinha falado antes. Profissionais e equipe não entram.
+  if (caminho === "/platform/report" && metodo === "GET") {
+    const q = new URL(request.url).searchParams;
+    const ini = Number(q.get("ini")), fim = Number(q.get("fim"));
+    if (!Number.isFinite(ini) || !Number.isFinite(fim) || fim <= ini || fim - ini > 93 * 86400000) return json({ sucesso: false, erro: "Período inválido." }, 400);
+    const txtMs = v => new Date(v).toISOString().slice(0, 19).replace("T", " ");
+    await carregarTelsExtras(c).catch(() => {});
+    const equipe = new Set(String(c.env.EQUIPE_TELEFONES || "").split(/[,;\s]+/).map(digitos).filter(Boolean));
+    const ehCliente = (tel, tipo) => !["TECNICO", "ATENDENTE", "EQUIPE"].includes(String(tipo || "").toUpperCase()) && !prestadorPorTelefone(tel) && !variantesTel(tel).some(v => equipe.has(v));
+    const linhas = (await c.db.prepare(`SELECT p.telefone, p.nome, p.tipo, m.criado_em FROM mensagens m JOIN pessoas p ON p.id=m.pessoa_id WHERE m.empresa_id=? AND UPPER(m.direcao)='ENTRADA' AND m.criado_em >= ? AND m.criado_em < ? LIMIT 60000`)
+      .bind(EMPRESA_ID, txtMs(ini), txtMs(Math.ceil(fim / 1000) * 1000)).all())?.results || [];
+    const entradas = [], nomes = {};
+    for (const l of linhas) { if (!l.telefone || !ehCliente(l.telefone, l.tipo)) continue; entradas.push({ telefone: digitos(l.telefone), ms: Date.parse(String(l.criado_em).replace(" ", "T") + "Z") }); if (l.nome) nomes[digitos(l.telefone)] = l.nome; }
+    const casos = (await c.db.prepare("SELECT telefone, fatos_json, criado_ms FROM d30_casos WHERE criado_ms >= ? AND criado_ms < ? LIMIT 20000").bind(ini, fim).all())?.results || [];
+    const buscas = casos.map(k => { let f = {}; try { f = JSON.parse(k.fatos_json || "{}"); } catch { f = {}; }
+      const cat = CATEGORIAS[f.categoria]?.rotulo ? CATEGORIAS[f.categoria].rotulo.split(" (")[0] : txt(f.servico || "", 60);
+      return { telefone: digitos(k.telefone), ms: Number(k.criado_ms), o: txt([cat, f.problema || f.servico].filter(Boolean).join(": "), 160), categoria: cat || "Não identificado" }; }).filter(b => b.telefone && ehCliente(b.telefone, ""));
+    const tels = [...new Set(entradas.map(e => e.telefone))], antigos = [];
+    for (let i = 0; i < tels.length; i += 80) {
+      const lote = tels.slice(i, i + 80);
+      const r = (await c.db.prepare(`SELECT DISTINCT p.telefone FROM mensagens m JOIN pessoas p ON p.id=m.pessoa_id WHERE m.empresa_id=? AND UPPER(m.direcao)='ENTRADA' AND m.criado_em < ? AND p.telefone IN (${lote.map(() => "?").join(",")})`).bind(EMPRESA_ID, txtMs(ini), ...lote).all())?.results || [];
+      for (const x of r) antigos.push(digitos(x.telefone));
+    }
+    return json({ sucesso: true, entradas, buscas, nomes, antigos });
   }
   if (caminho === "/platform/telegram" && metodo === "GET") return json({ sucesso: true, ...(await situacaoTelegram(c)) });
   if (caminho === "/platform/telegram/connect" && metodo === "POST") {
