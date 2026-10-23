@@ -1707,3 +1707,12 @@ test("Economia: tarefas internas no modelo econômico, cliente no principal, e '
   const entrada = a.llm.filter(x => x.papel === "cliente").at(-1).entrada;
   assert.ok(entrada.indexOf("CATEGORIAS (e quem atende") < entrada.indexOf("MEMÓRIA COMPLETA DO CLIENTE"));
 });
+
+test("Se a OpenAI recusar um parâmetro ou o modelo, a DENIA tenta do jeito simples e responde o cliente", async () => {
+  const a = await criarAmbiente();
+  a.openaiRecusa = corpo => corpo.prompt_cache_key ? "Unknown parameter: 'prompt_cache_key'." : corpo.model === "gpt-5.6-luna" ? "The model `gpt-5.6-luna` does not exist" : null;
+  a.llmCliente = () => decisao({ resposta: "Oi! Como posso ajudar?" });
+  await a.cliente(CLI, "Oi, preciso de um orçamento");
+  assert.equal(a.ultimoPara(CLI), "Oi! Como posso ajudar?");
+  assert.equal(a.llm.at(-1).modelo, "gpt-5-mini", "caiu para o modelo que existe");
+});
