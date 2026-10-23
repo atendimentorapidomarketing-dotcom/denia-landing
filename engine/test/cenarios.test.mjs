@@ -230,15 +230,19 @@ test("À noite a consulta fica para as 8h (cron), sem mandar nada ao prestador",
   assert.equal(a.para(CHAVEIRO).length, 1, "uma única vez");
 });
 
-test("V30.7 — mensagem atrasada (20 min) é respondida com desculpas; mais de 12 h só é registrada", async () => {
+test("Mensagem atrasada (20 min ou 13 h) é respondida com desculpas; só depois de 24 h (o WhatsApp não deixa) fica registrada", async () => {
   const a = await criarAmbiente();
   a.llmCliente = (entrada) => decisao({ resposta: /pedido de desculpas/.test(entrada) ? "Oi! Desculpa a demora. Como posso te ajudar?" : "Olá!" });
   await a.cliente(CLI, "Oi, alguém aí?", { ts: a.agora - 20 * 60 * 1000 });
   assert.equal(a.para(CLI).length, 1, "nenhuma conversa fica sem resposta");
   assert.match(a.para(CLI)[0].texto, /Desculpa a demora/);
+  const m = await criarAmbiente();
+  m.llmCliente = (entrada) => decisao({ resposta: /pedido de desculpas/.test(entrada) ? "Oi! Desculpe a demora. Como posso te ajudar?" : "Olá!" });
+  await m.cliente(CLI, "Oi", { ts: m.agora - 13 * 3600 * 1000 });
+  assert.match(m.ultimoPara(CLI), /Desculpe a demora/, "a IA substitui a equipe: responde mesmo horas depois");
   const b = await criarAmbiente();
   b.llmCliente = () => decisao({ resposta: "Olá!" });
-  await b.cliente(CLI, "Oi", { ts: b.agora - 13 * 3600 * 1000 });
+  await b.cliente(CLI, "Oi", { ts: b.agora - 25 * 3600 * 1000 });
   assert.equal(b.para(CLI).length, 0);
   assert.equal(b.DB.q("SELECT COUNT(*) n FROM mensagens")[0].n, 1);
   assert.ok(b.telegram.some(t => /sem resposta/.test(t)));
@@ -868,7 +872,7 @@ test("Limite de chamadas da Cloudflare — perto do limite, a resposta vai para 
   assert.match(msg.w, /^wamid\./, "a mensagem no painel ganhou o id real do WhatsApp");
 });
 
-test("Cron depois de horas parado — NUNCA manda mensagens em massa nem responde clientes antigos", async () => {
+test("Cron depois de horas parado — responde todos que esperaram (até 23 h), com desculpas, um por um e uma vez só", async () => {
   const a = await criarAmbiente();
   a.llmCliente = () => decisao({ resposta: "Desculpe a demora! Como posso ajudar?" });
   const fila = (tel, minutosAtras, i) => {
@@ -882,8 +886,8 @@ test("Cron depois de horas parado — NUNCA manda mensagens em massa nem respond
   antigos.forEach((t, i) => fila(t, 120 + i * 60, i));
   a.telegram.length = 0;
   await a.cron(); await a.cron(); await a.cron();
-  for (const t of antigos) assert.equal(a.para(t).length, 0, "não responde mensagem de horas atrás: " + t);
-  assert.ok(a.telegram.some(t => /NÃO respondeu sozinha/.test(t)), "a equipe é avisada, sem mandar nada aos clientes");
+  for (const t of antigos) assert.equal(a.para(t).length, 1, "ninguém fica sem resposta, e só uma: " + t);
+  assert.match(a.para(antigos[0])[0].texto, /Desculpe a demora/);
   // Mensagem de 10 min atrás, sem ninguém ter respondido: responde (uma vez).
   fila("5521977770001", 10, 100);
   await a.cron();

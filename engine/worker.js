@@ -36,7 +36,7 @@
 //       relatório diário. Nunca inicia conversa nova por conta própria.
 // ============================================================================
 
-const VERSAO = "34.6.2";
+const VERSAO = "34.7.0";
 const SCHEMA_VERSAO = "33.4.0"; // mude sempre que acrescentar tabela ou índice (senão o banco de produção não recebe)
 const EMPRESA_ID = 1;
 const PHONE_ID_PADRAO = "473474732510163";
@@ -52,8 +52,10 @@ const LIMITE_ATRASO_MS = 12 * 60 * 60 * 1000; // teto absoluto; o padrão real �
 // Até quanto tempo depois a DENIA ainda responde sozinha uma mensagem que ficou sem resposta.
 // Padrão 30 min (variável ATRASO_MAXIMO_MIN). Mais velha que isso: só registra e avisa a equipe —
 // nunca sai mandando mensagem para clientes antigos quando o cron volta a funcionar.
-function atrasoMaximo(env) { const m = Number(env?.ATRASO_MAXIMO_MIN); return (Number.isFinite(m) && m >= 1 ? Math.min(m, 720) : 30) * 60000; }
-const MAX_ATRASADAS_POR_EXECUCAO = 3;
+// A DENIA responde sempre: mensagem atrasada (servidor fora do ar, IA pausada, chave faltando) é respondida
+// com desculpas enquanto o WhatsApp deixar responder sem modelo pago (janela de 24 h; usamos 23 h de folga).
+function atrasoMaximo(env) { const m = Number(env?.ATRASO_MAXIMO_MIN); return (Number.isFinite(m) && m >= 1 ? Math.min(m, 1410) : 1380) * 60000; }
+const MAX_ATRASADAS_POR_EXECUCAO = 15; // por minuto: a fila atrasada é respondida aos poucos, sem enxurrada
 const AGENDADO_EXPIRA_MS = 16 * 60 * 60 * 1000;
 const HISTORICO_LIMITE = 60;
 const HORA_INICIO_PRESTADOR = 8;
@@ -3650,12 +3652,12 @@ async function cobrarProfissionais(c) {
   }
 }
 
-// Vigia: cliente que escreveu há 5 a 40 min e ficou sem resposta (nem da DENIA nem da equipe): a DENIA responde
+// Vigia: cliente que escreveu há mais de 5 min (até 23 h, a janela do WhatsApp) e ficou sem resposta (nem da DENIA nem da equipe): a DENIA responde
 // (com desculpas pela demora). Se nem assim a resposta sair, aviso urgente à equipe, uma vez por mensagem.
 async function vigiarSemResposta(c) {
   const agora = c.agora();
   const linhas = (await c.db.prepare("SELECT telefone, MAX(recebido_ms) ult FROM d30_fila WHERE recebido_ms BETWEEN ? AND ? GROUP BY telefone HAVING SUM(CASE WHEN status IN ('PENDENTE','PROCESSANDO') THEN 1 ELSE 0 END)=0 LIMIT 20")
-    .bind(agora - 40 * 60000, agora - 5 * 60000).all().catch(() => null))?.results || [];
+    .bind(agora - atrasoMaximo(c.env), agora - 5 * 60000).all().catch(() => null))?.results || [];
   for (const l of linhas) {
     const ult = await c.db.prepare("SELECT MAX(recebido_ms) m FROM d30_fila WHERE telefone=?").bind(l.telefone).first().catch(() => null);
     if (Number(ult?.m || 0) > Number(l.ult)) continue; // escreveu de novo: o lote novo cuida
