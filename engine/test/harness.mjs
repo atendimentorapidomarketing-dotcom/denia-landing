@@ -68,6 +68,11 @@ export async function criarAmbiente({ inicio = "2026-10-07T14:00:00-03:00", env:
     if (url.includes("graph.facebook.com")) return resp({ url: "https://media.test/" + url.split("/").pop(), mime_type: "audio/ogg" });
     if (url.startsWith("https://media.test/")) return new Response(new Uint8Array([1, 2, 3]), { status: 200, headers: { "content-type": "audio/ogg" } });
     if (url.includes("/audio/transcriptions")) return resp({ text: amb.transcricaoAtual || "áudio" });
+    if (url.includes("api.openai.com/v1/responses") && !corpo.instructions) {
+      // Estudo na internet (web_search): texto livre, sem JSON.
+      amb.llm.push({ papel: "web", entrada: String(corpo.input), modelo: corpo.model, ferramentas: corpo.tools });
+      return resp({ output_text: amb.llmWeb ? amb.llmWeb(String(corpo.input)) : "- Regra de teste com tamanho suficiente." });
+    }
     if (url.includes("api.openai.com/v1/responses")) {
       const entrada = corpo.input[0].content[0].text;
       const papel = corpo.instructions.startsWith("Você é a DENIA") ? "cliente" : corpo.instructions.startsWith("Você trabalha") ? "prestador" : "outro";
