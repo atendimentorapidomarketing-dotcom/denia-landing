@@ -36,7 +36,7 @@
 //       relatório diário. Nunca inicia conversa nova por conta própria.
 // ============================================================================
 
-const VERSAO = "34.6.1";
+const VERSAO = "34.6.2";
 const SCHEMA_VERSAO = "33.4.0"; // mude sempre que acrescentar tabela ou índice (senão o banco de produção não recebe)
 const EMPRESA_ID = 1;
 const PHONE_ID_PADRAO = "473474732510163";
@@ -1887,7 +1887,12 @@ async function openaiJSON(c, instrucoes, entrada, anexos = [], maxTokens = 1400,
     if (!r.ok && [400, 404].includes(r.status) && simples.model !== "gpt-5-mini") { simples.model = "gpt-5-mini"; simples.reasoning = { effort: "low" }; ({ r, bruto } = await chamar(simples)); }
     if (r.ok) corpo.model = simples.model;
   } else if (!r.ok && (r.status === 429 || r.status >= 500)) { await sleep(1500); ({ r, bruto } = await chamar(corpo)); }
-  if (!r.ok) { await registrarUsoIA(c, "atendimento", corpo.model, null, true); throw new Error(`OpenAI HTTP ${r.status}: ${bruto.slice(0, 300)}`); }
+  if (!r.ok) {
+    await registrarUsoIA(c, "atendimento", corpo.model, null, true);
+    let msg = ""; try { msg = JSON.parse(bruto)?.error?.message || ""; } catch { msg = bruto.slice(0, 200); }
+    await c.db.prepare("INSERT OR REPLACE INTO d30_meta(chave,valor) VALUES('diag_openai',?)").bind(JSON.stringify({ em: c.agora(), status: r.status, modelo: corpo.model, erro: txt(msg, 240) })).run().catch(() => { });
+    throw new Error(`OpenAI HTTP ${r.status}: ${bruto.slice(0, 300)}`);
+  }
   const d = JSON.parse(bruto);
   await registrarUsoIA(c, interna ? "tarefa_interna" : "atendimento", corpo.model, d.usage, false);
   let saida = typeof d.output_text === "string" ? d.output_text : "";
@@ -2435,8 +2440,8 @@ async function processarCliente(c, tel, id, msgs, { apenasRegistrar, chaveLote, 
   // Ia sair a mesma frase de agora há pouco: em vez de calar, responde com o retorno padrão da etapa.
   if (!acao.fixa && ultimaDenia && norm(ultimaDenia.conteudo) === norm(texto) && ultimaHa < 5 * 60000) {
     await evento(c, caso?.casoId, "RESPOSTA_REPETIDA_EVITADA", txt(texto, 200));
-    const alt = respostaPadraoEtapa(caso?.etapa);
-    texto = norm(alt) === norm(texto) ? "Certo! Já estou verificando e te retorno em seguida." : alt;
+    const alt = ["AGUARDANDO_PRESTADOR", "AGUARDANDO_CONFIRMACAO_PRESTADOR"].includes(caso?.etapa) ? respostaPadraoEtapa(caso.etapa) : "";
+    if (alt && norm(alt) !== norm(texto)) texto = alt; // senão, manda a mesma resposta: o cliente nunca fica sem retorno
   }
   await enviarAoCliente(c, { tel, pessoaId: pessoa.id, casoId: caso?.casoId, texto, chave: chaveLote });
 }
@@ -4694,6 +4699,39 @@ async function conectarTelegramEquipe(c, base, forcar = false) {
   return r?.ok ? { ok: true, url } : { ok: false, erro: r?.description || "Telegram recusou." };
 }
 
+// Página de status (sem senha): só números e erros técnicos, nenhum dado de cliente. Para conferir pelo celular.
+async function paginaStatus(env) {
+  const c = criarContexto(env), agora = c.agora(), linhas = [];
+  const q = async (sql, ...a) => c.db.prepare(sql).bind(...a).first().catch(e => ({ __erro: e?.message }));
+  const min = ms => ms ? Math.max(0, Math.round((agora - Number(ms)) / 60000)) : null;
+  const quando = ms => ms == null ? "nunca" : ms < 1 ? "agora há pouco" : ms < 120 ? `há ${ms} min` : `há ${Math.round(ms / 60)} h`;
+  let banco = "ok";
+  try { await garantirSchema(c); } catch (e) { banco = "ERRO: " + txt(e?.message, 200); }
+  const rec = await q("SELECT MAX(recebido_ms) m, SUM(CASE WHEN recebido_ms > ? THEN 1 ELSE 0 END) h FROM d30_fila", agora - 3600000);
+  const pend = await q("SELECT SUM(CASE WHEN status IN ('PENDENTE','PROCESSANDO') THEN 1 ELSE 0 END) p, SUM(CASE WHEN status='ERRO' AND atualizado_ms > ? THEN 1 ELSE 0 END) e FROM d30_fila", agora - 3600000);
+  const errFila = await q("SELECT erro FROM d30_fila WHERE status='ERRO' ORDER BY atualizado_ms DESC LIMIT 1");
+  const env1 = await q("SELECT MAX(criado_ms) m, SUM(CASE WHEN criado_ms > ? THEN 1 ELSE 0 END) h FROM d30_saidas", agora - 3600000);
+  let oa = null, bloq = null;
+  try { oa = JSON.parse((await q("SELECT valor FROM d30_meta WHERE chave='diag_openai'"))?.valor || "null"); } catch { oa = null; }
+  try { bloq = JSON.parse((await q("SELECT valor FROM d30_meta WHERE chave='entrega_bloqueada'"))?.valor || "null"); } catch { bloq = null; }
+  const uso = await q("SELECT SUM(chamadas) ch, SUM(erros) er FROM d30_uso WHERE dia=?", dataSP(agora));
+  const pausa = await pausaGeralAtiva(c).catch(() => false);
+  const semDigitos = t => String(t || "").replace(/\d{8,}/g, "…");
+  linhas.push(["Versão da IA", VERSAO]);
+  linhas.push(["Banco de dados", banco]);
+  linhas.push(["Última mensagem recebida", `${quando(min(rec?.m))} · ${Number(rec?.h || 0)} na última hora`]);
+  linhas.push(["Última mensagem enviada", `${quando(min(env1?.m))} · ${Number(env1?.h || 0)} na última hora`]);
+  linhas.push(["Na fila agora", `${Number(pend?.p || 0)} · com erro na última hora: ${Number(pend?.e || 0)}`]);
+  if (errFila?.erro && Number(pend?.e || 0)) linhas.push(["Último erro da fila", semDigitos(txt(errFila.erro, 240))]);
+  linhas.push(["OpenAI hoje", `${Number(uso?.ch || 0)} chamadas · ${Number(uso?.er || 0)} com erro · chave ${env.OPENAI_API_KEY ? "configurada" : "FALTANDO"}`]);
+  if (oa && agora - Number(oa.em || 0) < 24 * 3600000) linhas.push(["Último erro da OpenAI", `${quando(min(oa.em))}: HTTP ${oa.status} (${oa.modelo}) ${semDigitos(oa.erro)}`]);
+  linhas.push(["WhatsApp", `${env.WHATSAPP_TOKEN ? "token configurado" : "token FALTANDO"}${bloq ? ` · NÃO ESTÁ ENTREGANDO: ${bloq.erro} (código ${bloq.codigo})` : ""}`]);
+  linhas.push(["Pausas", `${pausa ? "PAUSA GERAL LIGADA" : "sem pausa geral"}${String(env.DENIA_PAUSADA || "").toLowerCase() === "true" ? " · ENGINE_DENIA_PAUSADA=true" : ""}${/^(desligadas|0|false|nao|não)$/i.test(String(env.DENIA_TAREFAS || "")) ? " · DENIA_TAREFAS=desligadas" : ""}`]);
+  const esc = t => String(t).replace(/[&<>"]/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch]);
+  const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Status da DENIA</title><style>body{font:15px/1.5 system-ui,sans-serif;margin:0;padding:16px;background:#0b1020;color:#e8ecff}table{width:100%;border-collapse:collapse}td{padding:8px 6px;border-bottom:1px solid #222a48;vertical-align:top}td:first-child{color:#9aa3c7;width:42%}h1{font-size:19px}</style></head><body><h1>Status da IA da Central</h1><table>${linhas.map(([a, b]) => `<tr><td>${esc(a)}</td><td>${esc(b)}</td></tr>`).join("")}</table><p style="color:#9aa3c7">Atualizado ${esc(dataHoraSP(agora))}. Não mostra dados de clientes.</p></body></html>`;
+  return new Response(html, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
+}
+
 // Diagnóstico do Telegram da equipe: para onde o bot entrega, se ele lê o grupo e o que impede a DENIA de responder.
 async function situacaoTelegram(c) {
   const env = c.env;
@@ -4757,6 +4795,7 @@ async function rotear(request, env, ctx) {
   }
   if (caminho.startsWith("/platform/")) return platformApi(request, env, caminho, metodo);
   if (caminho === "/favicon.ico") return new Response(null, { status: 204 });
+  if (caminho === "/status" && metodo === "GET") return paginaStatus(env);
 
   if (caminho === "/login") return login(request, env);
   if (caminho === "/sair") return new Response(null, { status: 302, headers: { location: "/login", "set-cookie": "denia_sess=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict" } });
