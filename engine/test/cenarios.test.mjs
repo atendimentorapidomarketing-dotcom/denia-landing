@@ -32,13 +32,13 @@ test("Cenário 1 — chaveiro: não repete pergunta, consulta o chaveiro certo u
   assert.doesNotMatch(a.para(CHAVEIRO)[0].texto, /caso\s*#?\d+|#\d+/i, "número de caso é interno: não vai ao profissional");
   assert.doesNotMatch(a.para(CHAVEIRO)[0].texto, /Solicitação:|Marca\/modelo:/, "escrita como gente, não como formulário");
   assert.doesNotMatch(a.para(CHAVEIRO)[0].texto, new RegExp(CLI), "telefone do cliente não vai ao prestador");
-  assert.match(a.ultimoPara(CLI), /^Enviamos sua solicitação ao profissional/);
+  assert.match(a.ultimoPara(CLI), /^Vou verificar o valor e a disponibilidade e já te retorno\./);
 
   a.llmCliente = () => decisao({ resposta: "Qual serviço você precisa? Em qual bairro?", quer_orcamento_ou_atendimento: true, pronto_para_profissional: true, intencao: "PERGUNTA_STATUS" });
   await a.cliente(CLI, "E aí, alguma novidade?");
   assert.equal(a.para(CHAVEIRO).length, 1, "não reenvia consulta");
   assert.doesNotMatch(a.ultimoPara(CLI), /servi[cç]o|bairro/i, "não repete perguntas já respondidas");
-  assert.match(a.ultimoPara(CLI), /aguardamos o retorno/);
+  assert.match(a.ultimoPara(CLI), /Ainda estou verificando/);
 });
 
 test("Cenário 2 — várias mensagens rápidas geram uma única resposta", async () => {
@@ -83,7 +83,7 @@ test("Cenário 7 — prestador: +50% só quando é a parte dele, cliente aceita,
 
   a.llmPrestador = () => prest({ tipo: "COMENTARIO", valor_e_final: "NAO" });
   await a.cliente(CARLOS_ESTOF, "só minha parte");
-  assert.equal(a.ultimoPara(CLI), "O profissional pode atender amanhã às 14h. O valor fica R$ 600,00. Podemos confirmar?");
+  assert.equal(a.ultimoPara(CLI), "Temos disponibilidade amanhã às 14h. O valor fica R$ 600,00. Podemos confirmar?");
 
   a.llmCliente = () => decisao({ resposta: "Que ótimo!", intencao: "ACEITA_PROPOSTA" });
   await a.cliente(CLI, "Sim, pode ser");
@@ -93,7 +93,7 @@ test("Cenário 7 — prestador: +50% só quando é a parte dele, cliente aceita,
   const pedidoConf = a.ultimoPara(CARLOS_ESTOF);
   assert.match(pedidoConf, /aprovou o valor de R\$ 400,00 para amanhã às 14h/, "prestador vê o valor DELE, não o do cliente");
   assert.match(pedidoConf, /Barata Ribeiro/);
-  assert.match(a.ultimoPara(CLI), /Vamos confirmar com o profissional/);
+  assert.match(a.ultimoPara(CLI), /Vou confirmar e já te retorno/);
   assert.equal(a.DB.q("SELECT etapa FROM d30_casos")[0].etapa, "AGUARDANDO_CONFIRMACAO_PRESTADOR", "aceite do cliente NÃO é agendamento");
 
   const chamadas = a.llm.length;
@@ -102,7 +102,7 @@ test("Cenário 7 — prestador: +50% só quando é a parte dele, cliente aceita,
 
   a.llmPrestador = () => prest({ tipo: "CONFIRMA_AGENDAMENTO" });
   await a.cliente(CARLOS_ESTOF, "Confirmado");
-  assert.equal(a.ultimoPara(CLI), "Atendimento confirmado pelo profissional: amanhã às 14h. Valor: R$ 600,00.");
+  assert.equal(a.ultimoPara(CLI), "Atendimento confirmado: amanhã às 14h. Valor: R$ 600,00.");
   assert.equal(a.DB.q("SELECT etapa FROM d30_casos")[0].etapa, "AGENDADO");
   assert.ok(a.telegram.some(t => /SERVIÇO AGENDADO[\s\S]*Maria[\s\S]*Carlos \(estofador\)[\s\S]*R\$\s600,00/.test(t)));
 
@@ -113,7 +113,7 @@ test("Cenário 7 — prestador: +50% só quando é a parte dele, cliente aceita,
   };
   await a.cliente(CLI, "Tem como chegar meia hora mais tarde?");
   assert.match(a.ultimoPara(CARLOS_ESTOF), /meia hora mais tarde/);
-  assert.equal(a.ultimoPara(CLI), "Vamos verificar com o profissional e já retornamos.");
+  assert.equal(a.ultimoPara(CLI), "Vou verificar e já te retorno.");
   a.llmPrestador = () => prest({ tipo: "RESPONDE", mensagem_para_cliente: "O profissional pode chegar às 14h30." });
   await a.cliente(CARLOS_ESTOF, "pode sim 14h30");
   assert.equal(a.ultimoPara(CLI), "O profissional pode chegar às 14h30.");
@@ -174,7 +174,7 @@ test("Pergunta do prestador vai ao cliente e a resposta volta ao prestador", asy
   a.llmCliente = (e) => { assert.match(e, /PERGUNTA DO PROFISSIONAL PENDENTE/); return decisao({ resposta: "Ok", resposta_para_profissional: "Porta de madeira." }); };
   await a.cliente(CLI, "madeira");
   assert.match(a.ultimoPara(CHAVEIRO), /o cliente respondeu: Porta de madeira/);
-  assert.equal(a.ultimoPara(CLI), "Obrigado! Vamos repassar ao profissional.");
+  assert.equal(a.ultimoPara(CLI), "Obrigado! Vou verificar e já te retorno.");
 });
 
 test("Preço inventado pela IA é bloqueado", async () => {
@@ -213,7 +213,7 @@ test("Fora da janela de 24h com template configurado: usa o template", async () 
   a.metaFalha = (corpo) => corpo.to === CHAVEIRO && corpo.type === "text" ? { code: 131047, message: "Re-engagement message" } : null;
   await iniciarConsultaChaveiro(a);
   assert.equal(a.para(CHAVEIRO)[0].type, "template");
-  assert.match(a.ultimoPara(CLI), /^Enviamos/);
+  assert.match(a.ultimoPara(CLI), /^Vou verificar o valor/);
 });
 
 test("À noite a consulta fica para as 8h (cron), sem mandar nada ao prestador", async () => {
@@ -342,7 +342,7 @@ test("Simulador do painel roda o fluxo sem enviar nada pela Meta", async () => {
   const r = await (await a.http("/api/teste", { method: "POST", body: JSON.stringify({ remetente: "cliente", texto: "Preciso de cópia de chave" }) })).json();
   assert.equal(a.enviados.length, 0);
   assert.ok(r.saidas.some(s => s.papel === "prestador" && /Consegue pegar/i.test(s.texto)));
-  assert.ok(r.saidas.some(s => s.papel === "cliente" && /^Enviamos/.test(s.texto)));
+  assert.ok(r.saidas.some(s => s.papel === "cliente" && /^Vou verificar o valor/.test(s.texto)));
   a.llmPrestador = () => prest({ tipo: "ACEITA", valor_centavos: 3000, valor_e_final: "SIM", disponibilidade: "hoje" });
   const r2 = await (await a.http("/api/teste", { method: "POST", body: JSON.stringify({ remetente: "CHAV-ANDERSON", texto: "faço por 30, hoje" }) })).json();
   assert.ok(r2.saidas.some(s => s.papel === "cliente" && /R\$\s30,00/.test(s.texto)));
@@ -435,7 +435,7 @@ test("V30.2 — aparelho ligado no 220 V NUNCA vai para o eletricista", async ()
   a.llmCliente = () => decisao({ resposta: "Poxa, que chato! Vamos ver isso.", intencao: "NOVO_PEDIDO", quer_orcamento_ou_atendimento: true, pronto_para_profissional: true, categoria_confianca: "ALTA", fatos: { servico: "conserto de micro-ondas", problema: "liguei o micro-ondas na tomada 220v e queimou", categoria: "ELETRICA" } });
   await a.cliente(CLI, "Liguei meu micro-ondas na tomada 220v e queimou");
   assert.equal(a.para(WILLIAM).length, 0, "eletricista não recebe");
-  assert.doesNotMatch(a.ultimoPara(CLI), /^Enviamos/);
+  assert.doesNotMatch(a.ultimoPara(CLI), /^Vou verificar o valor/);
   assert.ok(a.telegram.some(t => /não tenho certeza|Sem prestador/.test(t)), "equipe é avisada");
 });
 
@@ -451,7 +451,7 @@ test("V30.2 — categoria incerta: não consulta ninguém, equipe decide", async
   const a = await criarAmbiente();
   a.llmCliente = () => decisao({ resposta: "Entendi.", intencao: "NOVO_PEDIDO", quer_orcamento_ou_atendimento: true, pronto_para_profissional: true, categoria_confianca: "MEDIA", fatos: { servico: "instalação de suporte de TV", categoria: "REFORMA" } });
   await a.cliente(CLI, "Quero instalar um suporte de TV");
-  assert.match(a.ultimoPara(CLI), /em qual bairro/, "serviço no endereço do cliente: pede o bairro primeiro");
+  assert.match(a.ultimoPara(CLI), /em qual bairro/i, "serviço no endereço do cliente: pede o bairro primeiro");
   a.llmCliente = () => decisao({ resposta: "Certo.", quer_orcamento_ou_atendimento: true, pronto_para_profissional: true, fatos: { bairro: "Méier" } });
   await a.cliente(CLI, "Méier");
   assert.equal(a.enviados.filter(e => e.to !== CLI).length, 0, "nenhum prestador consultado");
@@ -505,7 +505,7 @@ test("V30.2 — valor claro em uma mensagem passa direto", async () => {
   await iniciarConsultaChaveiro(a);
   a.llmPrestador = () => prest({ tipo: "ACEITA", valor_centavos: 15000, valor_e_final: "SIM", disponibilidade: "dia 15 às 10h" });
   await a.cliente(CHAVEIRO, "Faço dia 15 às 10h, 150 já é o valor final");
-  assert.equal(a.ultimoPara(CLI), "O profissional pode atender dia 15 às 10h. O valor fica R$ 150,00. Podemos confirmar?");
+  assert.equal(a.ultimoPara(CLI), "Temos disponibilidade dia 15 às 10h. O valor fica R$ 150,00. Podemos confirmar?");
 });
 
 test("V30.2 — login: página com senha e cookie de sessão", async () => {
@@ -1275,7 +1275,7 @@ test("Equipe pelo Telegram: responde o aviso 'a equipe decide' e a DENIA consult
   const conf = a.telegramMsgs.at(-1);
   assert.match(conf.texto, /✅ Consultei Mirella sobre o atendimento de Ana/);
   assert.equal(conf.responde, 503, "responde a mensagem da equipe no grupo (a 3ª enviada no teste)");
-  assert.match(a.ultimoPara(CLI), /^Enviamos sua solicitação ao profissional/);
+  assert.match(a.ultimoPara(CLI), /^Vou verificar o valor e a disponibilidade e já te retorno\./);
   // Pergunta solta: só responde.
   a.llmEquipe = () => ({ caso_id: 0, acoes: [], resposta: "Higienização: Mirella e Paulo.", pergunta: "" });
   await a.equipe("@DeniaBot quem faz higienização?");
@@ -1311,7 +1311,7 @@ test("Pedido sem bairro: pergunta o bairro antes de chamar o profissional; o ped
   const a = await criarAmbiente();
   a.llmCliente = () => decisao({ resposta: "Certo!", intencao: "NOVO_PEDIDO", quer_orcamento_ou_atendimento: true, pronto_para_profissional: true, fatos: { servico: "higienização de sofá", problema: "lavar sofá de 3 lugares" }, resumo_caso: "Cliente quer lavar um sofá de 3 lugares de tecido, com manchas de café, de preferência sábado de manhã." });
   await a.cliente(CLI, "Quero lavar meu sofá de 3 lugares, tem mancha de café. Mas não é pra usar produto forte");
-  assert.equal(a.ultimoPara(CLI), "Perfeito! Pra eu já passar ao profissional certo: em qual bairro é o atendimento?");
+  assert.equal(a.ultimoPara(CLI), "Perfeito! Em qual bairro é o atendimento?");
   assert.equal(a.para(MIRELLA).length, 0, "ainda não chama o profissional");
   a.llmCliente = () => decisao({ resposta: "Obrigada!", quer_orcamento_ou_atendimento: true, pronto_para_profissional: true, fatos: { bairro: "Tijuca" } });
   await a.cliente(CLI, "Tijuca");
@@ -1459,7 +1459,7 @@ test("Profissional confirma o mesmo horário com outras palavras: agenda direto,
   a.llmPrestador = () => prest({ tipo: "CONFIRMA_AGENDAMENTO", disponibilidade: "amanhã 14:00" });
   await a.cliente(CARLOS_ESTOF, "Confirmado amanhã 14:00");
   assert.equal(a.DB.q("SELECT etapa FROM d30_casos")[0].etapa, "AGENDADO");
-  assert.match(a.ultimoPara(CLI), /Atendimento confirmado pelo profissional/);
+  assert.match(a.ultimoPara(CLI), /Atendimento confirmado: /);
 
   // E "ok" do profissional depois não vira aviso para a equipe.
   const antes = a.DB.q("SELECT COUNT(*) n FROM d30_eventos WHERE tipo IN ('AVISO_PAINEL','ALERTA_EQUIPE')")[0].n;
@@ -1477,7 +1477,7 @@ test("Profissional propõe outro horário: vai ao cliente e o profissional sabe 
   await a.cliente(CLI, "Pode ser");
   a.llmPrestador = () => prest({ tipo: "CONFIRMA_AGENDAMENTO", disponibilidade: "sexta às 9h" });
   await a.cliente(CARLOS_ESTOF, "Amanhã não vou conseguir, pode ser sexta às 9h?");
-  assert.match(a.ultimoPara(CLI), /propôs sexta às 9h/);
+  assert.match(a.ultimoPara(CLI), /O horário disponível é sexta às 9h/);
   assert.match(a.ultimoPara(CARLOS_ESTOF), /vou ver com o cliente se sexta às 9h funciona/);
 });
 
@@ -1549,7 +1549,7 @@ test("Serviço agendado: depois do horário a DENIA pergunta ao profissional; fe
   a.llmProfAgendado = () => ({ resposta: "Perfeito, obrigada! 🙏", precisa_equipe: false, servico: "FEITO" });
   await a.cliente(CARLOS_ESTOF, "Terminei agora, ficou ótimo");
   assert.equal(a.DB.q("SELECT etapa FROM d30_casos")[0].etapa, "CONCLUIDO");
-  assert.match(a.ultimoPara(CLI), /serviço foi concluído\. Ficou tudo certo/);
+  assert.match(a.ultimoPara(CLI), /o serviço foi concluído! Ficou tudo certo/);
   assert.equal(a.DB.q("SELECT status FROM d30_acompanhamentos")[0].status, "FEITO");
 });
 
@@ -1682,4 +1682,13 @@ test("Vigia: cliente respondido não gera aviso", async () => {
   await a.cliente(CLI, "Oi, preciso de um orçamento");
   a.avancar(10 * 60000); await a.cron();
   assert.ok(!a.telegram.some(t => /ainda não recebeu resposta/.test(t)));
+});
+
+test("A DENIA assume: diz que ela vai verificar, nunca joga para o profissional", async () => {
+  const a = await criarAmbiente();
+  await iniciarConsultaChaveiro(a);
+  assert.doesNotMatch(a.ultimoPara(CLI), /profissional/i);
+  a.llmCliente = () => decisao({ resposta: "Boa pergunta! Vou verificar isso com o técnico e já te retorno.", intencao: "CONVERSA" });
+  await a.cliente(CLI, "Vocês dão garantia?");
+  assert.equal(a.ultimoPara(CLI), "Boa pergunta! Vou verificar isso e já te retorno.");
 });
