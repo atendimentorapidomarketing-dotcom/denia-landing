@@ -5715,16 +5715,16 @@ Botão só com texto = resposta.` })),
     const cor = d.nota >= 90 ? "var(--ok, #22c55e)" : d.nota >= 70 ? "#fbbf24" : "#f87171";
     const anel = h("div", { class: "chk-anel", style: `--p:${d.nota};--cor:${cor}`, role: "img", "aria-label": `Perfil ${d.nota}% completo` }, h("strong", { text: d.nota + "%" }), h("span", { text: "completo" }));
     const grupos = [...new Set(d.itens.map(i => i.grupo))];
-    const icone = { ok: "✅", parcial: "🟡", falta: "❌" };
+    const icone = { ok: "✅", parcial: "🟡", falta: "❌", conferir: "ℹ️" };
     const linha = i => h("li", { class: "chk-item chk-" + i.ok }, h("span", { class: "chk-ic", text: icone[i.ok] }),
       h("div", {}, h("strong", { text: i.titulo }), h("span", { class: "sub", text: ` · ${i.detalhe}` }), i.dica ? h("p", { class: "chk-dica", text: i.dica }) : null),
-      h("span", { class: "chk-pts", text: `${String(i.pontos).replace(".", ",")}/${i.max}` }));
-    const faltando = d.itens.filter(i => i.ok !== "ok").sort((a, b) => (b.max - b.pontos) - (a.max - a.pontos));
+      h("span", { class: "chk-pts", text: i.ok === "conferir" ? "fora da nota" : `${String(i.pontos).replace(".", ",")}/${i.max}` }));
+    const faltando = d.itens.filter(i => i.ok === "parcial" || i.ok === "falta").sort((a, b) => (b.max - b.pontos) - (a.max - a.pontos));
     trocar(area,
       h("section", { class: "cartao vidro chk-topo" }, anel,
         h("div", {}, h("h3", { style: "margin:0", text: d.perfil || "Perfil do Google" }),
-          h("p", { class: "sub", style: "margin:4px 0 10px", text: d.faltam ? `Faltam ${d.faltam} ponto(s) para o perfil ficar 100%. Comece pelos de cima: são os que mais pesam.` : "Perfil completo! Continue postando toda semana e respondendo as avaliações." }),
-          h("p", { class: "fx-nota", text: "A DENIA só lê o perfil (não muda nada no Google). As mudanças você faz no próprio Google; depois toque em Checar de novo." }),
+          h("p", { class: "sub", style: "margin:4px 0 10px", text: d.faltam ? `Falta${d.faltam > 1 ? "m" : ""} ${d.faltam} item(ns) para o perfil ficar 100%. Comece pelos de cima: são os que mais pesam.` : "Perfil completo! Continue postando toda semana e respondendo as avaliações." }),
+          h("p", { class: "fx-nota", text: "Tudo aqui é lido agora, direto do Google. A DENIA só aponta falta quando o Google confirma; o que não deu para ler aparece como \"fora da nota\". As mudanças você faz no próprio Google; depois toque em Checar de novo." }),
           h("div", { class: "acoes" }, botao("↻ Checar de novo", () => navegar(), "btn-secundario btn-pequeno"),
             d.maps ? h("a", { class: "btn btn-secundario btn-pequeno", href: d.maps, target: "_blank", rel: "noopener" }, "Abrir no Google Maps") : null,
             h("a", { class: "btn btn-primario btn-pequeno", href: "https://business.google.com/locations", target: "_blank", rel: "noopener" }, "Editar o perfil no Google")))),

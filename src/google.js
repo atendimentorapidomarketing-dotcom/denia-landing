@@ -353,8 +353,17 @@ async function sincronizarAvaliacoes(env, k, conta, token, { paginas = 20, conti
 // Checagem do perfil (como o GBP Check): o que falta preencher para o perfil ficar 100% no Google.
 // Só lê — nada é alterado no Google. Cada item tem peso, situação e o que fazer.
 // ---------------------------------------------------------------------------
-export function avaliarPerfil({ info = {}, midias = [], posts = [], avaliacoes = {}, atributos = [], agoraMs = Date.now() }) {
+// Feriados nacionais do Brasil (fixos + os que dependem da Páscoa).
+function feriadosNacionais(ano) {
+  const a = ano % 19, b = Math.floor(ano / 100), c = ano % 100, d = Math.floor(b / 4), e = b % 4, f = Math.floor((b + 8) / 25), g = Math.floor((b - f + 1) / 3);
+  const h = (19 * a + b - d - g + 15) % 30, i = Math.floor(c / 4), k = c % 4, l = (32 + 2 * e + 2 * i - h - k) % 7, m = Math.floor((a + 11 * h + 22 * l) / 451);
+  const pascoa = Date.UTC(ano, Math.floor((h + l - 7 * m + 114) / 31) - 1, ((h + l - 7 * m + 114) % 31) + 1), dia = 86400000;
+  const fixos = [["Confraternização Universal", 1, 1], ["Tiradentes", 4, 21], ["Dia do Trabalho", 5, 1], ["Independência", 9, 7], ["Nossa Senhora Aparecida", 10, 12], ["Finados", 11, 2], ["Proclamação da República", 11, 15], ["Consciência Negra", 11, 20], ["Natal", 12, 25]];
+  return [...fixos.map(([nome, mes, d2]) => ({ nome, ms: Date.UTC(ano, mes - 1, d2) })), { nome: "Carnaval", ms: pascoa - 47 * dia }, { nome: "Sexta-feira Santa", ms: pascoa - 2 * dia }, { nome: "Corpus Christi", ms: pascoa + 60 * dia }].sort((x, y) => x.ms - y.ms);
+}
+export function avaliarPerfil({ info = {}, midias = [], posts = [], avaliacoes = {}, atributos = [], agoraMs = Date.now(), postsErro = "", postsDenia = { ultimos7: 0, ultimos30: 0, agendados: 0 } }) {
   const itens = [];
+  const conferir = (grupo, chave, titulo, detalhe, dica) => itens.push({ grupo, chave, titulo, max: 0, pontos: 0, ok: "conferir", detalhe, dica });
   const add = (grupo, chave, titulo, max, pontos, detalhe, dica) => itens.push({ grupo, chave, titulo, max, pontos: Math.max(0, Math.min(max, Math.round(pontos * 10) / 10)), ok: pontos >= max ? "ok" : pontos > 0 ? "parcial" : "falta", detalhe, dica });
   const end = info.storefrontAddress || {};
   const atende = Boolean(info.serviceArea && (info.serviceArea.places?.placeInfos?.length || info.serviceArea.regionCode));
@@ -377,8 +386,17 @@ export function avaliarPerfil({ info = {}, midias = [], posts = [], avaliacoes =
   const periodos = info.regularHours?.periods || [];
   const dias = new Set(periodos.map(x => x.openDay)).size;
   add("Horários", "horario", "Horário de funcionamento", 8, periodos.length ? 8 : 0, periodos.length ? `${dias} dia(s) da semana` : "sem horário", periodos.length ? "" : "Coloque o horário de cada dia: perfis sem horário aparecem menos e confundem o cliente.");
-  const especiais = (info.specialHours?.specialHourPeriods || []).filter(x => x.startDate && Date.UTC(x.startDate.year, x.startDate.month - 1, x.startDate.day) >= agoraMs - 86400000).length;
-  add("Horários", "feriados", "Horários de feriados", 3, especiais ? 3 : 0, especiais ? `${especiais} data(s) futura(s)` : "nenhum feriado marcado", especiais ? "" : "Marque os horários especiais dos próximos feriados: o Google valoriza perfis atualizados.");
+  // Feriados: só conta como falta quando um feriado nacional está chegando (14 dias) e o Google não tem horário para ele.
+  const diaMs = x => x && x.year ? Date.UTC(x.year, (x.month || 1) - 1, x.day || 1) : 0;
+  const periodosEsp = (info.specialHours?.specialHourPeriods || []).map(x => ({ ini: diaMs(x.startDate), fim: diaMs(x.endDate) || diaMs(x.startDate) })).filter(x => x.ini);
+  const hoje = Math.floor((agoraMs - 3 * 3600000) / 86400000) * 86400000;
+  const futuros = periodosEsp.filter(x => x.fim >= hoje);
+  const dataBr = ms => new Date(ms).toISOString().slice(5, 10).split("-").reverse().join("/");
+  const proximos = feriadosNacionais(new Date(hoje).getUTCFullYear()).concat(feriadosNacionais(new Date(hoje).getUTCFullYear() + 1)).filter(f => f.ms >= hoje && f.ms <= hoje + 14 * 86400000);
+  const semHorario = proximos.filter(f => !periodosEsp.some(x => f.ms >= x.ini && f.ms <= x.fim));
+  const marcadas = futuros.length ? `o Google tem ${futuros.length} data(s) especial(is) marcada(s): ${futuros.slice(0, 6).map(x => dataBr(x.ini)).join(", ")}` : periodosEsp.length ? `o Google só tem datas que já passaram (última: ${dataBr(Math.max(...periodosEsp.map(x => x.ini)))})` : "o Google não informou nenhuma data especial";
+  if (semHorario.length) add("Horários", "feriados", "Horários de feriados", 3, 0, `${marcadas}; falta ${semHorario.map(f => `${f.nome} (${dataBr(f.ms)})`).join(", ")}`, "Marque no Google o horário (ou fechado) dos feriados que estão chegando.");
+  else add("Horários", "feriados", "Horários de feriados", 3, 3, proximos.length ? `${marcadas}; próximos feriados cobertos` : `${marcadas}; nenhum feriado nacional nos próximos 14 dias`, "");
   const fotos = midias.filter(m => m.mediaFormat === "PHOTO"), videos = midias.filter(m => m.mediaFormat === "VIDEO");
   const cat = c => midias.some(m => m.locationAssociation?.category === c);
   add("Fotos e vídeos", "fotos", "Fotos (mínimo 3, ideal 10+)", 10, fotos.length >= 10 ? 10 : fotos.length >= 3 ? 7 : fotos.length * 2, `${fotos.length} foto(s)`, fotos.length >= 10 ? "" : fotos.length >= 3 ? "Chegue a 10 fotos ou mais: fachada, interior, equipe e serviços/produtos." : `Faltam ${3 - fotos.length} foto(s) para o mínimo de 3.`);
@@ -389,16 +407,19 @@ export function avaliarPerfil({ info = {}, midias = [], posts = [], avaliacoes =
   add("Avaliações", "avaliacoes", "Avaliações (mínimo 5)", 8, total >= 5 ? 8 : total * 1.6, `${total} avaliação(ões)${total ? `, nota ${String(Math.round(mediaNota * 10) / 10).replace(".", ",")}` : ""}`, total >= 5 ? (mediaNota && mediaNota < 4.5 ? "A nota está abaixo de 4,5: peça avaliação aos clientes satisfeitos logo após o atendimento." : "") : `Faltam ${5 - total} avaliação(ões) para o mínimo de 5. Mande o link de avaliação para clientes satisfeitos.`);
   const respondidas = lidas ? (lidas - semResp) / lidas : 1;
   add("Avaliações", "respostas", "Avaliações respondidas", 5, lidas ? 5 * respondidas : total ? 0 : 5, lidas ? `${lidas - semResp} de ${lidas} recentes respondidas` : "sem avaliações", semResp ? `Responda as ${semResp} avaliação(ões) sem resposta (a DENIA sugere as respostas em Avaliações).` : "");
-  const recentes = posts.filter(p => Date.parse(p.createTime || p.updateTime || 0) >= agoraMs - 7 * 86400000).length;
-  const mes = posts.filter(p => Date.parse(p.createTime || p.updateTime || 0) >= agoraMs - 30 * 86400000).length;
-  add("Atividade", "posts", "Posts recentes", 4, recentes ? 4 : mes ? 2 : 0, recentes ? `${recentes} nos últimos 7 dias` : mes ? `${mes} nos últimos 30 dias` : "nenhum post no último mês", recentes ? "" : "Publique pelo menos 1 post por semana (novidade, oferta ou evento). A DENIA cria e publica em Posts e imagens.");
+  // Posts: o que o Google devolve + o que a DENIA publicou no perfil. Se o Google não deixou ler, não chuta: pede para conferir.
+  const doGoogle = d => posts.filter(p => Date.parse(p.createTime || p.updateTime || 0) >= agoraMs - d * 86400000).length;
+  const recentes = Math.max(doGoogle(7), postsDenia.ultimos7 || 0), mes = Math.max(doGoogle(30), postsDenia.ultimos30 || 0);
+  const agend = postsDenia.agendados ? `; ${postsDenia.agendados} programado(s) pela DENIA` : "";
+  if (postsErro && !mes) conferir("Atividade", "posts", "Posts recentes", `o Google não deixou ler os posts agora (${postsErro})${agend}`, "Não entra na nota. Toque em Checar de novo daqui a pouco; se continuar, reconecte o Google.");
+  else add("Atividade", "posts", "Posts recentes", 4, recentes ? 4 : mes ? 2 : 0, (recentes ? `${recentes} nos últimos 7 dias` : mes ? `${mes} nos últimos 30 dias` : "o Google não mostra nenhum post no último mês") + agend, recentes ? "" : "Publique pelo menos 1 post por semana (novidade, oferta ou evento). A DENIA cria e publica em Posts e imagens.");
   const aberto = !info.openInfo?.status || info.openInfo.status === "OPEN";
   add("Atividade", "status", "Perfil aberto", 2, aberto ? 2 : 0, aberto ? "aberto" : info.openInfo.status === "CLOSED_TEMPORARILY" ? "fechado temporariamente" : "fechado", aberto ? "" : "O perfil está marcado como fechado: reabra se a empresa está funcionando.");
   const abertura = info.openInfo?.openingDate;
   add("Atividade", "abertura", "Data de abertura", 1, abertura?.year ? 1 : 0, abertura?.year ? `${String(abertura.month || 1).padStart(2, "0")}/${abertura.year}` : "sem data", abertura?.year ? "" : "Coloque o mês e o ano em que a empresa abriu.");
   add("Atividade", "atributos", "Atributos (Wi-Fi, acessibilidade, pagamentos…)", 2, Math.min(2, atributos.length * (2 / 3)), `${atributos.length} marcado(s)`, atributos.length >= 3 ? "" : "Marque os atributos que valem para a empresa: formas de pagamento, acessibilidade, Wi-Fi, estacionamento…");
   const max = itens.reduce((t, x) => t + x.max, 0), pts = itens.reduce((t, x) => t + x.pontos, 0);
-  return { nota: Math.round((pts / max) * 100), itens, faltam: itens.filter(x => x.ok !== "ok").length };
+  return { nota: Math.round((pts / max) * 100), itens, faltam: itens.filter(x => x.ok === "parcial" || x.ok === "falta").length, conferir: itens.filter(x => x.ok === "conferir").length };
 }
 // Dados do perfil do Google para completar o cadastro (só o que estiver vazio): logo, categoria, cidade,
 // telefone, site, horários e a descrição (a IA tira dela o tom de voz, o público e os diferenciais).
@@ -423,15 +444,19 @@ async function preencherPeloGoogle(env, k, conta) {
 export async function checagemDoPerfil(env, k, conta) {
   const token = await tokenDa(env, k, conta);
   const campos = "title,phoneNumbers,categories,storefrontAddress,websiteUri,regularHours,specialHours,serviceArea,profile,openInfo,metadata";
+  let postsErro = "";
   const [info, midias, posts, rev, atributos] = await Promise.all([
     chamar("GET", `${API_INFO}/${conta.local_nome}?readMask=${campos}`, token),
     (async () => { const lista = []; let pg = ""; for (let i = 0; i < 5; i++) { const d = await chamar("GET", `${API_V4}/${caminhoV4(conta)}/media?pageSize=100${pg ? "&pageToken=" + encodeURIComponent(pg) : ""}`, token); lista.push(...(d.mediaItems || [])); if (!d.nextPageToken) break; pg = d.nextPageToken; } return lista; })().catch(() => []),
-    chamar("GET", `${API_V4}/${caminhoV4(conta)}/localPosts?pageSize=20`, token).then(d => d.localPosts || []).catch(() => []),
+    (async () => { const lista = []; let pg = ""; for (let i = 0; i < 3; i++) { const d = await chamar("GET", `${API_V4}/${caminhoV4(conta)}/localPosts?pageSize=100${pg ? "&pageToken=" + encodeURIComponent(pg) : ""}`, token); lista.push(...(d.localPosts || [])); if (!d.nextPageToken) break; pg = d.nextPageToken; } return lista; })().catch(e => { postsErro = String(e?.message || "erro").slice(0, 160); return []; }),
     chamar("GET", `${API_V4}/${caminhoV4(conta)}/reviews?pageSize=50`, token).catch(() => ({})),
     chamar("GET", `${API_INFO}/${conta.local_nome}/attributes`, token).then(d => (d.attributes || []).filter(a => (a.values || []).some(Boolean) || (a.uriValues || []).length)).catch(() => [])
   ]);
   const lidas = (rev.reviews || []).length, semResposta = (rev.reviews || []).filter(r => !r.reviewReply).length;
-  const r = avaliarPerfil({ info, midias, posts, atributos, agoraMs: k.agora(env), avaliacoes: { total: Number(rev.totalReviewCount || 0), media: Number(rev.averageRating || 0), lidas, sem_resposta: semResposta } });
+  const agoraMs = k.agora(env), hojeBr = new Date(agoraMs - 3 * 3600000).toISOString().slice(0, 10);
+  const pd = await env.DB.prepare(`SELECT SUM(CASE WHEN status='PUBLICADO' AND atualizado_ms>=? THEN 1 ELSE 0 END) u7, SUM(CASE WHEN status='PUBLICADO' AND atualizado_ms>=? THEN 1 ELSE 0 END) u30,
+      SUM(CASE WHEN status='APROVADO' AND data>=? THEN 1 ELSE 0 END) ag FROM plt_mk_posts WHERE org_id=? AND marca_id=? AND canais LIKE '%google%'`).bind(agoraMs - 7 * 86400000, agoraMs - 30 * 86400000, hojeBr, conta.org_id, conta.marca_id).first().catch(() => null);
+  const r = avaliarPerfil({ info, midias, posts, atributos, agoraMs, postsErro, postsDenia: { ultimos7: Number(pd?.u7 || 0), ultimos30: Number(pd?.u30 || 0), agendados: Number(pd?.ag || 0) }, avaliacoes: { total: Number(rev.totalReviewCount || 0), media: Number(rev.averageRating || 0), lidas, sem_resposta: semResposta } });
   return { perfil: info.title || conta.local_titulo, maps: info.metadata?.mapsUri || conta.maps_uri || null, ...r };
 }
 
