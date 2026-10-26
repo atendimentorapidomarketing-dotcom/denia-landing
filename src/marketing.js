@@ -451,7 +451,7 @@ export async function apiMarketing(request, env, k, orgId, papel, resto) {
     const { corpo, erro } = await lerCorpo(request, 1000);
     if (erro) return erro;
     const conta = await contaGoogleDe(env, orgId, Number(corpo.marca_id));
-    if (!conta) return json({ erro: "Esta marca ainda não está conectada ao Google (Marcas → Conectar Google)." }, 409);
+    if (!conta) return json({ erro: "Esta marca ainda não está conectada ao Google (Contas conectadas → Conectar Google)." }, 409);
     let sinc;
     try { sinc = await sincronizarConta(env, k, conta, { forcarDesempenho: false, completa: false }); }
     catch (e) {
@@ -1033,7 +1033,7 @@ function marcaPorNome(marcasOrg, nome, obrigatoria = true) {
   if (!nome && marcasOrg.length === 1) return marcasOrg[0];
   const n = semAcento(nome);
   const m = n ? marcasOrg.find(x => semAcento(x.nome) === n) || marcasOrg.find(x => semAcento(x.nome).includes(n) || n.includes(semAcento(x.nome))) : null;
-  if (!m && obrigatoria) throw new Error(marcasOrg.length ? `Não encontrei a marca "${nome || ""}". Diga qual: ${marcasOrg.map(x => x.nome).join(", ")}.` : "Cadastre uma marca primeiro, em Marketing → Marcas.");
+  if (!m && obrigatoria) throw new Error(marcasOrg.length ? `Não encontrei a marca "${nome || ""}". Diga qual: ${marcasOrg.map(x => x.nome).join(", ")}.` : "Cadastre uma marca primeiro, em Contas conectadas.");
   return m;
 }
 const ACOES_TP = ["tp_resumo", "tp_precos", "tp_config", "tp_disponibilidade", "tp_estoque", "tp_nota", "tp_cotacao", "tp_mercado"];
@@ -1227,7 +1227,7 @@ async function executarAcao(a, { marcasOrg, contexto, txt }) {
       const d = r.dados, v = d.desempenho_30_dias;
       const partes = [`${marca.nome}: ${d.total ? `nota média ${String(d.nota_media).replace(".", ",")} em ${d.total} avaliações, ${d.sem_resposta} sem resposta e ${d.negativas} com 3 estrelas ou menos.` : "nenhuma avaliação registrada ainda."}`];
       if (d.precisam_de_voce.length) partes.push(`Precisam de uma pessoa: ${d.precisam_de_voce.map(x => `${x.autor} (${x.nota}★) — ${x.motivo}`).join("; ")}.`);
-      if (!d.conectada) partes.push("O perfil do Google desta marca ainda não está conectado (Marcas → Conectar Google).");
+      if (!d.conectada) partes.push("O perfil do Google desta marca ainda não está conectado (Contas conectadas → Conectar Google).");
       else if (v && !v.erro) partes.push(`Últimos 30 dias: o perfil apareceu ${v.totais.visualizacoes} vezes, ${v.totais.ligacoes} ligações, ${v.totais.rotas} pedidos de rota, ${v.totais.cliques_site} cliques no site e ${v.totais.mensagens} mensagens.${v.palavras.length ? " Buscas que mais trouxeram pessoas: " + v.palavras.slice(0, 5).map(p => p.palavra).join(", ") + "." : ""}`);
       else if (v && v.erro) partes.push(`Não consegui ler o desempenho agora: ${v.erro}`);
       if (d.ultimo_relatorio) partes.push(`Último relatório (semana de ${d.ultimo_relatorio.semana}): ${String(d.ultimo_relatorio.texto).slice(0, 700)}`);
@@ -1306,7 +1306,7 @@ Você também EXECUTA ações quando a pessoa pede claramente. Ações disponív
 - {"tipo":"criar_semana","marca":"nome da marca","canais":["instagram","facebook","google"],"quantidade":3,"semana":"esta"|"proxima","com_artes":true} — planeja e cria os posts da semana (legendas, hashtags e as imagens).
 - {"tipo":"criar_post","marca":"nome","canais":["instagram"],"tema":"sobre o que é","formato":"post"|"carrossel"|"story"|"reels","data":"AAAA-MM-DD","hora":"HH:MM","com_arte":true} — cria um post com texto e imagem.
 - {"tipo":"aprovar_posts","marca":"nome ou vazio para todas"} — aprova os posts que aguardam aprovação (perfil ADMIN ou OWNER).
-- {"tipo":"publicar_post","post_id":123} — aprova e publica agora no Instagram e no Facebook, se a marca estiver conectada (Marcas → Conectar Instagram e Facebook). Se não estiver, explique que o post fica aprovado e que basta conectar a marca. No Google Meu Negócio é igual: com a marca conectada (Marcas → Conectar Google) os posts saem no perfil e as respostas às avaliações são publicadas direto no Google.
+- {"tipo":"publicar_post","post_id":123} — aprova e publica agora no Instagram e no Facebook, se a marca estiver conectada (Contas conectadas → Conectar Instagram e Facebook). Se não estiver, explique que o post fica aprovado e que basta conectar a marca. No Google Meu Negócio é igual: com a marca conectada (Contas conectadas → Conectar Google) os posts saem no perfil e as respostas às avaliações são publicadas direto no Google.
 - {"tipo":"treinar","campo":"instrucoes"|"servicos"|"regras"|"precos"|"procedimentos"|"informacoes"|"exemplos","modo":"acrescentar"|"substituir","texto":"o texto do treinamento, bem escrito, na voz de instrução para a IA do WhatsApp"} — muda o treinamento da IA que atende os clientes no WhatsApp (perfil ADMIN ou OWNER). Prefira "acrescentar". Use "substituir" só se a pessoa pedir para trocar tudo daquele campo; nesse caso o texto deve ser o campo completo, já reescrito. Cada mudança vira uma nova versão (dá para voltar).
 - {"tipo":"pausar_ia","pausar":true|false} — pausa ou retoma a IA do WhatsApp para todos os clientes (perfil ADMIN ou OWNER).
 - {"tipo":"google_resumo","marca":"nome"} — lê o Google Meu Negócio da marca: nota, avaliações sem resposta, as que precisam de uma pessoa, desempenho dos últimos 30 dias, buscas e o último relatório. Use para responder perguntas sobre o Google com dados reais.
@@ -1359,7 +1359,7 @@ Para assuntos de fora (notícias, concorrentes, tendências, preços de mercado,
 Quando a pessoa pedir claramente uma ação, use a ferramenta certa (criar_semana, criar_post, aprovar_posts, publicar_post, treinar, pausar_ia, google_resumo, atualizar_google, responder_avaliacoes, relatorio_google). Para perguntas sobre o Google de uma marca (avaliações, nota, ligações, buscas, posição), use google_resumo antes de responder. Antes, diga numa frase curta o que vai fazer ("Vou abrir o treinamento e acrescentar isso"); a pessoa vê você fazendo na tela e pode pausar ou parar. Quando a ferramenta devolver o resultado, conte em uma frase. Se faltar algo essencial (por exemplo qual marca, havendo mais de uma), pergunte antes.
 Locação por temporada: para preços, disponibilidade, estoque, melhorias, cotação e mercado use as ferramentas tp_*. Datas em AAAA-MM-DD (se a pessoa disser "próximo fim de semana", calcule a partir da data de hoje). Antes de mudar preço ou fechar datas, confirme o imóvel e o período em uma frase.
 Treinamento: prefira acrescentar; substituir só se pedirem para trocar tudo daquele campo (aí o texto é o campo inteiro já reescrito). Escreva o texto do treinamento como instrução clara para a IA que atende os clientes no WhatsApp.
-Publicar: com a marca conectada (Marcas → Conectar Instagram e Facebook), os posts aprovados saem sozinhos no horário marcado e publicar_post publica na hora. Sem conexão, o post fica aprovado. No Google Meu Negócio é igual: com a marca conectada (Marcas → Conectar Google) os posts saem no perfil e as respostas às avaliações são publicadas direto no Google. Diga isso com honestidade.
+Publicar: com a marca conectada (Contas conectadas → Conectar Instagram e Facebook), os posts aprovados saem sozinhos no horário marcado e publicar_post publica na hora. Sem conexão, o post fica aprovado. No Google Meu Negócio é igual: com a marca conectada (Contas conectadas → Conectar Google) os posts saem no perfil e as respostas às avaliações são publicadas direto no Google. Diga isso com honestidade.
 Marcas existentes: ${marcasOrg.map(m => m.nome).join(", ") || "nenhuma cadastrada"}.
 DADOS DO PAINEL (no início da conversa):
 ${contexto.dados}`;

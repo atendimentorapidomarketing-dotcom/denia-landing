@@ -246,7 +246,7 @@
     estudio: { titulo: "Estúdio de Marketing", render: paginaEstudio },
     calendario: { titulo: "Calendário", render: paginaCalendario },
     aprovacoes: { titulo: "Aprovações", render: paginaAprovacoes },
-    marcas: { titulo: "Marcas", render: paginaMarcas },
+    marcas: { titulo: "Contas conectadas", render: paginaMarcas },
     contatos: { titulo: "Contatos do site", render: paginaContatos, superAdmin: true }
   };
 
@@ -4366,8 +4366,8 @@ Botão só com texto = resposta.` })),
     return cfg && !cfg.ia_ligada ? h("div", { class: "nota nota-alerta" }, "A criação com IA está desligada: falta colar a chave da OpenAI. ", h("a", { href: "#/integracoes", text: "Colar a chave agora →" })) : null;
   }
   function semMarcas(el) {
-    el.appendChild(h("div", { class: "cartao vidro" }, vazio("Cadastre a primeira marca", "Cada marca tem o seu Instagram, Facebook e Google. A Central pode cuidar de várias marcas.", ICONES.foguete),
-      h("div", { class: "acoes", style: "justify-content:center" }, h("a", { class: "btn btn-primario", href: "#/marcas" }, "Cadastrar marca"))));
+    el.appendChild(h("div", { class: "cartao vidro" }, vazio("Conecte o primeiro perfil", "Cada perfil tem o seu Instagram, Facebook e Google. A Central pode cuidar de vários perfis.", ICONES.foguete),
+      h("div", { class: "acoes", style: "justify-content:center" }, h("a", { class: "btn btn-primario", href: "#/marcas" }, "Conectar perfil"))));
   }
 
   // Painel "Criar com IA": posts da semana (com as artes) e imagens avulsas.
@@ -4471,7 +4471,7 @@ Botão só com texto = resposta.` })),
     try { [r, cfg, lista] = await Promise.all([mk("resumo"), mk("config"), marcas(true)]); }
     catch (e) { if (vivo()) falha(metricas, e); return; }
     if (!vivo()) return;
-    metricas.replaceChildren(metrica("Marcas", numero(r.marcas), "com Instagram, Facebook e Google"), metrica("Aguardando aprovação", numero(r.aguardando), "artes e legendas"),
+    metricas.replaceChildren(metrica("Perfis", numero(r.marcas), "com Instagram, Facebook e Google"), metrica("Aguardando aprovação", numero(r.aguardando), "artes e legendas"),
       metrica("Prontos para publicar", numero(r.aprovados), "aprovados"), metrica("Posts nesta semana", numero(r.semana), "no calendário"));
     const modo = h("div", { class: "opcoes-modo" },
       [["HUMANO", "Uma pessoa aprova", "Cada arte criada pela IA espera a aprovação de alguém da equipe antes de publicar."], ["AUTOMATICO", "A IA aprova sozinha", "A DENIA revisa cada arte e aprova sozinha as que passam da nota mínima. As outras esperam uma pessoa."]]
@@ -4491,7 +4491,7 @@ Botão só com texto = resposta.` })),
         h("div", { class: "acoes" }, h("a", { class: "btn btn-primario", href: "#/denia" }, "🎙 Conversar por voz"))));
     el.appendChild(criadorIA(lista, cfg, null, null) || h("span"));
     el.appendChild(h("section", { class: "grade grade-3" },
-      passoInicial("01", "Marcas", "Cadastre cada marca com o tom de voz, o público e as contas de Instagram, Facebook e Google.", "#/marcas"),
+      passoInicial("01", "Contas conectadas", "Cadastre cada perfil com o tom de voz, o público e as contas de Instagram, Facebook e Google.", "#/marcas"),
       passoInicial("02", "Calendário", "Veja a semana de cada marca, crie posts e gere as artes com IA.", "#/calendario"),
       passoInicial("03", "Google Meu Negócio", "Avaliações respondidas, palavras-chave e desempenho semanal de cada perfil.", "#/google")));
   }
@@ -4635,7 +4635,7 @@ Botão só com texto = resposta.` })),
           h("div", { class: "linha-form" }, campo("Data", data), campo("Horário", hora)),
           campo("Título (interno)", tituloP), campo("Legenda", legenda), campo("Hashtags", hashtags), campo("Chamada para ação", chamada), campo("Texto escrito na arte", textoArte, "A DENIA escreve exatamente isto na arte e confere a ortografia."), campo("Ideia da arte (a cena)", ideia)),
         h("div", { class: "formulario" }, h("label", { style: "font-weight:600;color:var(--texto-2);font-size:14px", text: "Arte" }), imagem,
-          h("p", { class: "nota", text: "Com a marca conectada (Marcas → Conectar Instagram e Facebook), os posts aprovados saem sozinhos no dia e horário marcados. Sem conexão, baixe a arte e copie a legenda para publicar." }))),
+          h("p", { class: "nota", text: "Com a marca conectada (Contas conectadas → Conectar Instagram e Facebook), os posts aprovados saem sozinhos no dia e horário marcados. Sem conexão, baixe a arte e copie a legenda para publicar." }))),
       botoes]);
   }
 
@@ -4708,7 +4708,7 @@ Botão só com texto = resposta.` })),
     const opcoes = h("div", { class: "lista-saude lista-rolavel" }, d.paginas.map((p, i) => h("label", { class: "opcao-pagina" },
       h("input", { type: "radio", name: "pagina-meta", value: p.id, checked: i === 0 }),
       h("span", {}, h("strong", { text: p.nome }), h("span", { class: "sub", text: p.ig_usuario ? `Instagram @${p.ig_usuario}` : "Sem Instagram profissional ligado a esta página" })))));
-    if (!(await modal({ titulo: "Qual página é desta marca?", conteudo: [...(d.paginas.length > 6 ? [filtroDaLista(opcoes, `Procurar entre as ${d.paginas.length} páginas`)] : []), opcoes], confirmar: "Conectar" }))) { location.hash = "#/marcas"; return; }
+    if (!(await modal({ titulo: "Qual página você quer conectar?", conteudo: [...(d.paginas.length > 6 ? [filtroDaLista(opcoes, `Procurar entre as ${d.paginas.length} páginas`)] : []), opcoes], confirmar: "Conectar" }))) { location.hash = "#/marcas"; return; }
     const escolhida = opcoes.querySelector("input:checked");
     try {
       const r = await mk("meta/escolher", { metodo: "POST", corpo: { n: nonce, pagina_id: escolhida && escolhida.value } });
@@ -4747,7 +4747,7 @@ Botão só com texto = resposta.` })),
     const opcoes = h("div", { class: "lista-saude lista-rolavel" }, d.locais.map((l, i) => h("label", { class: "opcao-pagina" },
       h("input", { type: "radio", name: "local-google", value: l.id, checked: i === 0 }),
       h("span", {}, h("strong", { text: l.titulo }), h("span", { class: "sub", text: l.endereco || "Perfil sem endereço (atende na região)" })))));
-    if (!(await modal({ titulo: "Qual perfil do Google é desta marca?", conteudo: [...(d.locais.length > 6 ? [filtroDaLista(opcoes, `Procurar entre os ${d.locais.length} perfis (nome ou endereço)`)] : []), opcoes], confirmar: "Conectar" }))) { location.hash = "#/marcas"; return; }
+    if (!(await modal({ titulo: "Qual perfil do Google você quer conectar?", conteudo: [...(d.locais.length > 6 ? [filtroDaLista(opcoes, `Procurar entre os ${d.locais.length} perfis (nome ou endereço)`)] : []), opcoes], confirmar: "Conectar" }))) { location.hash = "#/marcas"; return; }
     const escolhido = opcoes.querySelector("input:checked");
     try {
       const r = await mk("google/escolher", { metodo: "POST", corpo: { n: nonce, local_id: escolhido && escolhido.value } });
@@ -4761,7 +4761,7 @@ Botão só com texto = resposta.` })),
   async function paginaMarcas(el, param, vivo) {
     if (String(param || "").startsWith("meta-")) { escolherPaginaMeta(String(param).slice(5)); }
     if (String(param || "").startsWith("google-")) { escolherLocalGoogle(String(param).slice(7)); }
-    el.appendChild(cabeca("Marcas", "Cada marca tem o seu tom de voz, o seu público e as suas contas. A Central pode cuidar de quantas marcas precisar.", pode("ADMIN") ? botao("Nova marca", () => formMarca({}), "btn-primario") : null));
+    el.appendChild(cabeca("Contas conectadas", "Conecte aqui o Google, o Instagram e o Facebook de cada perfil da empresa. Cada perfil tem o seu tom de voz, o seu público e as suas contas.", pode("ADMIN") ? botao("Novo perfil", () => formMarca({}), "btn-primario") : null));
     const area = h("div", { class: "grade grade-3" }, carregando());
     el.appendChild(area);
     let lista, meta, goo;
@@ -4791,8 +4791,8 @@ Botão só com texto = resposta.` })),
   function formMarca(m) {
     const c = {};
     const linha = (k, rot, ph, area) => { c[k] = area ? h("textarea", { class: "entrada", value: m[k] || "", placeholder: ph || "", style: "min-height:80px" }) : h("input", { class: "entrada", value: m[k] || "", placeholder: ph || "" }); return campo(rot, c[k]); };
-    const fechar = gaveta(m.id ? "Editar marca" : "Nova marca", [h("div", { class: "formulario" },
-      h("div", { class: "linha-form" }, linha("nome", "Nome da marca"), linha("segmento", "Segmento", "Ex.: assistência técnica")),
+    const fechar = gaveta(m.id ? "Editar perfil" : "Novo perfil", [h("div", { class: "formulario" },
+      h("div", { class: "linha-form" }, linha("nome", "Nome do perfil"), linha("segmento", "Segmento", "Ex.: assistência técnica")),
       h("div", { class: "linha-form" }, linha("cidade", "Cidade / região", "Ex.: Rio de Janeiro — Zona Sul"), linha("whatsapp", "WhatsApp", "Ex.: (21) 99999-9999")),
       h("div", { class: "linha-form" }, linha("instagram", "Instagram", "@perfil"), linha("facebook", "Página do Facebook", "Endereço da página"), linha("google", "Perfil no Google", "Nome ou link do perfil")),
       h("div", { class: "linha-form" }, linha("site", "Site", "https://"), linha("cores", "Cores da marca", "Ex.: azul-marinho e dourado"),
@@ -4801,7 +4801,7 @@ Botão só com texto = resposta.` })),
       campo("Produtos, serviços e ofertas para divulgar", c.ofertas = h("textarea", { class: "entrada", value: m.ofertas || "", maxlength: "1500", style: "min-height:100px", placeholder: "Ex.: Conserto de geladeira com garantia de 90 dias; visita técnica grátis no bairro; peças originais. Promoção: 10% no Pix até sexta." }), "Quanto mais detalhes reais (produtos, preços, promoções, garantias), mais as legendas vendem. A IA nunca inventa preço ou promoção."),
       campo("Dias e horários preferidos para publicar", c.horarios = h("input", { class: "entrada", value: m.horarios || "", maxlength: "200", placeholder: "Ex.: segunda, quarta e sexta às 18h, sábado às 10h" }), "A IA monta a semana só nesses dias e horários. Você ainda pode mudar a data e a hora de cada post."),
       m.id ? campoLogo(m) : h("p", { class: "nota", text: "A logo da marca é enviada logo depois de salvar (o campo aparece na sequência)." }),
-      h("div", { class: "acoes" }, botao("Salvar marca", async () => {
+      h("div", { class: "acoes" }, botao("Salvar perfil", async () => {
         try { const corpo = { id: m.id }; Object.keys(c).forEach(k => { corpo[k] = c[k].value; }); const r = await mk("marcas", { metodo: "POST", corpo }); fechar(); cacheMarcas = null; navegar();
           // Marca nova: reabre já com o campo da logo, para enviar na hora.
           if (!m.id && r.id) { aviso("Marca salva. Agora envie a logo da marca.", "ok"); formMarca({ ...corpo, id: r.id }); } else aviso("Marca salva.", "ok"); }
@@ -5109,9 +5109,9 @@ Botão só com texto = resposta.` })),
       return h("span", { class: "acoes" }, selo("Conectada", "ok"), pode("ADMIN") ? botao("Reconectar", () => conectarMeta(m), "btn-secundario btn-pequeno") : null);
     };
     trocar(area, h("section", { class: "grade grade-2" },
-      h("div", { class: "cartao vidro" }, h("h3", { text: "Contas por marca" }),
+      h("div", { class: "cartao vidro" }, h("h3", { text: "Contas por perfil" }),
         h("ul", { class: "lista-saude" }, lista.map(m => { const c = contaDa(meta, m.id); return h("li", {}, h("span", {}, h("strong", { text: m.nome }), h("span", { class: "sub", text: c ? (canal === "instagram" ? (c.ig_usuario ? "@" + c.ig_usuario : "—") : c.pagina_nome) : m[campoConta] ? (canal === "instagram" ? "@" + m.instagram : m.facebook) : "Conta não informada" })), estadoCanal(m)); })),
-        h("a", { class: "btn btn-secundario btn-pequeno", href: "#/marcas", style: "margin-top:14px;width:fit-content" }, "Editar contas nas marcas")),
+        h("a", { class: "btn btn-secundario btn-pequeno", href: "#/marcas", style: "margin-top:14px;width:fit-content" }, "Conectar ou reconectar contas")),
       h("div", { class: "cartao vidro" }, h("h3", { text: "O que a DENIA faz neste canal" }),
         h("ul", { class: "lista-saude" },
           h("li", {}, "Planejar e criar posts, carrosséis, stories e reels", selo("Disponível", "ok")),
@@ -5162,9 +5162,10 @@ Botão só com texto = resposta.` })),
         area.replaceChildren(h("div", { class: "cartao vidro" }, h("h3", { text: c ? `Conectado: ${c.local_titulo}` : "Conectar o perfil" }),
           c ? h("p", { text: `A DENIA publica os posts aprovados neste perfil, traz as avaliações novas de hora em hora e publica as respostas direto no Google.${c.sincronizado_ms ? " Última atualização: " + new Date(c.sincronizado_ms).toLocaleString(LOCALE) + "." : ""}` })
             : h("ol", { class: "passos" }, h("li", {}, "Entre com a conta do Google que é proprietária ou administradora do perfil da empresa."),
-              h("li", {}, "Autorize a DENIA e escolha o perfil desta marca."),
+              h("li", {}, "Autorize a DENIA e escolha o perfil da empresa."),
               h("li", {}, "Pronto: os posts aprovados saem no perfil, as avaliações chegam sozinhas e as respostas são publicadas no Google.")),
-          pode("ADMIN") ? h("div", { class: "acoes" }, c ? botao("Atualizar agora", async (_e, b) => { b.textContent = "Atualizando…"; try { const r = await mk("google/sincronizar", { metodo: "POST", corpo: { marca_id: marcaId } }); aviso(`Atualizado: ${r.avaliacoes_novas} avaliação(ões) nova(s).`, "ok"); navegar(); } catch (e) { aviso(e.message, "erro"); } finally { b.textContent = "Atualizar agora"; } }, "btn-secundario")
+          c && c.erro ? h("p", { class: "nota nota-alerta", text: `${c.erro} Clique em Reconectar Google e entre com a conta dona do perfil.` }) : null,
+          pode("ADMIN") ? h("div", { class: "acoes" }, c ? botao("Reconectar Google", () => conectarGoogle(marca), c.erro ? "btn-primario" : "btn-secundario") : null, c ? botao("Atualizar agora", async (_e, b) => { b.textContent = "Atualizando…"; try { const r = await mk("google/sincronizar", { metodo: "POST", corpo: { marca_id: marcaId } }); aviso(`Atualizado: ${r.avaliacoes_novas} avaliação(ões) nova(s).`, "ok"); navegar(); } catch (e) { aviso(e.message, "erro"); } finally { b.textContent = "Atualizar agora"; } }, "btn-secundario")
             : botao("Conectar Google", () => conectarGoogle(marca), "btn-primario")) : null,
           h("p", { class: "nota nota-alerta", text: "Importante: a DENIA nunca escreve avaliações para o próprio perfil — isso é proibido pelo Google e pode suspender o perfil. Ela pede avaliações aos clientes reais depois de cada atendimento." })));
       }
@@ -5219,7 +5220,7 @@ Botão só com texto = resposta.` })),
     const marcaId = marca.id;
     const sites = await mk(`google/sc/sites?marca=${marcaId}`).catch(e => ({ erro: e.message, codigo: e.codigo }));
     if (sites.conectada === false) {
-      trocar(area, h("section", { class: "cartao vidro" }, vazio("Conecte o Google desta marca", "O Search Console usa o mesmo login do Google do perfil da empresa."), pode("ADMIN") ? h("div", { class: "acoes" }, botao("Conectar Google", () => conectarGoogle(marca), "btn-primario")) : null), cartaoSeoLimites());
+      trocar(area, h("section", { class: "cartao vidro" }, vazio("Conecte o Google deste perfil", "O Search Console usa o mesmo login do Google do perfil da empresa."), pode("ADMIN") ? h("div", { class: "acoes" }, botao("Conectar Google", () => conectarGoogle(marca), "btn-primario")) : null), cartaoSeoLimites());
       return;
     }
     if (sites.precisa_reconectar || sites.codigo === "RECONECTAR") return pedirReconexao(area, marca, "Para ver a posição do site no Google orgânico, a DENIA precisa da permissão do Search Console. Toque abaixo, entre com a conta do Google que administra o site e aceite.", "sc");
@@ -5302,7 +5303,7 @@ Botão só com texto = resposta.` })),
   async function abaGoogleAds(area, marca) {
     const marcaId = marca.id;
     const contas = await mk(`google/ads/contas?marca=${marcaId}`).catch(e => ({ erro: e.message, codigo: e.codigo }));
-    if (contas.conectada === false) { trocar(area, h("section", { class: "cartao vidro" }, vazio("Conecte o Google desta marca", "O Google Ads usa o mesmo login do Google."), pode("ADMIN") ? h("div", { class: "acoes" }, botao("Conectar Google", () => conectarGoogle(marca), "btn-primario")) : null)); return; }
+    if (contas.conectada === false) { trocar(area, h("section", { class: "cartao vidro" }, vazio("Conecte o Google deste perfil", "O Google Ads usa o mesmo login do Google."), pode("ADMIN") ? h("div", { class: "acoes" }, botao("Conectar Google", () => conectarGoogle(marca), "btn-primario")) : null)); return; }
     if (contas.configurado === false) {
       const instrucoes = () => trocar(area, h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Ligar o Google Ads na DENIA (uma vez, para todas as empresas)" }),
         h("ol", { class: "passos" }, h("li", {}, "Em ads.google.com, abra a sua conta gerente (MCC) → Administrador → Central de API e peça o token de desenvolvedor (acesso básico)."), h("li", {}, "No Google Cloud do mesmo projeto do login do Google, ative a Google Ads API."),
@@ -5377,7 +5378,7 @@ Botão só com texto = resposta.` })),
   async function abaConcorrentesGoogle(area, marca) {
     const marcaId = marca.id;
     const d = await mk(`google/concorrentes?marca=${marcaId}`);
-    if (d.conectada === false) { trocar(area, h("section", { class: "cartao vidro" }, vazio("Conecte o Google desta marca", "A posição é medida para o perfil conectado."), pode("ADMIN") ? h("div", { class: "acoes" }, botao("Conectar Google", () => conectarGoogle(marca), "btn-primario")) : null)); return; }
+    if (d.conectada === false) { trocar(area, h("section", { class: "cartao vidro" }, vazio("Conecte o Google deste perfil", "A posição é medida para o perfil conectado."), pode("ADMIN") ? h("div", { class: "acoes" }, botao("Conectar Google", () => conectarGoogle(marca), "btn-primario")) : null)); return; }
     const busca = h("input", { class: "entrada", placeholder: "Ex.: oficina mecânica em Niterói", value: estado.ultimaBuscaConc || (d.ultimo ? d.ultimo.busca : "") });
     const res = h("div", { class: "grade" });
     const desenhar = r => {
@@ -5659,7 +5660,7 @@ Botão só com texto = resposta.` })),
       h("section", { class: "cartao vidro" },
         h("h3", { style: "margin-top:0", text: "Central de reputação — avaliações de 1 e 2 estrelas" }),
         conectada ? h("p", { class: "nota", text: `Perfil: ${conta.local_titulo}.${conta.total_google != null ? ` No Google: ${numero(conta.total_google)} avaliações${conta.media_google ? `, nota ${String(Number(conta.media_google).toFixed(1)).replace(".", ",")}` : ""}.` : ""} Na DENIA: ${numero(res.n1 || 0)} de 1 estrela e ${numero(res.n2 || 0)} de 2 estrelas.${conta.lendo ? " A última leitura completa do Google não terminou: clique em \"Buscar todas no Google\"." : ""}${conta.sincronizado_ms ? " Última busca: " + new Date(conta.sincronizado_ms).toLocaleString(LOCALE) + "." : ""}` })
-          : h("p", { class: "nota nota-alerta", text: "Conecte o Google desta marca (Marcas → Conectar Google) para trazer as avaliações." }),
+          : h("p", { class: "nota nota-alerta", text: "Conecte o Google desta marca (Contas conectadas → Conectar Google) para trazer as avaliações." }),
         conectada && conta.erro ? h("p", { class: "nota nota-alerta", text: "Última tentativa com o Google falhou: " + conta.erro }) : null,
         avisoFaltam(conta),
         h("p", { style: "margin:6px 0 0;color:var(--texto-2);font-size:14px", text: "A DENIA confere se quem avaliou está na sua base de clientes, procura avaliações em sequência, textos repetidos e conteúdo fora do tema, e indica o tópico de denúncia do Google. A denúncia em si é um toque no Google (ele não permite denúncia automática); o botão \"Denunciar no Google\" já abre o perfil e copia o nome para você achar a avaliação." }),
