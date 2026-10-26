@@ -818,6 +818,24 @@ async function relatoriosAgendados(env) {
 async function rotasRelatorio(request, env, sessao, orgId, papel, resto) {
   const metodo = request.method, q = new URL(request.url).searchParams, t = agora(env);
   if (resto === "relatorio/config" && metodo === "GET") return json({ config: await configRelatorio(env, orgId), email_configurado: emailConfigurado(env), dias: DIAS_SEMANA });
+  // Administrador geral: situação do relatório semanal de TODAS as empresas (se as mensagens chegam aqui e para quem vai).
+  if (resto === "relatorio/todas" && metodo === "GET") {
+    if (!sessao.usuario.super_admin) return json({ erro: "Só o administrador geral vê todas as empresas." }, 403);
+    const orgs = (await env.DB.prepare("SELECT id, nome, status FROM plt_organizacoes ORDER BY id").all())?.results || [];
+    const lista = [];
+    for (const o of orgs) {
+      const zap = await env.DB.prepare("SELECT phone_number_id FROM plt_zap_contas WHERE org_id=?").bind(o.id).first().catch(() => null);
+      const ia = await conexaoDa(env, o.id).catch(() => null);
+      if (!zap?.phone_number_id && !ia) continue;
+      const ult = zap?.phone_number_id ? await env.DB.prepare("SELECT MAX(criado_ms) m, SUM(CASE WHEN criado_ms > ? THEN 1 ELSE 0 END) d FROM plt_zap_msgs WHERE org_id=? AND direcao='E'").bind(t - 7 * 86400000, o.id).first().catch(() => null) : null;
+      const cfg = await configRelatorio(env, o.id);
+      const extras = cfg.emails.split(/[,;\s]+/).map(e => e.trim()).filter(emailValido);
+      const envio = await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave LIKE ? ORDER BY valor DESC LIMIT 1").bind(`relatorio_enviado_${o.id}_%`).first().catch(() => null);
+      lista.push({ id: o.id, nome: o.nome, status: o.status, chatbot: Boolean(zap?.phone_number_id), ia: Boolean(ia), ultima_mensagem_ms: ult?.m || null, mensagens_7d: Number(ult?.d || 0),
+        config: cfg, destinatarios: [...new Set([...(await responsaveisDa(env, o.id)), ...extras])], ultimo_envio_ms: envio ? Number(envio.valor) : null });
+    }
+    return json({ email_configurado: emailConfigurado(env), dias: DIAS_SEMANA, empresas: lista });
+  }
   if (resto === "relatorio/config" && metodo === "POST") {
     if (!pode(papel, "ADMIN")) return json({ erro: "Só administradores mudam o envio do relatório." }, 403);
     const lido = await lerCorpo(request, 4000); if (lido.erro) return lido.erro;
