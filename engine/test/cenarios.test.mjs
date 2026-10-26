@@ -1741,3 +1741,16 @@ test("Atrasada: a DENIA lê a conversa e, se a equipe já resolveu, não manda n
   await a.cliente(CLI, "Obrigada pela ajuda de ontem, já resolvi", { ts: a.agora - 3 * 3600 * 1000 });
   assert.equal(a.para(CLI).length, 0);
 });
+
+test("Profissional sem atendimento aberto também é respondido (como alguém da equipe), e a equipe é chamada quando precisa", async () => {
+  const a = await criarAmbiente();
+  a.llmProfAgendado = (e) => { assert.match(e, /MENSAGEM NOVA DELE:\n.*cliente de Copacabana/); return { resposta: "Oi! Não encontrei atendimento aberto com você agora. É de qual cliente?", precisa_equipe: false }; };
+  await a.cliente(CHAVEIRO, "Bom dia, e aquele cliente de Copacabana?");
+  assert.equal(a.ultimoPara(CHAVEIRO), "Oi! Não encontrei atendimento aberto com você agora. É de qual cliente?");
+  await a.cliente(CHAVEIRO, "ok");
+  assert.equal(a.ultimoPara(CHAVEIRO), "Combinado! Qualquer coisa, estou por aqui.", "'ok' recebe fechamento, sem IA");
+  a.llmProfAgendado = () => ({ resposta: "Vou verificar e já te retorno.", precisa_equipe: true, motivo: "pagamento" });
+  await a.cliente(CHAVEIRO, "Ainda não recebi o pagamento do serviço da semana passada");
+  assert.equal(a.ultimoPara(CHAVEIRO), "Vou verificar e já te retorno.");
+  assert.ok(a.telegram.some(t => /não há atendimento aberto com ele[\s\S]*pagamento/.test(t)));
+});
