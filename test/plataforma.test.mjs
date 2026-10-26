@@ -2984,3 +2984,15 @@ test("Relatórios — chatbot: separa quem só mandou mensagem de quem gerou avi
   const so = r.conversas.find(c => c.telefone === "5521900000005");
   assert.deepEqual([so.buscas.length, so.avisos], [0, 0]);
 });
+
+test("Login: aceita o próprio site com www ou atrás do proxy (http/https), recusa outro site", async () => {
+  const p = await criarPlataforma();
+  for (const origin of ["https://www.plataforma.test", "http://plataforma.test"]) {
+    const r = await p.req("/api/entrar", { metodo: "POST", corpo: { email: ADMIN, senha: SENHA_ADMIN }, cabecalhos: { origin } });
+    assert.equal(r.status, 200, origin + " " + JSON.stringify(r.dados));
+  }
+  for (const origin of ["https://malicioso.test", "https://plataforma.test.malicioso.test"]) {
+    const r = await p.req("/api/entrar", { metodo: "POST", corpo: { email: ADMIN, senha: SENHA_ADMIN }, cabecalhos: { origin } });
+    assert.equal(r.status, 403, origin);
+  }
+});
