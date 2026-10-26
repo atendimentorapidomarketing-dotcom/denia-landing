@@ -318,6 +318,7 @@ export async function iniciar(op = {}) {
       // desviados por um cabeçalho forjado). Sem ele, usa o Host; X-Forwarded-Host só com DENIA_CONFIAR_HOST=1.
       const site = /^https?:\/\/[^/\s]+$/.test(String(ambiente.SITE_URL || "").trim().replace(/\/+$/, "")) ? new URL(String(ambiente.SITE_URL).trim()) : null;
       const hostCab = ambiente.DENIA_CONFIAR_HOST === "1" ? req.headers["x-forwarded-host"] || req.headers.host : req.headers.host;
+      const usaSite = site && !(hostIA && String(req.headers.host || "").toLowerCase() === hostIA);
       const host = site && !(hostIA && String(req.headers.host || "").toLowerCase() === hostIA) ? site.host : String(hostCab || "localhost").split(",")[0].trim();
       const headers = new Headers();
       for (const [k, v] of Object.entries(req.headers)) {
@@ -326,7 +327,7 @@ export async function iniciar(op = {}) {
       }
       headers.set("cf-connecting-ip", ipDe(req));
       const temCorpo = req.method !== "GET" && req.method !== "HEAD";
-      const request = new Request(`${proto}://${host}${req.url}`, { method: req.method, headers, ...(temCorpo ? { body: Readable.toWeb(req), duplex: "half" } : {}) });
+      const request = new Request(`${usaSite ? site.protocol.replace(":", "") : proto}://${host}${req.url}`, { method: req.method, headers, ...(temCorpo ? { body: Readable.toWeb(req), duplex: "half" } : {}) });
       const resposta = await atender(request);
       const cabecalhos = {};
       resposta.headers.forEach((v, k) => { if (k !== "set-cookie") cabecalhos[k] = v; });

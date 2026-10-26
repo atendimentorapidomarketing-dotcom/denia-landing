@@ -314,8 +314,10 @@ async function decifrar(env, valor) {
 // Proteção contra requisições forjadas: só aceita escrita vinda do próprio site
 // e com o cabeçalho X-Denia (que outro site não consegue enviar sem CORS).
 function postLegitimo(request) {
+  // Mesmo site: compara só o domínio (com ou sem www; http ou https atrás do proxy da hospedagem).
   const origem = request.headers.get("origin");
-  if (origem && origem !== new URL(request.url).origin) return false;
+  const dominio = u => { try { return new URL(u).host.toLowerCase().replace(/^www\./, ""); } catch { return ""; } };
+  if (origem && dominio(origem) !== dominio(request.url)) return false;
   return request.headers.get("x-denia") === "1";
 }
 async function lerCorpo(request, limite = 16000) {
