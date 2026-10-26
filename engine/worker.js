@@ -36,7 +36,7 @@
 //       relatório diário. Nunca inicia conversa nova por conta própria.
 // ============================================================================
 
-const VERSAO = "34.8.1";
+const VERSAO = "34.9.0";
 const SCHEMA_VERSAO = "33.4.0"; // mude sempre que acrescentar tabela ou índice (senão o banco de produção não recebe)
 const EMPRESA_ID = 1;
 const PHONE_ID_PADRAO = "473474732510163";
@@ -2861,7 +2861,7 @@ async function processarPrestador(c, tel, id, msgs, { apenasRegistrar, chaveLote
 
   for (const m of msgs) await registrarMensagem(c, { pessoaId: pessoa?.id, casoId: consulta?.caso_id, wamid: m.wamid, direcao: "ENTRADA", origem: "WHATSAPP", tipo: String(m.tipo || "text").toUpperCase(), conteudo: m.conteudo });
   if (apenasRegistrar || await estaPausado(c, tel)) return;
-  if (!prest && !abertas.length) return;
+  if (!abertas.length) return responderProfissionalSemCaso(c, tel, pessoa, prest, msgs, textoTodo, chaveLote);
 
   if (!consulta && abertas.length > 1) {
     // Confirmação simples ("ok", "fechado", "obrigado") não precisa de pergunta: fica registrada para a equipe.
@@ -2882,7 +2882,7 @@ async function processarPrestador(c, tel, id, msgs, { apenasRegistrar, chaveLote
     await enviarAgoraAoPrestador(c, { consulta: { ...abertas[0], caso_id: null }, texto: `É sobre qual cliente: ${nomesCurtos}?`, chave: "qual:" + chaveLote });
     return;
   }
-  if (!consulta) return; // mensagem solta de prestador: só registra (a equipe vê no app)
+  if (!consulta) return responderProfissionalSemCaso(c, tel, pessoa, prest, msgs, textoTodo, chaveLote);
 
   const caso = await carregarCasoPorId(c, consulta.caso_id);
   if (!caso) return;
@@ -2932,6 +2932,31 @@ Responda em JSON.`, anexos, 700);
     return;
   }
   await tratarRespostaPrestador(c, { caso, consulta, d, textoTodo, chaveLote, histCaso, msgs });
+}
+
+// Profissional escreveu e não há atendimento aberto com ele: a DENIA responde como alguém da equipe
+// (ela é sempre a última a falar). Se ele quer algo que só a equipe resolve, a equipe é avisada.
+const INSTRUCOES_PROFISSIONAL_SEM_CASO = `Você é da equipe da Central e fala com um PROFISSIONAL parceiro pelo WhatsApp. Agora NÃO existe nenhum atendimento aberto com ele. Leia o histórico e responda a mensagem dele como uma pessoa da equipe: curto (1 ou 2 frases), simpático, sem formalidade, sem número de caso.
+- Se ele fala de um cliente ou serviço: diga que não encontrou atendimento aberto com ele agora e pergunte de qual cliente (nome ou bairro) se trata.
+- Se ele avisa disponibilidade, manda foto/comprovante de serviço ou agradece: agradeça e diga que fica registrado.
+- Se ele quer um serviço para ele mesmo, reclama, fala de pagamento ou algo que só a equipe resolve: precisa_equipe=true e diga que vai verificar e já retorna.
+Nunca invente dado, valor ou cliente. Responda em JSON {"resposta":"","precisa_equipe":false,"motivo":""}`;
+async function responderProfissionalSemCaso(c, tel, pessoa, prest, msgs, textoTodo, chaveLote) {
+  const nome = prest?.nome || pessoa?.nome || "";
+  const alvo = { prestador_tel: tel, prestador_nome: nome, caso_id: null, area: prest?.area || "" };
+  const hist = pessoa?.id ? await historico(c, pessoa.id, 12) : [];
+  const ultimaAEle = [...hist].reverse().find(m => String(m.direcao).toUpperCase() === "SAIDA" && !msgs.some(x => x.wamid === m.whatsapp_message_id));
+  let texto = "", equipe = false, motivo = "";
+  if (msgs.every(m => !m.mediaId && ehMensagemSocial(m.conteudo))) {
+    texto = ["Combinado! Qualquer coisa, estou por aqui.", "Certo! Fico à disposição."].find(t => norm(t) !== norm(ultimaAEle?.conteudo || "")) || "Combinado!";
+  } else {
+    try {
+      const o = await openaiJSON(c, INSTRUCOES_PROFISSIONAL_SEM_CASO, `PROFISSIONAL: ${nome || "-"}${prest?.area ? ` (${CATEGORIAS[prest.area]?.rotulo || prest.area})` : ""}\n\nHISTÓRICO COM ELE:\n${formatarHistorico(hist, "PROFISSIONAL", new Set(msgs.map(m => m.wamid)))}\n\nMENSAGEM NOVA DELE:\n${txt(textoTodo, 1500)}\n\nResponda em JSON.`, [], 300);
+      texto = txt(o?.resposta, 500); equipe = o?.precisa_equipe === true; motivo = txt(o?.motivo, 200);
+    } catch (e) { console.warn("profissional sem caso", e?.message); texto = "Oi! Recebi aqui, vou verificar e já te retorno."; equipe = true; }
+  }
+  if (texto && !(ultimaAEle && norm(texto) === norm(ultimaAEle.conteudo))) await enviarAgoraAoPrestador(c, { consulta: alvo, caso: null, texto, chave: "prof-sem-caso:" + chaveLote });
+  if (equipe) await alertarEquipe(c, `${nome || "Um profissional"} (${digitos(tel)}) escreveu e não há atendimento aberto com ele: "${txt(textoTodo, 250)}"${motivo ? ` — ${motivo}` : ""}. Confira.`, "apoio:prof:" + chaveLote);
 }
 
 // Serviço já agendado/em andamento: a DENIA responde o profissional como alguém da equipe que leu tudo
