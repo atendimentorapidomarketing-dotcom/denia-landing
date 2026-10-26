@@ -484,6 +484,7 @@
       corpo, envio);
     faixaClientes(topo).catch(e => { if (vivo()) falha(topo, e); });
     blocoEnvioRelatorio(envio).catch(e => { if (vivo()) falha(envio, e); });
+    if (estado.eu.usuario.super_admin) { const todas = h("div", {}); el.appendChild(todas); blocoRelatoriosTodas(todas).catch(e => { if (vivo()) falha(todas, e); }); }
     let r;
     try { r = await org(`relatorio?de=${de}&ate=${ate}`); } catch (e) { if (vivo()) falha(corpo, e); return; }
     if (!vivo()) return;
@@ -511,6 +512,22 @@
           (r.conversas || []).length ? h("ul", { class: "lista-saude" }, r.conversas.slice(-12).reverse().map(c => h("li", {}, h("span", {}, h("strong", { text: `${c.nome || "Sem nome"} · ${fone(c.telefone)}` }),
             h("span", { class: "sub", text: `${dataCompleta(c.dia)} às ${new Date(c.inicio).toLocaleTimeString(LOCALE, { hour: "2-digit", minute: "2-digit", timeZone: "America/Sao_Paulo" })} · ${c.buscas.join("; ") || "Não informou"} · ${c.recorrente ? "Recorrente" : "Novo"}` }))))) : vazio("Nenhum contato no período", ""))),
       (r.fontes || []).includes("ia-indisponivel") ? h("p", { class: "nota nota-alerta", text: "A IA desta empresa não respondeu agora: os números acima podem estar sem as conversas da IA." }) : "");
+  }
+  // Administrador geral: o relatório de cada empresa (de onde vêm as mensagens, para quem vai e quando saiu).
+  async function blocoRelatoriosTodas(caixa) {
+    const r = await org("relatorio/todas");
+    const quando = ms => ms ? new Date(ms).toLocaleString(LOCALE, { timeZone: "America/Sao_Paulo", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "nunca";
+    caixa.replaceChildren(h("section", { class: "cartao vidro" },
+      h("h3", { style: "margin-top:0", text: "Relatório semanal de todas as empresas" }),
+      r.email_configurado ? null : h("p", { class: "nota nota-alerta", text: "Nenhum relatório sai enquanto o e-mail não estiver configurado na Hostinger (RESEND_API_KEY e EMAIL_REMETENTE, com o domínio verificado no Resend)." }),
+      tabelaDados([["nome", "Empresa"], ["fonte", "Atendimento"], ["chegando", "Mensagens chegando aqui"], ["envio", "Envio"], ["destinatarios", "Vai para"], ["ultimo", "Último envio"]],
+        r.empresas.map(e => ({
+          nome: e.nome, fonte: [e.chatbot ? "Chatbot" : "", e.ia ? "IA" : ""].filter(Boolean).join(" + "),
+          chegando: e.chatbot ? (e.ultima_mensagem_ms ? `sim, a última ${quando(e.ultima_mensagem_ms)} (${numero(e.mensagens_7d)} em 7 dias)` : "NENHUMA: o webhook do chatbot ainda aponta para a Cloudflare ou não está ligado") : "IA: confira em denia-ai.com/ia/status",
+          envio: e.config.ativo ? `${(r.dias[e.config.dia] || "").replace(/^./, x => x.toUpperCase())} às ${String(e.config.hora).padStart(2, "0")}:00` : "desligado",
+          destinatarios: (e.destinatarios || []).join(", ") || "ninguém", ultimo: quando(e.ultimo_envio_ms)
+        })), { titulo: "Empresas", busca: false, vazioTxt: "Nenhuma empresa com chatbot ou IA." }),
+      h("p", { class: "sub", text: "Para mandar o relatório para a própria empresa (ex.: o e-mail da Infomix), entre na empresa pelo seletor do topo, abra Relatórios e coloque o e-mail em \"Enviar também para\"." })));
   }
   async function blocoEnvioRelatorio(caixa) {
     const r = await org("relatorio/config");
