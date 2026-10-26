@@ -878,7 +878,7 @@ test("Cron depois de horas parado — responde todos que esperaram (até 23 h), 
   const fila = (tel, minutosAtras, i) => {
     const ts = a.agora - minutosAtras * 60000;
     a.DB.prepare("INSERT INTO d30_fila(wamid,telefone,payload,recebido_ms,status,atualizado_ms) VALUES(?,?,?,?,'PENDENTE',?)")
-      .bind("wamid.antigo." + i, tel, JSON.stringify({ wamid: "wamid.antigo." + i, de: tel, nome: "", ts: String(Math.floor(ts / 1000)), tipo: "text", texto: "Oi, tudo bem?", recebidoMs: ts }), ts, ts).run();
+      .bind("wamid.antigo." + i, tel, JSON.stringify({ wamid: "wamid.antigo." + i, de: tel, nome: "", ts: String(Math.floor(ts / 1000)), tipo: "text", texto: "Oi, tudo bem?", recebidoMs: ts, podiaEnviar: true }), ts, ts).run();
   };
   await a.cron(); // cria o esquema
   // 8 clientes que escreveram há 2 a 9 horas (o cron estava desligado).
@@ -1719,4 +1719,25 @@ test("Se a OpenAI recusar um parâmetro ou o modelo, a DENIA tenta do jeito simp
   await a.cliente(CLI, "Oi, preciso de um orçamento");
   assert.equal(a.ultimoPara(CLI), "Oi! Como posso ajudar?");
   assert.equal(a.llm.at(-1).modelo, "gpt-5-mini", "caiu para o modelo que existe");
+});
+
+test("Mensagem que chegou com a DENIA sem token do WhatsApp fica com a equipe: quando o token volta, ela não responde quem a equipe atendeu", async () => {
+  const a = await criarAmbiente();
+  const token = a.env.WHATSAPP_TOKEN;
+  delete a.env.WHATSAPP_TOKEN;
+  a.llmCliente = () => decisao({ resposta: "Desculpe a demora! Como posso ajudar?" });
+  await a.cliente(CLI, "Oi, qual o horário de vocês?");
+  assert.equal(a.para(CLI).length, 0, "sem token: não envia");
+  a.env.WHATSAPP_TOKEN = token;
+  a.avancar(60 * 60000); await a.cron(); a.avancar(60000); await a.cron();
+  assert.equal(a.para(CLI).length, 0, "token voltou: não fala com quem chegou enquanto ela estava parada");
+  await a.cliente(CLI, "Bom dia, ainda preciso de ajuda");
+  assert.equal(a.para(CLI).length, 1, "mensagem nova: responde normalmente");
+});
+
+test("Atrasada: a DENIA lê a conversa e, se a equipe já resolveu, não manda nada", async () => {
+  const a = await criarAmbiente();
+  a.llmCliente = (e) => { assert.match(e, /se alguém da equipe já respondeu ou o assunto já foi resolvido, deixe "resposta" vazia/); return decisao({ resposta: "" }); };
+  await a.cliente(CLI, "Obrigada pela ajuda de ontem, já resolvi", { ts: a.agora - 3 * 3600 * 1000 });
+  assert.equal(a.para(CLI).length, 0);
 });

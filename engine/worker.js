@@ -36,7 +36,7 @@
 //       relatório diário. Nunca inicia conversa nova por conta própria.
 // ============================================================================
 
-const VERSAO = "34.7.2";
+const VERSAO = "34.8.0";
 const SCHEMA_VERSAO = "33.4.0"; // mude sempre que acrescentar tabela ou índice (senão o banco de produção não recebe)
 const EMPRESA_ID = 1;
 const PHONE_ID_PADRAO = "473474732510163";
@@ -2379,7 +2379,7 @@ async function processarCliente(c, tel, id, msgs, { apenasRegistrar, chaveLote, 
   let consulta = caso ? await consultaDoCaso(c, caso.casoId) : null;
   let autorizados = await autorizadosParaCaso(c, consulta);
   const treinamento = await carregarTreinamento(c);
-  const novas = (atrasoMs ? `(ATENÇÃO: estas mensagens chegaram há cerca de ${Math.max(1, Math.round(atrasoMs / 60000))} min e ainda não tinham sido respondidas. Comece com um pedido de desculpas breve e natural pela demora.)\n` : "") + msgs.map(m => `- ${m.conteudo || "(vazio)"}`).join("\n");
+  const novas = (atrasoMs ? `(ATENÇÃO: estas mensagens chegaram há cerca de ${Math.max(1, Math.round(atrasoMs / 60000))} min e ainda não tinham sido respondidas. Comece com um pedido de desculpas breve e natural pela demora. ANTES, leia o HISTÓRICO: se alguém da equipe já respondeu ou o assunto já foi resolvido, deixe "resposta" vazia e não mande nada.)\n` : "") + msgs.map(m => `- ${m.conteudo || "(vazio)"}`).join("\n");
   const [perfil, estilo, ficha, memoria, reunioes] = await Promise.all([perfilCliente(c, pessoa), estiloDaEquipe(c), fichaCRM(c, tel), memoriaDoCliente(c, pessoa), reunioesDoCliente(c, tel)]);
 
   let d;
@@ -2429,6 +2429,8 @@ async function processarCliente(c, tel, id, msgs, { apenasRegistrar, chaveLote, 
   // Reunião online combinada na conversa: registra e avisa a equipe no Telegram da Central.
   const reuniao = d.reuniao ? await registrarReuniao(c, { tel, pessoa, caso, r: d.reuniao, existentes: reunioes }).catch(e => { console.error("reunião", e?.message); return null; }) : null;
 
+  // Atrasada e a IA leu que a equipe já cuidou: não manda nada.
+  if (atrasoMs && !String(d.resposta || "").trim() && !d.pronto && !d.quer && d.intencao !== "NOVO_PEDIDO") { await evento(c, caso?.casoId, "ATRASADA_JA_ATENDIDA", "A DENIA leu a conversa e viu que já tinha sido atendida"); return; }
   // 4) Decisão determinística.
   const acao = await decidirCliente(c, { tel, pessoa, caso, consulta, d, chaveLote });
   let texto = acao.texto;
@@ -3253,9 +3255,11 @@ async function processarLote(c, tel, itens) {
   const agora = c.agora();
   const idade = m => agora - (Number(m.ts) * 1000 || m.recebidoMs || agora);
   const frescas = msgs.filter(m => idade(m) <= FILA_EXPIRA_MS);
-  const ate12h = msgs.filter(m => idade(m) <= atrasoMaximo(c.env));
+  // Atrasada só é respondida se, quando chegou, a DENIA podia responder (token e sem pausa). O que chegou
+  // com ela parada ficou com a equipe: nunca falar com quem a equipe já atendeu.
+  const ate12h = msgs.filter(m => idade(m) <= atrasoMaximo(c.env) && (idade(m) <= FILA_EXPIRA_MS || m.podiaEnviar === true));
   const opts = { apenasRegistrar: ate12h.length === 0, atrasoMs: frescas.length ? 0 : Math.min(...ate12h.map(idade)), chaveLote: msgs[msgs.length - 1].wamid };
-  if (opts.apenasRegistrar) c.atrasadasSemResposta = (c.atrasadasSemResposta || 0) + 1; // velha demais: só registra
+  if (opts.apenasRegistrar && msgs.some(m => m.podiaEnviar === true)) c.atrasadasSemResposta = (c.atrasadasSemResposta || 0) + 1; // velha demais: só registra
   // Resposta atrasada só se ninguém da equipe já respondeu depois da mensagem, e no máximo 3 por execução
   // (se há muitas atrasadas é porque algo ficou parado: a equipe é avisada, nada sai em massa).
   if (!opts.apenasRegistrar && opts.atrasoMs > 0) {
@@ -3399,7 +3403,7 @@ async function webhookPost(request, env, ctx) {
   for (const m of mensagens) {
     try {
       const r = await c.db.prepare("INSERT OR IGNORE INTO d30_fila(wamid,telefone,payload,recebido_ms,status,atualizado_ms) VALUES(?,?,?,?,'PENDENTE',?)")
-        .bind(m.wamid, m.de, JSON.stringify({ ...m, recebidoMs: agora }), agora, agora).run();
+        .bind(m.wamid, m.de, JSON.stringify({ ...m, recebidoMs: agora, podiaEnviar: Boolean(String(env.WHATSAPP_TOKEN || "").trim() && env.OPENAI_API_KEY) && String(env.DENIA_PAUSADA || "").toLowerCase() !== "true" }), agora, agora).run();
       if (Number(r?.meta?.changes || 0) > 0) ultimos.set(m.de, m.wamid);
     } catch (e) {
       console.error("fila D1:", e?.message);
@@ -3672,6 +3676,8 @@ async function vigiarSemResposta(c) {
   for (const l of linhas) {
     const ult = await c.db.prepare("SELECT MAX(recebido_ms) m FROM d30_fila WHERE telefone=?").bind(l.telefone).first().catch(() => null);
     if (Number(ult?.m || 0) > Number(l.ult)) continue; // escreveu de novo: o lote novo cuida
+    let ultMsg = null; try { ultMsg = JSON.parse((await c.db.prepare("SELECT payload FROM d30_fila WHERE telefone=? ORDER BY recebido_ms DESC LIMIT 1").bind(l.telefone).first().catch(() => null))?.payload || "null"); } catch { ultMsg = null; }
+    if (ultMsg?.podiaEnviar !== true) continue; // chegou quando a DENIA não podia enviar: ficou com a equipe
     if (prestadorPorTelefone(l.telefone) || await estaPausado(c, l.telefone) || await pausaGeralAtiva(c).catch(() => false)) continue;
     const id = await identificar(c, l.telefone).catch(() => null);
     if (!id || id.papel !== "CLIENTE" || !id.pessoa) continue;
@@ -4748,6 +4754,8 @@ async function paginaStatus(env) {
   if (zap && Date.now() - Number(zap.em || 0) < 24 * 3600000) linhas.push(["Último erro ao enviar", `${quando(Math.round((Date.now() - Number(zap.em)) / 60000))}: HTTP ${zap.status}${zap.codigo ? ` código ${zap.codigo}` : ""} — ${zap.erro}`]);
   const assin = Number((await q("SELECT valor FROM d30_meta WHERE chave='assinatura_invalida'"))?.valor || 0);
   if (assin && Date.now() - assin < 6 * 3600000) linhas.push(["ATENÇÃO", `${quando(Math.round((Date.now() - assin) / 60000))} a Meta mandou mensagens e a assinatura NÃO conferiu: elas foram recusadas. O META_APP_SECRET na Hostinger não é a chave secreta deste app da Meta. Corrija ou apague essa variável.`]);
+  const eco = await q("SELECT MAX(criado_em) t FROM mensagens WHERE UPPER(origem)='HUMANO' AND UPPER(direcao)='SAIDA'");
+  linhas.push(["Respostas da equipe pelo celular", eco?.t ? `a última chegou em ${String(eco.t).slice(0, 16)} (UTC) — a DENIA vê o que a equipe responde` : "nenhuma registrada: na Meta, assine o campo smb_message_echoes do webhook para a DENIA ver o que a equipe responde pelo app"]);
   linhas.push(["Segurança do webhook", `${env.WHATSAPP_VERIFY_TOKEN ? "token de verificação ok" : "WHATSAPP_VERIFY_TOKEN faltando"} · ${env.META_APP_SECRET ? "assinatura conferida" : "sem META_APP_SECRET"}`]);
   linhas.push(["Pausas", `${pausa ? "PAUSA GERAL LIGADA" : "sem pausa geral"}${String(env.DENIA_PAUSADA || "").toLowerCase() === "true" ? " · ENGINE_DENIA_PAUSADA=true" : ""}${/^(desligadas|0|false|nao|não)$/i.test(String(env.DENIA_TAREFAS || "")) ? " · DENIA_TAREFAS=desligadas" : ""}`]);
   const esc = t => String(t).replace(/[&<>"]/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch]);
