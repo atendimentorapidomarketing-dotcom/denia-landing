@@ -1613,8 +1613,18 @@ export async function webhookTelegram(request, env, k) {
 // nomes e quem já tinha falado antes do período.
 export async function brutoRelatorioZap(env, orgId, ini, fim) {
   const entradas = ((await env.DB.prepare("SELECT telefone, criado_ms ms FROM plt_zap_msgs WHERE org_id=? AND direcao='E' AND criado_ms>=? AND criado_ms<?").bind(orgId, ini, fim).all())?.results || []);
-  const buscas = ((await env.DB.prepare("SELECT telefone, caminho, titulo, criado_ms ms FROM plt_zap_buscas WHERE org_id=? AND criado_ms>=? AND criado_ms<?").bind(orgId, ini, fim).all())?.results || [])
-    .map(b => ({ telefone: b.telefone, ms: b.ms, o: b.caminho || b.titulo || "", categoria: b.caminho || b.titulo || "" }));
+  // aviso = a mesma regra do aviso de cliente no Telegram: opção com resposta/lojas, sem "[sem aviso]",
+  // aviso ligado e não repetida pelo mesmo cliente na mesma opção dentro de 1 hora.
+  const cfg = lerConfig(await contaDa(env, orgId));
+  const linhasB = (await env.DB.prepare("SELECT b.telefone, b.item_id, b.tipo, b.caminho, b.titulo, b.criado_ms ms, i.extra FROM plt_zap_buscas b LEFT JOIN plt_zap_itens i ON i.id=b.item_id WHERE b.org_id=? AND b.criado_ms>=? AND b.criado_ms<? ORDER BY b.criado_ms").bind(orgId, ini - 3600000, fim).all())?.results || [];
+  const ultimaPorItem = new Map(), buscas = [];
+  for (const b of linhasB) {
+    const k = b.telefone + "|" + b.item_id, antes = ultimaPorItem.get(k);
+    ultimaPorItem.set(k, b.ms);
+    if (b.ms < ini) continue;
+    const aviso = Boolean(cfg.avisar_buscas) && b.tipo !== "HUMANO" && extraDe(b).lead !== false && !(antes && b.ms - antes < 3600000);
+    buscas.push({ telefone: b.telefone, ms: b.ms, o: b.caminho || b.titulo || "", categoria: b.caminho || b.titulo || "", aviso });
+  }
   const tels = [...new Set(entradas.map(x => x.telefone))];
   const nomes = {}, antigos = [];
   for (let i = 0; i < tels.length; i += 80) {
