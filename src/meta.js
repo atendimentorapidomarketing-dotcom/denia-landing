@@ -38,6 +38,21 @@ function operacaoMeta(metodo, caminho) {
   const partes = String(caminho).split("?")[0].split("/").filter(x => x && !/^\d+$/.test(x));
   return `${metodo} ${partes.slice(-1)[0] || "objeto"}`.slice(0, 50);
 }
+// Dados públicos da página e do Instagram para completar o cadastro do perfil (só o que estiver vazio).
+async function preencherPelaMeta(env, orgId, marcaId, p) {
+  const [pag, ig] = await Promise.all([
+    graph(env, "GET", p.id, { fields: "about,description,category,website,phone,whatsapp_number,link,location{city,state},picture.width(512).height(512){url,is_silhouette}", access_token: p.token }).catch(() => ({})),
+    p.ig_id ? graph(env, "GET", p.ig_id, { fields: "profile_picture_url,biography,website,username", access_token: p.token }).catch(() => ({})) : {}
+  ]);
+  const cidade = [pag.location?.city, pag.location?.state].filter(Boolean).join(" — ");
+  const { preencherMarca } = await import("./marketing.js");
+  return preencherMarca(env, orgId, marcaId, {
+    segmento: pag.category, cidade, whatsapp: pag.whatsapp_number || pag.phone, site: pag.website || ig.website,
+    facebook: pag.link, instagram: ig.username || p.ig_usuario,
+    sobre: [ig.biography, pag.about, pag.description].filter(Boolean).join("\n"),
+    logos: [ig.profile_picture_url, pag.picture?.data?.is_silhouette ? "" : pag.picture?.data?.url]
+  });
+}
 export async function graph(env, metodo, caminho, params = {}) {
   const url = new URL(`https://graph.facebook.com/${versao(env)}/${caminho.replace(/^\//, "")}`);
   const init = { method: metodo, signal: AbortSignal.timeout(30000) };
@@ -156,7 +171,8 @@ export async function rotasMeta(request, env, k, orgId, papel, resto) {
     if (p.ig_usuario) await env.DB.prepare("UPDATE plt_mk_marcas SET instagram=COALESCE(NULLIF(instagram,''),?) WHERE id=? AND org_id=?").bind(p.ig_usuario, reg.m, orgId).run();
     await env.DB.prepare("DELETE FROM plt_meta WHERE chave=?").bind("meta_n_" + txt(corpo.n, 60)).run();
     await auditar(env, request, sessao, orgId, "INTEGRACAO", `Meta conectada à marca #${reg.m}: página ${p.nome}${p.ig_usuario ? " · @" + p.ig_usuario : " (sem Instagram profissional ligado)"}`);
-    return json({ ok: true, pagina: p.nome, instagram: p.ig_usuario || null });
+    const auto = await preencherPelaMeta(env, orgId, reg.m, p).catch(e => { console.error("preencher pela Meta", e?.message); return { preenchidos: [] }; });
+    return json({ ok: true, pagina: p.nome, instagram: p.ig_usuario || null, preenchidos: auto.preenchidos });
   }
   if (resto === "meta/desconectar" && metodo === "POST") {
     if (!pode(papel, "ADMIN")) return json({ erro: "Somente administradores." }, 403);

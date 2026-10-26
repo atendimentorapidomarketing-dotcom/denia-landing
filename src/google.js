@@ -198,8 +198,9 @@ export async function rotasGoogle(request, env, k, orgId, papel, resto) {
     await auditar(env, request, sessao, orgId, "INTEGRACAO", `Google conectado à marca #${reg.m}: perfil ${l.titulo}`);
     // Já traz as avaliações e o desempenho.
     const conta = await contaGoogleDe(env, orgId, reg.m);
-    const sinc = await sincronizarConta(env, k, conta).catch(e => ({ erro: e.message }));
-    return json({ ok: true, perfil: l.titulo, sincronizacao: sinc });
+    const [sinc, auto] = await Promise.all([sincronizarConta(env, k, conta).catch(e => ({ erro: e.message })),
+      preencherPeloGoogle(env, k, conta).catch(e => { console.error("preencher pelo Google", e?.message); return { preenchidos: [] }; })]);
+    return json({ ok: true, perfil: l.titulo, sincronizacao: sinc, preenchidos: auto.preenchidos });
   }
   if (resto === "google/desconectar" && metodo === "POST") {
     if (!pode(papel, "ADMIN")) return json({ erro: "Somente administradores." }, 403);
@@ -398,6 +399,26 @@ export function avaliarPerfil({ info = {}, midias = [], posts = [], avaliacoes =
   add("Atividade", "atributos", "Atributos (Wi-Fi, acessibilidade, pagamentos…)", 2, Math.min(2, atributos.length * (2 / 3)), `${atributos.length} marcado(s)`, atributos.length >= 3 ? "" : "Marque os atributos que valem para a empresa: formas de pagamento, acessibilidade, Wi-Fi, estacionamento…");
   const max = itens.reduce((t, x) => t + x.max, 0), pts = itens.reduce((t, x) => t + x.pontos, 0);
   return { nota: Math.round((pts / max) * 100), itens, faltam: itens.filter(x => x.ok !== "ok").length };
+}
+// Dados do perfil do Google para completar o cadastro (só o que estiver vazio): logo, categoria, cidade,
+// telefone, site, horários e a descrição (a IA tira dela o tom de voz, o público e os diferenciais).
+const DIAS_GOOGLE = { MONDAY: "seg", TUESDAY: "ter", WEDNESDAY: "qua", THURSDAY: "qui", FRIDAY: "sex", SATURDAY: "sáb", SUNDAY: "dom" };
+async function preencherPeloGoogle(env, k, conta) {
+  const token = await tokenDa(env, k, conta);
+  const [info, midias] = await Promise.all([
+    chamar("GET", `${API_INFO}/${conta.local_nome}?readMask=title,phoneNumbers,categories,storefrontAddress,websiteUri,regularHours,profile,metadata`, token),
+    chamar("GET", `${API_V4}/${caminhoV4(conta)}/media?pageSize=100`, token).then(d => d.mediaItems || []).catch(() => [])
+  ]);
+  const hm = t => t ? `${String(t.hours || 0).padStart(2, "0")}:${String(t.minutes || 0).padStart(2, "0")}` : "";
+  const horarios = (info.regularHours?.periods || []).map(x => `${DIAS_GOOGLE[x.openDay] || x.openDay} ${hm(x.openTime)}-${hm(x.closeTime)}`).join(", ");
+  const end = info.storefrontAddress || {};
+  const logos = ["LOGO", "PROFILE"].flatMap(cat => midias.filter(m => m.locationAssociation?.category === cat && m.mediaFormat !== "VIDEO").map(m => m.googleUrl));
+  const { preencherMarca } = await import("./marketing.js");
+  return preencherMarca(env, conta.org_id, conta.marca_id, {
+    segmento: info.categories?.primaryCategory?.displayName, cidade: [end.sublocality, end.locality, end.administrativeArea].filter(Boolean).join(" — "),
+    whatsapp: info.phoneNumbers?.primaryPhone, site: info.websiteUri, google: info.metadata?.mapsUri || info.title, horarios,
+    sobre: info.profile?.description || "", logos
+  });
 }
 export async function checagemDoPerfil(env, k, conta) {
   const token = await tokenDa(env, k, conta);
