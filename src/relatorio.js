@@ -37,7 +37,7 @@ export function contarConversas(entradas) {
   return conversas.sort((a, b) => a.inicio - b.inicio);
 }
 
-export function montarRelatorio({ entradas = [], buscas = [], nomes = {}, antigos = [] }, ini, fim) {
+export function montarRelatorio({ entradas = [], buscas = [], nomes = {}, antigos = [], telegram = null }, ini, fim) {
   const antes = new Set(antigos);
   const conversas = contarConversas(entradas.filter(m => m.ms >= ini && m.ms < fim));
   const porTel = new Map();
@@ -50,7 +50,14 @@ export function montarRelatorio({ entradas = [], buscas = [], nomes = {}, antigo
     if (!c) continue;
     c.buscas = c.buscas || [];
     if (b.o && !c.buscas.includes(b.o)) c.buscas.push(b.o);
-    if (b.aviso) c.avisos = (c.avisos || 0) + 1;
+
+  }
+  // Avisos que chegaram ao Telegram (registro exato do que foi enviado ao grupo), ligados à conversa do cliente.
+  const tg = Array.isArray(telegram) ? telegram.filter(t => t.ms >= ini && t.ms < fim) : null;
+  for (const t of tg || []) {
+    const lista = porTel.get(t.telefone) || [];
+    const c = lista.find(x => t.ms >= x.inicio - 600000 && t.ms < x.inicio + CONVERSA_MS) || lista.filter(x => x.inicio <= t.ms).pop();
+    if (c) c.avisos = (c.avisos || 0) + 1;
   }
   // Linha da planilha = uma conversa. "Recorrente" = o cliente já tinha falado antes desta conversa
   // (antes do período ou numa conversa anterior do mesmo período).
@@ -70,7 +77,8 @@ export function montarRelatorio({ entradas = [], buscas = [], nomes = {}, antigo
     const novos = [...tels].filter(t => !antes.has(t) && primeiroDia.get(t) === d).length;
     const doDia = buscas.filter(b => diaBR(b.ms) === d);
     return { dia: d, clientes: tels.size, conversas: linhas.filter(c => c.dia === d).length, novos, recorrentes: tels.size - novos, buscas: doDia.length,
-      escolheram: new Set(doDia.map(b => b.telefone)).size, avisados: new Set(doDia.filter(b => b.aviso).map(b => b.telefone)).size, avisos: doDia.filter(b => b.aviso).length };
+      escolheram: new Set(doDia.map(b => b.telefone)).size,
+      ...(tg ? { avisos: tg.filter(t => diaBR(t.ms) === d).length, avisados: new Set(tg.filter(t => diaBR(t.ms) === d).map(t => t.telefone)).size } : {}) };
   });
   const cat = new Map();
   for (const b of buscas) {
@@ -82,8 +90,8 @@ export function montarRelatorio({ entradas = [], buscas = [], nomes = {}, antigo
   const clientes = [...porTel.keys()];
   return {
     de: diaBR(ini), ate: diaBR(fim - 1), conversas: linhas, por_dia: porDia, categorias,
-    tem_avisos: buscas.some(b => b.aviso !== undefined),
-    totais: { escolheram: new Set(buscas.filter(b => b.ms >= ini && b.ms < fim).map(b => b.telefone)).size, avisos: buscas.filter(b => b.aviso).length, avisados: new Set(buscas.filter(b => b.aviso).map(b => b.telefone)).size,
+    tem_avisos: Boolean(tg),
+    totais: { escolheram: new Set(buscas.filter(b => b.ms >= ini && b.ms < fim).map(b => b.telefone)).size, ...(tg ? { avisos: tg.length, avisados: new Set(tg.map(t => t.telefone)).size } : {}),
       clientes: clientes.length, conversas: linhas.length, novos: clientes.filter(t => !antes.has(t)).length, recorrentes: clientes.filter(t => antes.has(t)).length, voltaram: [...porTel.values()].filter(l => l.length > 1).length, buscas: buscas.length }
   };
 }
@@ -94,17 +102,17 @@ export function planilhaRelatorio(d, empresa = "") {
   return gerarXlsx([
     { nome: "Resumo", larguras: [46, 44],
       linhas: [["Relatório de atendimento", empresa], ["Período", `${dataBR(d.de)} a ${dataBR(d.ate)}`], ["Clientes que entraram em contato (mandaram mensagem)", d.totais.clientes],
-        ...(av ? [["Clientes que escolheram uma opção no menu", d.totais.escolheram], ["Clientes avisados no Telegram", d.totais.avisados], ["Avisos de cliente no Telegram", d.totais.avisos],
+        ...(av ? [["Clientes que escolheram uma opção no menu", d.totais.escolheram], ["Avisos enviados ao Telegram (mensagens no grupo)", d.totais.avisos], ["Clientes diferentes com aviso no Telegram", d.totais.avisados],
           ["Só mandaram mensagem (não escolheram opção)", Math.max(0, d.totais.clientes - d.totais.escolheram)]] : []),
         ["Clientes novos", d.totais.novos], ["Clientes recorrentes (já tinham falado antes)", d.totais.recorrentes], ["Conversas (janela de 24 horas)", d.totais.conversas],
         ["Clientes que voltaram no período", d.totais.voltaram], ["Buscas e pedidos", d.totais.buscas],
         ["Mais procurado", d.categorias[0] ? `${d.categorias[0].categoria} (${d.categorias[0].buscas})` : "-"],
         [], ["Como contamos", "Cliente = cada número de WhatsApp diferente que mandou mensagem. Conversa = começa na primeira mensagem e vale 24 horas, como a Meta conta."],
-        ...(av ? [["Aviso no Telegram", "Sai quando o cliente escolhe uma opção com lojas ou resposta (não sai para quem só mandou \"oi\", nem para opções marcadas como sem aviso, nem para a mesma opção repetida em 1 hora)."]] : [])] },
-    { nome: "Por dia", larguras: [12, 15, 10, 11, 9, 12, 9, ...(av ? [12, 12] : [])],
-      linhas: [["Data", "Dia", "Clientes", "Conversas", "Novos", "Recorrentes", "Buscas", ...(av ? ["Escolheram opção", "Avisados no Telegram"] : [])],
-        ...d.por_dia.map(x => [dataBR(x.dia), semanaBR(x.dia), x.clientes, x.conversas, x.novos, x.recorrentes, x.buscas, ...(av ? [x.escolheram, x.avisados] : [])]),
-        ["Total do período", "", d.totais.clientes, d.totais.conversas, d.totais.novos, d.totais.recorrentes, d.totais.buscas, ...(av ? [d.totais.escolheram, d.totais.avisados] : [])]] },
+        ...(av ? [["Avisos no Telegram", "Contagem exata das mensagens que a DENIA mandou ao grupo (novo cliente e pedido de atendente). Um mesmo cliente que escolhe várias opções gera vários avisos, mas conta como 1 cliente."]] : [])] },
+    { nome: "Por dia", larguras: [12, 15, 10, 11, 9, 12, 9, ...(av ? [12, 14, 16] : [])],
+      linhas: [["Data", "Dia", "Clientes", "Conversas", "Novos", "Recorrentes", "Buscas", ...(av ? ["Escolheram opção", "Avisos no Telegram", "Clientes com aviso"] : [])],
+        ...d.por_dia.map(x => [dataBR(x.dia), semanaBR(x.dia), x.clientes, x.conversas, x.novos, x.recorrentes, x.buscas, ...(av ? [x.escolheram, x.avisos, x.avisados] : [])]),
+        ["Total do período", "", d.totais.clientes, d.totais.conversas, d.totais.novos, d.totais.recorrentes, d.totais.buscas, ...(av ? [d.totais.escolheram, d.totais.avisos, d.totais.avisados] : [])]] },
     { nome: "Clientes", larguras: [12, 15, 7, 28, 20, 48, 11, 20, 26, ...(av ? [16] : [])],
       linhas: [["Data", "Dia", "Hora", "Nome", "Telefone", "O que procurou", "Mensagens", "Contatos no período", "Tipo de cliente", ...(av ? ["Aviso no Telegram"] : [])],
         ...d.conversas.map(c => [dataBR(c.dia), semanaBR(c.dia), horaBR(c.inicio), c.nome || "Sem nome", fone(c.telefone), c.buscas.join("; ") || (av ? "Não escolheu opção (só mandou mensagem)" : "Não informou"), c.mensagens,
@@ -116,7 +124,7 @@ export function planilhaRelatorio(d, empresa = "") {
 export function textoRelatorio(d, empresa) {
   const top = d.categorias.slice(0, 5).map((x, i) => `${i + 1}. ${x.categoria}: ${x.buscas}`).join("\n") || "Sem buscas no período.";
   return [`Relatório de atendimento${empresa ? " - " + empresa : ""}`, `Período: ${dataBR(d.de)} a ${dataBR(d.ate)}`, "",
-    `Clientes que entraram em contato: ${d.totais.clientes}`, ...(d.tem_avisos ? [`Escolheram uma opção no menu: ${d.totais.escolheram} | Avisados no Telegram: ${d.totais.avisados}`] : []), `Novos: ${d.totais.novos} | Recorrentes: ${d.totais.recorrentes}`, `Conversas: ${d.totais.conversas}`, `Clientes que voltaram no período: ${d.totais.voltaram}`, "",
+    `Clientes que entraram em contato: ${d.totais.clientes}`, ...(d.tem_avisos ? [`Escolheram uma opção no menu: ${d.totais.escolheram} | Avisos enviados ao Telegram: ${d.totais.avisos} (de ${d.totais.avisados} clientes)`] : []), `Novos: ${d.totais.novos} | Recorrentes: ${d.totais.recorrentes}`, `Conversas: ${d.totais.conversas}`, `Clientes que voltaram no período: ${d.totais.voltaram}`, "",
     "Clientes por dia:", ...d.por_dia.map(x => `${semanaBR(x.dia)}, ${dataBR(x.dia)}: ${x.clientes}`), "",
     "Mais procurados:", top, "", "A planilha completa (nome, telefone, data, horário e o que cada cliente procurou) segue em anexo.",
     "Para mudar o dia, o horário ou quem recebe: Relatórios, no painel da DENIA."].join("\n");
