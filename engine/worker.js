@@ -36,7 +36,7 @@
 //       relatório diário. Nunca inicia conversa nova por conta própria.
 // ============================================================================
 
-const VERSAO = "34.8.0";
+const VERSAO = "34.8.1";
 const SCHEMA_VERSAO = "33.4.0"; // mude sempre que acrescentar tabela ou índice (senão o banco de produção não recebe)
 const EMPRESA_ID = 1;
 const PHONE_ID_PADRAO = "473474732510163";
@@ -4719,7 +4719,7 @@ async function conectarTelegramEquipe(c, base, forcar = false) {
 }
 
 // Página de status (sem senha): só números e erros técnicos, nenhum dado de cliente. Para conferir pelo celular.
-async function paginaStatus(env) {
+async function paginaStatus(env, numero = "") {
   const c = criarContexto(env), agora = c.agora(), linhas = [];
   const q = async (sql, ...a) => c.db.prepare(sql).bind(...a).first().catch(e => ({ __erro: e?.message }));
   const min = ms => ms ? Math.max(0, Math.round((agora - Number(ms)) / 60000)) : null;
@@ -4755,11 +4755,30 @@ async function paginaStatus(env) {
   const assin = Number((await q("SELECT valor FROM d30_meta WHERE chave='assinatura_invalida'"))?.valor || 0);
   if (assin && Date.now() - assin < 6 * 3600000) linhas.push(["ATENÇÃO", `${quando(Math.round((Date.now() - assin) / 60000))} a Meta mandou mensagens e a assinatura NÃO conferiu: elas foram recusadas. O META_APP_SECRET na Hostinger não é a chave secreta deste app da Meta. Corrija ou apague essa variável.`]);
   const eco = await q("SELECT MAX(criado_em) t FROM mensagens WHERE UPPER(origem)='HUMANO' AND UPPER(direcao)='SAIDA'");
+  const ent = await q("SELECT SUM(CASE WHEN status='ACEITA' THEN 1 ELSE 0 END) a, SUM(CASE WHEN status IN ('DELIVERED','READ') THEN 1 ELSE 0 END) e, SUM(CASE WHEN status='READ' THEN 1 ELSE 0 END) l, SUM(CASE WHEN status IN ('FAILED','FALHOU') THEN 1 ELSE 0 END) f FROM d30_entregas WHERE enviado_ms > ?", agora - 6 * 3600000);
+  linhas.push(["Entregas (últimas 6 h)", `${Number(ent?.e || 0)} entregues · ${Number(ent?.l || 0)} lidas · ${Number(ent?.a || 0)} aguardando confirmação · ${Number(ent?.f || 0)} falharam`]);
+  const falhaEnt = await q("SELECT codigo, erro, detalhe, atualizado_ms FROM d30_entregas WHERE status IN ('FAILED','FALHOU') ORDER BY atualizado_ms DESC LIMIT 1");
+  if (falhaEnt && falhaEnt.atualizado_ms && agora - Number(falhaEnt.atualizado_ms) < 24 * 3600000) linhas.push(["Última entrega que falhou", `${quando(min(falhaEnt.atualizado_ms))}: código ${falhaEnt.codigo || "-"} — ${semDigitos(txt(falhaEnt.detalhe || falhaEnt.erro, 200))}`]);
+  const velha = await q("SELECT MIN(recebido_ms) m FROM d30_fila WHERE status IN ('PENDENTE','PROCESSANDO')");
+  if (velha?.m) linhas.push(["Mais antiga na fila", `chegou ${quando(min(velha.m))}`]);
+  // Por que não respondeu este número? (?numero=5521...) Só o papel e a situação, sem conteúdo de conversa.
+  const tel = digitos(numero);
+  if (tel.length >= 10) {
+    const t = tel.length <= 11 ? "55" + tel : tel;
+    const id = await identificar(c, t).catch(() => null);
+    const pausa = await c.db.prepare(`SELECT ate_ms, motivo FROM d30_pausas WHERE telefone IN (${variantesTel(t).map(() => "?").join(",")}) AND ate_ms > ? LIMIT 1`).bind(...variantesTel(t), agora).first().catch(() => null);
+    const f = await q("SELECT status, recebido_ms, payload FROM d30_fila WHERE telefone IN (?,?) ORDER BY recebido_ms DESC LIMIT 1", t, t.length === 13 ? t.slice(0, 4) + t.slice(5) : t);
+    let pl = null; try { pl = JSON.parse(f?.payload || "null"); } catch { pl = null; }
+    const papel = { CLIENTE: "cliente (a DENIA responde)", PRESTADOR: "PROFISSIONAL — a DENIA só fala com ele sobre atendimentos, não como cliente", ATENDENTE: "EQUIPE — a DENIA não responde números da equipe" }[id?.papel] || id?.papel || "?";
+    const ult = id?.pessoa?.id ? await q("SELECT direcao, origem FROM mensagens WHERE pessoa_id=? ORDER BY id DESC LIMIT 1", id.pessoa.id) : null;
+    linhas.push(["Número consultado", `…${t.slice(-4)}: ${papel}`]);
+    linhas.push(["Situação", `${pausa ? `PAUSADO até ${new Date(Number(pausa.ate_ms)).toLocaleTimeString("pt-BR", { timeZone: TZ, hour: "2-digit", minute: "2-digit" })} (${pausa.motivo === "HUMANO" ? "a equipe respondeu pelo celular" : pausa.motivo || "pausa"})` : "sem pausa"}${f ? ` · última mensagem dele ${quando(min(f.recebido_ms))} (${f.status}${pl && pl.podiaEnviar === false ? ", chegou com a DENIA parada" : ""})` : " · nenhuma mensagem recebida dele"}${ult ? ` · última na conversa: ${String(ult.direcao).toUpperCase() === "SAIDA" ? (String(ult.origem).toUpperCase() === "HUMANO" ? "da equipe" : "da DENIA") : "do cliente"}` : ""}`]);
+  }
   linhas.push(["Respostas da equipe pelo celular", eco?.t ? `a última chegou em ${String(eco.t).slice(0, 16)} (UTC) — a DENIA vê o que a equipe responde` : "nenhuma registrada: na Meta, assine o campo smb_message_echoes do webhook para a DENIA ver o que a equipe responde pelo app"]);
   linhas.push(["Segurança do webhook", `${env.WHATSAPP_VERIFY_TOKEN ? "token de verificação ok" : "WHATSAPP_VERIFY_TOKEN faltando"} · ${env.META_APP_SECRET ? "assinatura conferida" : "sem META_APP_SECRET"}`]);
   linhas.push(["Pausas", `${pausa ? "PAUSA GERAL LIGADA" : "sem pausa geral"}${String(env.DENIA_PAUSADA || "").toLowerCase() === "true" ? " · ENGINE_DENIA_PAUSADA=true" : ""}${/^(desligadas|0|false|nao|não)$/i.test(String(env.DENIA_TAREFAS || "")) ? " · DENIA_TAREFAS=desligadas" : ""}`]);
   const esc = t => String(t).replace(/[&<>"]/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch]);
-  const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Status da DENIA</title><style>body{font:15px/1.5 system-ui,sans-serif;margin:0;padding:16px;background:#0b1020;color:#e8ecff}table{width:100%;border-collapse:collapse}td{padding:8px 6px;border-bottom:1px solid #222a48;vertical-align:top}td:first-child{color:#9aa3c7;width:42%}h1{font-size:19px}</style></head><body><h1>Status da IA da Central</h1><table>${linhas.map(([a, b]) => `<tr><td>${esc(a)}</td><td>${esc(b)}</td></tr>`).join("")}</table><p style="color:#9aa3c7">Atualizado ${esc(dataHoraSP(agora))}. Não mostra dados de clientes.</p></body></html>`;
+  const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Status da DENIA</title><style>body{font:15px/1.5 system-ui,sans-serif;margin:0;padding:16px;background:#0b1020;color:#e8ecff}table{width:100%;border-collapse:collapse}td{padding:8px 6px;border-bottom:1px solid #222a48;vertical-align:top}td:first-child{color:#9aa3c7;width:42%}h1{font-size:19px}</style></head><body><h1>Status da IA da Central</h1><table>${linhas.map(([a, b]) => `<tr><td>${esc(a)}</td><td>${esc(b)}</td></tr>`).join("")}</table><form style="margin:14px 0"><label style="color:#9aa3c7">Por que não respondeu um número? </label><input name="numero" inputmode="tel" placeholder="21 99999-0000" style="padding:8px;border-radius:8px;border:1px solid #333;background:#111833;color:#fff"> <button style="padding:8px 12px;border-radius:8px">Ver</button></form><p style="color:#9aa3c7">Atualizado ${esc(dataHoraSP(agora))}. Não mostra dados de clientes.</p></body></html>`;
   return new Response(html, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
 }
 
@@ -4826,7 +4845,7 @@ async function rotear(request, env, ctx) {
   }
   if (caminho.startsWith("/platform/")) return platformApi(request, env, caminho, metodo);
   if (caminho === "/favicon.ico") return new Response(null, { status: 204 });
-  if (caminho === "/status" && metodo === "GET") return paginaStatus(env);
+  if (caminho === "/status" && metodo === "GET") return paginaStatus(env, url.searchParams.get("numero") || "");
 
   if (caminho === "/login") return login(request, env);
   if (caminho === "/sair") return new Response(null, { status: 302, headers: { location: "/login", "set-cookie": "denia_sess=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict" } });
