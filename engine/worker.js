@@ -36,7 +36,7 @@
 //       relatório diário. Nunca inicia conversa nova por conta própria.
 // ============================================================================
 
-const VERSAO = "34.7.0";
+const VERSAO = "34.7.1";
 const SCHEMA_VERSAO = "33.4.0"; // mude sempre que acrescentar tabela ou índice (senão o banco de produção não recebe)
 const EMPRESA_ID = 1;
 const PHONE_ID_PADRAO = "473474732510163";
@@ -1242,7 +1242,10 @@ async function metaPost(env, corpo) {
     let d = {}; try { d = JSON.parse(bruto); } catch { }
     const id = d?.messages?.[0]?.id || null;
     if (r.ok && id) return { ok: true, id };
-    return { ok: false, incerto: r.ok && !id, status: r.status, codigo: d?.error?.code || null, erro: d?.error?.message || bruto.slice(0, 300) || `HTTP ${r.status}` };
+    const falha = { ok: false, incerto: r.ok && !id, status: r.status, codigo: d?.error?.code || null, erro: d?.error?.message || bruto.slice(0, 300) || `HTTP ${r.status}` };
+    // Para a página de status: o último erro da Meta ao enviar (sem telefone nem texto do cliente).
+    try { await env.DB.prepare("INSERT OR REPLACE INTO d30_meta(chave,valor) VALUES('diag_whatsapp',?)").bind(JSON.stringify({ em: Date.now(), status: r.status, codigo: falha.codigo, erro: String(falha.erro).replace(/\d{8,}/g, "…").slice(0, 240) })).run(); } catch { }
+    return falha;
   } catch (e) {
     return { ok: false, incerto: true, erro: "Falha de rede com a Meta: " + String(e?.message || e) };
   }
@@ -3366,6 +3369,12 @@ async function webhookPost(request, env, ctx) {
     const base = enderecoPublico(request);
     ctx.waitUntil((async () => { await env.DB.prepare("INSERT OR REPLACE INTO d30_meta(chave,valor) VALUES('base_publica',?)").bind(base).run(); })().catch(() => { ultimaBaseGuardada = 0; })); // tabela ainda não criada: tenta na próxima
   }
+  // Mensagem para outro número (ex.: WHATSAPP_PHONE_NUMBER_ID errado): fica registrado para a página de status.
+  for (const entry of payload?.entry || []) for (const ch of entry?.changes || []) {
+    const pid = String(ch?.value?.metadata?.phone_number_id || "");
+    if (pid && pid !== phoneId(env) && (ch?.value?.messages || []).length) ctx.waitUntil(env.DB.prepare("INSERT OR REPLACE INTO d30_meta(chave,valor) VALUES('pid_ignorado',?)").bind(JSON.stringify({ pid, numero: String(ch.value.metadata.display_phone_number || "").replace(/\d(?=\d{4})/g, "•"), em: Date.now() })).run().catch(() => { }));
+    else if (pid && (ch?.value?.messages || []).length) ctx.waitUntil(env.DB.prepare("INSERT OR REPLACE INTO d30_meta(chave,valor) VALUES('pid_ok',?)").bind(JSON.stringify({ pid, em: Date.now() })).run().catch(() => { }));
+  }
   const { mensagens, ecos } = extrairEventos(payload, env);
   const statuses = extrairStatuses(payload, env);
   if (!mensagens.length && !ecos.length && !statuses.length) return new Response("EVENT_RECEIVED", { status: 200 });
@@ -4728,6 +4737,16 @@ async function paginaStatus(env) {
   linhas.push(["OpenAI hoje", `${Number(uso?.ch || 0)} chamadas · ${Number(uso?.er || 0)} com erro · chave ${env.OPENAI_API_KEY ? "configurada" : "FALTANDO"}`]);
   if (oa && agora - Number(oa.em || 0) < 24 * 3600000) linhas.push(["Último erro da OpenAI", `${quando(min(oa.em))}: HTTP ${oa.status} (${oa.modelo}) ${semDigitos(oa.erro)}`]);
   linhas.push(["WhatsApp", `${env.WHATSAPP_TOKEN ? "token configurado" : "token FALTANDO"}${bloq ? ` · NÃO ESTÁ ENTREGANDO: ${bloq.erro} (código ${bloq.codigo})` : ""}`]);
+  let pidIgn = null, pidOk = null, zap = null;
+  try { pidIgn = JSON.parse((await q("SELECT valor FROM d30_meta WHERE chave='pid_ignorado'"))?.valor || "null"); } catch { pidIgn = null; }
+  try { pidOk = JSON.parse((await q("SELECT valor FROM d30_meta WHERE chave='pid_ok'"))?.valor || "null"); } catch { pidOk = null; }
+  try { zap = JSON.parse((await q("SELECT valor FROM d30_meta WHERE chave='diag_whatsapp'"))?.valor || "null"); } catch { zap = null; }
+  linhas.push(["ID do número em uso", `${phoneId(env)}${env.WHATSAPP_PHONE_NUMBER_ID ? "" : " (padrão do código)"}${pidOk && pidOk.pid === phoneId(env) ? ` · mensagens chegando para ele ${quando(min(pidOk.em))}` : ""}`]);
+  if (pidIgn && Date.now() - Number(pidIgn.em || 0) < 24 * 3600000) linhas.push(["ATENÇÃO", `${quando(Math.round((Date.now() - Number(pidIgn.em)) / 60000))} chegaram mensagens para o número ${pidIgn.numero || ""} (ID ${pidIgn.pid}), que NÃO é o configurado, e foram ignoradas. Se esse é o número da Central, coloque WHATSAPP_PHONE_NUMBER_ID=${pidIgn.pid} na Hostinger.`]);
+  if (zap && Date.now() - Number(zap.em || 0) < 24 * 3600000) linhas.push(["Último erro ao enviar", `${quando(Math.round((Date.now() - Number(zap.em)) / 60000))}: HTTP ${zap.status}${zap.codigo ? ` código ${zap.codigo}` : ""} — ${zap.erro}`]);
+  const assin = Number((await q("SELECT valor FROM d30_meta WHERE chave='assinatura_invalida'"))?.valor || 0);
+  if (assin && Date.now() - assin < 6 * 3600000) linhas.push(["ATENÇÃO", `${quando(Math.round((Date.now() - assin) / 60000))} a Meta mandou mensagens e a assinatura NÃO conferiu: elas foram recusadas. O META_APP_SECRET na Hostinger não é a chave secreta deste app da Meta. Corrija ou apague essa variável.`]);
+  linhas.push(["Segurança do webhook", `${env.WHATSAPP_VERIFY_TOKEN ? "token de verificação ok" : "WHATSAPP_VERIFY_TOKEN faltando"} · ${env.META_APP_SECRET ? "assinatura conferida" : "sem META_APP_SECRET"}`]);
   linhas.push(["Pausas", `${pausa ? "PAUSA GERAL LIGADA" : "sem pausa geral"}${String(env.DENIA_PAUSADA || "").toLowerCase() === "true" ? " · ENGINE_DENIA_PAUSADA=true" : ""}${/^(desligadas|0|false|nao|não)$/i.test(String(env.DENIA_TAREFAS || "")) ? " · DENIA_TAREFAS=desligadas" : ""}`]);
   const esc = t => String(t).replace(/[&<>"]/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch]);
   const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Status da DENIA</title><style>body{font:15px/1.5 system-ui,sans-serif;margin:0;padding:16px;background:#0b1020;color:#e8ecff}table{width:100%;border-collapse:collapse}td{padding:8px 6px;border-bottom:1px solid #222a48;vertical-align:top}td:first-child{color:#9aa3c7;width:42%}h1{font-size:19px}</style></head><body><h1>Status da IA da Central</h1><table>${linhas.map(([a, b]) => `<tr><td>${esc(a)}</td><td>${esc(b)}</td></tr>`).join("")}</table><p style="color:#9aa3c7">Atualizado ${esc(dataHoraSP(agora))}. Não mostra dados de clientes.</p></body></html>`;
