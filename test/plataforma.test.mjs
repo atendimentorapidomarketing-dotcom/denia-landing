@@ -2888,7 +2888,9 @@ test("Relatórios — conversas pela janela de 24 h, planilha profissional e env
   p.env.__agora = () => ms("2026-10-19T14:00:00Z"); // segunda: últimos 7 dias = 12 a 18/10
   const r = (await p.req(`/api/orgs/${inf}/relatorio`, { quem: "admin" })).dados;
   assert.equal(r.de, "2026-10-12"); assert.equal(r.ate, "2026-10-18");
-  assert.deepEqual(r.totais, { clientes: 2, conversas: 3, novos: 1, recorrentes: 1, voltaram: 1, buscas: 3 }, "3 conversas, não 5 mensagens");
+  const { clientes, conversas, novos, recorrentes, voltaram, buscas, escolheram, avisados } = r.totais;
+  assert.deepEqual({ clientes, conversas, novos, recorrentes, voltaram, buscas }, { clientes: 2, conversas: 3, novos: 1, recorrentes: 1, voltaram: 1, buscas: 3 }, "3 conversas, não 5 mensagens");
+  assert.deepEqual([escolheram, avisados], [2, 2], "os dois escolheram uma opção e geraram aviso no Telegram");
   assert.deepEqual(r.por_dia.map(d => d.clientes), [2, 0, 1, 0, 0, 0, 0]);
   assert.equal(r.categorias[0].categoria, "Serviços › Celular"); assert.equal(r.categorias[0].clientes, 2);
   const ana = r.conversas[0];
@@ -2942,4 +2944,36 @@ test("Relatórios — empresa com IA: clientes da IA entram na planilha, profiss
   assert.equal(r.conversas[0].nome, "Marta");
   assert.match(r.conversas[0].buscas[0], /^Chaveiro: troca de fechadura/);
   assert.equal(r.categorias[0].categoria, "Chaveiro");
+});
+
+test("Relatórios — chatbot: separa quem só mandou mensagem de quem gerou aviso no Telegram (mesma regra do aviso)", async () => {
+  const p = await criarPlataforma();
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  const nova = await p.req("/api/admin/organizacoes", { metodo: "POST", quem: "admin", corpo: { nome: "Shopping Teste", segmento: "Shopping" } });
+  const org = nova.dados.id;
+  await p.req(`/api/orgs/${org}/zap/stats`, { quem: "admin" });
+  const db = p.env.DB, exec = (sql, ...a) => db.prepare(sql).bind(...a).run(), ms = s => Date.parse(s);
+  await exec("INSERT INTO plt_zap_contas(org_id,phone_number_id,config,modo,ativo,atualizado_ms) VALUES(?,'555000222','{}','BOTOES',1,?)", org, ms("2026-10-01T12:00:00Z"));
+  const lojas = (await exec("INSERT INTO plt_zap_itens(org_id,pai_id,tipo,titulo,ordem,ativo,extra) VALUES(?,0,'LISTA','Celular',1,1,'{}') RETURNING id", org)).results?.[0]?.id
+    || db.q("SELECT id FROM plt_zap_itens WHERE org_id=? AND titulo='Celular'", org)[0].id;
+  await exec("INSERT INTO plt_zap_itens(org_id,pai_id,tipo,titulo,ordem,ativo,extra) VALUES(?,0,'RESPOSTA','Endereço',2,1,'{\"lead\":false}')", org);
+  const endereco = db.q("SELECT id FROM plt_zap_itens WHERE org_id=? AND titulo='Endereço'", org)[0].id;
+  const msg = (tel, q) => exec("INSERT INTO plt_zap_msgs(org_id,telefone,direcao,origem,texto,criado_ms) VALUES(?,?,'E','CLIENTE','x',?)", org, tel, ms(q));
+  const busca = (tel, item, cam, q) => exec("INSERT INTO plt_zap_buscas(org_id,telefone,item_id,tipo,titulo,caminho,via,resultados,criado_ms) VALUES(?,?,?,?,?,?,'BOTAO',1,?)", org, tel, item, item === endereco ? "RESPOSTA" : "LISTA", cam, cam, ms(q));
+  // Domingo 25/10: 4 pessoas mandaram mensagem; 3 geraram aviso.
+  for (const t of ["5521900000001", "5521900000002", "5521900000003", "5521900000004", "5521900000005"]) await msg(t, "2026-10-25T14:00:00Z");
+  await busca("5521900000001", lojas, "Celular", "2026-10-25T14:01:00Z");
+  await busca("5521900000001", lojas, "Celular", "2026-10-25T14:20:00Z"); // repetida em 1 h: não avisa de novo
+  await busca("5521900000002", lojas, "Celular", "2026-10-25T15:00:00Z");
+  await busca("5521900000003", lojas, "Celular", "2026-10-25T16:00:00Z");
+  await busca("5521900000004", endereco, "Endereço", "2026-10-25T17:00:00Z"); // opção sem aviso
+  // 5521900000005 só mandou "oi"
+  const r = (await p.req(`/api/orgs/${org}/relatorio?de=2026-10-25&ate=2026-10-25`, { quem: "admin" })).dados;
+  assert.equal(r.totais.clientes, 5, "5 números mandaram mensagem");
+  assert.equal(r.totais.escolheram, 4, "4 escolheram alguma opção");
+  assert.equal(r.totais.avisados, 3, "3 clientes geraram aviso no Telegram — igual ao Telegram");
+  assert.equal(r.totais.avisos, 3, "3 avisos (a busca repetida não avisa de novo)");
+  assert.equal(r.por_dia[0].avisados, 3);
+  const so = r.conversas.find(c => c.telefone === "5521900000005");
+  assert.deepEqual([so.buscas.length, so.avisos], [0, 0]);
 });
