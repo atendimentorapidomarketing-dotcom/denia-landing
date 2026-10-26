@@ -36,7 +36,7 @@
 //       relatório diário. Nunca inicia conversa nova por conta própria.
 // ============================================================================
 
-const VERSAO = "34.7.1";
+const VERSAO = "34.7.2";
 const SCHEMA_VERSAO = "33.4.0"; // mude sempre que acrescentar tabela ou índice (senão o banco de produção não recebe)
 const EMPRESA_ID = 1;
 const PHONE_ID_PADRAO = "473474732510163";
@@ -1868,6 +1868,8 @@ const ehTarefaInterna = instrucoes => PREFIXOS_INTERNOS.some(p => String(instruc
 async function openaiJSON(c, instrucoes, entrada, anexos = [], maxTokens = 1400, modeloForcado = "") {
   const env = c.env;
   if (!env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY não configurada.");
+  // A OpenAI exige a palavra "json" na mensagem quando a resposta é em JSON (senão: HTTP 400).
+  if (!/json/i.test(String(entrada))) entrada = String(entrada) + "\n\nResponda em JSON.";
   const content = [{ type: "input_text", text: entrada }];
   for (const a of anexos.slice(0, 3)) {
     const url = `data:${a.mime};base64,${a.base64}`;
