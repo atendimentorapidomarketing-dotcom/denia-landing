@@ -405,6 +405,53 @@ Seções: RESUMO DA SEMANA (3 frases), O QUE MELHOROU, O QUE PRECISA DE ATENÇÃ
   await env.DB.prepare("INSERT OR REPLACE INTO plt_mk_relatorios(org_id,marca_id,semana,texto,criado_ms) VALUES(?,?,?,?,?)").bind(orgId, marca.id, semana, texto.slice(0, 12000), k.agora(env)).run();
   return { semana, texto };
 }
+// Ao conectar Instagram/Facebook ou Google, a DENIA preenche sozinha o que estiver vazio no perfil:
+// logo, segmento, cidade, WhatsApp, site, links e (com a OpenAI) tom de voz, público e diferenciais.
+// Nunca apaga nem troca o que a pessoa já escreveu.
+async function baixarLogo(url) {
+  if (!/^https:\/\//.test(String(url || ""))) return null;
+  const r = await fetch(url, { signal: AbortSignal.timeout(15000) }).catch(() => null);
+  if (!r || !r.ok) return null;
+  const buf = new Uint8Array(await r.arrayBuffer());
+  if (!buf.length || buf.length > 1_400_000) return null;
+  let bin = "";
+  for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode(...buf.subarray(i, i + 0x8000));
+  const dados = btoa(bin), mime = tipoDaImagem(dados);
+  return mime ? { dados, mime } : null;
+}
+export async function preencherMarca(env, orgId, marcaId, d = {}) {
+  await garantir(env);
+  const marca = await env.DB.prepare("SELECT * FROM plt_mk_marcas WHERE id=? AND org_id=?").bind(Number(marcaId), orgId).first();
+  if (!marca) return { preenchidos: [] };
+  const vazio = c => !String(marca[c] || "").trim();
+  const novos = {};
+  for (const c of ["segmento", "cidade", "whatsapp", "site", "instagram", "facebook", "google", "horarios"]) {
+    const v = String(d[c] || "").trim().slice(0, 200);
+    if (v && vazio(c)) novos[c] = v;
+  }
+  // Tom de voz, público e diferenciais: a IA escreve a partir da descrição e da bio do perfil.
+  const faltaTexto = ["tom", "publico", "diferenciais"].filter(vazio);
+  const sobre = String(d.sobre || "").trim().slice(0, 2500);
+  if (faltaTexto.length && sobre.length >= 20 && chave(env)) {
+    const r = await iaJSON(env, `Você monta o cadastro de uma empresa para uma agência de marketing, a partir do que a própria empresa escreveu nas redes e no Google. Não invente fatos (preços, prêmios, anos de mercado) que não estejam no texto. Português do Brasil, frases curtas. Responda em JSON: {"tom":"(tom de voz, até 12 palavras)","publico":"(quem são os clientes, até 40 palavras)","diferenciais":"(o que a empresa faz melhor, até 50 palavras, só com base no texto)"}`,
+      `Empresa: ${marca.nome}${novos.segmento || marca.segmento ? " — " + (novos.segmento || marca.segmento) : ""}${novos.cidade || marca.cidade ? ", " + (novos.cidade || marca.cidade) : ""}\n\nO que a empresa escreve sobre si:\n${sobre}\nResponda em JSON.`, 500).catch(() => null);
+    for (const c of faltaTexto) { const v = String(r?.[c] || "").trim().slice(0, c === "tom" ? 200 : 600); if (v) novos[c] = v; }
+  }
+  const campos = Object.keys(novos);
+  if (campos.length) await env.DB.prepare(`UPDATE plt_mk_marcas SET ${campos.map(c => c + "=?").join(",")} WHERE id=? AND org_id=?`).bind(...campos.map(c => novos[c]), marca.id, orgId).run();
+  if (!marca.logo_midia_id) {
+    for (const url of (d.logos || []).filter(Boolean)) {
+      const logo = await baixarLogo(url).catch(() => null);
+      if (!logo) continue;
+      const n = await env.DB.prepare("INSERT INTO plt_mk_midias(org_id,mime,dados,prompt,criado_ms) VALUES(?,?,?,?,?) RETURNING id").bind(orgId, logo.mime, logo.dados, "logo", typeof env.__agora === "function" ? env.__agora() : Date.now()).first();
+      await env.DB.prepare("UPDATE plt_mk_marcas SET logo_midia_id=? WHERE id=? AND org_id=? AND logo_midia_id IS NULL").bind(n.id, marca.id, orgId).run();
+      campos.push("logo");
+      break;
+    }
+  }
+  return { preenchidos: campos };
+}
+
 // Cron: toda segunda-feira (a partir das 8h de Brasília), um relatório por marca com perfil do Google conectado.
 export async function relatoriosDaSemana(env, k, orgId) {
   if (!chave(env)) return [];

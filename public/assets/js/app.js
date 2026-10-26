@@ -4670,13 +4670,24 @@ Botão só com texto = resposta.` })),
     return d;
   }
   const contaDa = (meta, marcaId) => (meta.contas || []).find(c => String(c.marca_id) === String(marcaId)) || null;
+  const NOME_PREENCHIDO = { logo: "logo", segmento: "segmento", cidade: "cidade", whatsapp: "telefone", site: "site", instagram: "Instagram", facebook: "Facebook", google: "Google", horarios: "horários", tom: "tom de voz", publico: "público", diferenciais: "diferenciais" };
+  const textoPreenchidos = l => (l && l.length) ? ` Preenchido automaticamente: ${l.map(c => NOME_PREENCHIDO[c] || c).join(", ")}.` : "";
+  // Sem nenhum perfil cadastrado: cria um com o nome da empresa e já abre a conexão (o resto vem das redes e do Google).
+  async function conectarNovoPerfil(qual) {
+    try {
+      const r = await mk("marcas", { metodo: "POST", corpo: { nome: estado.org.nome || "Minha empresa", idioma: IDIOMA } });
+      cacheMarcas = null;
+      const m = { id: r.id, nome: estado.org.nome };
+      if (qual === "google") await conectarGoogle(m); else await conectarMeta(m);
+    } catch (e) { aviso(e.message, "erro"); }
+  }
   async function conectarMeta(marca) {
     const meta = await estadoMeta(true);
     if (meta.erro) { aviso(meta.erro, "erro"); return; }
     if (meta.configurada === false && meta.faltando && meta.faltando.length) {
       await modal({ titulo: "Falta configurar a Meta", soInformar: true, conteudo: [
         `Nas variáveis de ambiente da Hostinger, falta: ${meta.faltando.join(" e ")}.`,
-        "Vá em Workers e Pages → denia-landing → Settings → Variables and Secrets → Add, escolha o tipo Secret, crie com o nome exato e clique em Deploy. Depois volte aqui e clique em Conectar de novo."] });
+        "Na Hostinger, abra o site → Variáveis de ambiente, crie cada variável com o nome exato, salve e reimplante. Depois volte aqui e clique em Conectar de novo."] });
       return;
     }
     if (!meta.configurada) {
@@ -4712,7 +4723,7 @@ Botão só com texto = resposta.` })),
     const escolhida = opcoes.querySelector("input:checked");
     try {
       const r = await mk("meta/escolher", { metodo: "POST", corpo: { n: nonce, pagina_id: escolhida && escolhida.value } });
-      aviso(r.instagram ? `Conectado: ${r.pagina} · @${r.instagram}` : `Conectado: ${r.pagina}`, "ok");
+      aviso((r.instagram ? `Conectado: ${r.pagina} · @${r.instagram}.` : `Conectado: ${r.pagina}.`) + textoPreenchidos(r.preenchidos), "ok");
       cacheMeta = null; cacheMarcas = null;
     } catch (e) { aviso(e.message, "erro"); }
     location.hash = "#/marcas";
@@ -4752,7 +4763,7 @@ Botão só com texto = resposta.` })),
     try {
       const r = await mk("google/escolher", { metodo: "POST", corpo: { n: nonce, local_id: escolhido && escolhido.value } });
       const s = r.sincronizacao || {};
-      aviso(`Google conectado: ${r.perfil}.${s.avaliacoes_total != null ? ` ${s.avaliacoes_total} avaliação(ões) trazidas do perfil.` : ""}`, "ok");
+      aviso(`Google conectado: ${r.perfil}.${s.avaliacoes_total != null ? ` ${s.avaliacoes_total} avaliação(ões) trazidas do perfil.` : ""}` + textoPreenchidos(r.preenchidos), "ok");
       cacheGoogle = null; cacheMarcas = null;
     } catch (e) { aviso(e.message, "erro"); }
     location.hash = "#/marcas";
@@ -4767,7 +4778,12 @@ Botão só com texto = resposta.` })),
     let lista, meta, goo;
     try { [lista, meta, goo] = await Promise.all([marcas(true), estadoMeta(true), estadoGoogle(true)]); } catch (e) { if (vivo()) falha(area, e); return; }
     if (!vivo()) return;
-    if (!lista.length) { area.replaceChildren(); semMarcas(el); return; }
+    if (!lista.length) {
+      area.replaceChildren();
+      el.appendChild(h("div", { class: "cartao vidro" }, vazio("Conecte as contas da empresa", "Escolha por onde começar. A DENIA puxa sozinha a logo, o segmento, a cidade, o telefone, o site, os horários e a descrição, e já escreve o tom de voz, o público e os diferenciais. Você só confere.", ICONES.foguete),
+        pode("ADMIN") ? h("div", { class: "acoes", style: "justify-content:center" }, botao("Conectar Google", () => conectarNovoPerfil("google"), "btn-primario"), botao("Conectar Instagram e Facebook", () => conectarNovoPerfil("meta"), "btn-primario"), botao("Preencher à mão", () => formMarca({}), "btn-secundario")) : null));
+      return;
+    }
     area.replaceChildren(...lista.map(m => {
       const conta = contaDa(meta, m.id), contaG = contaGoogleDa(goo, m.id);
       return h("article", { class: "cartao vidro marca-cartao" },
@@ -4800,7 +4816,7 @@ Botão só com texto = resposta.` })),
       linha("tom", "Tom de voz", "Ex.: próximo, acolhedor, sem gírias"), linha("publico", "Público", "Quem são os clientes", true), linha("diferenciais", "Diferenciais", "O que a marca faz melhor que os concorrentes", true),
       campo("Produtos, serviços e ofertas para divulgar", c.ofertas = h("textarea", { class: "entrada", value: m.ofertas || "", maxlength: "1500", style: "min-height:100px", placeholder: "Ex.: Conserto de geladeira com garantia de 90 dias; visita técnica grátis no bairro; peças originais. Promoção: 10% no Pix até sexta." }), "Quanto mais detalhes reais (produtos, preços, promoções, garantias), mais as legendas vendem. A IA nunca inventa preço ou promoção."),
       campo("Dias e horários preferidos para publicar", c.horarios = h("input", { class: "entrada", value: m.horarios || "", maxlength: "200", placeholder: "Ex.: segunda, quarta e sexta às 18h, sábado às 10h" }), "A IA monta a semana só nesses dias e horários. Você ainda pode mudar a data e a hora de cada post."),
-      m.id ? campoLogo(m) : h("p", { class: "nota", text: "A logo da marca é enviada logo depois de salvar (o campo aparece na sequência)." }),
+      m.id ? campoLogo(m) : h("p", { class: "nota", text: "Ao conectar o Google, o Instagram ou o Facebook, a logo e os dados vazios são puxados sozinhos. Se preferir, envie a logo depois de salvar." }),
       h("div", { class: "acoes" }, botao("Salvar perfil", async () => {
         try { const corpo = { id: m.id }; Object.keys(c).forEach(k => { corpo[k] = c[k].value; }); const r = await mk("marcas", { metodo: "POST", corpo }); fechar(); cacheMarcas = null; navegar();
           // Marca nova: reabre já com o campo da logo, para enviar na hora.
@@ -4823,7 +4839,7 @@ Botão só com texto = resposta.` })),
     throw new Error("A logo é grande demais. Envie um arquivo menor (até 1 MB).");
   }
   function campoLogo(m) {
-    const previa = h("div", { class: "logo-previa" }, m.logo_midia_id ? h("img", { src: `/api/orgs/${estado.org.id}/mk/midias/${m.logo_midia_id}`, alt: "Logo da marca" }) : h("span", { text: "Sem logo" }));
+    const previa = h("div", { class: "logo-previa" }, m.logo_midia_id ? h("img", { src: `/api/orgs/${estado.org.id}/mk/midias/${m.logo_midia_id}`, alt: "Logo" }) : h("span", { text: "Sem logo" }));
     const arquivo = h("input", { type: "file", accept: "image/png,image/jpeg,image/webp", class: "oculto" });
     arquivo.addEventListener("change", async () => {
       const f = arquivo.files && arquivo.files[0];
@@ -4831,13 +4847,13 @@ Botão só com texto = resposta.` })),
       try {
         const dados = await logoReduzida(f);
         await mk(`marcas/${m.id}/logo`, { metodo: "POST", corpo: { dados } });
-        previa.replaceChildren(h("img", { src: dados, alt: "Logo da marca" }));
+        previa.replaceChildren(h("img", { src: dados, alt: "Logo" }));
         cacheMarcas = null;
         aviso("Logo salva. As próximas artes já saem com ela.", "ok");
       } catch (e) { aviso(e.message, "erro"); }
       arquivo.value = "";
     });
-    return h("div", { class: "campo" }, h("label", { text: "Logo da marca" }),
+    return h("div", { class: "campo" }, h("label", { text: "Logo (puxada sozinha ao conectar as redes ou o Google)" }),
       h("div", { class: "logo-linha" }, previa,
         h("div", { class: "acoes" }, botao(m.logo_midia_id ? "Trocar logo" : "Enviar logo", () => arquivo.click(), "btn-secundario btn-pequeno"),
           m.logo_midia_id ? botao("Remover", async () => { try { await mk(`marcas/${m.id}/logo`, { metodo: "POST", corpo: { remover: true } }); previa.replaceChildren(h("span", { text: "Sem logo" })); cacheMarcas = null; } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno") : null)),

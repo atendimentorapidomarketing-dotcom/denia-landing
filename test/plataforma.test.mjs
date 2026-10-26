@@ -2996,3 +2996,48 @@ test("Login: aceita o próprio site com www ou atrás do proxy (http/https), rec
     assert.equal(r.status, 403, origin);
   }
 });
+
+test("Contas conectadas — ao conectar a Meta e o Google, a DENIA puxa a logo e preenche só o que está vazio", async () => {
+  const p = await criarPlataforma({ META_APP_ID: "123456", META_APP_SECRET: "segredo-do-app", GOOGLE_CLIENT_ID: "cliente.apps.googleusercontent.com", GOOGLE_CLIENT_SECRET: "segredo-google", OPENAI_API_KEY: "sk-teste" });
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  const marca = (await p.req("/api/orgs/1/mk/marcas", { metodo: "POST", quem: "admin", corpo: { nome: "Clínica Sol", cidade: "Niterói (escrito à mão)" } })).dados.id;
+  const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(64, 1)]);
+  p.web = { "https://img.test/ig.png": png };
+  p.openai = () => ({ output: [{ type: "message", content: [{ type: "output_text", text: JSON.stringify({ tom: "Acolhedor e direto", publico: "Famílias de Niterói", diferenciais: "Atendimento no mesmo dia" }) }] }] });
+  // Meta
+  const ida = await p.req(`/api/orgs/1/mk/meta/conectar?marca=${marca}`, { quem: "admin" });
+  const state = new URL(ida.r.headers.get("location")).searchParams.get("state");
+  p.meta = (url) => {
+    if (url.includes("oauth/access_token")) return { access_token: "longo" };
+    if (url.includes("me/accounts")) return { data: [{ id: "PAG1", name: "Clínica Sol Niterói", access_token: "token-da-pagina", instagram_business_account: { id: "IG1", username: "clinicasol" } }] };
+    if (url.includes("/PAG1?")) return { category: "Clínica odontológica", website: "https://clinicasol.test", phone: "+55 21 3333-4444", link: "https://facebook.com/clinicasol", location: { city: "Niterói", state: "RJ" }, about: "Clínica de odontologia com atendimento no mesmo dia para toda a família." };
+    if (url.includes("/IG1?")) return { profile_picture_url: "https://img.test/ig.png", biography: "Sorrisos que mudam vidas", username: "clinicasol" };
+    return { error: { message: "inesperado " + url } };
+  };
+  const nonce = (await (await p.req(`/api/meta/retorno?code=abc&state=${encodeURIComponent(state)}`)).r.text()).match(/\/app#\/marcas\/meta-([A-Za-z0-9_-]+)/)[1];
+  const esc = await p.req("/api/orgs/1/mk/meta/escolher", { metodo: "POST", quem: "admin", corpo: { n: nonce, pagina_id: "PAG1" } });
+  assert.ok(esc.dados.preenchidos.includes("logo"), JSON.stringify(esc.dados));
+  let m = p.env.DB.q("SELECT * FROM plt_mk_marcas WHERE id=?", marca)[0];
+  assert.equal(m.cidade, "Niterói (escrito à mão)", "não troca o que a pessoa escreveu");
+  assert.deepEqual([m.segmento, m.site, m.whatsapp, m.facebook, m.instagram, m.tom, m.publico], ["Clínica odontológica", "https://clinicasol.test", "+55 21 3333-4444", "https://facebook.com/clinicasol", "clinicasol", "Acolhedor e direto", "Famílias de Niterói"]);
+  assert.ok(m.logo_midia_id, "logo puxada do Instagram");
+  assert.equal(p.env.DB.q("SELECT mime FROM plt_mk_midias WHERE id=?", m.logo_midia_id)[0].mime, "image/png");
+  // Google: a logo já existe (não troca); horários vêm do perfil.
+  const idaG = await p.req(`/api/orgs/1/mk/google/conectar?marca=${marca}`, { quem: "admin" });
+  const stateG = new URL(idaG.r.headers.get("location")).searchParams.get("state");
+  p.google = (url) => {
+    if (url.startsWith("https://oauth2.googleapis.com/token")) return { access_token: "ya29.a", refresh_token: "1//permanente", expires_in: 3599 };
+    if (url.includes("/v1/accounts?")) return { accounts: [{ name: "accounts/111" }] };
+    if (url.includes("/accounts/111/locations?")) return { locations: [{ name: "locations/222", title: "Clínica Sol" }] };
+    if (url.includes("/locations/222?readMask=")) return { title: "Clínica Sol", regularHours: { periods: [{ openDay: "MONDAY", openTime: { hours: 9 }, closeTime: { hours: 18 } }] }, metadata: { mapsUri: "https://maps.google.com/?cid=1" } };
+    if (url.includes("/media?")) return { mediaItems: [{ googleUrl: "https://img.test/google.png", locationAssociation: { category: "LOGO" } }] };
+    if (url.includes("/reviews?")) return { reviews: [] };
+    return { error: { code: 404, message: "inesperado " + url } };
+  };
+  const nG = (await (await p.req(`/api/google/retorno?code=abc&state=${encodeURIComponent(stateG)}`)).r.text()).match(/\/app#\/marcas\/google-([A-Za-z0-9_-]+)/)[1];
+  const escG = await p.req("/api/orgs/1/mk/google/escolher", { metodo: "POST", quem: "admin", corpo: { n: nG, local_id: "locations/222" } });
+  assert.deepEqual(escG.dados.preenchidos, ["horarios"], JSON.stringify(escG.dados));
+  m = p.env.DB.q("SELECT * FROM plt_mk_marcas WHERE id=?", marca)[0];
+  assert.equal(m.horarios, "seg 09:00-18:00");
+  assert.equal(p.env.DB.q("SELECT COUNT(*) n FROM plt_mk_midias")[0].n, 1, "a logo do Instagram fica");
+});
