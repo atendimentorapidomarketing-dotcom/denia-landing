@@ -51,12 +51,23 @@ export function montarRelatorio({ entradas = [], buscas = [], nomes = {}, antigo
     c.buscas = c.buscas || [];
     if (b.o && !c.buscas.includes(b.o)) c.buscas.push(b.o);
   }
-  const linhas = conversas.map(c => ({ ...c, buscas: c.buscas || [], dia: diaBR(c.inicio), nome: nomes[c.telefone] || "", vezes: porTel.get(c.telefone).length, recorrente: antes.has(c.telefone) }));
+  // Linha da planilha = uma conversa. "Recorrente" = o cliente já tinha falado antes desta conversa
+  // (antes do período ou numa conversa anterior do mesmo período).
+  const linhas = conversas.map(c => {
+    const doCliente = porTel.get(c.telefone);
+    return { ...c, buscas: c.buscas || [], dia: diaBR(c.inicio), nome: nomes[c.telefone] || "", vezes: doCliente.length, recorrente: antes.has(c.telefone) || doCliente[0] !== c };
+  });
+  // Por dia: cliente = quem mandou mensagem naquele dia (mesmo no meio de uma conversa que começou na véspera);
+  // novo = primeiro contato da vida foi naquele dia; conversas = conversas que começaram naquele dia.
+  const noPeriodo = entradas.filter(m => m.ms >= ini && m.ms < fim);
+  const primeiroDia = new Map();
+  for (const m of noPeriodo) { const d = diaBR(m.ms); if (!primeiroDia.has(m.telefone) || d < primeiroDia.get(m.telefone)) primeiroDia.set(m.telefone, d); }
   const dias = [];
   for (let t = ini; t < fim; t += DIA_MS) dias.push(diaBR(t + 12 * 3600000));
   const porDia = dias.map(d => {
-    const doDia = linhas.filter(c => c.dia === d), tels = new Set(doDia.map(c => c.telefone));
-    return { dia: d, clientes: tels.size, conversas: doDia.length, novos: [...tels].filter(t => !antes.has(t)).length, recorrentes: [...tels].filter(t => antes.has(t)).length, buscas: buscas.filter(b => diaBR(b.ms) === d).length };
+    const tels = new Set(noPeriodo.filter(m => diaBR(m.ms) === d).map(m => m.telefone));
+    const novos = [...tels].filter(t => !antes.has(t) && primeiroDia.get(t) === d).length;
+    return { dia: d, clientes: tels.size, conversas: linhas.filter(c => c.dia === d).length, novos, recorrentes: tels.size - novos, buscas: buscas.filter(b => diaBR(b.ms) === d).length };
   });
   const cat = new Map();
   for (const b of buscas) {
