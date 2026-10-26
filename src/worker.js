@@ -769,7 +769,7 @@ async function vigiarWhatsapp(env) {
 // ---------------------------------------------------------------------------
 async function brutoRelatorio(env, orgId, ini, fim) {
   const bruto = { entradas: [], buscas: [], nomes: {}, antigos: [] }, fontes = [];
-  const juntar = b => { bruto.entradas.push(...(b.entradas || [])); bruto.buscas.push(...(b.buscas || [])); Object.assign(bruto.nomes, b.nomes || {}); bruto.antigos.push(...(b.antigos || [])); };
+  const juntar = b => { bruto.entradas.push(...(b.entradas || [])); bruto.buscas.push(...(b.buscas || [])); Object.assign(bruto.nomes, b.nomes || {}); bruto.antigos.push(...(b.antigos || [])); if (Array.isArray(b.telegram)) (bruto.telegram ||= []).push(...b.telegram); };
   const zap = await env.DB.prepare("SELECT phone_number_id FROM plt_zap_contas WHERE org_id=?").bind(orgId).first().catch(() => null);
   if (zap?.phone_number_id) { juntar(await brutoRelatorioZap(env, orgId, ini, fim)); fontes.push("chatbot"); }
   const con = await conexaoDa(env, orgId).catch(() => null);

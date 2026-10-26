@@ -2885,6 +2885,9 @@ test("Relatórios — conversas pela janela de 24 h, planilha profissional e env
     await exec("INSERT INTO plt_zap_msgs(org_id,telefone,direcao,origem,texto,criado_ms) VALUES(?,?,'E','CLIENTE','oi',?)", inf, tel, ms(quando));
   for (const [tel, cam, quando] of [["5521911110001", "Serviços › Celular", "2026-10-12T13:06:30Z"], ["5521911110002", "Serviços › Celular", "2026-10-12T18:31:00Z"], ["5521911110001", "Produtos › Roupas", "2026-10-14T20:11:00Z"]])
     await exec("INSERT INTO plt_zap_buscas(org_id,telefone,caminho,titulo,tipo,via,resultados,criado_ms) VALUES(?,?,?,?,'LISTA','BOTAO',1,?)", inf, tel, cam, cam.split(" › ").pop(), ms(quando));
+  // Registro do que foi para o grupo do Telegram (um aviso por busca).
+  for (const [i, tel, quando] of [[1, "5521911110001", "2026-10-12T13:06:30Z"], [2, "5521911110002", "2026-10-12T18:31:00Z"], [3, "5521911110001", "2026-10-14T20:11:00Z"]])
+    await exec("INSERT INTO plt_zap_tg(chat_id,message_id,org_id,telefone,criado_ms) VALUES('-100',?,?,?,?)", i, inf, tel, ms(quando));
   p.env.__agora = () => ms("2026-10-19T14:00:00Z"); // segunda: últimos 7 dias = 12 a 18/10
   const r = (await p.req(`/api/orgs/${inf}/relatorio`, { quem: "admin" })).dados;
   assert.equal(r.de, "2026-10-12"); assert.equal(r.ate, "2026-10-18");
@@ -2946,7 +2949,7 @@ test("Relatórios — empresa com IA: clientes da IA entram na planilha, profiss
   assert.equal(r.categorias[0].categoria, "Chaveiro");
 });
 
-test("Relatórios — chatbot: separa quem só mandou mensagem de quem gerou aviso no Telegram (mesma regra do aviso)", async () => {
+test("Relatórios — chatbot: separa quem só mandou mensagem de quem gerou aviso no Telegram (registro exato do grupo)", async () => {
   const p = await criarPlataforma();
   await p.entrar("admin", ADMIN, SENHA_ADMIN);
   const nova = await p.req("/api/admin/organizacoes", { metodo: "POST", quem: "admin", corpo: { nome: "Shopping Teste", segmento: "Shopping" } });
@@ -2968,11 +2971,15 @@ test("Relatórios — chatbot: separa quem só mandou mensagem de quem gerou avi
   await busca("5521900000003", lojas, "Celular", "2026-10-25T16:00:00Z");
   await busca("5521900000004", endereco, "Endereço", "2026-10-25T17:00:00Z"); // opção sem aviso
   // 5521900000005 só mandou "oi"
+  // O que de fato foi para o grupo: 1 aviso para cada um dos 3, e o cliente 1 também pediu atendente (2º aviso).
+  for (const [i, tel, q] of [[1, "5521900000001", "2026-10-25T14:01:00Z"], [2, "5521900000002", "2026-10-25T15:00:00Z"], [3, "5521900000003", "2026-10-25T16:00:00Z"], [4, "5521900000001", "2026-10-25T14:30:00Z"]])
+    await exec("INSERT INTO plt_zap_tg(chat_id,message_id,org_id,telefone,criado_ms) VALUES('-100',?,?,?,?)", i, org, tel, ms(q));
   const r = (await p.req(`/api/orgs/${org}/relatorio?de=2026-10-25&ate=2026-10-25`, { quem: "admin" })).dados;
   assert.equal(r.totais.clientes, 5, "5 números mandaram mensagem");
   assert.equal(r.totais.escolheram, 4, "4 escolheram alguma opção");
   assert.equal(r.totais.avisados, 3, "3 clientes geraram aviso no Telegram — igual ao Telegram");
-  assert.equal(r.totais.avisos, 3, "3 avisos (a busca repetida não avisa de novo)");
+  assert.equal(r.totais.avisos, 4, "4 avisos no grupo — o mesmo número do Telegram (1 cliente pode gerar vários)");
+  assert.equal(r.por_dia[0].avisos, 4);
   assert.equal(r.por_dia[0].avisados, 3);
   const so = r.conversas.find(c => c.telefone === "5521900000005");
   assert.deepEqual([so.buscas.length, so.avisos], [0, 0]);

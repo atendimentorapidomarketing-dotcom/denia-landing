@@ -501,7 +501,7 @@
     };
     const fone = tel => { const x = String(tel || "").replace(/\D/g, ""); return x.length >= 12 ? `(${x.slice(2, 4)}) ${x.slice(4, -4)}-${x.slice(-4)}` : x; };
     trocar(corpo,
-      r.tem_avisos ? h("p", { class: "nota", text: `Chatbot: ${numero(t.escolheram || 0)} dos ${numero(t.clientes || 0)} clientes escolheram uma opção no menu; ${numero(t.avisados || 0)} geraram aviso de cliente no Telegram. Os outros só mandaram mensagem (ex.: "oi") ou escolheram opções sem aviso, como endereço e horário.` }) : "",
+      r.tem_avisos ? h("p", { class: "nota", text: `Chatbot: ${numero(t.clientes || 0)} clientes mandaram mensagem; ${numero(t.escolheram || 0)} escolheram uma opção no menu. Chegaram ${numero(t.avisos || 0)} avisos ao Telegram, de ${numero(t.avisados || 0)} clientes diferentes (quem escolhe várias opções gera vários avisos, mas é 1 cliente).` }) : "",
       h("section", { class: "grade grade-4" }, metrica("Clientes", numero(t.clientes || 0), `${dataCompleta(r.de)} a ${dataCompleta(r.ate)}`), metrica("Conversas", numero(t.conversas || 0), "janela de 24 horas"),
         metrica("Novos", numero(t.novos || 0), `${numero(t.recorrentes || 0)} recorrentes`), metrica("Voltaram no período", numero(t.voltaram || 0), "mais de uma conversa")),
       h("section", { class: "cartao vidro" }, h("div", { class: "cabeca-grafico" }, h("h3", { style: "margin:0", text: "Clientes por dia" }), botao("Baixar planilha (Excel)", (_e, b) => baixar(b), "btn-primario btn-pequeno")),
