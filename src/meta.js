@@ -59,7 +59,7 @@ export async function graph(env, metodo, caminho, params = {}) {
 }
 function explicarErro(err, status) {
   const c = err?.code, msg = String(err?.message || `HTTP ${status}`);
-  if (c === 190) return "O acesso à conta da Meta expirou ou foi removido. Conecte de novo em Marcas.";
+  if (c === 190) return "O acesso à conta da Meta expirou ou foi removido. Conecte de novo em Contas conectadas.";
   if (c === 10 || c === 200 || c === 3 || (c >= 200 && c < 300)) return "A Meta não deu permissão para esta ação. Conecte a marca de novo (Marcas → Conectar Instagram e Facebook) e aceite todas as permissões pedidas — as novas liberam números, comentários e respostas.";
   if (c === 4 || c === 17 || c === 32 || c === 613) return "Limite de publicações da Meta atingido por agora. A DENIA tenta de novo mais tarde.";
   if (c === 9004 || /image|imagem|media/i.test(msg) && c === 100) return "O Instagram não conseguiu baixar a imagem do post. Gere a arte de novo e tente outra vez.";
@@ -290,7 +290,7 @@ export async function aoAprovar(request, env, k, p) {
   await garantir(env);
   const conta = await env.DB.prepare("SELECT id FROM plt_mk_contas WHERE org_id=? AND marca_id=?").bind(p.org_id, p.marca_id).first();
   const contaG = googleConfigurada(env) ? await contaGoogleDe(env, p.org_id, p.marca_id) : null;
-  if (!conta && !contaG) return { publicado: false, resumo: "Post aprovado. A marca ainda não está conectada ao Instagram/Facebook: vá em Marcas → Conectar para ele sair sozinho." };
+  if (!conta && !contaG) return { publicado: false, resumo: "Post aprovado. A marca ainda não está conectada ao Instagram/Facebook: vá em Contas conectadas → Conectar para ele sair sozinho." };
   const quando = p.data ? Date.parse(`${p.data}T${p.hora || "00:00"}:00-03:00`) : NaN;
   if (Number.isFinite(quando) && quando > k.agora(env)) {
     const [, mes, dia] = p.data.split("-");

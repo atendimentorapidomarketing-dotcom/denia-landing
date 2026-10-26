@@ -56,7 +56,7 @@ const baseDe = request => new URL(request.url).origin;
 function explicarErro(d, status) {
   const msg = String(d?.error?.message || d?.error_description || d?.error || `HTTP ${status}`);
   if (/insufficient.*scope|ACCESS_TOKEN_SCOPE_INSUFFICIENT/i.test(msg)) return "Falta permissão nesta conexão do Google. Toque em Ligar (Search Console ou Google Ads) e marque todas as caixas na tela do Google.";
-  if (status === 401 || /invalid_grant/i.test(msg)) return "O acesso ao Google desta marca expirou ou foi removido. Conecte de novo em Marcas.";
+  if (status === 401 || /invalid_grant/i.test(msg)) return "O acesso ao Google desta marca expirou ou foi removido. Conecte de novo em Contas conectadas.";
   if (status === 403 && /disabled|not been used|has not been enabled/i.test(msg)) return "Uma API do Google Perfil da Empresa não está ativada no projeto do Google Cloud. Ative as APIs do Google Business Profile e tente de novo.";
   if (status === 403) return "O Google não deu permissão para esta ação. Confira se a conta usada é proprietária ou administradora do perfil e conecte de novo.";
   if (status === 429) return "Limite de uso do Google atingido por agora. A DENIA tenta de novo mais tarde.";
@@ -214,7 +214,7 @@ export async function rotasGoogle(request, env, k, orgId, papel, resto) {
     const { corpo, erro } = await k.lerCorpo(request, 1000);
     if (erro) return erro;
     const conta = await contaGoogleDe(env, orgId, Number(corpo.marca_id));
-    if (!conta) return json({ erro: "Esta marca ainda não está conectada ao Google (Marcas → Conectar Google)." }, 409);
+    if (!conta) return json({ erro: "Esta marca ainda não está conectada ao Google (Contas conectadas → Conectar Google)." }, 409);
     try { return json({ ok: true, ...(await sincronizarConta(env, k, conta, { continuar: corpo.continuar === true })) }); }
     catch (e) {
       await env.DB.prepare("UPDATE plt_mk_google SET erro=? WHERE id=?").bind(String(e?.message || e).slice(0, 400), conta.id).run();
