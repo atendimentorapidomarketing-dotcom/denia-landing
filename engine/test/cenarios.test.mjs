@@ -641,7 +641,7 @@ test("V30.4 — ponte contínua: cada dúvida do cliente vai ao profissional e a
   a.llmCliente = () => decisao({ resposta: "Vou confirmar com o profissional.", intencao: "PERGUNTA_PARA_PROFISSIONAL", resposta_para_profissional: "A fechadura nova está inclusa no valor?" });
   await a.cliente(CLI, "A fechadura nova está inclusa?");
   assert.match(a.ultimoPara(CHAVEIRO), /o cliente de Botafogo perguntou: A fechadura nova está inclusa no valor\?/);
-  assert.match(a.ultimoPara(CLI), /Vou confirmar com o profissional e já te respondo/);
+  assert.match(a.ultimoPara(CLI), /Vou confirmar e já te respondo/);
 
   a.llmPrestador = (e) => { assert.match(e, /PERGUNTA DO CLIENTE: A fechadura nova/); return prest({ tipo: "RESPONDE", mensagem_para_cliente: "Sim, a fechadura nova já está inclusa." }); };
   await a.cliente(CHAVEIRO, "Sim, já inclui a fechadura");
@@ -1774,4 +1774,23 @@ test("Valores — R$ 1.190,00 sai inteiro (o ponto de milhar não corta a frase)
   a.llmCliente = () => decisao({ resposta: "Consigo por R$ 1.050,00. Posso confirmar?", intencao: "CONVERSA" });
   await a.cliente(CLI, "Faz mais barato?");
   assert.doesNotMatch(a.ultimoPara(CLI), /050|1\.050/);
+});
+
+test("Horário comercial: com a equipe falando com o profissional, a consulta espera minutos e o cliente nunca ouve 'amanhã' ou '8h'", async () => {
+  const a = await criarAmbiente({ inicio: "2026-10-07T13:00:00-03:00" });
+  await a.eco(CHAVEIRO, "Oi, tudo bem? Amanhã tem aquele serviço"); // a equipe está na conversa com o chaveiro (pausa)
+  await iniciarConsultaChaveiro(a);
+  assert.equal(a.ultimoPara(CLI), "Vou verificar o valor e a disponibilidade e já te retorno.");
+  assert.doesNotMatch(a.ultimoPara(CLI), /amanh|8h|expediente/);
+  const antes = a.para(CHAVEIRO).length;
+  a.avancar(11 * 60 * 1000);
+  await a.cron();
+  assert.equal(a.para(CHAVEIRO).length, antes + 1, "passada a pausa, a consulta sai no mesmo dia");
+});
+
+test("Madrugada: diz que verifica a partir das 8h (hoje), não amanhã", async () => {
+  const a = await criarAmbiente({ inicio: "2026-10-07T06:30:00-03:00" });
+  await iniciarConsultaChaveiro(a);
+  assert.match(a.ultimoPara(CLI), /a partir das 8h/);
+  assert.doesNotMatch(a.ultimoPara(CLI), /amanh/);
 });
