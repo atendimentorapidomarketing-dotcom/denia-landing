@@ -3084,3 +3084,37 @@ test("Treinar IA: versões anteriores e Restaurar trazem de volta o treinamento 
   await p.engine.cliente("5521911113333", "Oi");
   assert.match(entrada, /JEITO DE FALAR[^\n]*:\nPersonalidade: Acolhedora\. Emojis: Nunca\./);
 });
+
+test("Conectar conta nova: vários perfis do Google de uma vez viram perfis, com o nome certo; palavra-chave tem a posição medida sozinha", async () => {
+  const p = await criarPlataforma({ GOOGLE_CLIENT_ID: "cliente.apps.googleusercontent.com", GOOGLE_CLIENT_SECRET: "segredo-google", GOOGLE_PLACES_API_KEY: "chave-places" });
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  const marca = (await p.req("/api/orgs/1/mk/marcas", { metodo: "POST", quem: "admin", corpo: { nome: "Central de Atendimento" } })).dados.id;
+  const ida = await p.req(`/api/orgs/1/mk/google/conectar?marca=${marca}`, { quem: "admin" });
+  const state = new URL(ida.r.headers.get("location")).searchParams.get("state");
+  p.google = (url, metodo, corpo) => {
+    if (url.startsWith("https://oauth2.googleapis.com/token")) return { access_token: "ya29.a", refresh_token: "1//permanente", expires_in: 3599 };
+    if (url.includes("/v1/accounts?")) return { accounts: [{ name: "accounts/111" }] };
+    if (url.includes("/accounts/111/locations?")) return { locations: [{ name: "locations/1", title: "Reforma Tudo RT" }, { name: "locations/2", title: "Chaveiro Tijuca" }, { name: "locations/3", title: "Outro" }] };
+    if (url.includes("/reviews?")) return { reviews: [] };
+    if (url.startsWith("https://places.googleapis.com/")) return { places: [{ id: "a", displayName: { text: "Pedreiro Bom" } }, { id: "b", displayName: { text: "Reforma Tudo RT" } }] };
+    return { error: { code: 404, message: "inesperado " + url } };
+  };
+  const nonce = (await (await p.req(`/api/google/retorno?code=abc&state=${encodeURIComponent(state)}`)).r.text()).match(/\/app#\/marcas\/google-([A-Za-z0-9_-]+)/)[1];
+  const esc = await p.req("/api/orgs/1/mk/google/escolher", { metodo: "POST", quem: "admin", corpo: { n: nonce, local_ids: ["locations/1", "locations/2"], renomear: true } });
+  assert.equal(esc.status, 200, JSON.stringify(esc.dados));
+  assert.deepEqual(esc.dados.conectados.map(c => c.perfil), ["Reforma Tudo RT", "Chaveiro Tijuca"]);
+  const nomes = p.env.DB.q("SELECT m.nome, g.local_titulo FROM plt_mk_marcas m JOIN plt_mk_google g ON g.marca_id=m.id ORDER BY m.id").map(x => `${x.nome}=${x.local_titulo}`);
+  assert.deepEqual(nomes, ["Reforma Tudo RT=Reforma Tudo RT", "Chaveiro Tijuca=Chaveiro Tijuca"], "o perfil novo ganhou o nome do perfil do Google");
+  // Palavra-chave: ao adicionar, já mede (2º lugar).
+  const add = await p.req("/api/orgs/1/mk/palavras", { metodo: "POST", quem: "admin", corpo: { marca_id: marca, palavra: "pedreiro", cidade: "Rio de Janeiro" } });
+  assert.equal(add.dados.medicao.posicao, 2, JSON.stringify(add.dados));
+  const busca = p.googleChamadas.filter(c => c.url.startsWith("https://places.googleapis.com/")).pop();
+  assert.equal(busca.corpo.textQuery, "pedreiro Rio de Janeiro");
+  const l = (await p.req(`/api/orgs/1/mk/palavras?marca=${marca}`, { quem: "admin" })).dados;
+  assert.equal(l.medicao_automatica, true);
+  assert.equal(l.palavras[0].posicoes[0].posicao, 2);
+  // Fora dos 20 primeiros: 0.
+  p.google = (url) => url.startsWith("https://places.googleapis.com/") ? { places: [{ id: "a", displayName: { text: "Outro" } }] } : url.startsWith("https://oauth2") ? { access_token: "x", expires_in: 3599 } : { error: { code: 404, message: "x" } };
+  const med = await p.req(`/api/orgs/1/mk/palavras/${add.dados.id}/medir`, { metodo: "POST", quem: "admin", corpo: {} });
+  assert.equal(med.dados.posicao, 0);
+});
