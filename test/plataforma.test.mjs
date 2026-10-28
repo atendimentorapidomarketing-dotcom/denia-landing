@@ -3118,3 +3118,13 @@ test("Conectar conta nova: vários perfis do Google de uma vez viram perfis, com
   const med = await p.req(`/api/orgs/1/mk/palavras/${add.dados.id}/medir`, { metodo: "POST", quem: "admin", corpo: {} });
   assert.equal(med.dados.posicao, 0);
 });
+
+test("Equipe: sem e-mail configurado a tela avisa, e quem já tinha conta pode receber senha temporária", async () => {
+  const p = await criarPlataforma();
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  const l = (await p.req("/api/orgs/1/membros", { quem: "admin" })).dados;
+  assert.equal(l.email.ok, false); assert.match(l.email.motivo, /RESEND_API_KEY/);
+  const a = (await p.req("/api/orgs/1/membros", { metodo: "POST", quem: "admin", corpo: { nome: "Teste", email: "teste.auditoria@exemplo.test", papel: "ADMIN" } })).dados;
+  assert.ok(a.senha_temporaria, "conta nova: senha temporária na tela");
+  assert.equal(a.ja_tinha_conta, false);
+});

@@ -1376,15 +1376,21 @@
           const r = await org("membros", { metodo: "POST", corpo: { nome: nome.value, email: email.value, papel: papel.value } });
           aviso("Pessoa adicionada.", "ok");
           if (r.senha_temporaria) await mostrarSenha(email.value.trim(), r.senha_temporaria);
+          else if (r.ja_tinha_conta && await modal({ titulo: "Esta pessoa já tinha conta", conteudo: [`${email.value.trim()} já tinha uma conta na DENIA, então ela entra com a senha que já tem.`, "Se ela não lembra a senha (ou nunca chegou a entrar), gere agora uma senha temporária para passar a ela."], confirmar: "Gerar senha temporária", cancelar: "Não precisa" })) {
+            try { const s2 = await org("membros/" + r.usuario_id, { metodo: "POST", corpo: { acao: "nova_senha" } }); await mostrarSenha(email.value.trim(), s2.senha_temporaria); } catch (e2) { aviso(e2.message, "erro"); }
+          }
           navegar();
         } catch (e) { aviso(e.message, "erro"); }
-      }, "btn-primario"), h("span", { style: "font-size:13px;color:var(--texto-3)", text: "Proprietário e administrador gerenciam tudo; atendente opera conversas e atendimentos; somente leitura apenas acompanha." }))));
+      }, "btn-primario"), h("span", { style: "font-size:13px;color:var(--texto-3)", text: "Proprietário e administrador gerenciam tudo; atendente opera conversas e atendimentos; somente leitura apenas acompanha." })),
+      h("p", { class: "nota", text: "Não é enviado convite por e-mail: ao adicionar, aparece na tela uma senha temporária para você passar à pessoa (por WhatsApp, por exemplo). Ela entra em denia-ai.com/entrar com o e-mail e essa senha e cria a senha dela. Esqueceu? Use Nova senha na lista abaixo." })));
     const area = h("div", {}, carregando());
     el.appendChild(area);
     let membros;
-    try { membros = (await org("membros")).membros || []; }
+    let situacaoEmail = null;
+    try { const dm = await org("membros"); membros = dm.membros || []; situacaoEmail = dm.email; }
     catch (e) { if (vivo()) falha(area, e); return; }
     if (!vivo()) return;
+    if (situacaoEmail && !situacaoEmail.ok) el.insertBefore(h("p", { class: "nota nota-alerta", text: `Os e-mails da plataforma não estão saindo (${situacaoEmail.motivo}). Isso afeta o "Esqueceu a senha?" e os relatórios por e-mail. Para a equipe, use a senha temporária mostrada aqui.` }), area);
     if (!membros.length) { area.replaceChildren(h("div", { class: "cartao vidro" }, vazio("Ninguém na equipe ainda", "Adicione as atendentes e os responsáveis acima."))); return; }
     const eu = estado.eu.usuario.id;
     area.replaceChildren(h("div", { class: "tabela-caixa" }, h("table", {},
