@@ -36,7 +36,7 @@
 //       relatório diário. Nunca inicia conversa nova por conta própria.
 // ============================================================================
 
-const VERSAO = "34.9.0";
+const VERSAO = "34.9.1";
 const SCHEMA_VERSAO = "33.4.0"; // mude sempre que acrescentar tabela ou índice (senão o banco de produção não recebe)
 const EMPRESA_ID = 1;
 const PHONE_ID_PADRAO = "473474732510163";
@@ -1873,8 +1873,10 @@ async function openaiJSON(c, instrucoes, entrada, anexos = [], maxTokens = 1400,
   const content = [{ type: "input_text", text: entrada }];
   for (const a of anexos.slice(0, 3)) {
     const url = `data:${a.mime};base64,${a.base64}`;
-    // Foto em "low" custa ~85 tokens (em "auto", até ~1.100); dá para ler o que importa. IMAGEM_DETALHE=auto volta ao antigo.
-    if (a.mime.startsWith("image/")) content.push({ type: "input_image", image_url: url, detail: String(env.IMAGEM_DETALHE || "low") === "auto" ? "auto" : "low" });
+    // Foto em alta resolução: em "low" a IA chegou a ler "R$ 1.190" como "190" num orçamento. Valor errado custa mais
+    // que os tokens. IMAGEM_DETALHE=low ou auto troca (só para quem aceita o risco).
+    const detalhe = String(env.IMAGEM_DETALHE || "high").toLowerCase();
+    if (a.mime.startsWith("image/")) content.push({ type: "input_image", image_url: url, detail: ["low", "auto"].includes(detalhe) ? detalhe : "high" });
     else content.push({ type: "input_file", filename: a.nome || "documento.pdf", file_data: url });
   }
   const interna = !modeloForcado && ehTarefaInterna(instrucoes) && String(env.OPENAI_ECONOMIA || "") !== "desligada";
@@ -2057,7 +2059,7 @@ function camposDaPergunta(frase) {
 function perguntasRecentes(hist, limite = 8) {
   const feitas = new Set();
   const saidas = hist.filter(m => String(m.direcao).toUpperCase() === "SAIDA" && String(m.origem).toUpperCase() !== "HUMANO").slice(-limite);
-  for (const m of saidas) for (const f of String(m.conteudo || "").match(/[^.!?]+[.!?]*/g) || []) for (const k of camposDaPergunta(f)) feitas.add(k);
+  for (const m of saidas) for (const f of frasesDe(m.conteudo)) for (const k of camposDaPergunta(f)) feitas.add(k);
   // Bairro: no máximo uma vez em toda a conversa recente.
   for (const m of hist.filter(m => String(m.direcao).toUpperCase() === "SAIDA").slice(-30)) if (camposDaPergunta(m.conteudo || "").includes("bairro")) feitas.add("bairro");
   return feitas;
@@ -2111,10 +2113,12 @@ function semJogarParaProfissional(texto) {
     .replace(/\s+([,.!?])/g, "$1");
 }
 
+// Divide em frases sem quebrar números: o ponto de "R$ 1.190,00" não termina frase.
+const frasesDe = t => String(t || "").match(/(?:[^.!?]|\.(?=\d))+[.!?]*\s*/g) || [String(t || "")];
 function guardarResposta(texto, g) {
   const t = String(texto || "").replace(/\s+/g, " ").trim();
   if (!t) return { texto: "", removidas: [] };
-  const frases = t.match(/[^.!?]+[.!?]*\s*/g) || [t];
+  const frases = frasesDe(t);
   const removidas = [], mantidas = [];
   for (const f of frases) { const m = fraseProibida(f, g); if (m) removidas.push(`${m}: ${f.trim()}`); else mantidas.push(f.trim()); }
   let final = mantidas.join(" ").replace(/\s+/g, " ").trim();
@@ -2176,7 +2180,7 @@ NÚMEROS DE CASO são internos: nunca escreva "caso 210", "#210" ou qualquer nú
 
 SEU PAPEL: você interpreta as mensagens e redige a resposta. Você NÃO executa ações. O sistema decide e executa (consultar profissional, enviar orçamento, agendar) com base nos fatos que você extrai. Portanto:
 - Nunca diga que enviou, consultou, falou, avisou, repassou, agendou, confirmou ou cancelou algo, a menos que o ESTADO DO CASO diga que isso já aconteceu (exceção: a REUNIÃO ONLINE que você registrar em "reuniao", explicada abaixo).
-- Nunca invente preço, prazo, disponibilidade, diagnóstico, cobertura de região ou que um profissional faz certo serviço. Valores: somente os listados em VALORES AUTORIZADOS.
+- Nunca invente preço, prazo, disponibilidade, diagnóstico, cobertura de região ou que um profissional faz certo serviço. Valores: somente os listados em VALORES AUTORIZADOS ou que o próprio cliente mandou. Escreva o valor completo, com todos os dígitos e o ponto de milhar, igual ao original (ex.: R$ 1.190,00; R$ 320,00). Em foto ou documento, leia o valor dígito por dígito; se não der para ler com certeza, não diga o valor e peça para confirmar.
 - Nunca peça ao cliente para escolher profissional. Nunca informe telefone, CPF ou dados de profissionais ou de outras pessoas. Não peça CPF.
 - Bairro NÃO define preço: nunca diga que precisa do bairro para orçamento. Não pergunte bairro por iniciativa própria; o sistema e o profissional pedem quando for necessário. Nunca repita uma pergunta que você já fez nesta conversa, mesmo que o cliente não tenha respondido: siga em frente com o que ele disse.
 - Serviços de BALCÃO: o cliente leva o equipamento à loja; nunca pergunte bairro ou endereço.
@@ -2291,7 +2295,8 @@ Campos:
 - valor_centavos: SOMENTE se ele escreveu um valor em dinheiro NESTA mensagem (R$ 400 = 40000). Senão 0.
 - valor_e_final: "SIM" se ele disse que o valor é o final para o cliente / já inclui a central; "NAO" se disse que é só a parte dele; senão "NAO_INFORMADO".
 - disponibilidade: dia/horário exatamente como ele disse; senão "".
-- atende_regiao: "SIM" ou "NAO" só se ele falou explicitamente sobre atender o local; senão "NAO_INFORMADO".`;
+- atende_regiao: "SIM" ou "NAO" só se ele falou explicitamente sobre atender o local; senão "NAO_INFORMADO".
+- valor_centavos: o valor completo, com todos os dígitos (R$ 1.190,00 = 119000; R$ 320 = 32000). Se veio em foto ou documento (orçamento), leia dígito por dígito e escreva em "resumo" o valor exatamente como aparece; se não der para ler com certeza, valor_centavos 0.`;
 
 // ============================================================================
 // FLUXO DO CLIENTE
@@ -2435,6 +2440,7 @@ async function processarCliente(c, tel, id, msgs, { apenasRegistrar, chaveLote, 
   const acao = await decidirCliente(c, { tel, pessoa, caso, consulta, d, chaveLote });
   let texto = acao.texto;
   if (!acao.fixa) {
+    for (const v of valoresMonetarios([...msgs.map(m => m.conteudo), d.descricao_anexos || ""].join("\n"))) autorizados.add(v);
     const g = { reuniao: Boolean(reuniao && !reuniao.recusada), etapa: caso?.etapa || "SEM_CASO", autorizados, modo: CATEGORIAS[caso?.fatos?.categoria]?.modo || "", regiaoConfirmada: caso?.fatos?.regiao_confirmada === "SIM", fatos: caso && !ETAPAS_ENCERRADAS.has(caso.etapa) ? caso.fatos : null, nome: pessoa.nome, perguntadas: perguntasRecentes(hist) };
     const r = guardarResposta(d.resposta, g);
     if (r.removidas.length) await evento(c, caso?.casoId, "RESPOSTA_CORRIGIDA", r.removidas.join(" | "));
@@ -2803,7 +2809,7 @@ function mensagemParaEncaminhar(texto, original, autorizados) {
   const g = { etapa: "AGENDADO", autorizados, regiaoConfirmada: true };
   const removidas = [];
   const linhas = semLinks.split("\n").map(l => {
-    const frases = l.match(/[^.!?]+[.!?]*\s*/g) || [l];
+    const frases = frasesDe(l);
     return frases.filter(f => { const m = fraseProibida(f, g); if (m && /telefone|documento|valor/.test(m)) { removidas.push(m); return false; } return true; }).join("").trim();
   });
   const final = linhas.join("\n").replace(/§(\d+)§/g, (_, i) => guardados[Number(i)]).replace(/\n{3,}/g, "\n\n").trim();
@@ -2989,7 +2995,7 @@ async function tratarRespostaPrestador(c, { caso, consulta, d, textoTodo, chaveL
 
   // Valor só conta se aparece literalmente na mensagem dele.
   let valor = Math.round(Number(d?.valor_centavos || 0));
-  if (valor > 0 && !valoresNoTexto(textoTodo).includes(valor)) valor = 0;
+  if (valor > 0 && !valoresNoTexto(textoTodo + (msgs.some(m => m.mediaId) ? "\n" + String(d?.resumo || "") : "")).includes(valor)) valor = 0;
   const finalInf = ["SIM", "NAO"].includes(String(d?.valor_e_final).toUpperCase()) ? String(d.valor_e_final).toUpperCase() : "";
   const disp = txt(d?.disponibilidade, 200);
   // Respostas curtas a perguntas nossas ("só minha parte", "confirmado") contam como continuação.

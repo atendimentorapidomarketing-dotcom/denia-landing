@@ -1754,3 +1754,24 @@ test("Profissional sem atendimento aberto também é respondido (como alguém da
   assert.equal(a.ultimoPara(CHAVEIRO), "Vou verificar e já te retorno.");
   assert.ok(a.telegram.some(t => /não há atendimento aberto com ele[\s\S]*pagamento/.test(t)));
 });
+
+test("Valores — R$ 1.190,00 sai inteiro (o ponto de milhar não corta a frase) e valor que o cliente mandou pode ser repetido", async () => {
+  const a = await criarAmbiente();
+  a.llmCliente = () => decisao({ resposta: "Certo!", intencao: "NOVO_PEDIDO", quer_orcamento_ou_atendimento: true, pronto_para_profissional: true, fatos: { servico: "troca de tecido do sofá", bairro: "Copacabana" } });
+  await a.cliente(CLI, "Quero trocar o tecido do sofá, moro em Copacabana", { nome: "Maria" });
+  a.llmPrestador = () => prest({ tipo: "ACEITA", valor_centavos: 119000, valor_e_final: "SIM", disponibilidade: "amanhã às 14h" });
+  await a.cliente(CARLOS_ESTOF, "Faço amanhã às 14h, fica 1.190 já com tudo");
+  assert.equal(a.ultimoPara(CLI), "Temos disponibilidade amanhã às 14h. O valor fica R$ 1.190,00. Podemos confirmar?");
+  a.llmCliente = () => decisao({ resposta: "O valor fica R$ 1.190,00. Posso confirmar para amanhã às 14h?", intencao: "PERGUNTA_STATUS" });
+  await a.cliente(CLI, "Quanto ficou mesmo?");
+  assert.match(a.ultimoPara(CLI), /R\$ 1\.190,00/, a.ultimoPara(CLI));
+  assert.doesNotMatch(a.ultimoPara(CLI), /^190/);
+  // Valor que o próprio cliente mandou (ex.: orçamento de outro lugar) não é cortado.
+  a.llmCliente = () => decisao({ resposta: "Entendi, o outro orçamento foi de R$ 320,00. Vou verificar e te retorno.", intencao: "CONVERSA" });
+  await a.cliente(CLI, "Outro lugar me cobrou R$ 320,00");
+  assert.match(a.ultimoPara(CLI), /R\$ 320,00/, a.ultimoPara(CLI));
+  // Valor inventado continua barrado (a frase inteira sai, nunca um pedaço do número).
+  a.llmCliente = () => decisao({ resposta: "Consigo por R$ 1.050,00. Posso confirmar?", intencao: "CONVERSA" });
+  await a.cliente(CLI, "Faz mais barato?");
+  assert.doesNotMatch(a.ultimoPara(CLI), /050|1\.050/);
+});
