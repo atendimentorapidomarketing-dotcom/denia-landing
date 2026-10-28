@@ -793,13 +793,14 @@ export async function icalPublico(env, caminho) {
   if (!m) return null;
   const im = await env.DB.prepare("SELECT * FROM plt_tp_imoveis WHERE ical_token=? AND ativo=1").bind(m[1]).first();
   if (!im) return new Response("Calendário não encontrado.", { status: 404 });
-  const hoje = iso(Date.now() - 2 * DIA);
+  const agoraMs = typeof env.__agora === "function" ? env.__agora() : Date.now();
+  const hoje = iso(agoraMs - 2 * DIA);
   // Para a plataforma X, manda as ocupações das OUTRAS (a própria plataforma já sabe as suas).
   const res = (await env.DB.prepare(`SELECT id, canal, inicio, fim, tipo FROM plt_tp_reservas WHERE imovel_id=? AND status='CONFIRMADA' AND fim >= ? ${m[2] ? "AND canal<>?" : ""} LIMIT 2000`).bind(im.id, hoje, ...(m[2] ? [m[2]] : [])).all())?.results || [];
   const fech = (await env.DB.prepare("SELECT data FROM plt_tp_precos WHERE imovel_id=? AND fechado=1 AND data >= ? ORDER BY data LIMIT 800").bind(im.id, hoje).all())?.results || [];
   const eventos = res.map(r => ({ uid: "r" + r.id, inicio: r.inicio, fim: r.fim, titulo: r.tipo === "BLOQUEIO" ? "Indisponível" : "Reservado" }));
   for (const f of fech) eventos.push({ uid: "f" + im.id + f.data, inicio: f.data, fim: somaDias(f.data, 1), titulo: "Fechado" });
-  const janela = fimDaJanela(im, Date.now());
+  const janela = fimDaJanela(im, agoraMs);
   if (janela) eventos.push({ uid: "janela" + im.id, inicio: somaDias(janela, 1), fim: somaDias(janela, 3 * 365), titulo: "Fora da janela de reservas" });
   return new Response(gerarIcal(im.nome, eventos), { headers: { "content-type": "text/calendar; charset=utf-8", "cache-control": "no-store" } });
 }
