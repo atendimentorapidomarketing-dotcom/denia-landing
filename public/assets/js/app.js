@@ -313,7 +313,16 @@
       tb.closest(".lista-rolavel").after(mais);
     });
   }
-  new MutationObserver(() => encurtarListas($("conteudo"))).observe($("conteudo"), { childList: true, subtree: true });
+  // Nos menus por área, as abas da página somem porque o menu lateral já tem os mesmos atalhos. Abas que o menu
+  // não tem (campos do treinamento, filtros de aprovação, partes do guia) continuam visíveis.
+  function abasSemAtalho(raiz) {
+    const noMenu = new Set([...document.querySelectorAll("#lateral-nav a[href]")].map(a => a.getAttribute("href")));
+    raiz.querySelectorAll('.abas[role="tablist"]:not(.abas-visiveis)').forEach(ab => {
+      const itens = [...ab.children];
+      if (!itens.length || itens.some(x => x.tagName !== "A" || !noMenu.has(x.getAttribute("href")))) ab.classList.add("abas-visiveis");
+    });
+  }
+  new MutationObserver(() => { encurtarListas($("conteudo")); abasSemAtalho($("conteudo")); }).observe($("conteudo"), { childList: true, subtree: true });
 
   function semEmpresa(el) {
     el.appendChild(h("div", { class: "cartao vidro" }, vazio("Você ainda não faz parte de nenhuma empresa", "Peça ao responsável pela sua empresa para adicionar o seu e-mail na equipe.")));
@@ -948,7 +957,8 @@
     ["procedimentos", "Procedimentos", "Passo a passo de situações específicas: urgência, reclamação, retorno de serviço."],
     ["informacoes", "Informações", "Endereço, horários, formas de pagamento e contatos."],
     ["exemplos", "Exemplos de conversa", "Trechos reais de como as atendentes falam. A IA imita esse jeito de escrever."],
-    ["aprendizados", "Aprendizados aprovados", "Conhecimentos extraídos do histórico e aprovados por você em Aprendizados. Você também pode editar aqui."]
+    ["aprendizados", "Aprendizados aprovados", "Conhecimentos extraídos do histórico e aprovados por você em Aprendizados. Você também pode editar aqui."],
+    ["licoes_diarias", "Lições do estudo diário", "O que a DENIA aprendeu sozinha relendo as conversas de cada dia. Você pode corrigir ou apagar o que não estiver certo."]
   ];
 
   async function paginaTreinamento(el, _p, vivo) {

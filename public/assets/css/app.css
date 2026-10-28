@@ -734,7 +734,7 @@ details > summary { cursor: pointer; font-weight: 700; }
 .canal-ic.canal-airbnb { background: var(--c-airbnb); } .canal-ic.canal-booking { background: var(--c-booking); } .canal-ic.canal-vrbo { background: var(--c-vrbo); }
 .barra-app-item .canal-ic { width: 22px; height: 22px; font-size: 12px; }
 /* Dentro de um canal, as opções ficam no menu (não em abas na tela). */
-body[data-modo] .conteudo .abas[role="tablist"] { display: none; }
+body[data-modo] .conteudo .abas[role="tablist"]:not(.abas-visiveis) { display: none; }
 .plataforma-topo { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
 .lista-possivel { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
 .lista-possivel li { display: flex; gap: 12px; align-items: flex-start; padding: 12px; border: 1px solid var(--borda); border-radius: 14px; }
