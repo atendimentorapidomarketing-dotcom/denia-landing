@@ -3059,3 +3059,28 @@ test("Base de clientes: a DENIA cadastra sozinha quem conversou (nome, número, 
   assert.equal(cs[0].pedidos, 1); assert.equal(cs[0].servicos_feitos, 0); assert.equal(cs[0].bairro, "Tijuca");
   assert.ok(cs[0].ultimo_pedido_ms && cs[0].primeiro_contato_ms);
 });
+
+test("Treinar IA: versões anteriores e Restaurar trazem de volta o treinamento apagado; jeito de falar vai para a IA", async () => {
+  const p = await criarPlataforma();
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  await p.req("/api/orgs/1/integracao", { metodo: "POST", quem: "admin", corpo: { engine_url: "https://engine.test", token: TOKEN_ENGINE } });
+  const salvar = corpo => p.req("/api/orgs/1/engine/training", { metodo: "POST", quem: "admin", corpo });
+  const v1 = await salvar({ treinamento: { servicos: "Chaveiro, eletricista e encanador.", jeito: "Personalidade: Acolhedora. Emojis: Nunca." } });
+  assert.equal(v1.status, 200, JSON.stringify(v1.dados));
+  assert.equal((await salvar({ treinamento: { servicos: "" } })).status, 409, "apagar pede confirmação");
+  await salvar({ treinamento: { servicos: "" }, confirmar_vazio: true });
+  const vs = (await p.req("/api/orgs/1/engine/training/versions", { quem: "admin" })).dados.versoes;
+  const comConteudo = vs.find(v => v.campos.includes("servicos"));
+  assert.ok(comConteudo, JSON.stringify(vs));
+  const r = await p.req("/api/orgs/1/engine/training/restore", { metodo: "POST", quem: "admin", corpo: { versao: comConteudo.versao } });
+  assert.equal(r.status, 200, JSON.stringify(r.dados));
+  const t = (await p.req("/api/orgs/1/engine/training", { quem: "admin" })).dados;
+  assert.equal(t.dados.servicos, "Chaveiro, eletricista e encanador.");
+  assert.match(t.autor, /restaurou a versão/);
+  // O jeito de falar entra na instrução da IA.
+  let entrada = "";
+  p.engine.agora = Date.now() - 60000;
+  p.engine.llmCliente = (e) => { entrada = e; return { resposta: "Oi!", intencao: "CONVERSA", fatos: {} }; };
+  await p.engine.cliente("5521911113333", "Oi");
+  assert.match(entrada, /JEITO DE FALAR[^\n]*:\nPersonalidade: Acolhedora\. Emojis: Nunca\./);
+});
