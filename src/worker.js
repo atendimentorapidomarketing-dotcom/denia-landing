@@ -31,7 +31,7 @@ import { DDL_ZAP, webhookZap, rotasZap, webhookTelegram, segredoTelegram, tokenT
 import { montarRelatorio, planilhaRelatorio, textoRelatorio, base64, ultimos7Dias, lerConfigRelatorio, horaDeEnviar, diaBR, dataBR, DIAS_SEMANA, inicioDoDia as inicioDoDiaBR } from "./relatorio.js";
 import { lerPlanos, acessoDa, recursoDaRota, planoMinimo, rotasPlano, webhookAsaas, lembretesDePlano, TESTE_DIAS, STATUS as STATUS_PLANO, PLANOS_PADRAO, RECURSOS } from "./planos.js";
 
-const VERSAO = "3.14.0";
+const VERSAO = "3.14.1";
 // Versão dos Termos de uso e da Política de privacidade aceitas no cadastro.
 const VERSAO_TERMOS = "2026-10-16";
 // WhatsApp da Central de Atendimento (botão flutuante do site).
@@ -441,8 +441,17 @@ async function enviarEmail(env, para, assunto, texto, anexos = []) {
       method: "POST", headers: { authorization: `Bearer ${String(env.RESEND_API_KEY).trim()}`, "content-type": "application/json" },
       body: JSON.stringify({ from: String(env.EMAIL_REMETENTE).trim(), to: [para], subject: assunto, text: texto, ...(anexos.length ? { attachments: anexos.map(a => ({ filename: a.nome, content: a.base64 })) } : {}) }), signal: AbortSignal.timeout(20000)
     });
+    if (!r.ok) {
+      const motivo = String((await r.json().catch(() => ({})))?.message || `HTTP ${r.status}`).slice(0, 240);
+      await env.DB.prepare("INSERT OR REPLACE INTO plt_meta(chave,valor) VALUES('email_erro',?)").bind(JSON.stringify({ em: agora(env), motivo })).run().catch(() => {});
+    } else await env.DB.prepare("DELETE FROM plt_meta WHERE chave='email_erro'").run().catch(() => {});
     return r.ok;
   } catch (e) { console.error("e-mail", e?.message); return false; }
+}
+async function situacaoEmail(env) {
+  if (!emailConfigurado(env)) return { ok: false, motivo: `faltam as variáveis ${[!String(env.RESEND_API_KEY || "").trim() ? "RESEND_API_KEY" : "", !emailValido(String(env.EMAIL_REMETENTE || "").replace(/^.*<|>$/g, "")) ? "EMAIL_REMETENTE" : ""].filter(Boolean).join(" e ")} na Hostinger` };
+  let e = null; try { e = JSON.parse((await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave='email_erro'").first())?.valor || "null"); } catch { e = null; }
+  return e ? { ok: false, motivo: `o Resend recusou o último envio: ${e.motivo}` } : { ok: true };
 }
 async function sha256(texto) { return b64url(new Uint8Array(await crypto.subtle.digest("SHA-256", enc.encode(texto)))); }
 async function limitar(env, chave, max, janelaMs) {
@@ -1065,7 +1074,7 @@ async function apiOrg(request, env, sessao, orgId, resto) {
   if (resto === "membros" && metodo === "GET") {
     if (!pode(papel, "ADMIN")) return json({ erro: "Sem permissão." }, 403);
     const r = await env.DB.prepare(`SELECT u.id, u.email, u.nome, u.ativo, u.trocar_senha, u.ultimo_acesso_ms, m.papel, m.criado_ms FROM plt_membros m JOIN plt_usuarios u ON u.id=m.usuario_id WHERE m.org_id=? ORDER BY m.criado_ms`).bind(orgId).all();
-    return json({ membros: (r?.results || []).map(x => ({ ...x, ativo: Boolean(x.ativo), trocar_senha: Boolean(x.trocar_senha) })) });
+    return json({ email: await situacaoEmail(env), membros: (r?.results || []).map(x => ({ ...x, ativo: Boolean(x.ativo), trocar_senha: Boolean(x.trocar_senha) })) });
   }
   if (resto === "membros" && metodo === "POST") {
     if (!pode(papel, "ADMIN")) return json({ erro: "Sem permissão." }, 403);
@@ -1098,7 +1107,7 @@ async function apiOrg(request, env, sessao, orgId, resto) {
     if (!sessao.usuario.super_admin && naEquipe >= Number(acesso.limites?.usuarios || 0)) return json({ erro: `O plano ${acesso.nome} permite até ${acesso.limites.usuarios} pessoas na equipe. Atualize o plano para adicionar mais.`, codigo: "PLANO_LIMITE" }, 402);
     await env.DB.prepare("INSERT INTO plt_membros(org_id,usuario_id,papel,criado_ms) VALUES(?,?,?,?)").bind(orgId, u.id, novoPapel, agora(env)).run();
     await auditar(env, request, sessao, orgId, "EQUIPE", `Adicionou ${email} como ${NOME_PAPEL[novoPapel]}`);
-    return json({ ok: true, usuario_id: u.id, senha_temporaria: senha || null });
+    return json({ ok: true, usuario_id: u.id, senha_temporaria: senha || null, ja_tinha_conta: !senha });
   }
   let m;
   if ((m = resto.match(/^membros\/(\d{1,12})$/)) && metodo === "POST") {
