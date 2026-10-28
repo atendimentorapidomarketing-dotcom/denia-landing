@@ -3041,3 +3041,21 @@ test("Contas conectadas — ao conectar a Meta e o Google, a DENIA puxa a logo e
   assert.equal(m.horarios, "seg 09:00-18:00");
   assert.equal(p.env.DB.q("SELECT COUNT(*) n FROM plt_mk_midias")[0].n, 1, "a logo do Instagram fica");
 });
+
+test("Base de clientes: a DENIA cadastra sozinha quem conversou (nome, número, o que buscou e quando), sem profissionais", async () => {
+  const p = await criarPlataforma();
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  await p.req("/api/orgs/1/integracao", { metodo: "POST", quem: "admin", corpo: { engine_url: "https://engine.test", token: TOKEN_ENGINE } });
+  p.engine.agora = Date.now() - 60000;
+  p.engine.llmCliente = () => ({ resposta: "Certo!", intencao: "NOVO_PEDIDO", quer_orcamento_ou_atendimento: true, pronto_para_profissional: false, fatos: { servico: "chaveiro", problema: "troca de fechadura", categoria: "CHAVEIRO", bairro: "Tijuca" }, categoria_confianca: "ALTA" });
+  await p.engine.cliente("5521911112222", "Preciso trocar a fechadura", { nome: "Marta" });
+  await p.engine.cliente("5521964545279", "Bom dia"); // profissional
+  const r = await p.req("/api/orgs/1/engine/clients", { quem: "admin" });
+  assert.equal(r.status, 200, JSON.stringify(r.dados));
+  const cs = r.dados.clientes;
+  assert.equal(cs.length, 1, JSON.stringify(cs));
+  assert.equal(cs[0].nome, "Marta"); assert.equal(cs[0].telefone, "5521911112222");
+  assert.match(cs[0].ultimo_pedido, /^Chaveiro: troca de fechadura/);
+  assert.equal(cs[0].pedidos, 1); assert.equal(cs[0].servicos_feitos, 0); assert.equal(cs[0].bairro, "Tijuca");
+  assert.ok(cs[0].ultimo_pedido_ms && cs[0].primeiro_contato_ms);
+});

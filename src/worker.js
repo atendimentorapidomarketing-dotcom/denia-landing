@@ -54,6 +54,7 @@ const ROTAS_ENGINE = [
   ["GET", /^usage$/, "ADMIN"],
   ["GET", /^metrics$/, "VISUALIZADOR"],
   ["GET", /^conversations$/, "VISUALIZADOR"],
+  ["GET", /^clients$/, "VISUALIZADOR"],
   ["GET", /^conversations\/\d{1,12}$/, "VISUALIZADOR"],
   ["POST", /^conversations\/\d{1,12}\/(send|takeover|release)$/, "AGENTE", "CONVERSA"],
   ["POST", /^conversations\/\d{1,12}\/type$/, "AGENTE", "CONVERSA"],

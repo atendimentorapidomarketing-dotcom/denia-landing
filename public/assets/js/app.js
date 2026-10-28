@@ -1140,7 +1140,21 @@
   }
 
   async function paginaClientes(el, _p, vivo) {
-    el.appendChild(cabeca("Base de clientes", "Traga o cadastro do sistema que as atendentes usam. Com isso, a IA reconhece clientes antigos, lembra o que já foi feito e não pede dados que já existem."));
+    el.appendChild(cabeca("Base de clientes", "A DENIA cadastra sozinha cada cliente que conversa com ela: nome, número, o que buscou e quando, e quantos serviços já fez. Você também pode importar o cadastro antigo das atendentes."));
+    const auto = h("div", {}, h("div", { class: "esqueleto", style: "height:160px" }));
+    el.appendChild(auto);
+    const SITUACAO = { COLETANDO: "Em atendimento", AGUARDANDO_PRESTADOR: "Verificando com profissional", AGUARDANDO_CLIENTE: "Proposta enviada", AGUARDANDO_ENDERECO: "Falta o endereço", AGUARDANDO_CONFIRMACAO_PRESTADOR: "Confirmando", AGENDADO: "Agendado", EM_ANDAMENTO: "Em andamento", CONCLUIDO: "Concluído", CANCELADO: "Cancelado" };
+    const dia = ms => ms ? new Date(ms).toLocaleDateString(LOCALE, { timeZone: "America/Sao_Paulo" }) : "—";
+    const reais = v => v ? new Intl.NumberFormat(LOCALE, { style: "currency", currency: "BRL" }).format(v / 100) : "—";
+    eng("clients").then(d => {
+      if (!vivo()) return;
+      const ls = (d.clientes || []).map(x => ({ ...x, primeiro: dia(x.primeiro_contato_ms), ultimo: dia(x.ultimo_contato_ms), data_pedido: dia(x.ultimo_pedido_ms), situacao_txt: SITUACAO[x.situacao] || "—", valor_txt: reais(x.valor_servicos), historico: (x.buscas || []).map(b => `${dia(b.ms)} ${b.o}`).join(" | ") }));
+      const total = ls.length, comPedido = ls.filter(x => x.pedidos).length, fizeram = ls.filter(x => x.servicos_feitos).length;
+      trocar(auto, h("section", { class: "grade grade-3" }, metrica("Clientes cadastrados pela DENIA", numero(total), "todos que mandaram mensagem"), metrica("Pediram algum serviço", numero(comPedido), "com o que buscaram"), metrica("Já fizeram serviço", numero(fizeram), "atendimentos concluídos")),
+        tabelaDados([["nome", "Nome", v => v || "Sem nome"], ["telefone", "Número"], ["ultimo_pedido", "O que buscou por último", v => v || "—"], ["data_pedido", "Data da busca"], ["situacao_txt", "Situação"], ["pedidos", "Pedidos", null, { num: true }], ["servicos_feitos", "Serviços feitos", null, { num: true }], ["valor_txt", "Valor dos serviços"], ["bairro", "Bairro", v => v || "—"], ["primeiro", "Primeiro contato"], ["ultimo", "Último contato"], ["historico", "Histórico de buscas", v => v || "—"]],
+          ls, { titulo: "Clientes", arquivo: "clientes-denia.csv", vazioTxt: "Ainda não há clientes: eles aparecem aqui assim que mandarem a primeira mensagem." }));
+    }).catch(e => { if (vivo()) falha(auto, e); });
+    el.appendChild(h("h3", { style: "margin:22px 0 8px", text: "Cadastro importado" }));
     const resumo = h("section", { class: "grade grade-3" }, [1, 2, 3].map(() => h("div", { class: "esqueleto" })));
     el.appendChild(resumo);
     let r;

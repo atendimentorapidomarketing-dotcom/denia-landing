@@ -36,7 +36,7 @@
 //       relatório diário. Nunca inicia conversa nova por conta própria.
 // ============================================================================
 
-const VERSAO = "34.9.1";
+const VERSAO = "34.9.2";
 const SCHEMA_VERSAO = "33.4.0"; // mude sempre que acrescentar tabela ou índice (senão o banco de produção não recebe)
 const EMPRESA_ID = 1;
 const PHONE_ID_PADRAO = "473474732510163";
@@ -1682,6 +1682,12 @@ async function enviarAoCliente(c, { tel, pessoaId, casoId, texto, chave, origem 
 }
 
 // Envio ao prestador: horário 8h–21h, pausa humana, template fora da janela de 24h.
+// Quando a mensagem ao profissional ficou na fila: no horário comercial (ex.: a equipe está falando com ele agora)
+// ela sai em minutos, então o cliente ouve "já te retorno". Só fora do horário (21h às 8h) diz quando.
+function quandoRetorna(c, r) {
+  if (!r?.agendado || dentroHorarioPrestador(c)) return "";
+  return horaSP(c.agora()) < HORA_INICIO_PRESTADOR ? " a partir das 8h" : " amanhã a partir das 8h";
+}
 async function enviarAoPrestador(c, { consulta, caso, texto, chave, inicial = false }) {
   const to = consulta.prestador_tel;
   const t = ocultarTelefones(texto).trim();
@@ -2153,7 +2159,7 @@ function descreverEtapa(caso, consulta) {
   switch (caso.etapa) {
     case "COLETANDO": return "Atendimento em andamento. O profissional AINDA NÃO foi consultado.";
     case "AGUARDANDO_PRESTADOR": return consulta?.status === "AGENDADA_ENVIO"
-      ? "A consulta ao profissional será enviada no início do próximo expediente (a partir das 8h)."
+      ? "A consulta ao profissional está na fila e sai assim que possível (os profissionais recebem das 8h às 21h). Se o cliente perguntar, diga só que está verificando e já retorna. Nunca diga que fica para amanhã ou para outro dia."
       : "A solicitação JÁ foi enviada ao profissional e aguardamos o retorno dele. Se o cliente perguntar, diga que ainda está verificando e já retorna (sem citar o profissional).";
     case "AGUARDANDO_CLIENTE": return `Enviamos ao cliente a proposta do profissional (${prop || "sem detalhes"}). Aguardamos o cliente aceitar, recusar ou pedir outro horário.`;
     case "AGUARDANDO_ENDERECO": return "O cliente aceitou a proposta. Falta o endereço completo para confirmarmos com o profissional.";
@@ -2180,6 +2186,7 @@ NÚMEROS DE CASO são internos: nunca escreva "caso 210", "#210" ou qualquer nú
 
 SEU PAPEL: você interpreta as mensagens e redige a resposta. Você NÃO executa ações. O sistema decide e executa (consultar profissional, enviar orçamento, agendar) com base nos fatos que você extrai. Portanto:
 - Nunca diga que enviou, consultou, falou, avisou, repassou, agendou, confirmou ou cancelou algo, a menos que o ESTADO DO CASO diga que isso já aconteceu (exceção: a REUNIÃO ONLINE que você registrar em "reuniao", explicada abaixo).
+- Horário comercial: o atendimento é agora. Nunca diga que vai verificar amanhã, no dia seguinte ou "a partir das 8h"; diga que vai verificar e já retorna.
 - Nunca invente preço, prazo, disponibilidade, diagnóstico, cobertura de região ou que um profissional faz certo serviço. Valores: somente os listados em VALORES AUTORIZADOS ou que o próprio cliente mandou. Escreva o valor completo, com todos os dígitos e o ponto de milhar, igual ao original (ex.: R$ 1.190,00; R$ 320,00). Em foto ou documento, leia o valor dígito por dígito; se não der para ler com certeza, não diga o valor e peça para confirmar.
 - Nunca peça ao cliente para escolher profissional. Nunca informe telefone, CPF ou dados de profissionais ou de outras pessoas. Não peça CPF.
 - Bairro NÃO define preço: nunca diga que precisa do bairro para orçamento. Não pergunte bairro por iniciativa própria; o sistema e o profissional pedem quando for necessário. Nunca repita uma pergunta que você já fez nesta conversa, mesmo que o cliente não tenha respondido: siga em frente com o que ele disse.
@@ -2553,7 +2560,7 @@ async function decidirCliente(c, { tel, pessoa, caso, consulta, d, chaveLote }) 
     if (r.ok || r.agendado || r.guardada) {
       const anterior = String(consulta.pedido_pendente || "").startsWith("PERGUNTA DO CLIENTE:") ? consulta.pedido_pendente + " / " : "PERGUNTA DO CLIENTE: ";
       await atualizarConsulta(c, consulta.id, { pedido_pendente: txt(anterior + pergunta, 900) });
-      return { texto: r.agendado ? "Boa pergunta! Vou confirmar com o profissional a partir das 8h e te respondo." : "Boa pergunta! Vou confirmar com o profissional e já te respondo.", fixa: true };
+      return { texto: quandoRetorna(c, r) ? `Boa pergunta! Vou confirmar${quandoRetorna(c, r)} e te respondo.` : "Boa pergunta! Vou confirmar e já te respondo.", fixa: true };
     }
     await alertarEquipe(c, `Não consegui levar ao profissional a pergunta do cliente (caso #${caso.casoId}): "${txt(pergunta, 200)}". ${r.erro || ""}`, "falha-pergcli:" + chaveLote, caso.casoId);
     return { texto: "Um momento, por favor.", fixa: true };
@@ -2568,7 +2575,7 @@ async function decidirCliente(c, { tel, pessoa, caso, consulta, d, chaveLote }) 
       if (r.ok || r.agendado || r.guardada) {
         await atualizarConsulta(c, consulta.id, { status: "ENVIADA", pedido_pendente: `outro horário: ${pref}` });
         await mudarEtapa(c, caso, "AGUARDANDO_PRESTADOR");
-        return { texto: r.agendado ? "Certo! Vou verificar outro horário a partir das 8h e te retorno." : "Certo! Vou verificar outro horário e já te retorno.", fixa: true };
+        return { texto: quandoRetorna(c, r) ? `Certo! Vou verificar outro horário${quandoRetorna(c, r)} e te retorno.` : "Certo! Vou verificar outro horário e já te retorno.", fixa: true };
       }
       return { texto: "Um momento, por favor.", fixa: true };
     }
@@ -2651,7 +2658,7 @@ async function consultarPrestador(c, caso, pessoa, chaveLote, escolhido = null) 
   if (r.agendado) {
     await atualizarConsulta(c, ins.id, { status: "AGENDADA_ENVIO" });
     await mudarEtapa(c, caso, "AGUARDANDO_PRESTADOR");
-    return { texto: "Vou verificar o valor e a disponibilidade no início do próximo expediente, a partir das 8h, e te retorno.", fixa: true };
+    return { texto: quandoRetorna(c, r) ? `Vou verificar o valor e a disponibilidade${quandoRetorna(c, r)} e te retorno.` : "Vou verificar o valor e a disponibilidade e já te retorno.", fixa: true };
   }
   await atualizarConsulta(c, ins.id, { status: "FALHA" });
   const semTemplate = foraDaJanela(r) && !c.env.WHATSAPP_TEMPLATE_CONSULTA_TECNICO;
@@ -2673,7 +2680,7 @@ async function clienteAceitou(c, caso, consulta, chaveLote) {
   if (r.ok || r.agendado || r.guardada) {
     await atualizarConsulta(c, consulta.id, { status: "AGUARDANDO_CONFIRMACAO" });
     await mudarEtapa(c, caso, "AGUARDANDO_CONFIRMACAO_PRESTADOR");
-    return { texto: r.agendado ? "Perfeito! Vou confirmar a partir das 8h e te retorno." : "Perfeito! Vou confirmar e já te retorno.", fixa: true };
+    return { texto: quandoRetorna(c, r) ? `Perfeito! Vou confirmar${quandoRetorna(c, r)} e te retorno.` : "Perfeito! Vou confirmar e já te retorno.", fixa: true };
   }
   await alertarEquipe(c, `Cliente aprovou o caso #${caso.casoId}, mas a confirmação não chegou ao profissional (${r.erro}). Fazer manualmente.`, "falha-aceite:" + chaveLote, caso.casoId);
   return { texto: "Um momento, por favor.", fixa: true };
@@ -4306,6 +4313,34 @@ async function platformApi(request, env, caminho, metodo) {
       resultado[n] = !achados.length ? { encontrado: "NAO" } : resto.length ? { encontrado: "SIM", onde: [...new Set(achados.map(a => a.onde))], ultimo_contato: achados.map(a => a.em).filter(Boolean).sort().pop() || null } : { encontrado: "TALVEZ", quantos: achados.length };
     }
     return json({ sucesso: true, base: { whatsapp: pessoas.length, cadastro: fichas.length }, resultado });
+  }
+  // Base de clientes montada sozinha a partir das conversas: nome, número, o que buscou e quando, quantos serviços fez.
+  if (caminho === "/platform/clients" && metodo === "GET") {
+    await carregarTelsExtras(c).catch(() => {});
+    const equipe = new Set(String(c.env.EQUIPE_TELEFONES || "").split(/[,;\s]+/).map(digitos).filter(Boolean));
+    const ehCliente = (tel, tipo) => !["TECNICO", "ATENDENTE", "EQUIPE"].includes(String(tipo || "").toUpperCase()) && !prestadorPorTelefone(tel) && !variantesTel(tel).some(v => equipe.has(v));
+    const msUtc = v => v ? Date.parse(String(v).replace(" ", "T") + "Z") : null;
+    const pessoas = (await c.db.prepare(`SELECT p.id, p.nome, p.telefone, p.tipo, MIN(m.criado_em) primeira, MAX(m.criado_em) ultima, COUNT(*) mensagens
+      FROM mensagens m JOIN pessoas p ON p.id=m.pessoa_id WHERE m.empresa_id=? AND UPPER(m.direcao)='ENTRADA' GROUP BY p.id ORDER BY ultima DESC LIMIT 5000`).bind(EMPRESA_ID).all())?.results || [];
+    const casos = (await c.db.prepare("SELECT caso_id, cliente_id, etapa, fatos_json, criado_ms FROM d30_casos ORDER BY criado_ms LIMIT 50000").all())?.results || [];
+    const valores = new Map(((await c.db.prepare("SELECT caso_id, valor_cliente FROM d30_consultas WHERE status='CONFIRMADA' AND valor_cliente IS NOT NULL").all().catch(() => null))?.results || []).map(x => [x.caso_id, Number(x.valor_cliente)]));
+    const porCliente = new Map();
+    for (const k of casos) {
+      let f = {}; try { f = JSON.parse(k.fatos_json || "{}"); } catch { f = {}; }
+      const cat = CATEGORIAS[f.categoria]?.rotulo ? CATEGORIAS[f.categoria].rotulo.split(" (")[0] : "";
+      const o = txt([cat || f.servico, f.problema && f.problema !== f.servico ? f.problema : ""].filter(Boolean).join(": "), 140);
+      if (!porCliente.has(k.cliente_id)) porCliente.set(k.cliente_id, []);
+      porCliente.get(k.cliente_id).push({ ms: Number(k.criado_ms), o: o || "Não identificado", etapa: k.etapa, bairro: f.bairro || "", valor: valores.get(k.caso_id) || 0 });
+    }
+    const clientes = pessoas.filter(p => p.telefone && ehCliente(p.telefone, p.tipo)).map(p => {
+      const ks = porCliente.get(p.id) || [], feitos = ks.filter(k => k.etapa === "CONCLUIDO");
+      const ult = ks[ks.length - 1];
+      return { id: p.id, nome: p.nome || "", telefone: digitos(p.telefone), primeiro_contato_ms: msUtc(p.primeira), ultimo_contato_ms: msUtc(p.ultima), mensagens: Number(p.mensagens || 0),
+        pedidos: ks.length, servicos_feitos: feitos.length, valor_servicos: feitos.reduce((t, k) => t + k.valor, 0),
+        ultimo_pedido: ult ? ult.o : "", ultimo_pedido_ms: ult ? ult.ms : null, situacao: ult ? ult.etapa : "", bairro: [...ks].reverse().find(k => k.bairro)?.bairro || "",
+        buscas: ks.slice(-10).reverse().map(k => ({ ms: k.ms, o: k.o, etapa: k.etapa })) };
+    });
+    return json({ sucesso: true, clientes });
   }
   if (caminho === "/platform/import/clients" && metodo === "POST") return json({ sucesso: true, ...(await importarClientes(c, corpo?.linhas, corpo?.origem)) });
   if (caminho === "/platform/import/clients" && metodo === "GET") {
