@@ -2,7 +2,7 @@ import { rotasMeta, aoAprovar } from "./meta.js";
 import { rotasSocial } from "./social.js";
 import { rotasVoz, falarComVoz, configVoz } from "./voz.js";
 import { rotasUso, registrarUso, custoOpenAI, tokensDe, precosDaOrg, orgDoUso, recursoDo, comRecurso } from "./uso.js";
-import { rotasGoogle, responderAvaliacaoGoogle, apagarRespostaGoogle, contaGoogleDe, desempenhoAoVivo, sincronizarConta, linkDoPerfil } from "./google.js";
+import { rotasGoogle, responderAvaliacaoGoogle, apagarRespostaGoogle, contaGoogleDe, desempenhoAoVivo, sincronizarConta, linkDoPerfil, buscarConcorrentes, placesConfigurado } from "./google.js";
 // ============================================================================
 // DENIA Platform — Estúdio de Marketing e Assistente DENIA (texto e voz)
 // ============================================================================
@@ -452,6 +452,26 @@ export async function preencherMarca(env, orgId, marcaId, d = {}) {
   return { preenchidos: campos };
 }
 
+// Posição no Google Maps de cada palavra-chave, medida sozinha (Places API): ao adicionar, toda semana e no "Medir agora".
+// 0 = não aparece entre os 20 primeiros. É a busca "palavra + cidade" sem a localização de quem procura.
+async function medirPalavra(env, k, p) {
+  const conta = await contaGoogleDe(env, p.org_id, p.marca_id);
+  if (!conta) { const e = new Error("Conecte o Google deste perfil para medir a posição."); e.status = 409; throw e; }
+  const r = await buscarConcorrentes(env, k, conta, [p.palavra, p.cidade].filter(Boolean).join(" "));
+  const semana = semanaDe(new Date(k.agora(env) - 3 * 3600000).toISOString().slice(0, 10));
+  await env.DB.prepare("INSERT OR REPLACE INTO plt_mk_posicoes(palavra_id,semana,posicao,criado_ms) VALUES(?,?,?,?)").bind(p.id, semana, r.posicao || 0, k.agora(env)).run();
+  return { semana, posicao: r.posicao || 0, total: r.lugares.length };
+}
+export async function medirPosicoesDaSemana(env, k, orgId, limite = 5) {
+  if (!placesConfigurado(env)) return 0;
+  await garantir(env);
+  const semana = semanaDe(new Date(k.agora(env) - 3 * 3600000).toISOString().slice(0, 10));
+  const lista = (await env.DB.prepare(`SELECT p.* FROM plt_mk_palavras p JOIN plt_mk_google g ON g.org_id=p.org_id AND g.marca_id=p.marca_id
+    WHERE p.org_id=? AND NOT EXISTS (SELECT 1 FROM plt_mk_posicoes x WHERE x.palavra_id=p.id AND x.semana=?) LIMIT ?`).bind(orgId, semana, limite).all().catch(() => null))?.results || [];
+  let n = 0;
+  for (const p of lista) { try { await medirPalavra(env, k, p); n++; } catch (e) { console.error("posição", p.id, e?.message); break; } }
+  return n;
+}
 // Cron: toda segunda-feira (a partir das 8h de Brasília), um relatório por marca com perfil do Google conectado.
 export async function relatoriosDaSemana(env, k, orgId) {
   if (!chave(env)) return [];
@@ -993,7 +1013,7 @@ Responda em JSON: {"resposta":""}`, `${resumoMarca(marca)}\n\nAvaliação de ${a
       const r = await env.DB.prepare(`SELECT * FROM plt_mk_palavras WHERE org_id=? ${marca ? "AND marca_id=?" : ""} ORDER BY id`).bind(...(marca ? [orgId, marca] : [orgId])).all();
       const palavras = r?.results || [];
       const pos = palavras.length ? ((await env.DB.prepare(`SELECT * FROM plt_mk_posicoes WHERE palavra_id IN (${palavras.map(() => "?").join(",")}) ORDER BY semana`).bind(...palavras.map(p => p.id)).all())?.results || []) : [];
-      return json({ palavras: palavras.map(p => ({ ...p, posicoes: pos.filter(x => x.palavra_id === p.id) })) });
+      return json({ medicao_automatica: placesConfigurado(env), palavras: palavras.map(p => ({ ...p, posicoes: pos.filter(x => x.palavra_id === p.id) })) });
     }
     if (resto === "palavras" && metodo === "POST") {
       exigir("AGENTE");
@@ -1003,12 +1023,19 @@ Responda em JSON: {"resposta":""}`, `${resumoMarca(marca)}\n\nAvaliação de ${a
       const palavra = txt(c.palavra, 120);
       if (palavra.length < 2) return json({ erro: "Informe a palavra-chave." }, 400);
       const n = await env.DB.prepare("INSERT INTO plt_mk_palavras(org_id,marca_id,palavra,cidade,criado_ms) VALUES(?,?,?,?,?) RETURNING id").bind(orgId, marca.id, palavra, txt(c.cidade, 120) || marca.cidade || null, agora(env)).first();
-      return json({ ok: true, id: n.id });
+      // Já mede a posição na hora (se der).
+      let medicao = null;
+      if (placesConfigurado(env)) medicao = await medirPalavra(env, k, { id: n.id, org_id: orgId, marca_id: marca.id, palavra, cidade: txt(c.cidade, 120) || marca.cidade || "" }).catch(e => ({ erro: e.message }));
+      return json({ ok: true, id: n.id, medicao });
     }
-    if ((m = resto.match(/^palavras\/(\d{1,12})\/(posicao|remover)$/)) && metodo === "POST") {
+    if ((m = resto.match(/^palavras\/(\d{1,12})\/(posicao|remover|medir)$/)) && metodo === "POST") {
       exigir("AGENTE");
       const p = await env.DB.prepare("SELECT * FROM plt_mk_palavras WHERE id=? AND org_id=?").bind(Number(m[1]), orgId).first();
       if (!p) return json({ erro: "Palavra-chave não encontrada." }, 404);
+      if (m[2] === "medir") {
+        if (!placesConfigurado(env)) return json({ erro: "Para medir sozinha, falta a variável GOOGLE_PLACES_API_KEY (Places API do Google) na Hostinger.", codigo: "PLACES_NAO_CONFIGURADO" }, 503);
+        try { return json({ ok: true, ...(await medirPalavra(env, k, p)) }); } catch (e) { return json({ erro: e.message }, e.status && e.status < 500 ? e.status : 502); }
+      }
       if (m[2] === "remover") { await env.DB.batch([env.DB.prepare("DELETE FROM plt_mk_palavras WHERE id=?").bind(p.id), env.DB.prepare("DELETE FROM plt_mk_posicoes WHERE palavra_id=?").bind(p.id)]); return json({ ok: true }); }
       const c = await corpoOu(1000);
       const semana = semanaDe(dataISO(c.semana) || new Date(agora(env)).toISOString().slice(0, 10));

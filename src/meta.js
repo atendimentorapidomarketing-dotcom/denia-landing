@@ -163,16 +163,26 @@ export async function rotasMeta(request, env, k, orgId, papel, resto) {
     if (erro) return erro;
     const reg = await lerNonce(env, k, txt(corpo.n, 60));
     if (!reg || reg.o !== orgId || reg.u !== sessao.usuario.id || !reg.paginas) return json({ erro: "A conexão expirou. Clique em Conectar de novo." }, 410);
-    const p = reg.paginas.find(x => x.id === String(corpo.pagina_id || ""));
-    if (!p) return json({ erro: "Escolha uma das páginas." }, 400);
-    await env.DB.prepare(`INSERT INTO plt_mk_contas(org_id,marca_id,pagina_id,pagina_nome,ig_id,ig_usuario,token_cifrado,criado_por,criado_ms,atualizado_ms) VALUES(?,?,?,?,?,?,?,?,?,?)
-      ON CONFLICT(org_id, marca_id) DO UPDATE SET pagina_id=excluded.pagina_id, pagina_nome=excluded.pagina_nome, ig_id=excluded.ig_id, ig_usuario=excluded.ig_usuario, token_cifrado=excluded.token_cifrado, criado_por=excluded.criado_por, atualizado_ms=excluded.atualizado_ms`)
-      .bind(orgId, reg.m, p.id, p.nome, p.ig_id || null, p.ig_usuario || null, await k.cifrar(env, p.token), sessao.usuario.email, agora(env), agora(env)).run();
-    if (p.ig_usuario) await env.DB.prepare("UPDATE plt_mk_marcas SET instagram=COALESCE(NULLIF(instagram,''),?) WHERE id=? AND org_id=?").bind(p.ig_usuario, reg.m, orgId).run();
+    // Uma ou várias páginas: a primeira vai para o perfil que pediu a conexão; cada outra vira um perfil novo.
+    const ids = [...new Set((Array.isArray(corpo.pagina_ids) ? corpo.pagina_ids : [corpo.pagina_id]).map(x => String(x || "")).filter(Boolean))].slice(0, 30);
+    const escolhidas = ids.map(id => reg.paginas.find(x => x.id === id)).filter(Boolean);
+    if (!escolhidas.length) return json({ erro: "Escolha uma das páginas." }, 400);
+    const conectadas = [];
+    for (const [n, p] of escolhidas.entries()) {
+      let marcaId = reg.m;
+      if (n > 0) marcaId = (await env.DB.prepare("INSERT INTO plt_mk_marcas(org_id,nome,ativa,criado_ms) VALUES(?,?,1,?) RETURNING id").bind(orgId, String(p.nome || "Novo perfil").slice(0, 200), agora(env)).first()).id;
+      else if (corpo.renomear === true) await env.DB.prepare("UPDATE plt_mk_marcas SET nome=? WHERE id=? AND org_id=?").bind(String(p.nome || "").slice(0, 200) || "Novo perfil", marcaId, orgId).run();
+      await env.DB.prepare(`INSERT INTO plt_mk_contas(org_id,marca_id,pagina_id,pagina_nome,ig_id,ig_usuario,token_cifrado,criado_por,criado_ms,atualizado_ms) VALUES(?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(org_id, marca_id) DO UPDATE SET pagina_id=excluded.pagina_id, pagina_nome=excluded.pagina_nome, ig_id=excluded.ig_id, ig_usuario=excluded.ig_usuario, token_cifrado=excluded.token_cifrado, criado_por=excluded.criado_por, atualizado_ms=excluded.atualizado_ms`)
+        .bind(orgId, marcaId, p.id, p.nome, p.ig_id || null, p.ig_usuario || null, await k.cifrar(env, p.token), sessao.usuario.email, agora(env), agora(env)).run();
+      if (p.ig_usuario) await env.DB.prepare("UPDATE plt_mk_marcas SET instagram=COALESCE(NULLIF(instagram,''),?) WHERE id=? AND org_id=?").bind(p.ig_usuario, marcaId, orgId).run();
+      await auditar(env, request, sessao, orgId, "INTEGRACAO", `Meta conectada à marca #${marcaId}: página ${p.nome}${p.ig_usuario ? " · @" + p.ig_usuario : " (sem Instagram profissional ligado)"}`);
+      const auto = await preencherPelaMeta(env, orgId, marcaId, p).catch(e => { console.error("preencher pela Meta", e?.message); return { preenchidos: [] }; });
+      conectadas.push({ marca_id: marcaId, pagina: p.nome, instagram: p.ig_usuario || null, preenchidos: auto.preenchidos });
+    }
     await env.DB.prepare("DELETE FROM plt_meta WHERE chave=?").bind("meta_n_" + txt(corpo.n, 60)).run();
-    await auditar(env, request, sessao, orgId, "INTEGRACAO", `Meta conectada à marca #${reg.m}: página ${p.nome}${p.ig_usuario ? " · @" + p.ig_usuario : " (sem Instagram profissional ligado)"}`);
-    const auto = await preencherPelaMeta(env, orgId, reg.m, p).catch(e => { console.error("preencher pela Meta", e?.message); return { preenchidos: [] }; });
-    return json({ ok: true, pagina: p.nome, instagram: p.ig_usuario || null, preenchidos: auto.preenchidos });
+    const pri = conectadas[0];
+    return json({ ok: true, pagina: pri.pagina, instagram: pri.instagram, preenchidos: pri.preenchidos, conectadas });
   }
   if (resto === "meta/desconectar" && metodo === "POST") {
     if (!pode(papel, "ADMIN")) return json({ erro: "Somente administradores." }, 403);

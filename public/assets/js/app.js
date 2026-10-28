@@ -57,7 +57,7 @@
       $("modal-titulo").textContent = titulo;
       const corpo = $("modal-texto");
       corpo.replaceChildren(...[].concat(conteudo).map(c => typeof c === "string" ? h("p", { text: c }) : c));
-      ok.textContent = soInformar ? "Entendi" : confirmar;
+      ok.textContent = soInformar ? (confirmar !== "Confirmar" ? confirmar : "Entendi") : confirmar;
       ok.className = "btn " + (perigo ? "btn-perigo" : "btn-primario");
       cancel.textContent = cancelar;
       cancel.classList.toggle("oculto", soInformar);
@@ -4423,7 +4423,7 @@ Botão só com texto = resposta.` })),
   }
   function semMarcas(el) {
     el.appendChild(h("div", { class: "cartao vidro" }, vazio("Conecte o primeiro perfil", "Cada perfil tem o seu Instagram, Facebook e Google. A Central pode cuidar de vários perfis.", ICONES.foguete),
-      h("div", { class: "acoes", style: "justify-content:center" }, h("a", { class: "btn btn-primario", href: "#/marcas" }, "Conectar perfil"))));
+      h("div", { class: "acoes", style: "justify-content:center" }, pode("ADMIN") ? [botao("Conectar Google", () => conectarNovoPerfil("google"), "btn-primario"), botao("Conectar Instagram e Facebook", () => conectarNovoPerfil("meta"), "btn-primario")] : h("a", { class: "btn btn-primario", href: "#/marcas" }, "Ver contas conectadas"))));
   }
 
   // Painel "Criar com IA": posts da semana (com as artes) e imagens avulsas.
@@ -4728,12 +4728,23 @@ Botão só com texto = resposta.` })),
   const contaDa = (meta, marcaId) => (meta.contas || []).find(c => String(c.marca_id) === String(marcaId)) || null;
   const NOME_PREENCHIDO = { logo: "logo", segmento: "segmento", cidade: "cidade", whatsapp: "telefone", site: "site", instagram: "Instagram", facebook: "Facebook", google: "Google", horarios: "horários", tom: "tom de voz", publico: "público", diferenciais: "diferenciais" };
   const textoPreenchidos = l => (l && l.length) ? ` Preenchido automaticamente: ${l.map(c => NOME_PREENCHIDO[c] || c).join(", ")}.` : "";
+  // Perfil criado só para conectar uma conta nova: ganha o nome da página/perfil escolhido.
+  const perfilNovo = marcaId => { try { const v = sessionStorage.getItem("denia_perfil_novo"); sessionStorage.removeItem("denia_perfil_novo"); return Boolean(v) && v === String(marcaId); } catch { return false; } };
+  // Escolher o tipo de conta nova (Google ou Instagram/Facebook).
+  async function conectarOutraConta() {
+    let qual = null;
+    const escolher = q => { qual = q; if (fecharModal) fecharModal(); };
+    await modal({ titulo: "Conectar uma conta nova", soInformar: true, confirmar: "Cancelar", conteudo: [h("p", { text: "Entre com a conta e marque os perfis ou páginas que quer trazer. Cada um vira um perfil aqui, com a logo e os dados puxados sozinhos." }),
+      h("div", { class: "acoes" }, botao("Google (perfil da empresa)", () => escolher("google"), "btn-primario"), botao("Instagram e Facebook", () => escolher("meta"), "btn-primario"))] });
+    if (qual) await conectarNovoPerfil(qual);
+  }
   // Sem nenhum perfil cadastrado: cria um com o nome da empresa e já abre a conexão (o resto vem das redes e do Google).
   async function conectarNovoPerfil(qual) {
     try {
       const r = await mk("marcas", { metodo: "POST", corpo: { nome: estado.org.nome || "Minha empresa", idioma: IDIOMA } });
       cacheMarcas = null;
       const m = { id: r.id, nome: estado.org.nome };
+      try { sessionStorage.setItem("denia_perfil_novo", String(r.id)); } catch { /* sem armazenamento: só não renomeia */ }
       if (qual === "google") await conectarGoogle(m); else await conectarMeta(m);
     } catch (e) { aviso(e.message, "erro"); }
   }
@@ -4773,13 +4784,14 @@ Botão só com texto = resposta.` })),
     try { d = await mk(`meta/paginas?n=${encodeURIComponent(nonce)}`); }
     catch (e) { aviso(e.message, "erro"); location.hash = "#/marcas"; return; }
     const opcoes = h("div", { class: "lista-saude lista-rolavel" }, d.paginas.map((p, i) => h("label", { class: "opcao-pagina" },
-      h("input", { type: "radio", name: "pagina-meta", value: p.id, checked: i === 0 }),
+      h("input", { type: "checkbox", name: "pagina-meta", value: p.id, checked: i === 0 }),
       h("span", {}, h("strong", { text: p.nome }), h("span", { class: "sub", text: p.ig_usuario ? `Instagram @${p.ig_usuario}` : "Sem Instagram profissional ligado a esta página" })))));
-    if (!(await modal({ titulo: "Qual página você quer conectar?", conteudo: [...(d.paginas.length > 6 ? [filtroDaLista(opcoes, `Procurar entre as ${d.paginas.length} páginas`)] : []), opcoes], confirmar: "Conectar" }))) { location.hash = "#/marcas"; return; }
-    const escolhida = opcoes.querySelector("input:checked");
+    if (!(await modal({ titulo: "Quais páginas você quer conectar?", conteudo: [h("p", { class: "dica", text: "Marque uma ou várias. Cada página marcada vira um perfil, com a logo e os dados puxados sozinhos." }), ...(d.paginas.length > 6 ? [filtroDaLista(opcoes, `Procurar entre as ${d.paginas.length} páginas`)] : []), opcoes], confirmar: "Conectar" }))) { location.hash = "#/marcas"; return; }
+    const ids = [...opcoes.querySelectorAll("input:checked")].map(x => x.value);
     try {
-      const r = await mk("meta/escolher", { metodo: "POST", corpo: { n: nonce, pagina_id: escolhida && escolhida.value } });
-      aviso((r.instagram ? `Conectado: ${r.pagina} · @${r.instagram}.` : `Conectado: ${r.pagina}.`) + textoPreenchidos(r.preenchidos), "ok");
+      const r = await mk("meta/escolher", { metodo: "POST", corpo: { n: nonce, pagina_ids: ids, renomear: perfilNovo(d.marca_id) } });
+      const cs = r.conectadas || [];
+      aviso(cs.length > 1 ? `${cs.length} páginas conectadas: ${cs.map(c => c.pagina).join(", ")}. Cada uma virou um perfil.` : (r.instagram ? `Conectado: ${r.pagina} · @${r.instagram}.` : `Conectado: ${r.pagina}.`) + textoPreenchidos(r.preenchidos), "ok");
       cacheMeta = null; cacheMarcas = null;
     } catch (e) { aviso(e.message, "erro"); }
     location.hash = "#/marcas";
@@ -4812,12 +4824,13 @@ Botão só com texto = resposta.` })),
     try { d = await mk(`google/locais?n=${encodeURIComponent(nonce)}`); }
     catch (e) { aviso(e.message, "erro"); location.hash = "#/marcas"; return; }
     const opcoes = h("div", { class: "lista-saude lista-rolavel" }, d.locais.map((l, i) => h("label", { class: "opcao-pagina" },
-      h("input", { type: "radio", name: "local-google", value: l.id, checked: i === 0 }),
+      h("input", { type: "checkbox", name: "local-google", value: l.id, checked: i === 0 }),
       h("span", {}, h("strong", { text: l.titulo }), h("span", { class: "sub", text: l.endereco || "Perfil sem endereço (atende na região)" })))));
-    if (!(await modal({ titulo: "Qual perfil do Google você quer conectar?", conteudo: [...(d.locais.length > 6 ? [filtroDaLista(opcoes, `Procurar entre os ${d.locais.length} perfis (nome ou endereço)`)] : []), opcoes], confirmar: "Conectar" }))) { location.hash = "#/marcas"; return; }
-    const escolhido = opcoes.querySelector("input:checked");
+    if (!(await modal({ titulo: "Quais perfis do Google você quer conectar?", conteudo: [h("p", { class: "dica", text: "Marque um ou vários. Cada perfil marcado vira um perfil na DENIA, com a logo e os dados puxados sozinhos." }), ...(d.locais.length > 6 ? [filtroDaLista(opcoes, `Procurar entre os ${d.locais.length} perfis (nome ou endereço)`)] : []), opcoes], confirmar: "Conectar" }))) { location.hash = "#/marcas"; return; }
+    const ids = [...opcoes.querySelectorAll("input:checked")].map(x => x.value);
     try {
-      const r = await mk("google/escolher", { metodo: "POST", corpo: { n: nonce, local_id: escolhido && escolhido.value } });
+      const r = await mk("google/escolher", { metodo: "POST", corpo: { n: nonce, local_ids: ids, renomear: perfilNovo(d.marca_id) } });
+      if ((r.conectados || []).length > 1) { aviso(`${r.conectados.length} perfis do Google conectados: ${r.conectados.map(c => c.perfil).join(", ")}. Cada um virou um perfil.`, "ok"); cacheGoogle = null; cacheMarcas = null; location.hash = "#/marcas"; return; }
       const s = r.sincronizacao || {};
       aviso(`Google conectado: ${r.perfil}.${s.avaliacoes_total != null ? ` ${s.avaliacoes_total} avaliação(ões) trazidas do perfil.` : ""}` + textoPreenchidos(r.preenchidos), "ok");
       cacheGoogle = null; cacheMarcas = null;
@@ -4828,7 +4841,7 @@ Botão só com texto = resposta.` })),
   async function paginaMarcas(el, param, vivo) {
     if (String(param || "").startsWith("meta-")) { escolherPaginaMeta(String(param).slice(5)); }
     if (String(param || "").startsWith("google-")) { escolherLocalGoogle(String(param).slice(7)); }
-    el.appendChild(cabeca("Contas conectadas", "Conecte aqui o Google, o Instagram e o Facebook de cada perfil da empresa. Cada perfil tem o seu tom de voz, o seu público e as suas contas.", pode("ADMIN") ? botao("Novo perfil", () => formMarca({}), "btn-primario") : null));
+    el.appendChild(cabeca("Contas conectadas", "Conecte aqui o Google, o Instagram e o Facebook de cada perfil da empresa. Cada perfil tem o seu tom de voz, o seu público e as suas contas.", pode("ADMIN") ? h("div", { class: "acoes" }, botao("Conectar conta nova", () => conectarOutraConta(), "btn-primario"), botao("Novo perfil à mão", () => formMarca({}), "btn-secundario")) : null));
     const area = h("div", { class: "grade grade-3" }, carregando());
     el.appendChild(area);
     let lista, meta, goo;
@@ -5183,7 +5196,7 @@ Botão só com texto = resposta.` })),
     trocar(area, h("section", { class: "grade grade-2" },
       h("div", { class: "cartao vidro" }, h("h3", { text: "Contas por perfil" }),
         h("ul", { class: "lista-saude" }, lista.map(m => { const c = contaDa(meta, m.id); return h("li", {}, h("span", {}, h("strong", { text: m.nome }), h("span", { class: "sub", text: c ? (canal === "instagram" ? (c.ig_usuario ? "@" + c.ig_usuario : "—") : c.pagina_nome) : m[campoConta] ? (canal === "instagram" ? "@" + m.instagram : m.facebook) : "Conta não informada" })), estadoCanal(m)); })),
-        h("a", { class: "btn btn-secundario btn-pequeno", href: "#/marcas", style: "margin-top:14px;width:fit-content" }, "Conectar ou reconectar contas")),
+        h("div", { class: "acoes", style: "margin-top:14px" }, pode("ADMIN") ? botao("Conectar conta nova", () => conectarNovoPerfil("meta"), "btn-primario btn-pequeno") : null, h("a", { class: "btn btn-secundario btn-pequeno", href: "#/marcas" }, "Ver todas as contas conectadas"))),
       h("div", { class: "cartao vidro" }, h("h3", { text: "O que a DENIA faz neste canal" }),
         h("ul", { class: "lista-saude" },
           h("li", {}, "Planejar e criar posts, carrosséis, stories e reels", selo("Disponível", "ok")),
@@ -5239,6 +5252,7 @@ Botão só com texto = resposta.` })),
           c && c.erro ? h("p", { class: "nota nota-alerta", text: `${c.erro} Clique em Reconectar Google e entre com a conta dona do perfil.` }) : null,
           pode("ADMIN") ? h("div", { class: "acoes" }, c ? botao("Reconectar Google", () => conectarGoogle(marca), c.erro ? "btn-primario" : "btn-secundario") : null, c ? botao("Atualizar agora", async (_e, b) => { b.textContent = "Atualizando…"; try { const r = await mk("google/sincronizar", { metodo: "POST", corpo: { marca_id: marcaId } }); aviso(`Atualizado: ${r.avaliacoes_novas} avaliação(ões) nova(s).`, "ok"); navegar(); } catch (e) { aviso(e.message, "erro"); } finally { b.textContent = "Atualizar agora"; } }, "btn-secundario")
             : botao("Conectar Google", () => conectarGoogle(marca), "btn-primario")) : null,
+          pode("ADMIN") ? h("div", { class: "acoes", style: "margin-top:10px" }, botao("Conectar outra conta do Google", () => conectarNovoPerfil("google"), "btn-secundario btn-pequeno"), h("span", { class: "sub", text: "Traz outros perfis de empresa (de outra conta do Google ou da mesma). Cada um vira um perfil aqui." })) : null,
           h("p", { class: "nota nota-alerta", text: "Importante: a DENIA nunca escreve avaliações para o próprio perfil — isso é proibido pelo Google e pode suspender o perfil. Ela pede avaliações aos clientes reais depois de cada atendimento." })));
       }
     } catch (e) { falha(area, e); }
@@ -5790,27 +5804,38 @@ Botão só com texto = resposta.` })),
         h("p", { class: "fx-nota", text: "Perguntas e respostas: o Google tirou essa parte dos perfis, por isso ela não entra mais na checagem." })));
   }
   async function abaPalavras(area, marcaId, marca) {
-    const lista = (await mk(`palavras?marca=${marcaId}`)).palavras || [];
+    const d = await mk(`palavras?marca=${marcaId}`);
+    const lista = d.palavras || [], auto = d.medicao_automatica;
     const semanas = Array.from({ length: 6 }, (_, i) => isoLocal(somarDias(segundaDe(new Date()), -7 * (5 - i))));
-    const palavra = h("input", { class: "entrada", placeholder: "Ex.: assistência técnica de geladeira" });
+    const palavra = h("input", { class: "entrada", placeholder: "Ex.: pedreiro" });
     const cidade = h("input", { class: "entrada", value: (marca && marca.cidade) || "", placeholder: "Cidade ou bairro" });
-    trocar(area, 
+    const txtPos = v => v == null ? "—" : v === 0 ? "fora do top 20" : v + "º";
+    const medir = async (p, b) => {
+      if (b) { b.disabled = true; b.textContent = "Medindo…"; }
+      try { const r = await mk(`palavras/${p.id}/medir`, { metodo: "POST", corpo: {} }); aviso(r.posicao ? `"${p.palavra}": ${r.posicao}º lugar no Google Maps.` : `"${p.palavra}": o perfil não aparece entre os ${r.total || 20} primeiros.`, r.posicao ? "ok" : "info"); navegar(); }
+      catch (e) { aviso(e.message, "erro"); if (b) { b.disabled = false; b.textContent = "Medir agora"; } }
+    };
+    trocar(area,
       pode("AGENTE") ? h("section", { class: "cartao vidro formulario" }, h("h3", { style: "margin:0", text: "Acompanhar palavra-chave" }),
-        h("p", { style: "margin:0;color:var(--texto-2);font-size:14px", text: "As buscas que trazem clientes. A posição é o lugar do perfil no Google Maps para aquela busca, na cidade indicada." }),
+        h("p", { style: "margin:0;color:var(--texto-2);font-size:14px", text: "A DENIA mede sozinha o lugar do perfil no Google Maps para a busca \"palavra + cidade\": ao adicionar e toda semana. É a busca sem a localização de quem procura; cada pessoa pode ver uma ordem um pouco diferente, conforme onde está." }),
+        auto ? null : h("p", { class: "nota nota-alerta", text: "A medição automática ainda não está ligada: falta a variável GOOGLE_PLACES_API_KEY na Hostinger (Google Cloud → APIs e serviços → Credenciais → Criar chave de API, com a Places API (New) ativada). O Google cobra centavos por medição." }),
         h("div", { class: "linha-form" }, campo("Palavra-chave", palavra), campo("Cidade", cidade)),
-        h("div", { class: "acoes" }, botao("Adicionar", async () => { try { await mk("palavras", { metodo: "POST", corpo: { marca_id: marcaId, palavra: palavra.value, cidade: cidade.value } }); navegar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario"))) : null,
+        h("div", { class: "acoes" }, botao("Adicionar", async (_e, b) => {
+          b.disabled = true; b.textContent = auto ? "Adicionando e medindo…" : "Adicionando…";
+          try { const r = await mk("palavras", { metodo: "POST", corpo: { marca_id: marcaId, palavra: palavra.value, cidade: cidade.value } });
+            if (r.medicao && r.medicao.erro) aviso(r.medicao.erro, "erro"); else if (r.medicao) aviso(r.medicao.posicao ? `${r.medicao.posicao}º lugar no Google Maps.` : "O perfil não aparece entre os 20 primeiros para essa busca.", r.medicao.posicao ? "ok" : "info");
+            navegar(); } catch (e) { aviso(e.message, "erro"); b.disabled = false; b.textContent = "Adicionar"; } }, "btn-primario"))) : null,
       lista.length ? h("div", { class: "tabela-caixa" }, h("table", {},
-        h("thead", {}, h("tr", {}, h("th", { text: "Palavra-chave" }), semanas.map(s => h("th", { text: dataCurta(s) })), h("th", { text: "Esta semana" }), h("th", { text: "" }))),
+        h("thead", {}, h("tr", {}, h("th", { text: "Palavra-chave" }), semanas.map((s, i) => h("th", { text: i === 5 ? "Esta semana" : dataCurta(s) })), h("th", { text: "" }))),
         h("tbody", {}, lista.map(p => {
           const pos = s => (p.posicoes.find(x => x.semana === s) || {}).posicao;
           const atual = pos(semanas[5]), antes = pos(semanas[4]);
           const tendencia = atual && antes ? (atual < antes ? h("span", { class: "sobe", text: " ▲" + (antes - atual) }) : atual > antes ? h("span", { class: "desce", text: " ▼" + (atual - antes) }) : null) : null;
-          const inp = h("input", { class: "entrada pos-entrada", type: "number", min: "1", max: "100", value: atual || "", placeholder: "nº" });
-          inp.addEventListener("change", async () => { try { await mk(`palavras/${p.id}/posicao`, { metodo: "POST", corpo: { semana: semanas[5], posicao: inp.value } }); aviso("Posição salva.", "ok"); } catch (e) { aviso(e.message, "erro"); } });
           return h("tr", {}, h("td", {}, h("strong", { text: p.palavra }), h("span", { class: "sub", text: p.cidade || "" })),
-            semanas.map(s => h("td", { text: pos(s) ? pos(s) + "º" : "—" })), h("td", {}, inp, tendencia),
-            h("td", {}, pode("AGENTE") ? botao("Remover", async () => { await mk(`palavras/${p.id}/remover`, { metodo: "POST", corpo: {} }); navegar(); }, "btn-secundario btn-pequeno") : null));
-        })))) : h("div", { class: "cartao vidro" }, vazio("Nenhuma palavra-chave ainda", "Adicione as buscas mais importantes para esta marca.", ICONES.caixa)));
+            semanas.map((s, i) => h("td", {}, txtPos(pos(s)), i === 5 ? tendencia : null)),
+            h("td", { class: "td-acoes" }, pode("AGENTE") ? h("div", { class: "acoes" }, auto ? botao("Medir agora", (_e, b) => medir(p, b), "btn-secundario btn-pequeno") : null,
+              botao("Remover", async () => { await mk(`palavras/${p.id}/remover`, { metodo: "POST", corpo: {} }); navegar(); }, "btn-secundario btn-pequeno")) : null));
+        })))) : h("div", { class: "cartao vidro" }, vazio("Nenhuma palavra-chave ainda", "Adicione as buscas mais importantes, como o serviço principal e a cidade.", ICONES.caixa)));
   }
   // Desempenho no Google: qualquer período de 7 dias a 18 meses (ou datas escolhidas), comparação, detalhe, gráfico dia a dia e planilha.
   const PERIODOS_G = [["7", "7 dias"], ["30", "30 dias"], ["60", "60 dias"], ["90", "90 dias"], ["180", "6 meses"], ["365", "12 meses"], ["540", "18 meses"], ["mes", "Este mês"], ["mes_passado", "Mês passado"], ["datas", "Escolher datas"]];

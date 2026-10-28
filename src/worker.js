@@ -20,7 +20,7 @@
 //   CONTATO_WHATSAPP, CONTATO_EMAIL  (opcionais) botões de contato do site
 // ============================================================================
 
-import { apiMarketing, apiAssistente, analisarAvaliacoesPendentes, relatoriosDaSemana } from "./marketing.js";
+import { apiMarketing, apiAssistente, analisarAvaliacoesPendentes, relatoriosDaSemana, medirPosicoesDaSemana } from "./marketing.js";
 import { retornoMeta, servirMidiaPublica, publicarPendentes } from "./meta.js";
 import { retornoGoogle, sincronizarGooglePendentes } from "./google.js";
 import { comOrgUso, comRecurso, descarregarUso } from "./uso.js";
@@ -31,7 +31,7 @@ import { DDL_ZAP, webhookZap, rotasZap, webhookTelegram, segredoTelegram, tokenT
 import { montarRelatorio, planilhaRelatorio, textoRelatorio, base64, ultimos7Dias, lerConfigRelatorio, horaDeEnviar, diaBR, dataBR, DIAS_SEMANA, inicioDoDia as inicioDoDiaBR } from "./relatorio.js";
 import { lerPlanos, acessoDa, recursoDaRota, planoMinimo, rotasPlano, webhookAsaas, lembretesDePlano, TESTE_DIAS, STATUS as STATUS_PLANO, PLANOS_PADRAO, RECURSOS } from "./planos.js";
 
-const VERSAO = "3.13.0";
+const VERSAO = "3.14.0";
 // Versão dos Termos de uso e da Política de privacidade aceitas no cadastro.
 const VERSAO_TERMOS = "2026-10-16";
 // WhatsApp da Central de Atendimento (botão flutuante do site).
@@ -724,6 +724,7 @@ async function cuidarDasAvaliacoes(env, k) {
   // Relatório semanal (segunda-feira), para as empresas com perfil do Google conectado.
   const comGoogle = (await env.DB.prepare("SELECT DISTINCT org_id FROM plt_mk_google LIMIT 20").all().catch(() => null))?.results || [];
   for (const { org_id } of comGoogle) {
+    await medirPosicoesDaSemana(env, k, org_id).catch(e => console.error("posições", e?.message));
     const feitos = await relatoriosDaSemana(comRecurso(await comIA(env, org_id), "automático/relatórios"), k, org_id);
     if (!feitos.length || !emailConfigurado(env)) continue;
     for (const f of feitos) for (const para of await responsaveisDa(env, org_id)) await enviarEmail(env, para, `DENIA — relatório da semana: ${f.marca}`, f.texto + (base ? `\n\nVeja no painel: ${base}/app#/google/relatorio` : ""));

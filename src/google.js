@@ -187,20 +187,29 @@ export async function rotasGoogle(request, env, k, orgId, papel, resto) {
     const n = txt(corpo.n, 60);
     const reg = await lerNonce(env, k, n);
     if (!reg || reg.o !== orgId || reg.u !== sessao.usuario.id || !reg.locais) return json({ erro: "A conexão expirou. Clique em Conectar Google de novo." }, 410);
-    const l = reg.locais.find(x => x.local === String(corpo.local_id || ""));
-    if (!l) return json({ erro: "Escolha um dos perfis." }, 400);
-    await env.DB.prepare(`INSERT INTO plt_mk_google(org_id,marca_id,conta_nome,local_nome,local_titulo,token_cifrado,criado_por,criado_ms,atualizado_ms) VALUES(?,?,?,?,?,?,?,?,?)
-      ON CONFLICT(org_id, marca_id) DO UPDATE SET conta_nome=excluded.conta_nome, local_nome=excluded.local_nome, local_titulo=excluded.local_titulo, token_cifrado=excluded.token_cifrado, criado_por=excluded.criado_por, atualizado_ms=excluded.atualizado_ms, sincronizado_ms=NULL`)
-      .bind(orgId, reg.m, l.conta, l.local, l.titulo, await k.cifrar(env, reg.refresh), sessao.usuario.email, agora(env), agora(env)).run();
-    await env.DB.prepare("UPDATE plt_mk_marcas SET google=COALESCE(NULLIF(google,''),?) WHERE id=? AND org_id=?").bind(l.titulo, reg.m, orgId).run();
-    await env.DB.prepare("UPDATE plt_mk_google SET escopos=? WHERE org_id=? AND marca_id=?").bind(reg.escopos || ESCOPO, orgId, reg.m).run();
+    // Um ou vários perfis: o primeiro vai para o perfil que pediu a conexão; cada outro vira um perfil novo.
+    const ids = [...new Set((Array.isArray(corpo.local_ids) ? corpo.local_ids : [corpo.local_id]).map(x => String(x || "")).filter(Boolean))].slice(0, 30);
+    const escolhidos = ids.map(id => reg.locais.find(x => x.local === id)).filter(Boolean);
+    if (!escolhidos.length) return json({ erro: "Escolha um dos perfis." }, 400);
+    const conectados = [];
+    for (const [i, l] of escolhidos.entries()) {
+      let marcaId = reg.m;
+      if (i > 0) marcaId = (await env.DB.prepare("INSERT INTO plt_mk_marcas(org_id,nome,ativa,criado_ms) VALUES(?,?,1,?) RETURNING id").bind(orgId, String(l.titulo || "Novo perfil").slice(0, 200), agora(env)).first()).id;
+      else if (corpo.renomear === true) await env.DB.prepare("UPDATE plt_mk_marcas SET nome=? WHERE id=? AND org_id=?").bind(String(l.titulo || "").slice(0, 200) || "Novo perfil", marcaId, orgId).run();
+      await env.DB.prepare(`INSERT INTO plt_mk_google(org_id,marca_id,conta_nome,local_nome,local_titulo,token_cifrado,criado_por,criado_ms,atualizado_ms) VALUES(?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(org_id, marca_id) DO UPDATE SET conta_nome=excluded.conta_nome, local_nome=excluded.local_nome, local_titulo=excluded.local_titulo, token_cifrado=excluded.token_cifrado, criado_por=excluded.criado_por, atualizado_ms=excluded.atualizado_ms, sincronizado_ms=NULL, erro=NULL`)
+        .bind(orgId, marcaId, l.conta, l.local, l.titulo, await k.cifrar(env, reg.refresh), sessao.usuario.email, agora(env), agora(env)).run();
+      await env.DB.prepare("UPDATE plt_mk_marcas SET google=COALESCE(NULLIF(google,''),?) WHERE id=? AND org_id=?").bind(l.titulo, marcaId, orgId).run();
+      await env.DB.prepare("UPDATE plt_mk_google SET escopos=? WHERE org_id=? AND marca_id=?").bind(reg.escopos || ESCOPO, orgId, marcaId).run();
+      await auditar(env, request, sessao, orgId, "INTEGRACAO", `Google conectado à marca #${marcaId}: perfil ${l.titulo}`);
+      const conta = await contaGoogleDe(env, orgId, marcaId);
+      const [sinc, auto] = await Promise.all([sincronizarConta(env, k, conta).catch(e => ({ erro: e.message })),
+        preencherPeloGoogle(env, k, conta).catch(e => { console.error("preencher pelo Google", e?.message); return { preenchidos: [] }; })]);
+      conectados.push({ marca_id: marcaId, perfil: l.titulo, sincronizacao: sinc, preenchidos: auto.preenchidos });
+    }
     await env.DB.prepare("DELETE FROM plt_meta WHERE chave=?").bind("google_n_" + n).run();
-    await auditar(env, request, sessao, orgId, "INTEGRACAO", `Google conectado à marca #${reg.m}: perfil ${l.titulo}`);
-    // Já traz as avaliações e o desempenho.
-    const conta = await contaGoogleDe(env, orgId, reg.m);
-    const [sinc, auto] = await Promise.all([sincronizarConta(env, k, conta).catch(e => ({ erro: e.message })),
-      preencherPeloGoogle(env, k, conta).catch(e => { console.error("preencher pelo Google", e?.message); return { preenchidos: [] }; })]);
-    return json({ ok: true, perfil: l.titulo, sincronizacao: sinc, preenchidos: auto.preenchidos });
+    const pri = conectados[0];
+    return json({ ok: true, perfil: pri.perfil, sincronizacao: pri.sincronizacao, preenchidos: pri.preenchidos, conectados });
   }
   if (resto === "google/desconectar" && metodo === "POST") {
     if (!pode(papel, "ADMIN")) return json({ erro: "Somente administradores." }, 403);
@@ -687,6 +696,7 @@ const SC_ATRASO = 3; // o Search Console consolida com ~2–3 dias
 const SC_HISTORICO = 485; // 16 meses
 export const adsConfigurado = env => Boolean(String(env.GOOGLE_ADS_DEVELOPER_TOKEN || "").trim());
 const chavePlaces = env => String(env.GOOGLE_PLACES_API_KEY || env.GOOGLE_MAPS_API_KEY || "").trim();
+export const placesConfigurado = env => Boolean(chavePlaces(env));
 const versaoAds = env => (/^v\d{2}$/.test(String(env.GOOGLE_ADS_VERSAO || "").trim()) ? String(env.GOOGLE_ADS_VERSAO).trim() : "v25");
 const temEscopo = (conta, e) => !conta.escopos ? e === ESCOPO : String(conta.escopos).split(/\s+/).includes(e);
 const microsParaReal = m => Math.round(Number(m || 0) / 10000) / 100;
@@ -878,7 +888,7 @@ async function alterarAds(env, k, conta, acao, c) {
 const normal = t => String(t || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 export async function buscarConcorrentes(env, k, conta, busca) {
   const chave = chavePlaces(env);
-  if (!chave) { const e = new Error("A pesquisa de concorrentes ainda não foi ligada: falta o secret GOOGLE_PLACES_API_KEY (Places API do Google) no Worker denia-landing."); e.status = 503; throw e; }
+  if (!chave) { const e = new Error("A pesquisa de concorrentes ainda não foi ligada: falta a variável GOOGLE_PLACES_API_KEY (Places API do Google) na Hostinger."); e.status = 503; throw e; }
   const inicio = Date.now();
   const r = await fetch("https://places.googleapis.com/v1/places:searchText", {
     method: "POST", signal: AbortSignal.timeout(20000),
