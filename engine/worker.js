@@ -36,7 +36,7 @@
 //       relatório diário. Nunca inicia conversa nova por conta própria.
 // ============================================================================
 
-const VERSAO = "34.9.2";
+const VERSAO = "34.9.3";
 const SCHEMA_VERSAO = "33.4.0"; // mude sempre que acrescentar tabela ou índice (senão o banco de produção não recebe)
 const EMPRESA_ID = 1;
 const PHONE_ID_PADRAO = "473474732510163";
@@ -119,9 +119,9 @@ const REGRA_REFORMA = /\b(reforma|pedreiro|pintura|pintor|hidraulic\w*|encanador
 const ETAPAS_ENCERRADAS = new Set(["CONCLUIDO", "CANCELADO"]);
 const STATUS_LEGADO_ENCERRADO = /^(FINALIZADO|SERVICO_CONCLUIDO|CONCLUIDO|CONCLUÍDO|CANCELADO|ENCERRADO|RESOLVIDO)$/i;
 
-const CAMPOS_TREINAMENTO = ["instrucoes", "servicos", "regras", "precos", "procedimentos", "informacoes", "exemplos", "aprendizados", "licoes_diarias"];
+const CAMPOS_TREINAMENTO = ["jeito", "instrucoes", "servicos", "regras", "precos", "procedimentos", "informacoes", "exemplos", "aprendizados", "licoes_diarias"];
 const ROTULOS_TREINAMENTO = {
-  instrucoes: "INSTRUÇÕES DO ATENDIMENTO", servicos: "SERVIÇOS", regras: "REGRAS DA EMPRESA",
+  jeito: "JEITO DE FALAR (escolhido pela empresa; vale acima do estilo geral)", instrucoes: "INSTRUÇÕES DO ATENDIMENTO", servicos: "SERVIÇOS", regras: "REGRAS DA EMPRESA",
   precos: "PREÇOS E CONDIÇÕES AUTORIZADOS", procedimentos: "PROCEDIMENTOS",
   informacoes: "INFORMAÇÕES DA EMPRESA", exemplos: "EXEMPLOS DE ATENDIMENTO",
   aprendizados: "APRENDIZADOS APROVADOS (extraídos do histórico real e aprovados pela empresa)",
@@ -4278,6 +4278,20 @@ async function platformApi(request, env, caminho, metodo) {
     const r = await salvarTreinamento(c, corpo?.treinamento || corpo, String(corpo?.autor || "platform"), corpo?.confirmar_vazio === true);
     return json({ sucesso: r.ok, ...r }, r.ok ? 200 : 409);
   }
+  // Versões do treinamento: nada se perde; qualquer versão anterior pode voltar.
+  if (caminho === "/platform/training/versions" && metodo === "GET") {
+    const r = (await c.db.prepare("SELECT versao, autor, criado_ms, json FROM d30_treinamento ORDER BY versao DESC LIMIT 60").all())?.results || [];
+    return json({ sucesso: true, versoes: r.map(v => { let d = {}; try { d = JSON.parse(v.json || "{}"); } catch { d = {}; }
+      const campos = Object.entries(d).filter(([, x]) => String(x || "").trim());
+      return { versao: v.versao, autor: v.autor, criado_ms: v.criado_ms, caracteres: campos.reduce((t, [, x]) => t + String(x).length, 0), campos: campos.map(([k]) => k) }; }) });
+  }
+  if (caminho === "/platform/training/restore" && metodo === "POST") {
+    const v = await c.db.prepare("SELECT versao, json FROM d30_treinamento WHERE versao=?").bind(Number(corpo?.versao)).first();
+    if (!v) return json({ sucesso: false, erro: "Versão não encontrada." }, 404);
+    const ins = await c.db.prepare("INSERT INTO d30_treinamento(json,autor,criado_ms) VALUES(?,?,?) RETURNING versao").bind(v.json, `${txt(corpo?.autor || "platform", 80)} (restaurou a versão ${v.versao})`, c.agora()).first();
+    cacheTreinamento = null;
+    return json({ sucesso: true, versao: ins.versao, restaurada: v.versao });
+  }
   if (caminho === "/platform/learning" && metodo === "GET") return json({ sucesso: true, ...(await statusAprendizado(c)) });
   if (caminho === "/platform/learning/start" && metodo === "POST") return json({ sucesso: true, ...(await iniciarAprendizado(c)) });
   if (caminho === "/platform/learning/suggestions" && metodo === "GET") {
@@ -4806,6 +4820,11 @@ async function paginaStatus(env, numero = "") {
   linhas.push(["Banco de dados", banco]);
   linhas.push(["Última mensagem recebida", `${quando(min(rec?.m))} · ${Number(rec?.h || 0)} na última hora`]);
   linhas.push(["Última mensagem enviada", `${quando(min(env1?.m))} · ${Number(env1?.h || 0)} na última hora`]);
+  const tr = await q("SELECT versao, autor, criado_ms, LENGTH(json) n, (SELECT COUNT(*) FROM d30_treinamento) total FROM d30_treinamento ORDER BY versao DESC LIMIT 1");
+  const hist = await q("SELECT COUNT(*) n, MIN(criado_em) desde FROM mensagens");
+  const pes = await q("SELECT COUNT(*) n FROM pessoas");
+  linhas.push(["Treinamento", tr && !tr.__erro && tr.versao ? `versão ${tr.versao} (${tr.total} guardadas) · ${Math.max(0, Number(tr.n || 0) - 150)} caracteres · ${String(tr.autor || "").replace(/\S+@\S+/g, "equipe")}${Number(tr.n || 0) < 400 ? " · VAZIO: confira em Treinar IA → Versões anteriores" : ""}` : "nenhuma versão"]);
+  linhas.push(["Histórico guardado", `${Number(pes?.n || 0)} contatos · ${Number(hist?.n || 0)} mensagens${hist?.desde ? " · desde " + String(hist.desde).slice(0, 10).split("-").reverse().join("/") : ""}`]);
   linhas.push(["Na fila agora", `${Number(pend?.p || 0)} · com erro na última hora: ${Number(pend?.e || 0)}`]);
   if (errFila?.erro && Number(pend?.e || 0)) linhas.push(["Último erro da fila", semDigitos(txt(errFila.erro, 240))]);
   linhas.push(["OpenAI hoje", `${Number(uso?.ch || 0)} chamadas · ${Number(uso?.er || 0)} com erro · chave ${env.OPENAI_API_KEY ? "configurada" : "FALTANDO"}`]);

@@ -961,14 +961,14 @@
     if (!vivo()) return;
     const original = Object.assign({}, t.dados || {});
     const valores = Object.assign({}, original);
-    const extras = Object.keys(original).filter(k => !CAMPOS.some(c => c[0] === k) && typeof original[k] === "string");
+    const extras = Object.keys(original).filter(k => k !== "jeito" && !CAMPOS.some(c => c[0] === k) && typeof original[k] === "string");
     const lista = CAMPOS.concat(extras.map(k => [k, k.charAt(0).toUpperCase() + k.slice(1), "Campo trazido da versão anterior."]));
     const editar = pode("ADMIN");
     let atual = lista[0][0];
     const abas = h("div", { class: "abas", role: "tablist" });
     const corpo = h("div", { class: "cartao vidro" });
     const info = h("span", { style: "font-size:13.5px;color:var(--texto-2)" });
-    const mudou = () => lista.some(([k]) => String(valores[k] || "") !== String(original[k] || ""));
+    const mudou = () => [...lista.map(c => c[0]), "jeito"].some(k => String(valores[k] || "") !== String(original[k] || ""));
     const atualizarInfo = () => { info.textContent = mudou() ? "Há alterações não salvas." : `Versão ${t.versao || 0}${t.autor ? " · " + ({ inicial: "criada automaticamente", importado: "importada da versão anterior" }[t.autor] || "por " + t.autor) : ""}${t.criadoMs ? ", " + quandoFrase(t.criadoMs) : ""}`; };
     const rotuloAba = (k, nome) => nome + (String(valores[k] || "") !== String(original[k] || "") ? " •" : "");
     const desenhar = () => {
@@ -989,7 +989,7 @@
     };
     const salvar = async (confirmarVazio) => {
       const alterados = {};
-      for (const [k] of lista) if (String(valores[k] || "") !== String(original[k] || "")) alterados[k] = String(valores[k] || "");
+      for (const k of [...lista.map(c => c[0]), "jeito"]) if (String(valores[k] || "") !== String(original[k] || "")) alterados[k] = String(valores[k] || "");
       if (!Object.keys(alterados).length) { aviso("Nada para salvar."); return; }
       try {
         const r = await eng("training", { metodo: "POST", corpo: { treinamento: alterados, confirmar_vazio: confirmarVazio === true } });
@@ -1007,7 +1007,39 @@
       botao("Salvar treinamento", () => salvar(false), "btn-primario")) : h("span", { class: "selo", text: "Somente leitura" }));
     window.onbeforeunload = () => (mudou() ? true : undefined);
     window.addEventListener("hashchange", () => { window.onbeforeunload = null; }, { once: true });
-    area.replaceChildren(abas, corpo, barra);
+    // Jeito de falar em botões: vira o campo "jeito" do treinamento (a IA segue acima do estilo geral).
+    const GRUPOS_JEITO = [
+      ["Personalidade", ["Acolhedora", "Objetiva", "Formal", "Descontraída"]],
+      ["Tamanho das respostas", ["Bem curtas (1 frase)", "Curtas (1 a 2 frases)", "Explicativas"]],
+      ["Emojis", ["Nunca", "Só se o cliente usar", "Às vezes"]],
+      ["Tratamento", ["Você", "Senhor(a)"]]
+    ];
+    const lerJeito = () => Object.fromEntries(GRUPOS_JEITO.map(([g]) => [g, (String(valores.jeito || "").match(new RegExp(g.replace(/[()]/g, "\\$&") + ": ([^.]+)")) || [])[1] || ""]));
+    const cartaoJeito = h("section", { class: "cartao vidro" });
+    const desenharJeito = () => {
+      const atualJ = lerJeito();
+      cartaoJeito.replaceChildren(h("h3", { style: "margin-top:0", text: "Jeito de falar" }), h("p", { class: "dica", text: "Escolha com um toque. Vale para todas as conversas e fica salvo junto com o treinamento." }),
+        ...GRUPOS_JEITO.map(([g, ops]) => h("div", { class: "campo" }, h("label", { text: g }), h("div", { class: "acoes", style: "flex-wrap:wrap;gap:6px" },
+          ops.map(o => h("button", { type: "button", class: "btn btn-pequeno " + (atualJ[g] === o ? "btn-primario" : "btn-secundario"), disabled: !editar, "aria-pressed": atualJ[g] === o ? "true" : "false", onclick: () => {
+            const novo = { ...lerJeito(), [g]: atualJ[g] === o ? "" : o };
+            valores.jeito = GRUPOS_JEITO.map(([x]) => novo[x] ? `${x}: ${novo[x]}.` : "").filter(Boolean).join(" ");
+            desenharJeito(); atualizarInfo();
+          } }, o))))));
+    };
+    desenharJeito();
+    // Versões anteriores: nada se perde; qualquer uma pode voltar com um toque.
+    const cartaoVersoes = h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Versões anteriores" }), carregando());
+    eng("training/versions").then(d => {
+      const vs = d.versoes || [];
+      trocar(cartaoVersoes, h("h3", { style: "margin-top:0", text: "Versões anteriores" }),
+        h("p", { class: "dica", text: "Cada salvamento fica guardado. Se algo sumiu, restaure a versão que tinha o conteúdo (vira uma versão nova; nada é apagado)." }),
+        vs.length ? h("ul", { class: "lista-saude lista-rolavel" }, vs.map(v => h("li", {}, h("span", {}, h("strong", { text: `Versão ${v.versao}` }), h("span", { class: "sub", text: ` · ${v.criado_ms ? quando(v.criado_ms) : "—"} · ${numero(v.caracteres)} caracteres · ${String(v.autor || "").replace(/\S+@\S+/g, "equipe")}` })),
+          editar && v.versao !== t.versao ? botao("Restaurar", async () => {
+            if (!(await modal({ titulo: `Restaurar a versão ${v.versao}?`, conteudo: `O treinamento volta a ser o da versão ${v.versao} (${numero(v.caracteres)} caracteres). A versão atual continua guardada.`, confirmar: "Restaurar" }))) return;
+            try { const r = await eng("training/restore", { metodo: "POST", corpo: { versao: v.versao } }); aviso(`Versão ${r.restaurada} restaurada (agora é a versão ${r.versao}).`, "ok"); navegar(); } catch (e) { aviso(e.message, "erro"); }
+          }, "btn-secundario btn-pequeno") : selo(v.versao === t.versao ? "Em uso" : "", "ok")))) : vazio("Nenhuma versão guardada", ""));
+    }).catch(e => falha(cartaoVersoes, e));
+    area.replaceChildren(cartaoJeito, abas, corpo, barra, cartaoVersoes);
     desenhar();
   }
 
