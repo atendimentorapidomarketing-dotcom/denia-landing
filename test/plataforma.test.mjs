@@ -3128,3 +3128,38 @@ test("Equipe: sem e-mail configurado a tela avisa, e quem já tinha conta pode r
   assert.ok(a.senha_temporaria, "conta nova: senha temporária na tela");
   assert.equal(a.ja_tinha_conta, false);
 });
+
+test("Google: editar o perfil pela DENIA (descrição, telefone, site, horários, feriados), regras do Google e visão geral de todos os perfis", async () => {
+  const p = await criarPlataforma({ GOOGLE_CLIENT_ID: "cliente.apps.googleusercontent.com", GOOGLE_CLIENT_SECRET: "segredo-google" });
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  const marca = (await p.req("/api/orgs/1/mk/marcas", { metodo: "POST", quem: "admin", corpo: { nome: "Reforma Tudo RT" } })).dados.id;
+  const ida = await p.req(`/api/orgs/1/mk/google/conectar?marca=${marca}`, { quem: "admin" });
+  const state = new URL(ida.r.headers.get("location")).searchParams.get("state");
+  let patch = null;
+  p.google = (url, metodo, corpo) => {
+    if (url.startsWith("https://oauth2.googleapis.com/token")) return { access_token: "ya29.a", refresh_token: "1//p", expires_in: 3599 };
+    if (url.includes("/v1/accounts?")) return { accounts: [{ name: "accounts/111" }] };
+    if (url.includes("/accounts/111/locations?")) return { locations: [{ name: "locations/1", title: "Reforma Tudo RT" }] };
+    if (url.includes("/reviews?")) return { reviews: [{ reviewId: "r1", reviewer: { displayName: "Ana" }, starRating: "FIVE", comment: "Ótimo", createTime: "2026-10-20T10:00:00Z" }], totalReviewCount: 1, averageRating: 5 };
+    if (metodo === "PATCH" && url.includes("/locations/1?updateMask=")) { patch = { url, corpo }; return { name: "locations/1" }; }
+    if (url.includes("/locations/1?readMask=")) return { title: "Reforma Tudo RT", profile: { description: "Antiga" }, phoneNumbers: { primaryPhone: "(21) 3333-4444" }, metadata: { newReviewUri: "https://g.page/r/abc/review", mapsUri: "https://maps.google.com/?cid=1" }, regularHours: { periods: [] }, specialHours: { specialHourPeriods: [] } };
+    return { error: { code: 404, message: "inesperado " + url } };
+  };
+  const nonce = (await (await p.req(`/api/google/retorno?code=abc&state=${encodeURIComponent(state)}`)).r.text()).match(/\/app#\/marcas\/google-([A-Za-z0-9_-]+)/)[1];
+  await p.req("/api/orgs/1/mk/google/escolher", { metodo: "POST", quem: "admin", corpo: { n: nonce, local_id: "locations/1" } });
+  const perfil = (await p.req(`/api/orgs/1/mk/google/perfil?marca=${marca}`, { quem: "admin" })).dados;
+  assert.equal(perfil.perfil.avaliar, "https://g.page/r/abc/review", "link para pedir avaliação");
+  assert.ok(perfil.proximos_feriados.length >= 1);
+  const salvar = corpo => p.req("/api/orgs/1/mk/google/perfil", { metodo: "POST", quem: "admin", corpo: { marca_id: marca, ...corpo } });
+  assert.equal((await salvar({ descricao: "Veja www.site.com" })).status, 400, "sem link");
+  assert.equal((await salvar({ descricao: "Ligue 21 99999-8888" })).status, 400, "sem telefone");
+  assert.equal((await salvar({ descricao: "x".repeat(751) })).status, 400, "até 750");
+  const ok = await salvar({ descricao: "Reformas e reparos na Tijuca.", horarios: [{ dia: "MONDAY", abre: "08:00", fecha: "18:00" }], feriados: [{ data: "2026-11-02", fechado: true }, { data: "2026-11-15", abre: "09:00", fecha: "13:00" }] });
+  assert.equal(ok.status, 200, JSON.stringify(ok.dados));
+  assert.match(decodeURIComponent(patch.url), /updateMask=profile\.description,regularHours,specialHours/);
+  assert.equal(patch.corpo.profile.description, "Reformas e reparos na Tijuca.");
+  assert.deepEqual(patch.corpo.regularHours.periods[0], { openDay: "MONDAY", openTime: { hours: 8, minutes: 0 }, closeDay: "MONDAY", closeTime: { hours: 18, minutes: 0 } });
+  assert.deepEqual(patch.corpo.specialHours.specialHourPeriods[0], { startDate: { year: 2026, month: 11, day: 2 }, closed: true });
+  const v = (await p.req("/api/orgs/1/mk/google/visao", { quem: "admin" })).dados.perfis;
+  assert.equal(v.length, 1); assert.equal(v[0].sem_resposta, 1, "a avaliação da Ana está sem resposta");
+});
