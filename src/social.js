@@ -403,3 +403,15 @@ export async function rotasSocial(request, env, k, orgId, papel, resto, ajuda = 
   }
   return null;
 }
+
+// Resumo de um canal num período (para o relatório geral de marketing).
+export async function resumoSocial(env, k, orgId, marcaId, canal, dias = 30) {
+  const { conta, token } = await contaDa(env, k, orgId, marcaId);
+  if (canal === "instagram" && !conta.ig_id) throw new Error("sem Instagram profissional ligado");
+  const p = periodo(new URL(`https://x/?dias=${dias}`), k.agora(env));
+  const [pf, ins, ms] = await Promise.all([perfil(env, conta, token, canal), canal === "instagram" ? insightsInstagram(env, conta, token, p) : insightsFacebook(env, conta, token, p), midias(env, conta, token, canal, null).catch(() => ({ itens: [] }))]);
+  const t = ins.totais || {};
+  const posts = (ms.itens || []).filter(x => x.tipo !== "STORY" && Date.parse(x.quando) >= p.ini).length;
+  return { de: p.de, ate: p.ate, seguidores: pf.seguidores ?? t.seguidores ?? null, alcance: t.alcance ?? null, visualizacoes: t.visualizacoes ?? null, interacoes: t.interacoes ?? null,
+    novos_seguidores: t.comecaram_a_seguir ?? t.novos_seguidores ?? null, deixaram_de_seguir: t.deixaram_de_seguir ?? null, visitas_perfil: t.visitas_perfil ?? t.visitas_pagina ?? null, posts };
+}
