@@ -31,7 +31,7 @@ import { DDL_ZAP, webhookZap, rotasZap, webhookTelegram, segredoTelegram, tokenT
 import { montarRelatorio, planilhaRelatorio, textoRelatorio, base64, ultimos7Dias, lerConfigRelatorio, horaDeEnviar, diaBR, dataBR, DIAS_SEMANA, inicioDoDia as inicioDoDiaBR } from "./relatorio.js";
 import { lerPlanos, acessoDa, recursoDaRota, planoMinimo, rotasPlano, webhookAsaas, lembretesDePlano, TESTE_DIAS, STATUS as STATUS_PLANO, PLANOS_PADRAO, RECURSOS } from "./planos.js";
 
-const VERSAO = "3.18.0";
+const VERSAO = "3.19.0";
 // Versão dos Termos de uso e da Política de privacidade aceitas no cadastro.
 const VERSAO_TERMOS = "2026-10-16";
 // WhatsApp da Central de Atendimento (botão flutuante do site).
@@ -986,7 +986,7 @@ async function contextoAssistente(env, orgId) {
   return { empresa: o?.nome || "empresa", dados: linhas.join("\n") };
 }
 
-async function apiOrg(request, env, sessao, orgId, resto) {
+async function apiOrg(request, env, sessao, orgId, resto, ctx) {
   const papel = await papelNa(env, sessao.usuario, orgId);
   if (!papel) return json({ erro: "Empresa não encontrada." }, 404);
   // Revisor de aprendizados: só vê e decide o que a IA aprendeu; nada mais da empresa.
@@ -1003,7 +1003,7 @@ async function apiOrg(request, env, sessao, orgId, resto) {
   }
   if (resto === "plano" || resto.startsWith("plano/")) return rotasPlano(request, env, { ...kitBase(env), sessao }, orgId, papel, resto);
   if (resto.startsWith("engine/")) return proxyEngine(request, env, sessao, orgId, papel, resto.slice(7));
-  const kit = { ...kitBase(env), sessao };
+  const kit = { ...kitBase(env), sessao, emSegundoPlano: tarefa => { const t = Promise.resolve().then(tarefa).catch(e => console.error("segundo plano", e?.message)); if (ctx && ctx.waitUntil) ctx.waitUntil(t); return t; } };
   if (resto === "tp" || resto.startsWith("tp/")) return rotasTemporada(request, env, { ...(await kitZap(env, new URL(request.url).origin)), sessao, superAdmin: Boolean(sessao.usuario.super_admin), openai: openaiBruto, acesso: sessao.usuario.super_admin ? { ...acesso, limites: { ...acesso.limites, imoveis: 0 } } : acesso, avisar: async (o, texto) => { for (const para of await responsaveisDa(env, o)) await enviarEmail(env, para, "DENIA — hóspede precisa de você", texto); } }, orgId, papel, resto);
   if (resto === "problemas" || resto.startsWith("problemas/")) {
     // Empresa com a IA da Central ligada: os avisos não urgentes dela (que não vão ao Telegram) entram aqui.
@@ -1228,7 +1228,7 @@ async function apiAdminOrgs(request, env, sessao, resto) {
   return json({ ok: true });
 }
 
-async function api(request, env, caminho) {
+async function api(request, env, caminho, ctx) {
   const metodo = request.method;
   if (caminho === "/api/publico" && metodo === "GET") {
     let whatsapp = String(env.CONTATO_WHATSAPP || "").replace(/\D/g, "");
@@ -1340,7 +1340,7 @@ async function api(request, env, caminho) {
     }
     return json({ ...(await lerPlanos(env)), recursos: RECURSOS, cobranca: Boolean(String(env.ASAAS_API_KEY || "").trim()) });
   }
-  if ((m = caminho.match(/^\/api\/orgs\/(\d{1,12})\/(.+)$/))) return apiOrg(request, env, sessao, Number(m[1]), m[2]);
+  if ((m = caminho.match(/^\/api\/orgs\/(\d{1,12})\/(.+)$/))) return apiOrg(request, env, sessao, Number(m[1]), m[2], ctx);
   return json({ erro: "Rota não encontrada." }, 404);
 }
 
@@ -1357,7 +1357,7 @@ const ANTIGOS = {
 async function rotear(request, env, ctx) {
   const url = new URL(request.url);
   const caminho = url.pathname;
-  if (caminho.startsWith("/api/")) return api(request, env, caminho);
+  if (caminho.startsWith("/api/")) return api(request, env, caminho, ctx);
   // Um só webhook do WhatsApp para todas as empresas (cada mensagem diz de qual número ela é).
   if (caminho === "/webhook/whatsapp") { await garantirSchema(env); return webhookZap(request, env, await kitZap(env), ctx); }
   if (caminho === "/webhook/telegram" && request.method === "POST") { await garantirSchema(env); return webhookTelegram(request, env, await kitZap(env)); }

@@ -203,8 +203,11 @@ export async function rotasGoogle(request, env, k, orgId, papel, resto) {
       await env.DB.prepare("UPDATE plt_mk_google SET escopos=? WHERE org_id=? AND marca_id=?").bind(reg.escopos || ESCOPO, orgId, marcaId).run();
       await auditar(env, request, sessao, orgId, "INTEGRACAO", `Google conectado à marca #${marcaId}: perfil ${l.titulo}`);
       const conta = await contaGoogleDe(env, orgId, marcaId);
-      const [sinc, auto] = await Promise.all([sincronizarConta(env, k, conta).catch(e => ({ erro: e.message })),
+      // Trazer avaliações e dados pode demorar em perfis grandes: espera no máximo 8 s e o resto continua sozinho.
+      const trabalho = Promise.all([sincronizarConta(env, k, conta).catch(e => ({ erro: e.message })),
         preencherPeloGoogle(env, k, conta).catch(e => { console.error("preencher pelo Google", e?.message); return { preenchidos: [] }; })]);
+      if (k.emSegundoPlano) k.emSegundoPlano(() => trabalho);
+      const [sinc, auto] = await Promise.race([trabalho, new Promise(r => setTimeout(() => r([{ em_andamento: true }, { preenchidos: [] }]), 8000))]);
       conectados.push({ marca_id: marcaId, perfil: l.titulo, sincronizacao: sinc, preenchidos: auto.preenchidos });
     }
     await env.DB.prepare("DELETE FROM plt_meta WHERE chave=?").bind("google_n_" + n).run();

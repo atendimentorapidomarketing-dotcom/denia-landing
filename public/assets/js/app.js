@@ -162,8 +162,26 @@
     if (r.status === 401) { window.location.replace("/entrar"); throw new ErroApi("Sua sessão expirou.", 401); }
     if (r.status === 403 && dados && dados.codigo === "TROCAR_SENHA") { estado.eu.usuario.trocar_senha = true; location.hash = "#/conta"; }
     if (!r.ok) throw new ErroApi((dados && dados.erro) || "Algo deu errado. Tente novamente.", r.status, dados);
+    if (metodo !== "GET") limparMemorias();
     return dados || {};
   }
+  // Qualquer mudança (conectar, salvar, apagar) limpa o que a tela guardou: a próxima leitura já vem atualizada.
+  function limparMemorias() {
+    try { cacheEng.clear(); cacheConversa.clear(); cacheMk.clear(); } catch { /* ainda não criadas */ }
+    try { cacheMarcas = null; cacheMeta = null; cacheGoogle = null; } catch { /* ainda não criadas */ }
+  }
+  // Leituras do marketing guardadas por 20 s: voltar a uma tela é instantâneo (as mudanças limpam na hora).
+  const cacheMk = new Map();
+  async function lerMk(url, op) {
+    const c = cacheMk.get(url);
+    if (c && !(op && op.fresco) && Date.now() - c.em < 20000) return c.dados;
+    const p = c && c.pendente ? c.pendente : api(url, op);
+    cacheMk.set(url, { ...(c || {}), pendente: p });
+    try { const d = await p; cacheMk.set(url, { em: Date.now(), dados: d }); if (cacheMk.size > 80) cacheMk.delete(cacheMk.keys().next().value); return d; }
+    catch (e) { cacheMk.delete(url); throw e; }
+  }
+  // Vai para uma tela e redesenha mesmo que o endereço já seja o mesmo.
+  function irPara(hash) { if (location.hash === hash) navegar(); else location.hash = hash; }
   // Respostas do Engine guardadas por alguns segundos: voltar a uma tela é instantâneo.
   const cacheEng = new Map();
   async function eng(caminho, op) {
@@ -458,8 +476,11 @@
     $("empresa-select").addEventListener("change", async e => { escolherEmpresa(e.target.value); await verificarIa(); navegar(); });
     window.addEventListener("hashchange", navegar);
     iniciarAssistente();
-    await verificarIa();
+    // Desenha a primeira tela na hora; a conferência da chave da IA corre junto (e só redesenha o Painel se faltar a chave).
     navegar();
+    verificarIa().then(() => { if (estado.iaLigada === false && rotaAtual().nome === "painel") navegar(); });
+    // Adianta o que as telas de marketing usam (perfis e conexões).
+    setTimeout(() => { if (estado.org && temRecurso("marketing")) { marcas().catch(() => {}); estadoGoogle().catch(() => {}); estadoMeta().catch(() => {}); } }, 600);
     // Adianta a lista de conversas enquanto a pessoa olha o painel.
     setTimeout(() => {
       if (!estado.org || !estado.org.conectada || (estado.cacheConversas && estado.cacheConversas.org === estado.org.id)) return;
@@ -4412,7 +4433,7 @@ Botão só com texto = resposta.` })),
   // Estúdio de Marketing
   // ---------------------------------------------------------------------------
 
-  const mk = (caminho, op) => api(`/api/orgs/${estado.org.id}/mk/${caminho}`, op);
+  const mk = (caminho, op) => (!op || !op.metodo || op.metodo === "GET") && !/(^|\/)(agora|sincronizar|medir)(\?|$)/.test(caminho) ? lerMk(`/api/orgs/${estado.org.id}/mk/${caminho}`, op) : api(`/api/orgs/${estado.org.id}/mk/${caminho}`, op);
   const NOME_STATUS = { RASCUNHO: ["Rascunho", ""], AGUARDANDO: ["Aguardando aprovação", "alerta"], APROVADO: ["Aprovado", "ok"], PUBLICADO: ["Publicado", "info"], REJEITADO: ["Rejeitado", "erro"] };
   const NOME_FORMATO = { post: "Post", carrossel: "Carrossel", story: "Story", reels: "Reels", google: "Google" };
   const NOME_CANAL = { instagram: "Instagram", facebook: "Facebook", google: "Google" };
@@ -4812,19 +4833,20 @@ Botão só com texto = resposta.` })),
   async function escolherPaginaMeta(nonce) {
     let d;
     try { d = await mk(`meta/paginas?n=${encodeURIComponent(nonce)}`); }
-    catch (e) { aviso(e.message, "erro"); location.hash = "#/marcas"; return; }
+    catch (e) { aviso(e.message, "erro"); irPara("#/marcas"); return; }
     const opcoes = h("div", { class: "lista-saude lista-rolavel" }, d.paginas.map((p, i) => h("label", { class: "opcao-pagina" },
       h("input", { type: "checkbox", name: "pagina-meta", value: p.id, checked: i === 0 }),
       h("span", {}, h("strong", { text: p.nome }), h("span", { class: "sub", text: p.ig_usuario ? `Instagram @${p.ig_usuario}` : "Sem Instagram profissional ligado a esta página" })))));
-    if (!(await modal({ titulo: "Quais páginas você quer conectar?", conteudo: [h("p", { class: "dica", text: "Marque uma ou várias. Cada página marcada vira um perfil, com a logo e os dados puxados sozinhos." }), ...(d.paginas.length > 6 ? [filtroDaLista(opcoes, `Procurar entre as ${d.paginas.length} páginas`)] : []), opcoes], confirmar: "Conectar" }))) { location.hash = "#/marcas"; return; }
+    if (!(await modal({ titulo: "Quais páginas você quer conectar?", conteudo: [h("p", { class: "dica", text: "Marque uma ou várias. Cada página marcada vira um perfil, com a logo e os dados puxados sozinhos." }), ...(d.paginas.length > 6 ? [filtroDaLista(opcoes, `Procurar entre as ${d.paginas.length} páginas`)] : []), opcoes], confirmar: "Conectar" }))) { irPara("#/marcas"); return; }
     const ids = [...opcoes.querySelectorAll("input:checked")].map(x => x.value);
     try {
+      aviso(ids.length > 1 ? `Conectando ${ids.length} páginas e puxando os dados…` : "Conectando e puxando os dados da página…");
       const r = await mk("meta/escolher", { metodo: "POST", corpo: { n: nonce, pagina_ids: ids, renomear: perfilNovo(d.marca_id) } });
       const cs = r.conectadas || [];
       aviso(cs.length > 1 ? `${cs.length} páginas conectadas: ${cs.map(c => c.pagina).join(", ")}. Cada uma virou um perfil.` : (r.instagram ? `Conectado: ${r.pagina} · @${r.instagram}.` : `Conectado: ${r.pagina}.`) + textoPreenchidos(r.preenchidos), "ok");
       cacheMeta = null; cacheMarcas = null;
     } catch (e) { aviso(e.message, "erro"); }
-    location.hash = "#/marcas";
+    irPara("#/marcas");
   }
 
   // Conexão com o Google Perfil da Empresa (Google Meu Negócio), por marca.
@@ -4852,20 +4874,21 @@ Botão só com texto = resposta.` })),
   async function escolherLocalGoogle(nonce) {
     let d;
     try { d = await mk(`google/locais?n=${encodeURIComponent(nonce)}`); }
-    catch (e) { aviso(e.message, "erro"); location.hash = "#/marcas"; return; }
+    catch (e) { aviso(e.message, "erro"); irPara("#/marcas"); return; }
     const opcoes = h("div", { class: "lista-saude lista-rolavel" }, d.locais.map((l, i) => h("label", { class: "opcao-pagina" },
       h("input", { type: "checkbox", name: "local-google", value: l.id, checked: i === 0 }),
       h("span", {}, h("strong", { text: l.titulo }), h("span", { class: "sub", text: l.endereco || "Perfil sem endereço (atende na região)" })))));
-    if (!(await modal({ titulo: "Quais perfis do Google você quer conectar?", conteudo: [h("p", { class: "dica", text: "Marque um ou vários. Cada perfil marcado vira um perfil na DENIA, com a logo e os dados puxados sozinhos." }), ...(d.locais.length > 6 ? [filtroDaLista(opcoes, `Procurar entre os ${d.locais.length} perfis (nome ou endereço)`)] : []), opcoes], confirmar: "Conectar" }))) { location.hash = "#/marcas"; return; }
+    if (!(await modal({ titulo: "Quais perfis do Google você quer conectar?", conteudo: [h("p", { class: "dica", text: "Marque um ou vários. Cada perfil marcado vira um perfil na DENIA, com a logo e os dados puxados sozinhos." }), ...(d.locais.length > 6 ? [filtroDaLista(opcoes, `Procurar entre os ${d.locais.length} perfis (nome ou endereço)`)] : []), opcoes], confirmar: "Conectar" }))) { irPara("#/marcas"); return; }
     const ids = [...opcoes.querySelectorAll("input:checked")].map(x => x.value);
     try {
+      aviso(ids.length > 1 ? `Conectando ${ids.length} perfis do Google e trazendo as avaliações…` : "Conectando o perfil do Google e trazendo as avaliações…");
       const r = await mk("google/escolher", { metodo: "POST", corpo: { n: nonce, local_ids: ids, renomear: perfilNovo(d.marca_id) } });
-      if ((r.conectados || []).length > 1) { aviso(`${r.conectados.length} perfis do Google conectados: ${r.conectados.map(c => c.perfil).join(", ")}. Cada um virou um perfil.`, "ok"); cacheGoogle = null; cacheMarcas = null; location.hash = "#/marcas"; return; }
+      if ((r.conectados || []).length > 1) { aviso(`${r.conectados.length} perfis do Google conectados: ${r.conectados.map(c => c.perfil).join(", ")}. Cada um virou um perfil.`, "ok"); cacheGoogle = null; cacheMarcas = null; irPara("#/marcas"); return; }
       const s = r.sincronizacao || {};
-      aviso(`Google conectado: ${r.perfil}.${s.avaliacoes_total != null ? ` ${s.avaliacoes_total} avaliação(ões) trazidas do perfil.` : ""}` + textoPreenchidos(r.preenchidos), "ok");
+      aviso(`Google conectado: ${r.perfil}.${s.avaliacoes_total != null ? ` ${s.avaliacoes_total} avaliação(ões) trazidas do perfil.` : s.em_andamento ? " As avaliações e os dados continuam chegando em segundo plano; aparecem em instantes." : ""}` + textoPreenchidos(r.preenchidos), "ok");
       cacheGoogle = null; cacheMarcas = null;
     } catch (e) { aviso(e.message, "erro"); }
-    location.hash = "#/marcas";
+    irPara("#/marcas");
   }
 
   async function paginaMarcas(el, param, vivo) {
