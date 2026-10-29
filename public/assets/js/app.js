@@ -476,6 +476,25 @@
     $("empresa-select").addEventListener("change", async e => { escolherEmpresa(e.target.value); await verificarIa(); navegar(); });
     window.addEventListener("hashchange", navegar);
     iniciarAssistente();
+    // Celular e app instalado ficam abertos em segundo plano por dias: ao voltar para a DENIA, ela confere se há
+    // versão nova (recarrega sozinha) e redesenha a tela com os dados de agora, igual ao computador.
+    const versaoCarregada = estado.eu.versao;
+    let escondidaEm = 0, conferindo = false;
+    const conferirVersao = async (redesenhar) => {
+      if (conferindo) return; conferindo = true;
+      try {
+        const eu = await api("/api/eu");
+        if (eu.versao && eu.versao !== versaoCarregada) { location.reload(); return; }
+        estado.eu = eu; limparMemorias(); estado.cacheConversas = null;
+        if (redesenhar && !document.querySelector(".gaveta:not(.oculto), #modal:not(.oculto)")) navegar();
+      } catch { /* sem internet: tenta na próxima */ } finally { conferindo = false; }
+    };
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "hidden") { escondidaEm = Date.now(); return; }
+      if (escondidaEm && Date.now() - escondidaEm > 30000) conferirVersao(true);
+    });
+    window.addEventListener("pageshow", e => { if (e.persisted) conferirVersao(true); });
+    setInterval(() => { if (document.visibilityState === "visible") conferirVersao(false); }, 10 * 60000);
     // Desenha a primeira tela na hora; a conferência da chave da IA corre junto (e só redesenha o Painel se faltar a chave).
     navegar();
     verificarIa().then(() => { if (estado.iaLigada === false && rotaAtual().nome === "painel") navegar(); });
