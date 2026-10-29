@@ -2,7 +2,9 @@ import { rotasMeta, aoAprovar } from "./meta.js";
 import { rotasSocial } from "./social.js";
 import { rotasVoz, falarComVoz, configVoz } from "./voz.js";
 import { rotasUso, registrarUso, custoOpenAI, tokensDe, precosDaOrg, orgDoUso, recursoDo, comRecurso } from "./uso.js";
-import { rotasGoogle, responderAvaliacaoGoogle, apagarRespostaGoogle, contaGoogleDe, desempenhoAoVivo, sincronizarConta, linkDoPerfil, buscarConcorrentes, placesConfigurado } from "./google.js";
+import { rotasGoogle, responderAvaliacaoGoogle, apagarRespostaGoogle, contaGoogleDe, desempenhoAoVivo, sincronizarConta, linkDoPerfil, buscarConcorrentes, placesConfigurado, desempenhoDosDias } from "./google.js";
+import { resumoSocial } from "./social.js";
+import { gerarXlsx } from "./planilha.js";
 // ============================================================================
 // DENIA Platform — Estúdio de Marketing e Assistente DENIA (texto e voz)
 // ============================================================================
@@ -538,6 +540,49 @@ export async function apiMarketing(request, env, k, orgId, papel, resto) {
   const exigir = (min) => { if (!pode(papel, min)) throw Object.assign(new Error("perm"), { resposta: json({ erro: "Seu perfil não tem permissão para esta ação." }, 403) }); };
   let m;
   try {
+    // ----- Relatório geral de marketing: Google, Instagram e Facebook de todos os perfis num período (tela e planilha).
+    if (resto === "relatorio-marketing" && metodo === "GET") {
+      const q = new URL(request.url).searchParams;
+      const dias = [7, 30, 90].includes(Number(q.get("dias"))) ? Number(q.get("dias")) : 30;
+      const chaveC = `relmk_${orgId}_${dias}`;
+      let d = null;
+      if (q.get("atualizar") !== "1") { try { const c = JSON.parse((await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave=?").bind(chaveC).first())?.valor || "null"); if (c && agora(env) - c.em < 3 * 3600000) d = c; } catch { d = null; } }
+      if (!d) {
+        const lista = (await env.DB.prepare("SELECT * FROM plt_mk_marcas WHERE org_id=? AND ativa=1 ORDER BY nome").bind(orgId).all())?.results || [];
+        const contasMeta = new Map(((await env.DB.prepare("SELECT marca_id, ig_id FROM plt_mk_contas WHERE org_id=?").bind(orgId).all().catch(() => null))?.results || []).map(x => [x.marca_id, x]));
+        const desde = agora(env) - dias * 86400000;
+        const perfis = [];
+        for (const m of lista) {
+          const g = await contaGoogleDe(env, orgId, m.id).catch(() => null), meta = contasMeta.get(m.id);
+          const tentar = async f => { try { return await f(); } catch (e) { return { erro: String(e?.message || e).slice(0, 160) }; } };
+          const [google, instagram, facebook] = await Promise.all([
+            g ? tentar(() => desempenhoDosDias(env, k, g, dias)) : null,
+            meta?.ig_id ? tentar(() => resumoSocial(env, k, orgId, m.id, "instagram", dias)) : null,
+            meta ? tentar(() => resumoSocial(env, k, orgId, m.id, "facebook", dias)) : null]);
+          const av = g ? await env.DB.prepare("SELECT COUNT(*) n, AVG(nota) media, SUM(CASE WHEN status='PENDENTE' THEN 1 ELSE 0 END) sem FROM plt_mk_avaliacoes WHERE org_id=? AND marca_id=? AND google_id IS NOT NULL AND removida_ms IS NULL AND criado_ms>=?").bind(orgId, m.id, desde).first().catch(() => null) : null;
+          const pub = await env.DB.prepare("SELECT COUNT(*) n FROM plt_mk_posts WHERE org_id=? AND marca_id=? AND status='PUBLICADO' AND atualizado_ms>=?").bind(orgId, m.id, desde).first().catch(() => null);
+          perfis.push({ marca_id: m.id, nome: m.nome, google: google && { ...google, nota: g.media_google ?? null, total_avaliacoes: g.total_google ?? null, avaliacoes_novas: Number(av?.n || 0), nota_novas: av?.media ? Math.round(av.media * 10) / 10 : null, sem_resposta: Number(av?.sem || 0) }, instagram, facebook, posts_denia: Number(pub?.n || 0) });
+        }
+        d = { em: agora(env), dias, perfis };
+        await env.DB.prepare("INSERT OR REPLACE INTO plt_meta(chave,valor) VALUES(?,?)").bind(chaveC, JSON.stringify(d)).run().catch(() => {});
+      }
+      if (q.get("formato") !== "xlsx") return json(d);
+      const n = v => typeof v === "number" ? v : v == null ? "" : v;
+      const dataBr = s2 => s2 ? s2.split("-").reverse().join("/") : "";
+      const per = d.perfis.find(p => p.google && !p.google.erro)?.google || d.perfis.find(p => p.instagram && !p.instagram.erro)?.instagram;
+      const abas = [
+        { nome: "Resumo", larguras: [28, 16, 16, 16, 16, 16, 16], linhas: [["Perfil", "Google: visualizações", "Google: ligações + rotas + site", "Google: avaliações novas", "Instagram: alcance", "Facebook: alcance", "Posts pela DENIA"],
+          ...d.perfis.map(p => [p.nome, n(p.google?.totais?.visualizacoes), p.google?.totais ? (p.google.totais.ligacoes || 0) + (p.google.totais.rotas || 0) + (p.google.totais.cliques_site || 0) : "", n(p.google?.avaliacoes_novas), n(p.instagram?.alcance), n(p.facebook?.alcance), p.posts_denia]),
+          [], [`Período: últimos ${d.dias} dias${per ? ` (${dataBr(per.de)} a ${dataBr(per.ate)})` : ""}. O Google libera os números com 3 a 5 dias de atraso.`]] },
+        { nome: "Google", larguras: [28, 14, 12, 12, 12, 12, 12, 12, 12, 12, 12], linhas: [["Perfil", "Visualizações", "Na Pesquisa", "No Maps", "Ligações", "Rotas", "Cliques no site", "Mensagens", "Avaliações novas", "Nota geral", "Sem resposta"],
+          ...d.perfis.filter(p => p.google).map(p => p.google.erro ? [p.nome, "Erro: " + p.google.erro] : [p.nome, n(p.google.totais.visualizacoes), n(p.google.totais.buscas), n(p.google.totais.maps), n(p.google.totais.ligacoes), n(p.google.totais.rotas), n(p.google.totais.cliques_site), n(p.google.totais.mensagens), p.google.avaliacoes_novas, n(p.google.nota), p.google.sem_resposta])] },
+        ...["instagram", "facebook"].map(c => ({ nome: c === "instagram" ? "Instagram" : "Facebook", larguras: [28, 12, 12, 14, 12, 14, 14, 12, 10], linhas: [["Perfil", "Seguidores", "Alcance", "Visualizações", "Interações", "Novos seguidores", "Deixaram de seguir", "Visitas ao perfil", "Posts"],
+          ...d.perfis.filter(p => p[c]).map(p => p[c].erro ? [p.nome, "Erro: " + p[c].erro] : [p.nome, n(p[c].seguidores), n(p[c].alcance), n(p[c].visualizacoes), n(p[c].interacoes), n(p[c].novos_seguidores), n(p[c].deixaram_de_seguir), n(p[c].visitas_perfil), n(p[c].posts)])] }))
+      ];
+      const bytes = gerarXlsx(abas);
+      let bin = ""; for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+      return json({ nome: `relatorio-marketing-${d.dias}-dias.xlsx`, base64: btoa(bin) });
+    }
     // ----- Google: descrição do perfil escrita pela IA (regras do Google: até 750 letras, sem link, sem telefone, sem exagero)
     if (resto === "google/descricao-ia" && metodo === "POST") {
       exigir("ADMIN");

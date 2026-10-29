@@ -3234,3 +3234,33 @@ test("Instagram: 'O que funciona' e checagem do perfil calculados com os número
   const r2 = await p.req(`/api/orgs/1/mk/social/analise?marca=${marca}&canal=instagram`, { quem: "admin" });
   assert.equal(r2.dados.do_cache, true); assert.equal((p.metaChamadas || []).length, antes);
 });
+
+test("Relatório geral de marketing: Google de todos os perfis no período, com planilha", async () => {
+  const p = await criarPlataforma({ GOOGLE_CLIENT_ID: "cliente.apps.googleusercontent.com", GOOGLE_CLIENT_SECRET: "segredo-google" });
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  const marca = (await p.req("/api/orgs/1/mk/marcas", { metodo: "POST", quem: "admin", corpo: { nome: "Reforma Tudo RT" } })).dados.id;
+  await p.req("/api/orgs/1/mk/marcas", { metodo: "POST", quem: "admin", corpo: { nome: "Sem contas" } });
+  const ida = await p.req(`/api/orgs/1/mk/google/conectar?marca=${marca}`, { quem: "admin" });
+  const state = new URL(ida.r.headers.get("location")).searchParams.get("state");
+  p.google = (url) => {
+    if (url.startsWith("https://oauth2.googleapis.com/token")) return { access_token: "ya29.a", refresh_token: "1//p", expires_in: 3599 };
+    if (url.includes("/v1/accounts?")) return { accounts: [{ name: "accounts/111" }] };
+    if (url.includes("/accounts/111/locations?")) return { locations: [{ name: "locations/1", title: "Reforma Tudo RT" }] };
+    if (url.includes("/reviews?")) return { reviews: [{ reviewId: "r1", reviewer: { displayName: "Ana" }, starRating: "FIVE", comment: "Ótimo", createTime: new Date().toISOString() }], totalReviewCount: 1, averageRating: 5 };
+    if (url.includes(":fetchMultiDailyMetricsTimeSeries")) return { multiDailyMetricTimeSeries: [{ dailyMetricTimeSeries: [
+      { dailyMetric: "CALL_CLICKS", timeSeries: { datedValues: [{ value: "3" }, { value: "2" }] } }, { dailyMetric: "BUSINESS_DIRECTION_REQUESTS", timeSeries: { datedValues: [{ value: "4" }] } },
+      { dailyMetric: "BUSINESS_IMPRESSIONS_MOBILE_MAPS", timeSeries: { datedValues: [{ value: "40" }] } }, { dailyMetric: "BUSINESS_IMPRESSIONS_MOBILE_SEARCH", timeSeries: { datedValues: [{ value: "10" }] } }] }] };
+    return { error: { code: 404, message: "inesperado " + url } };
+  };
+  const nonce = (await (await p.req(`/api/google/retorno?code=abc&state=${encodeURIComponent(state)}`)).r.text()).match(/\/app#\/marcas\/google-([A-Za-z0-9_-]+)/)[1];
+  await p.req("/api/orgs/1/mk/google/escolher", { metodo: "POST", quem: "admin", corpo: { n: nonce, local_id: "locations/1" } });
+  const r = (await p.req("/api/orgs/1/mk/relatorio-marketing?dias=30", { quem: "admin" })).dados;
+  const rt = r.perfis.find(x => x.nome === "Reforma Tudo RT"), sem = r.perfis.find(x => x.nome === "Sem contas");
+  assert.equal(rt.google.totais.ligacoes, 5); assert.equal(rt.google.totais.rotas, 4); assert.equal(rt.google.totais.visualizacoes, 50);
+  assert.equal(rt.google.avaliacoes_novas, 1); assert.equal(rt.google.sem_resposta, 1);
+  assert.equal(sem.google, null); assert.equal(sem.instagram, null);
+  const x = (await p.req("/api/orgs/1/mk/relatorio-marketing?dias=30&formato=xlsx", { quem: "admin" })).dados;
+  const z = Buffer.from(x.base64, "base64").toString("utf8");
+  for (const aba of ["Resumo", "Google", "Instagram", "Facebook"]) assert.match(z, new RegExp(`name="${aba}"`));
+  assert.match(z, /Reforma Tudo RT/);
+});

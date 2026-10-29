@@ -482,6 +482,29 @@
       h("a", { class: "metrica vidro metrica-botao", href: "#/relatorios" }, h("span", { text: "Mais procurado nos 7 dias" }), h("strong", { text: r.categorias[0] ? r.categorias[0].categoria : "Sem dados" }), h("small", { text: "Abrir relatórios" }))));
   }
   // Relatórios: números do período, planilha para baixar e o envio automático por e-mail.
+  // Relatório geral de marketing: Google, Instagram e Facebook de todos os perfis, no mesmo período.
+  async function blocoRelatorioMarketing(caixa, dias, vivo, atualizar) {
+    trocar(caixa, h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Marketing: Google, Instagram e Facebook" }), carregando(), h("p", { class: "sub", text: "Lendo os números de cada perfil no Google e na Meta…" })));
+    const d = await mk(`relatorio-marketing?dias=${dias}${atualizar ? "&atualizar=1" : ""}`);
+    if (!vivo()) return;
+    const fmt = v => v == null || v === "" ? "—" : numero(v);
+    const cel = (o, f) => !o ? "não conectado" : o.erro ? "erro: " + o.erro : f(o);
+    const soma = (c, k2) => d.perfis.reduce((t, p) => t + Number((c === "google" ? p.google?.totais?.[k2] : p[c]?.[k2]) || 0), 0);
+    const baixar = async (_e, b) => { const t0 = b.textContent; b.textContent = "Gerando planilha…"; try { const x = await mk(`relatorio-marketing?dias=${dias}&formato=xlsx`); const bin = atob(x.base64), by = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) by[i] = bin.charCodeAt(i); const url = URL.createObjectURL(new Blob([by], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" })); const a = h("a", { href: url, download: x.nome }); document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 5000); } catch (e) { aviso(e.message, "erro"); } finally { b.textContent = t0; } };
+    if (!d.perfis.length) { trocar(caixa, h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Marketing: Google, Instagram e Facebook" }), vazio("Nenhum perfil conectado", "Conecte Google, Instagram e Facebook em Contas conectadas."))); return; }
+    trocar(caixa, h("section", { class: "cartao vidro" },
+      h("div", { class: "cabeca-grafico" }, h("h3", { style: "margin:0", text: `Marketing: Google, Instagram e Facebook (últimos ${dias} dias)` }), h("div", { class: "acoes" }, botao("Ler de novo", () => blocoRelatorioMarketing(caixa, dias, vivo, true), "btn-secundario btn-pequeno"), botao("Baixar planilha", baixar, "btn-primario btn-pequeno"))),
+      h("p", { class: "dica", text: `Números lidos direto do Google e da Meta ${quando(d.em)}. O Google libera os dados com 3 a 5 dias de atraso.` }),
+      h("div", { class: "grade grade-4" }, metrica("Visualizações no Google", fmt(soma("google", "visualizacoes")), "Pesquisa + Maps"), metrica("Ligações, rotas e site", fmt(soma("google", "ligacoes") + soma("google", "rotas") + soma("google", "cliques_site")), "clientes agindo pelo Google"),
+        metrica("Alcance no Instagram", fmt(soma("instagram", "alcance")), "pessoas diferentes"), metrica("Alcance no Facebook", fmt(soma("facebook", "alcance")), "pessoas diferentes")),
+      h("div", { class: "tabela-caixa", style: "margin-top:12px" }, h("table", {}, h("thead", {}, h("tr", {}, ["Perfil", "Google", "Avaliações", "Instagram", "Facebook", "Posts pela DENIA"].map(t => h("th", { text: t })))),
+        h("tbody", {}, d.perfis.map(p => h("tr", {}, h("td", {}, h("strong", { text: p.nome })),
+          h("td", { text: cel(p.google, g => `${fmt(g.totais.visualizacoes)} visualizações · ${fmt((g.totais.ligacoes || 0) + (g.totais.rotas || 0) + (g.totais.cliques_site || 0))} ações`) }),
+          h("td", { text: cel(p.google, g => `${fmt(g.avaliacoes_novas)} novas${g.nota_novas ? ` (${String(g.nota_novas).replace(".", ",")} ★)` : ""}${g.sem_resposta ? ` · ${g.sem_resposta} sem resposta` : ""}`) }),
+          h("td", { text: cel(p.instagram, x => `${fmt(x.alcance)} alcance · ${x.novos_seguidores != null ? "+" + fmt(x.novos_seguidores) + " seguidores" : fmt(x.seguidores) + " seguidores"} · ${fmt(x.posts)} posts`) }),
+          h("td", { text: cel(p.facebook, x => `${fmt(x.alcance)} alcance · ${x.novos_seguidores != null ? "+" + fmt(x.novos_seguidores) + " seguidores" : fmt(x.seguidores) + " seguidores"} · ${fmt(x.posts)} posts`) }),
+          h("td", { text: fmt(p.posts_denia) }))))))));
+  }
   async function paginaRelatorios(el, _p, vivo) {
     el.appendChild(cabeca("Relatórios", "Clientes que entraram em contato, conversas e o que procuraram. Cada conversa começa na primeira mensagem do cliente e vale por 24 horas, como a Meta conta."));
     const f = estado.relF = estado.relF || { dias: 7 };
@@ -493,6 +516,7 @@
       corpo, envio);
     faixaClientes(topo).catch(e => { if (vivo()) falha(topo, e); });
     blocoEnvioRelatorio(envio).catch(e => { if (vivo()) falha(envio, e); });
+    if (temRecurso("marketing")) { const mkt = h("div", {}); el.insertBefore(mkt, corpo.nextSibling); blocoRelatorioMarketing(mkt, f.dias, vivo).catch(e => { if (vivo()) falha(mkt, e); }); }
     if (estado.eu.usuario.super_admin) { const todas = h("div", {}); el.appendChild(todas); blocoRelatoriosTodas(todas).catch(e => { if (vivo()) falha(todas, e); }); }
     let r;
     try { r = await org(`relatorio?de=${de}&ate=${ate}`); } catch (e) { if (vivo()) falha(corpo, e); return; }

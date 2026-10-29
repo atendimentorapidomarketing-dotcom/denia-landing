@@ -586,6 +586,12 @@ async function gravarSemanas(env, k, conta, token) {
 }
 
 // Últimos 30 dias (o Google consolida com ~2 dias de atraso) e as buscas do mês passado.
+// Totais do Google num período de N dias (para o relatório geral).
+export async function desempenhoDosDias(env, k, conta, dias = 30) {
+  const token = await tokenDa(env, k, conta);
+  const fim = new Date(k.agora(env) - ATRASO_DIAS * DIA_MS), ini = new Date(fim.getTime() - (Math.max(1, dias) - 1) * DIA_MS);
+  return { de: isoDia(ini), ate: isoDia(fim), totais: await metricas(conta, token, ini, fim) };
+}
 export async function desempenhoAoVivo(env, k, conta) {
   const token = await tokenDa(env, k, conta);
   const fim = new Date(k.agora(env) - ATRASO_DIAS * DIA_MS), ini = new Date(fim.getTime() - 29 * DIA_MS);
