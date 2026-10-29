@@ -3195,3 +3195,42 @@ test("Google: serviços e fotos pelo perfil (foto vai por link assinado; serviç
   assert.equal(pub.status, 200, "o Google consegue baixar a foto pelo link assinado");
   assert.equal((await p.req("/api/orgs/1/mk/google/foto", { metodo: "POST", quem: "admin", corpo: { marca_id: marca, dados: "aGVsbG8=" } })).status, 400, "só JPG/PNG");
 });
+
+test("Instagram: 'O que funciona' e checagem do perfil calculados com os números reais das publicações", async () => {
+  const p = await criarPlataforma({ META_APP_ID: "123456", META_APP_SECRET: "segredo-do-app" });
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  const marca = (await p.req("/api/orgs/1/mk/marcas", { metodo: "POST", quem: "admin", corpo: { nome: "Reforma Tudo RT", cidade: "Rio de Janeiro" } })).dados.id;
+  const ida = await p.req(`/api/orgs/1/mk/meta/conectar?marca=${marca}`, { quem: "admin" });
+  const state = new URL(ida.r.headers.get("location")).searchParams.get("state");
+  const agora = Date.now(), dia = 86400000;
+  // 8 posts: 4 reels com alcance alto, 4 fotos com alcance baixo; #reforma só nos reels.
+  const posts = Array.from({ length: 8 }, (_, i) => ({ id: "M" + i, caption: i % 2 ? "Antes e depois #reforma #rj" : "Foto do dia #rj", media_type: i % 2 ? "VIDEO" : "IMAGE", media_product_type: i % 2 ? "REELS" : "FEED", timestamp: new Date(agora - (i + 1) * 2 * dia).toISOString(), like_count: 10, comments_count: 1, permalink: "https://instagram.com/p/" + i }));
+  p.meta = (url) => {
+    if (url.includes("oauth/access_token")) return { access_token: "longo" };
+    if (url.includes("me/accounts")) return { data: [{ id: "PAG1", name: "Reforma Tudo RT", access_token: "tok", instagram_business_account: { id: "IG1", username: "reformatudort" } }] };
+    if (/\/IG1\/media\?/.test(url) && url.includes("comments.limit")) return { data: [{ id: "M1", caption: "x", comments: { data: [{ id: "c1", text: "Quanto custa?", username: "ana", timestamp: new Date().toISOString(), replies: { data: [] } }] } }] };
+    if (/\/IG1\/media\?/.test(url)) return { data: posts };
+    const mi = url.match(/\/(M\d)\/insights/);
+    if (mi) { const n = Number(mi[1].slice(1)); return { data: [{ name: "reach", values: [{ value: n % 2 ? 1000 : 300 }] }, { name: "total_interactions", values: [{ value: n % 2 ? 60 : 9 }] }] }; }
+    if (/\/IG1\?/.test(url)) return { id: "IG1", username: "reformatudort", biography: "Reformas e reparos. Peça seu orçamento pelo WhatsApp", website: "https://wa.me/5521999999999", followers_count: 900, profile_picture_url: "https://x/y.jpg" };
+    return { data: [] };
+  };
+  const nonce = (await (await p.req(`/api/meta/retorno?code=abc&state=${encodeURIComponent(state)}`)).r.text()).match(/\/app#\/marcas\/meta-([A-Za-z0-9_-]+)/)[1];
+  await p.req("/api/orgs/1/mk/meta/escolher", { metodo: "POST", quem: "admin", corpo: { n: nonce, pagina_id: "PAG1" } });
+  const r = await p.req(`/api/orgs/1/mk/social/analise?marca=${marca}&canal=instagram`, { quem: "admin" });
+  assert.equal(r.status, 200, JSON.stringify(r.dados).slice(0, 400));
+  const a = r.dados.analise, c = r.dados.checagem;
+  assert.equal(a.medida, "alcance");
+  assert.equal(a.formatos[0].nome, "REELS"); assert.equal(a.formatos[0].media, 1000);
+  assert.ok(a.dicas.some(t => /Reels alcançam 3,3x mais que fotos/.test(t)), a.dicas.join(" | "));
+  assert.equal(a.hashtags[0].hashtag, "#reforma"); assert.ok(a.hashtags[0].vs_geral > 0);
+  const item = k => c.itens.find(i => i.chave === k);
+  assert.equal(item("onde").ok, "falta", "a bio não cita o Rio de Janeiro");
+  assert.equal(item("chamada").ok, "ok");
+  assert.equal(item("video").ok, "ok", "metade são reels");
+  assert.equal(item("respostas").ok, "falta", "o comentário da Ana está sem resposta");
+  // Segunda leitura vem do cache (não gasta a cota da Meta).
+  const antes = (p.metaChamadas || []).length;
+  const r2 = await p.req(`/api/orgs/1/mk/social/analise?marca=${marca}&canal=instagram`, { quem: "admin" });
+  assert.equal(r2.dados.do_cache, true); assert.equal((p.metaChamadas || []).length, antes);
+});

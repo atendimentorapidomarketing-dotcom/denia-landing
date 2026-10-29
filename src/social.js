@@ -152,6 +152,90 @@ async function insightsDaMidia(env, token, canal, id, tipo) {
   return r;
 }
 
+// ----- "O que funciona" e checagem do perfil: calculados só com os números reais das publicações.
+const normal = t => String(t || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+const DIAS_SEMANA = ["domingo", "segunda", "terça", "quarta", "quinta", "sexta", "sábado"];
+const media = l => l.length ? l.reduce((a, b) => a + b, 0) / l.length : 0;
+const mediana = l => { if (!l.length) return 0; const o = [...l].sort((a, b) => a - b), m = Math.floor(o.length / 2); return o.length % 2 ? o[m] : (o[m - 1] + o[m]) / 2; };
+async function emLotes(lista, n, f) { const r = []; for (let i = 0; i < lista.length; i += n) r.push(...await Promise.all(lista.slice(i, i + n).map(f))); return r; }
+async function postsComNumeros(env, conta, token, canal) {
+  const a = await midias(env, conta, token, canal, null);
+  const b = a.proximo ? await midias(env, conta, token, canal, a.proximo).catch(() => ({ itens: [] })) : { itens: [] };
+  const itens = [...a.itens, ...b.itens].filter(x => x.tipo !== "STORY").slice(0, 30);
+  return emLotes(itens, 5, async x => {
+    const m = await insightsDaMidia(env, token, canal, x.id, x.tipo).catch(() => ({}));
+    const reacoes = typeof m.post_reactions_by_type_total === "object" ? Object.values(m.post_reactions_by_type_total).reduce((t, v) => t + Number(v || 0), 0) : 0;
+    const alcance = canal === "instagram" ? Number(m.reach || 0) : Number(m.post_impressions_unique || 0);
+    const interacoes = canal === "instagram" ? Number(m.total_interactions || (Number(x.curtidas || 0) + Number(x.comentarios || 0) + Number(m.shares || 0) + Number(m.saved || 0)))
+      : Number(x.curtidas || reacoes || 0) + Number(x.comentarios || 0) + Number(x.compartilhamentos || 0);
+    return { ...x, alcance, interacoes, visualizacoes: Number(m.views || m.post_media_view || 0), salvos: Number(m.saved || 0), compartilhados: Number(m.shares || x.compartilhamentos || 0), cliques: Number(m.post_clicks || 0) };
+  });
+}
+function oQueFunciona(posts, agoraMs) {
+  const comAlcance = posts.filter(p => p.alcance > 0), medida = comAlcance.length >= Math.max(3, posts.length / 2) ? "alcance" : "interacoes";
+  const valor = p => p[medida];
+  const geral = media(posts.map(valor));
+  const grupo = (chave) => { const g = new Map(); for (const p of posts) { const k = chave(p); if (k == null) continue; if (!g.has(k)) g.set(k, []); g.get(k).push(p); } return [...g.entries()].map(([k, l]) => ({ nome: k, posts: l.length, media: Math.round(media(l.map(valor))), interacoes: Math.round(media(l.map(p => p.interacoes))), taxa: l.some(p => p.alcance) ? Math.round(media(l.filter(p => p.alcance).map(p => p.interacoes / p.alcance)) * 1000) / 10 : null })).sort((a, b) => b.media - a.media); };
+  const formatos = grupo(p => p.tipo);
+  const hora = p => Number(new Intl.DateTimeFormat("en-US", { timeZone: "America/Sao_Paulo", hour: "2-digit", hourCycle: "h23" }).format(new Date(p.quando)));
+  const diaSem = p => DIAS_SEMANA[new Date(Date.parse(p.quando) - 3 * 3600000).getUTCDay()];
+  const dias = grupo(diaSem), faixas = grupo(p => { const h = hora(p); return h < 12 ? "manhã (até 12h)" : h < 18 ? "tarde (12h às 18h)" : "noite (depois das 18h)"; });
+  const legenda = grupo(p => { const n = String(p.texto || "").length; return n < 125 ? "curta (até 125 letras)" : n < 500 ? "média" : "longa (mais de 500 letras)"; });
+  const tags = new Map();
+  for (const p of posts) for (const t of new Set((String(p.texto || "").match(/#[\p{L}\p{N}_]+/gu) || []).map(x => x.toLowerCase()))) { if (!tags.has(t)) tags.set(t, []); tags.get(t).push(valor(p)); }
+  const hashtags = [...tags.entries()].filter(([, l]) => l.length >= 2).map(([t, l]) => ({ hashtag: t, posts: l.length, media: Math.round(media(l)), vs_geral: geral ? Math.round((media(l) / geral - 1) * 100) : 0 })).sort((a, b) => b.media - a.media).slice(0, 15);
+  const ord = [...posts].sort((a, b) => valor(b) - valor(a));
+  const resumo = p => ({ id: p.id, texto: String(p.texto || "").slice(0, 140), tipo: p.tipo, quando: p.quando, link: p.link, imagem: p.imagem, alcance: p.alcance, interacoes: p.interacoes });
+  const semanas = [0, 1, 2, 3].map(i => posts.filter(p => { const t = Date.parse(p.quando); return t <= agoraMs - i * 7 * DIA_MS && t > agoraMs - (i + 1) * 7 * DIA_MS; }).length);
+  const ultimo = posts.length ? Math.floor((agoraMs - Math.max(...posts.map(p => Date.parse(p.quando)))) / DIA_MS) : null;
+  // Recomendações tiradas dos números (só quando a diferença é clara e há posts suficientes).
+  const dicas = [], nomeF = { REELS: "reels", CARROSSEL: "carrosséis", FOTO: "fotos", "VÍDEO": "vídeos", TEXTO: "posts só de texto" };
+  const fs = formatos.filter(f => f.posts >= 2);
+  if (fs.length >= 2 && fs[fs.length - 1].media > 0 && fs[0].media / fs[fs.length - 1].media >= 1.3) dicas.push(`${nomeF[fs[0].nome] || fs[0].nome} alcançam ${String(Math.round(fs[0].media / fs[fs.length - 1].media * 10) / 10).replace(".", ",")}x mais que ${nomeF[fs[fs.length - 1].nome] || fs[fs.length - 1].nome}: faça mais ${nomeF[fs[0].nome] || fs[0].nome}.`);
+  const ds = dias.filter(d => d.posts >= 2);
+  if (ds.length >= 3 && ds[ds.length - 1].media > 0 && ds[0].media / ds[ds.length - 1].media >= 1.3) dicas.push(`Posts de ${ds[0].nome} vão melhor (média ${ds[0].media.toLocaleString("pt-BR")}); ${ds[ds.length - 1].nome} é o dia mais fraco.`);
+  const fx = faixas.filter(f => f.posts >= 2);
+  if (fx.length >= 2 && fx[fx.length - 1].media > 0 && fx[0].media / fx[fx.length - 1].media >= 1.25) dicas.push(`O melhor horário tem sido de ${fx[0].nome}.`);
+  const ls = legenda.filter(l => l.posts >= 2);
+  if (ls.length >= 2 && ls[ls.length - 1].media > 0 && ls[0].media / ls[ls.length - 1].media >= 1.3) dicas.push(`Legendas ${ls[0].nome.split(" (")[0]}s rendem mais que as ${ls[ls.length - 1].nome.split(" (")[0]}s.`);
+  const ht = hashtags.filter(h => h.vs_geral >= 25);
+  if (ht.length) dicas.push(`Hashtags que puxam o alcance para cima: ${ht.slice(0, 4).map(h => h.hashtag).join(", ")}.`);
+  const porSemana = media(semanas);
+  if (porSemana < 2) dicas.push(`Você postou em média ${String(Math.round(porSemana * 10) / 10).replace(".", ",")} vez(es) por semana nas últimas 4 semanas. O ideal é pelo menos 3: a DENIA monta a semana em Agenda e criação.`);
+  if (ultimo != null && ultimo > 7) dicas.push(`O último post foi há ${ultimo} dias: perfis parados perdem alcance.`);
+  return { medida, posts_analisados: posts.length, media_geral: Math.round(geral), formatos, dias, faixas, legenda, hashtags, melhores: ord.slice(0, 3).map(resumo), piores: ord.slice(-3).reverse().map(resumo), por_semana: semanas, dias_sem_postar: ultimo, dicas: dicas.map(t => t.charAt(0).toUpperCase() + t.slice(1)) };
+}
+function checagemSocial(canal, pf, posts, comentariosLista, marca, analise) {
+  const itens = [];
+  const add = (chave, titulo, max, pontos, detalhe, dica) => itens.push({ chave, titulo, max, pontos: Math.max(0, Math.min(max, Math.round(pontos))), ok: pontos >= max ? "ok" : pontos > 0 ? "parcial" : "falta", detalhe, dica });
+  const conferir = (chave, titulo, detalhe, dica) => itens.push({ chave, titulo, max: 0, pontos: 0, ok: "conferir", detalhe, dica });
+  const bio = String(pf.bio || "").trim();
+  add("foto", "Foto de perfil", 5, pf.foto ? 5 : 0, pf.foto ? "tem foto" : "sem foto", pf.foto ? "" : "Use a logo ou uma foto clara da fachada.");
+  add("bio", canal === "instagram" ? "Bio" : "Sobre a página", 10, bio.length >= 40 ? 10 : bio ? 5 : 0, bio ? `${bio.length} letras` : "vazia", bio.length >= 40 ? "" : "Diga em uma frase o que faz, onde e como chamar.");
+  const cidade = normal(marca?.cidade || "").split(/[—,-]/)[0].trim();
+  if (cidade) add("onde", "Bio diz onde atende", 5, normal(bio).includes(cidade) ? 5 : 0, normal(bio).includes(cidade) ? `cita ${marca.cidade}` : `não cita ${marca.cidade}`, normal(bio).includes(cidade) ? "" : "Coloque a cidade ou os bairros: quem procura perto encontra mais fácil.");
+  else conferir("onde", "Bio diz onde atende", "a cidade não está no cadastro do perfil", "Preencha a cidade em Contas conectadas → Editar para a DENIA conferir.");
+  add("link", canal === "instagram" ? "Link na bio" : "Site na página", 8, pf.site ? 8 : 0, pf.site || "sem link", pf.site ? "" : "Coloque o link do WhatsApp ou do site.");
+  if (canal === "instagram") add("chamada", "Chamada para ação na bio", 5, /whats|agend|chame|cham[ae]|link|or[cç]amento|ligu|pe[cç]a|clique|direct|dm|reserv/i.test(bio) ? 5 : 0, /whats|agend|link|or[cç]amento|direct|dm/i.test(bio) ? "tem" : "não tem", "Termine a bio com o que a pessoa deve fazer: \"Peça seu orçamento pelo WhatsApp 👇\".");
+  else add("categoria", "Categoria da página", 5, pf.categoria ? 5 : 0, pf.categoria || "sem categoria", pf.categoria ? "" : "Escolha a categoria certa nas configurações da página.");
+  const porSemana = media(analise.por_semana);
+  add("frequencia", "Frequência de posts", 15, porSemana >= 3 ? 15 : porSemana >= 2 ? 10 : porSemana >= 1 ? 5 : 0, `${String(Math.round(porSemana * 10) / 10).replace(".", ",")} por semana (últimas 4)`, porSemana >= 3 ? "" : "Poste pelo menos 3 vezes por semana. A DENIA cria e agenda em Agenda e criação.");
+  const ult = analise.dias_sem_postar;
+  add("recente", "Último post", 8, ult == null ? 0 : ult <= 7 ? 8 : ult <= 14 ? 4 : 0, ult == null ? "nenhum post" : ult === 0 ? "hoje" : `há ${ult} dia(s)`, ult != null && ult <= 7 ? "" : "Perfis parados perdem alcance. Publique esta semana.");
+  const recentes = posts.slice(0, 20), videos = recentes.filter(p => ["REELS", "VÍDEO"].includes(p.tipo)).length;
+  const pv = recentes.length ? videos / recentes.length : 0;
+  add("video", canal === "instagram" ? "Reels" : "Vídeos", 10, pv >= 0.3 ? 10 : pv > 0 ? 5 : 0, `${videos} dos últimos ${recentes.length} posts`, pv >= 0.3 ? "" : `${canal === "instagram" ? "Reels" : "Vídeos"} curtos são o que mais alcança gente nova. Faça pelo menos 1 em cada 3 posts.`);
+  const taxas = posts.filter(p => p.alcance > 0).map(p => p.interacoes / p.alcance);
+  if (taxas.length >= 3) { const t = mediana(taxas) * 100; add("engajamento", "Engajamento", 12, t >= 5 ? 12 : t >= 2 ? 8 : t >= 1 ? 4 : 0, `${String(Math.round(t * 10) / 10).replace(".", ",")}% de quem vê interage`, t >= 5 ? "" : "Faça perguntas na legenda, mostre antes e depois e responda todo comentário."); }
+  else conferir("engajamento", "Engajamento", "a Meta não liberou o alcance dos posts", "Reconecte o Instagram/Facebook aceitando as permissões de números (insights).");
+  const doCliente = comentariosLista.filter(c => !c.oculto);
+  if (doCliente.length) { const r = doCliente.filter(c => c.respondido).length / doCliente.length; add("respostas", "Comentários respondidos", 10, r * 10, `${doCliente.filter(c => c.respondido).length} de ${doCliente.length}`, r >= 1 ? "" : "Responda todos os comentários: a DENIA sugere a resposta em Comentários."); }
+  else add("respostas", "Comentários respondidos", 10, 10, "nenhum comentário esperando", "");
+  if (canal === "facebook" && pf.nota != null) add("nota", "Nota das recomendações", 9, pf.nota >= 4.5 ? 9 : pf.nota >= 4 ? 5 : 0, String(pf.nota).replace(".", ",") + " ★", pf.nota >= 4.5 ? "" : "Peça recomendação aos clientes satisfeitos.");
+  const max = itens.reduce((t, x) => t + x.max, 0), pts = itens.reduce((t, x) => t + x.pontos, 0);
+  return { nota: max ? Math.round(pts / max * 100) : 0, itens, faltam: itens.filter(x => x.ok === "parcial" || x.ok === "falta").length };
+}
+
 // Comentários das últimas publicações, com quem respondeu e se a marca já respondeu.
 async function comentarios(env, conta, token, canal, perfilProprio) {
   const lista = [];
@@ -201,6 +285,21 @@ export async function rotasSocial(request, env, k, orgId, papel, resto, ajuda = 
     if (resto === "social/midias") return responder(async () => { const { conta, token } = await contaDa(env, k, orgId, marcaId); return await midias(env, conta, token, canal, ID_OK.test(url.searchParams.get("depois") || "") ? url.searchParams.get("depois") : null); });
     const m = resto.match(/^social\/midias\/([\w.-]{1,90})$/);
     if (m) return responder(async () => { const { token } = await contaDa(env, k, orgId, marcaId); return { id: m[1], metricas: await insightsDaMidia(env, token, canal, m[1], String(url.searchParams.get("tipo") || "")) }; });
+    if (resto === "social/analise") return responder(async () => {
+      const { conta, token } = await contaDa(env, k, orgId, marcaId);
+      if (canal === "instagram" && !conta.ig_id) throw new Error("A página desta marca não tem um Instagram profissional ligado.");
+      const chaveCache = `analise_${orgId}_${Number(marcaId)}_${canal}`;
+      if (url.searchParams.get("atualizar") !== "1") {
+        const c = await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave=?").bind(chaveCache).first().catch(() => null);
+        try { const v = c?.valor ? JSON.parse(c.valor) : null; if (v && k.agora(env) - v.em < 6 * 3600000) return { ...v, do_cache: true }; } catch { /* refaz */ }
+      }
+      const [pf, posts, cs, marca] = await Promise.all([perfil(env, conta, token, canal), postsComNumeros(env, conta, token, canal), comentarios(env, conta, token, canal, conta.ig_usuario).catch(() => []),
+        env.DB.prepare("SELECT * FROM plt_mk_marcas WHERE id=? AND org_id=?").bind(Number(marcaId), orgId).first().catch(() => null)]);
+      const analise = oQueFunciona(posts, k.agora(env));
+      const r = { em: k.agora(env), perfil: pf, analise, checagem: checagemSocial(canal, pf, posts, cs, marca, analise) };
+      await env.DB.prepare("INSERT OR REPLACE INTO plt_meta(chave,valor) VALUES(?,?)").bind(chaveCache, JSON.stringify(r)).run().catch(() => {});
+      return r;
+    });
     if (resto === "social/comentarios") return responder(async () => {
       const { conta, token } = await contaDa(env, k, orgId, marcaId);
       if (canal === "instagram" && !conta.ig_id) throw new Error("A página desta marca não tem um Instagram profissional ligado.");
