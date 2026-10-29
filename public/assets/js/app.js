@@ -4947,6 +4947,49 @@ Botão só com texto = resposta.` })),
   const ls = { ler(k) { try { return JSON.parse(localStorage.getItem(k) || "null"); } catch { return null; } }, gravar(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* sem espaço */ } } };
   const dataHoraCurta = v => { const d = new Date(v); return isNaN(d) ? "" : fmtDataHora.format(d); };
 
+  // ----- Instagram/Facebook: checagem do perfil e "o que funciona" (números reais das últimas 30 publicações)
+  async function abaAnaliseSocial(area, canal, marcaId, aba, atualizar) {
+    trocar(area, h("section", { class: "cartao vidro" }, carregando(), h("p", { class: "sub", style: "text-align:center", text: "Lendo as últimas 30 publicações e os números de cada uma na Meta. Leva alguns segundos." })));
+    const d = await mk(`social/analise?marca=${marcaId}&canal=${canal}${atualizar ? "&atualizar=1" : ""}`);
+    const a = d.analise, c = d.checagem, nomeC = canal === "instagram" ? "Instagram" : "Facebook";
+    const rotulo = a.medida === "alcance" ? "alcance médio" : "interações médias";
+    const fmt = v => numero(Math.round(v || 0));
+    const topo = h("p", { class: "fx-nota", text: `Calculado com ${a.posts_analisados} publicações reais do ${nomeC}${d.do_cache ? ", lidas " + quando(d.em) : ""}. A DENIA só afirma o que os números mostram.` });
+    const atualizarB = botao("Ler de novo agora", () => abaAnaliseSocial(area, canal, marcaId, aba, true), "btn-secundario btn-pequeno");
+    if (aba === "checagem") {
+      const cor = c.nota >= 90 ? "var(--ok, #22c55e)" : c.nota >= 70 ? "#fbbf24" : "#f87171";
+      const ONDE = { frequencia: [`#/${canal}/agenda`, "Criar a semana com IA"], recente: [`#/${canal}/agenda`, "Criar post"], video: [`#/${canal}/agenda`, "Criar reels"], respostas: [`#/${canal}/comentarios`, "Responder"], onde: ["#/marcas", "Editar cadastro"] };
+      const linha = i => h("li", { class: "chk-item chk-" + i.ok }, h("span", { class: "chk-ic", text: { ok: "✅", parcial: "🟡", falta: "❌", conferir: "ℹ️" }[i.ok] }),
+        h("div", {}, h("strong", { text: i.titulo }), h("span", { class: "sub", text: ` · ${i.detalhe}` }), i.dica ? h("p", { class: "chk-dica", text: i.dica }) : null,
+          (i.ok === "parcial" || i.ok === "falta") && ONDE[i.chave] ? h("a", { class: "btn btn-secundario btn-pequeno", href: ONDE[i.chave][0] }, ONDE[i.chave][1]) : null),
+        h("span", { class: "chk-pts", text: i.ok === "conferir" ? "fora da nota" : `${i.pontos}/${i.max}` }));
+      const faltando = c.itens.filter(i => i.ok === "parcial" || i.ok === "falta").sort((x, y) => (y.max - y.pontos) - (x.max - x.pontos));
+      trocar(area, h("section", { class: "cartao vidro chk-topo" }, h("div", { class: "chk-anel", style: `--p:${c.nota};--cor:${cor}`, role: "img", "aria-label": `Perfil ${c.nota}%` }, h("strong", { text: c.nota + "%" }), h("span", { text: "completo" })),
+        h("div", {}, h("h3", { style: "margin:0", text: d.perfil.usuario ? "@" + d.perfil.usuario : d.perfil.nome }), h("p", { class: "sub", style: "margin:4px 0 10px", text: c.faltam ? `Falta${c.faltam > 1 ? "m" : ""} ${c.faltam} item(ns) para o perfil ficar 100%.` : "Perfil em dia." }), topo, h("div", { class: "acoes" }, atualizarB))),
+        faltando.length ? h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "O que fazer agora" }), h("ul", { class: "chk-lista" }, faltando.map(linha))) : null,
+        h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Tudo o que foi checado" }), h("ul", { class: "chk-lista" }, c.itens.map(linha))));
+      return;
+    }
+    const tabela = (titulo, linhas, cols) => h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: titulo }), linhas.length ? h("div", { class: "tabela-caixa" }, h("table", {}, h("thead", {}, h("tr", {}, cols.map(x => h("th", { text: x[0] })))), h("tbody", {}, linhas.map(l => h("tr", {}, cols.map(x => h("td", { text: x[1](l) }))))))) : h("p", { class: "sub", text: "Ainda não há publicações suficientes." }));
+    const NOME_TIPO = { REELS: "Reels", CARROSSEL: "Carrossel", FOTO: "Foto", "VÍDEO": "Vídeo", TEXTO: "Só texto" };
+    const cartaoPost = p => h("a", { class: "cartao", href: p.link, target: "_blank", rel: "noopener", style: "display:block;padding:10px;text-decoration:none;color:inherit" }, p.imagem ? h("img", { src: p.imagem, alt: "", loading: "lazy", style: "width:100%;aspect-ratio:1;object-fit:cover;border-radius:10px" }) : null,
+      h("strong", { style: "display:block;margin-top:6px", text: `${NOME_TIPO[p.tipo] || p.tipo} · ${fmt(a.medida === "alcance" ? p.alcance : p.interacoes)} ${a.medida === "alcance" ? "de alcance" : "interações"}` }), h("span", { class: "sub", text: (p.texto || "(sem legenda)").slice(0, 90) }));
+    trocar(area,
+      h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "O que a DENIA tirou dos números" }), topo,
+        a.dicas.length ? h("ul", { class: "lista-saude" }, a.dicas.map(t => h("li", { text: t }))) : h("p", { class: "sub", text: "Sem diferença clara entre formatos, dias e horários ainda. Continue postando: com mais publicações as comparações ficam firmes." }), h("div", { class: "acoes" }, atualizarB)),
+      h("section", { class: "grade grade-4" }, metrica(rotulo[0].toUpperCase() + rotulo.slice(1), fmt(a.media_geral), "por publicação"), metrica("Posts por semana", String(Math.round((a.por_semana.reduce((x, y) => x + y, 0) / 4) * 10) / 10).replace(".", ","), "média das últimas 4 semanas"),
+        metrica("Último post", a.dias_sem_postar == null ? "—" : a.dias_sem_postar === 0 ? "hoje" : `há ${a.dias_sem_postar} dia(s)`, ""), metrica("Formato campeão", a.formatos[0] ? (NOME_TIPO[a.formatos[0].nome] || a.formatos[0].nome) : "—", a.formatos[0] ? `${fmt(a.formatos[0].media)} de ${rotulo.split(" ")[0]} médio` : "")),
+      tabela("Por formato", a.formatos, [["Formato", l => NOME_TIPO[l.nome] || l.nome], ["Posts", l => l.posts], [rotulo[0].toUpperCase() + rotulo.slice(1), l => fmt(l.media)], ["Interações médias", l => fmt(l.interacoes)], ["Engajamento", l => l.taxa == null ? "—" : String(l.taxa).replace(".", ",") + "%"]]),
+      h("section", { class: "grade grade-2" },
+        tabela("Por dia da semana", a.dias, [["Dia", l => l.nome], ["Posts", l => l.posts], [rotulo, l => fmt(l.media)]]),
+        tabela("Por horário", a.faixas, [["Horário", l => l.nome], ["Posts", l => l.posts], [rotulo, l => fmt(l.media)]])),
+      h("section", { class: "grade grade-2" },
+        tabela("Hashtags (usadas 2 vezes ou mais)", a.hashtags, [["Hashtag", l => l.hashtag], ["Posts", l => l.posts], [rotulo, l => fmt(l.media)], ["Comparado à média", l => (l.vs_geral > 0 ? "+" : "") + l.vs_geral + "%"]]),
+        tabela("Tamanho da legenda", a.legenda, [["Legenda", l => l.nome], ["Posts", l => l.posts], [rotulo, l => fmt(l.media)]])),
+      h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Melhores publicações" }), h("div", { class: "grade grade-3" }, a.melhores.map(cartaoPost))),
+      h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Publicações mais fracas" }), h("p", { class: "dica", text: "Compare com as melhores: formato, gancho no começo da legenda e horário costumam explicar a diferença." }), h("div", { class: "grade grade-3" }, a.piores.map(cartaoPost))));
+  }
+
   async function paginaCanalSocial(el, canal, vivo, aba) {
     const nome = NOME_CANAL[canal];
     const lista = await marcas(true);
@@ -4955,7 +4998,7 @@ Botão só com texto = resposta.` })),
     if (!lista.length) { semMarcas(el); return; }
     const meta = await estadoMeta(true);
     if (!vivo()) return;
-    const abas = [["visao", "Visão geral"], ["publicacoes", "Publicações"], ["comentarios", "Comentários"], ["horarios", "Melhores horários"], ...(canal === "instagram" ? [["stories", "Stories"], ["marcacoes", "Marcações"], ["concorrentes", "Concorrentes"]] : [["avaliacoes", "Recomendações"]]), ["agenda", "Agenda e criação"], ["conexao", "Conexão"]];
+    const abas = [["visao", "Visão geral"], ["checagem", "Checagem do perfil"], ["analise", "O que funciona"], ["publicacoes", "Publicações"], ["comentarios", "Comentários"], ["horarios", "Melhores horários"], ...(canal === "instagram" ? [["stories", "Stories"], ["marcacoes", "Marcações"], ["concorrentes", "Concorrentes"]] : [["avaliacoes", "Recomendações"]]), ["agenda", "Agenda e criação"], ["conexao", "Conexão"]];
     const chaveMarca = canal === "instagram" ? "marcaInstagram" : "marcaFacebook";
     const sel = seletorMarca(lista, estado[chaveMarca] || lista[0].id);
     sel.addEventListener("change", () => { estado[chaveMarca] = sel.value; navegar(); });
@@ -4973,6 +5016,7 @@ Botão só com texto = resposta.` })),
       if (atual === "agenda") return await abaAgendaSocial(area, canal, lista);
       if (!pronta) return precisaConexao();
       if (atual === "visao") await abaVisaoSocial(area, canal, marcaId);
+      else if (atual === "checagem" || atual === "analise") await abaAnaliseSocial(area, canal, marcaId, atual);
       else if (atual === "publicacoes") await abaPublicacoesSocial(area, canal, marcaId);
       else if (atual === "comentarios") await abaComentariosSocial(area, canal, marcaId);
       else if (atual === "concorrentes") await abaConcorrentes(area, marcaId);
