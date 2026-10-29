@@ -3163,3 +3163,35 @@ test("Google: editar o perfil pela DENIA (descrição, telefone, site, horários
   const v = (await p.req("/api/orgs/1/mk/google/visao", { quem: "admin" })).dados.perfis;
   assert.equal(v.length, 1); assert.equal(v[0].sem_resposta, 1, "a avaliação da Ana está sem resposta");
 });
+
+test("Google: serviços e fotos pelo perfil (foto vai por link assinado; serviços do catálogo são mantidos)", async () => {
+  const p = await criarPlataforma({ GOOGLE_CLIENT_ID: "cliente.apps.googleusercontent.com", GOOGLE_CLIENT_SECRET: "segredo-google" });
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  const marca = (await p.req("/api/orgs/1/mk/marcas", { metodo: "POST", quem: "admin", corpo: { nome: "Reforma Tudo RT" } })).dados.id;
+  const ida = await p.req(`/api/orgs/1/mk/google/conectar?marca=${marca}`, { quem: "admin" });
+  const state = new URL(ida.r.headers.get("location")).searchParams.get("state");
+  let patch = null, foto = null;
+  p.google = (url, metodo, corpo) => {
+    if (url.startsWith("https://oauth2.googleapis.com/token")) return { access_token: "ya29.a", refresh_token: "1//p", expires_in: 3599 };
+    if (url.includes("/v1/accounts?")) return { accounts: [{ name: "accounts/111" }] };
+    if (url.includes("/accounts/111/locations?")) return { locations: [{ name: "locations/1", title: "Reforma Tudo RT" }] };
+    if (url.includes("/reviews?")) return { reviews: [] };
+    if (metodo === "POST" && url.endsWith("/accounts/111/locations/1/media")) { foto = corpo; return { name: "accounts/111/locations/1/media/9" }; }
+    if (metodo === "PATCH") { patch = corpo; return {}; }
+    if (url.includes("readMask=categories,serviceItems")) return { categories: { primaryCategory: { name: "categories/gcid:contractor" } }, serviceItems: [{ structuredServiceItem: { serviceTypeId: "job_type_id:pintura" } }, { freeFormServiceItem: { label: { displayName: "Velho" } } }] };
+    return { error: { code: 404, message: "inesperado " + url } };
+  };
+  const nonce = (await (await p.req(`/api/google/retorno?code=abc&state=${encodeURIComponent(state)}`)).r.text()).match(/\/app#\/marcas\/google-([A-Za-z0-9_-]+)/)[1];
+  await p.req("/api/orgs/1/mk/google/escolher", { metodo: "POST", quem: "admin", corpo: { n: nonce, local_id: "locations/1" } });
+  const s = await p.req("/api/orgs/1/mk/google/perfil", { metodo: "POST", quem: "admin", corpo: { marca_id: marca, servicos: [{ nome: "Troca de piso", descricao: "Porcelanato e vinílico" }] } });
+  assert.equal(s.status, 200, JSON.stringify(s.dados));
+  assert.deepEqual(patch.serviceItems, [{ structuredServiceItem: { serviceTypeId: "job_type_id:pintura" } }, { freeFormServiceItem: { category: "categories/gcid:contractor", label: { displayName: "Troca de piso", description: "Porcelanato e vinílico", languageCode: "pt-BR" } } }]);
+  const jpg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(20000, 7)]).toString("base64");
+  const f = await p.req("/api/orgs/1/mk/google/foto", { metodo: "POST", quem: "admin", corpo: { marca_id: marca, categoria: "EXTERIOR", dados: jpg } });
+  assert.equal(f.status, 200, JSON.stringify(f.dados));
+  assert.equal(foto.locationAssociation.category, "EXTERIOR");
+  assert.match(foto.sourceUrl, /^https:\/\/plataforma\.test\/m\/\d+-[\w-]{32}\.jpg$/);
+  const pub = await p.req(new URL(foto.sourceUrl).pathname);
+  assert.equal(pub.status, 200, "o Google consegue baixar a foto pelo link assinado");
+  assert.equal((await p.req("/api/orgs/1/mk/google/foto", { metodo: "POST", quem: "admin", corpo: { marca_id: marca, dados: "aGVsbG8=" } })).status, 400, "só JPG/PNG");
+});

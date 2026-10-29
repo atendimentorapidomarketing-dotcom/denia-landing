@@ -924,14 +924,15 @@ async function rotasGoogleExtra(request, env, k, orgId, papel, resto, url) {
     if (!conta) return json({ conectada: false });
     try {
       const token = await tokenDa(env, k, conta);
-      const info = await chamar("GET", `${API_INFO}/${conta.local_nome}?readMask=title,phoneNumbers,websiteUri,regularHours,specialHours,profile,metadata,categories,storefrontAddress`, token);
+      const info = await chamar("GET", `${API_INFO}/${conta.local_nome}?readMask=title,phoneNumbers,websiteUri,regularHours,specialHours,profile,metadata,categories,storefrontAddress,serviceItems`, token);
       const hojeMs = Math.floor((k.agora(env) - 3 * 3600000) / 86400000) * 86400000;
       const ano = new Date(hojeMs).getUTCFullYear();
       const proximos = [...feriadosNacionais(ano), ...feriadosNacionais(ano + 1)].filter(f => f.ms >= hojeMs && f.ms <= hojeMs + 120 * 86400000).map(f => ({ nome: f.nome, data: isoDia(new Date(f.ms)) }));
       return json({ conectada: true, perfil: {
         titulo: info.title || conta.local_titulo, descricao: info.profile?.description || "", telefone: info.phoneNumbers?.primaryPhone || "", site: info.websiteUri || "",
         categoria: info.categories?.primaryCategory?.displayName || "", horarios: info.regularHours?.periods || [], feriados: info.specialHours?.specialHourPeriods || [],
-        avaliar: info.metadata?.newReviewUri || "", maps: info.metadata?.mapsUri || conta.maps_uri || "", cidade: info.storefrontAddress?.locality || "" }, proximos_feriados: proximos });
+        avaliar: info.metadata?.newReviewUri || "", maps: info.metadata?.mapsUri || conta.maps_uri || "", cidade: info.storefrontAddress?.locality || "",
+        servicos: (info.serviceItems || []).map(x => x.freeFormServiceItem ? { nome: x.freeFormServiceItem.label?.displayName || "", descricao: x.freeFormServiceItem.label?.description || "", livre: true } : { nome: String(x.structuredServiceItem?.serviceTypeId || "").replace(/^job_type_id:/, "").replace(/_/g, " "), descricao: x.structuredServiceItem?.description || "", livre: false, id: x.structuredServiceItem?.serviceTypeId }) }, proximos_feriados: proximos });
     } catch (e) { return erroJson(e); }
   }
   if (resto === "google/perfil" && metodo === "POST") {
@@ -961,12 +962,55 @@ async function rotasGoogleExtra(request, env, k, orgId, papel, resto, url) {
       const sp = c.feriados.filter(x => dataG(x.data)).slice(0, 60).map(x => x.fechado ? { startDate: dataG(x.data), closed: true } : (hora(x.abre) && hora(x.fecha) ? { startDate: dataG(x.data), openTime: hora(x.abre), closeTime: hora(x.fecha) } : null)).filter(Boolean);
       local.specialHours = { specialHourPeriods: sp }; mascara.push("specialHours");
     }
-    if (!mascara.length) return json({ erro: "Nada para mudar." }, 400);
+    if (!mascara.length && !Array.isArray(c.servicos)) return json({ erro: "Nada para mudar." }, 400);
     try {
       const token = await tokenDa(env, k, conta);
+      if (Array.isArray(c.servicos)) {
+        // Serviços escritos por você (livres) ficam na categoria principal; os do catálogo do Google são mantidos como estão.
+        const atual = await chamar("GET", `${API_INFO}/${conta.local_nome}?readMask=categories,serviceItems`, token);
+        const cat = atual.categories?.primaryCategory?.name;
+        if (!cat) return json({ erro: "O perfil precisa ter uma categoria principal no Google antes de cadastrar serviços." }, 409);
+        const livres = c.servicos.map(x => ({ nome: String(x.nome || "").trim().slice(0, 140), descricao: String(x.descricao || "").trim().slice(0, 300) })).filter(x => x.nome).slice(0, 100);
+        local.serviceItems = [...(atual.serviceItems || []).filter(x => x.structuredServiceItem), ...livres.map(x => ({ freeFormServiceItem: { category: cat, label: { displayName: x.nome, ...(x.descricao ? { description: x.descricao } : {}), languageCode: "pt-BR" } } }))];
+        mascara.push("serviceItems");
+      }
       await chamar("PATCH", `${API_INFO}/${conta.local_nome}?updateMask=${encodeURIComponent(mascara.join(","))}`, token, local);
       await k.auditar(env, request, k.sessao, orgId, "MARKETING", `Mudou no Google (${conta.local_titulo}): ${mascara.join(", ")}`).catch(() => {});
       return json({ ok: true, mudou: mascara });
+    } catch (e) { return erroJson(e); }
+  }
+  // ----- Fotos do perfil: ver as que estão no Google e enviar novas (o Google busca a imagem por um link assinado).
+  const CATEGORIAS_FOTO = ["ADDITIONAL", "COVER", "LOGO", "EXTERIOR", "INTERIOR", "PRODUCT", "AT_WORK", "TEAM", "FOOD_AND_DRINK", "MENU", "COMMON_AREA", "ROOMS"];
+  if (resto === "google/fotos" && metodo === "GET") {
+    const conta = await marcaDe();
+    if (!conta) return json({ conectada: false });
+    try {
+      const token = await tokenDa(env, k, conta);
+      const lista = []; let pg = "";
+      for (let i = 0; i < 3; i++) { const d = await chamar("GET", `${API_V4}/${caminhoV4(conta)}/media?pageSize=100${pg ? "&pageToken=" + encodeURIComponent(pg) : ""}`, token); lista.push(...(d.mediaItems || [])); if (!d.nextPageToken) break; pg = d.nextPageToken; }
+      return json({ conectada: true, fotos: lista.map(m => ({ id: m.name, url: m.thumbnailUrl || m.googleUrl, grande: m.googleUrl, tipo: m.mediaFormat, categoria: m.locationAssociation?.category || "", quando: m.createTime, vistas: Number(m.insights?.viewCount || 0) })).sort((a, b) => String(b.quando).localeCompare(String(a.quando))) });
+    } catch (e) { return erroJson(e); }
+  }
+  if (resto === "google/foto" && metodo === "POST") {
+    if (!pode(papel, "ADMIN")) return json({ erro: "Somente administradores enviam fotos ao Google." }, 403);
+    const { corpo: c, erro } = await k.lerCorpo(request, 2_200_000);
+    if (erro) return erro;
+    const conta = await contaGoogleDe(env, orgId, Number(c.marca_id));
+    if (!conta) return json({ erro: "Conecte o Google deste perfil primeiro." }, 409);
+    const dados = String(c.dados || "").replace(/^data:[^,]*,/, "");
+    const ini = (() => { try { return atob(dados.slice(0, 16)); } catch { return ""; } })();
+    const mime = ini.startsWith("\xff\xd8\xff") ? "image/jpeg" : ini.startsWith("\x89PNG") ? "image/png" : "";
+    if (!mime) return json({ erro: "Envie a foto em JPG ou PNG." }, 400);
+    if (dados.length < 14000) return json({ erro: "A foto é pequena demais para o Google (mínimo 10 KB e 250 pixels)." }, 400);
+    const categoria = CATEGORIAS_FOTO.includes(c.categoria) ? c.categoria : "ADDITIONAL";
+    const n = await env.DB.prepare("INSERT INTO plt_mk_midias(org_id,mime,dados,prompt,criado_ms) VALUES(?,?,?,?,?) RETURNING id").bind(orgId, mime, dados, "foto google", k.agora(env)).first();
+    try {
+      const { urlPublicaMidia } = await import("./meta.js");
+      const fonte = await urlPublicaMidia({ ...k, env }, baseDe(request), n.id);
+      const token = await tokenDa(env, k, conta);
+      const r = await chamar("POST", `${API_V4}/${caminhoV4(conta)}/media`, token, { mediaFormat: "PHOTO", locationAssociation: { category: categoria }, sourceUrl: fonte });
+      await k.auditar(env, request, k.sessao, orgId, "MARKETING", `Enviou foto ao Google (${conta.local_titulo}, ${categoria})`).catch(() => {});
+      return json({ ok: true, id: r.name || null });
     } catch (e) { return erroJson(e); }
   }
   // Visão geral de todos os perfis do Google da empresa (como numa agência): nota, avaliações sem resposta, posts e posições.
