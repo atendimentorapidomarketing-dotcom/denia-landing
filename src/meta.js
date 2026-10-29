@@ -177,7 +177,9 @@ export async function rotasMeta(request, env, k, orgId, papel, resto) {
         .bind(orgId, marcaId, p.id, p.nome, p.ig_id || null, p.ig_usuario || null, await k.cifrar(env, p.token), sessao.usuario.email, agora(env), agora(env)).run();
       if (p.ig_usuario) await env.DB.prepare("UPDATE plt_mk_marcas SET instagram=COALESCE(NULLIF(instagram,''),?) WHERE id=? AND org_id=?").bind(p.ig_usuario, marcaId, orgId).run();
       await auditar(env, request, sessao, orgId, "INTEGRACAO", `Meta conectada à marca #${marcaId}: página ${p.nome}${p.ig_usuario ? " · @" + p.ig_usuario : " (sem Instagram profissional ligado)"}`);
-      const auto = await preencherPelaMeta(env, orgId, marcaId, p).catch(e => { console.error("preencher pela Meta", e?.message); return { preenchidos: [] }; });
+      const trabalho = preencherPelaMeta(env, orgId, marcaId, p).catch(e => { console.error("preencher pela Meta", e?.message); return { preenchidos: [] }; });
+      if (k.emSegundoPlano) k.emSegundoPlano(() => trabalho);
+      const auto = await Promise.race([trabalho, new Promise(r => setTimeout(() => r({ preenchidos: [] }), 6000))]);
       conectadas.push({ marca_id: marcaId, pagina: p.nome, instagram: p.ig_usuario || null, preenchidos: auto.preenchidos });
     }
     await env.DB.prepare("DELETE FROM plt_meta WHERE chave=?").bind("meta_n_" + txt(corpo.n, 60)).run();
