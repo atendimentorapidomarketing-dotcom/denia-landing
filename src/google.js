@@ -918,6 +918,72 @@ async function rotasGoogleExtra(request, env, k, orgId, papel, resto, url) {
   const corpoDe = async () => { const { corpo, erro } = await k.lerCorpo(request, 4000); if (erro) throw Object.assign(new Error("Pedido inválido."), { status: 400 }); return corpo; };
 
   // Search Console
+  // ----- Perfil: ler e editar pela DENIA (descrição, telefone, site, horários e feriados), sem abrir o Google.
+  if (resto === "google/perfil" && metodo === "GET") {
+    const conta = await marcaDe();
+    if (!conta) return json({ conectada: false });
+    try {
+      const token = await tokenDa(env, k, conta);
+      const info = await chamar("GET", `${API_INFO}/${conta.local_nome}?readMask=title,phoneNumbers,websiteUri,regularHours,specialHours,profile,metadata,categories,storefrontAddress`, token);
+      const hojeMs = Math.floor((k.agora(env) - 3 * 3600000) / 86400000) * 86400000;
+      const ano = new Date(hojeMs).getUTCFullYear();
+      const proximos = [...feriadosNacionais(ano), ...feriadosNacionais(ano + 1)].filter(f => f.ms >= hojeMs && f.ms <= hojeMs + 120 * 86400000).map(f => ({ nome: f.nome, data: isoDia(new Date(f.ms)) }));
+      return json({ conectada: true, perfil: {
+        titulo: info.title || conta.local_titulo, descricao: info.profile?.description || "", telefone: info.phoneNumbers?.primaryPhone || "", site: info.websiteUri || "",
+        categoria: info.categories?.primaryCategory?.displayName || "", horarios: info.regularHours?.periods || [], feriados: info.specialHours?.specialHourPeriods || [],
+        avaliar: info.metadata?.newReviewUri || "", maps: info.metadata?.mapsUri || conta.maps_uri || "", cidade: info.storefrontAddress?.locality || "" }, proximos_feriados: proximos });
+    } catch (e) { return erroJson(e); }
+  }
+  if (resto === "google/perfil" && metodo === "POST") {
+    if (!pode(papel, "ADMIN")) return json({ erro: "Somente administradores mudam o perfil no Google." }, 403);
+    const c = await corpoDe().catch(e => e);
+    if (c instanceof Error) return json({ erro: c.message }, 400);
+    const conta = await contaGoogleDe(env, orgId, Number(c.marca_id));
+    if (!conta) return json({ erro: "Conecte o Google deste perfil primeiro." }, 409);
+    const local = {}, mascara = [];
+    if (typeof c.descricao === "string") {
+      const d = c.descricao.trim();
+      if (d.length > 750) return json({ erro: `A descrição tem ${d.length} letras; o Google aceita até 750.` }, 400);
+      if (/https?:\/\/|www\./i.test(d)) return json({ erro: "O Google não aceita links na descrição. Tire o link e tente de novo." }, 400);
+      if (/(\+?55[\s-]?)?\(?\d{2}\)?[\s-]?9?\d{4}[\s-]?\d{4}/.test(d)) return json({ erro: "O Google não aceita telefone na descrição (ele já aparece no botão Ligar)." }, 400);
+      local.profile = { description: d }; mascara.push("profile.description");
+    }
+    if (typeof c.telefone === "string") { const t = c.telefone.trim(); if (t && t.replace(/\D/g, "").length < 10) return json({ erro: "Coloque o telefone completo, com DDD." }, 400); local.phoneNumbers = { primaryPhone: t }; mascara.push("phoneNumbers"); }
+    if (typeof c.site === "string") { const u = c.site.trim(); if (u && !/^https?:\/\/[^\s]+\.[^\s]+/.test(u)) return json({ erro: "O site precisa começar com https://" }, 400); local.websiteUri = u; mascara.push("websiteUri"); }
+    const hora = v => { const m = String(v || "").match(/^(\d{1,2}):(\d{2})$/); return m ? { hours: Number(m[1]), minutes: Number(m[2]) } : null; };
+    const dataG = v => { const m = String(v || "").match(/^(\d{4})-(\d{2})-(\d{2})$/); return m ? { year: Number(m[1]), month: Number(m[2]), day: Number(m[3]) } : null; };
+    if (Array.isArray(c.horarios)) {
+      const DIAS = ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"];
+      const periods = c.horarios.filter(x => DIAS.includes(x.dia) && hora(x.abre) && hora(x.fecha)).slice(0, 21).map(x => ({ openDay: x.dia, openTime: hora(x.abre), closeDay: x.dia, closeTime: hora(x.fecha) }));
+      local.regularHours = { periods }; mascara.push("regularHours");
+    }
+    if (Array.isArray(c.feriados)) {
+      const sp = c.feriados.filter(x => dataG(x.data)).slice(0, 60).map(x => x.fechado ? { startDate: dataG(x.data), closed: true } : (hora(x.abre) && hora(x.fecha) ? { startDate: dataG(x.data), openTime: hora(x.abre), closeTime: hora(x.fecha) } : null)).filter(Boolean);
+      local.specialHours = { specialHourPeriods: sp }; mascara.push("specialHours");
+    }
+    if (!mascara.length) return json({ erro: "Nada para mudar." }, 400);
+    try {
+      const token = await tokenDa(env, k, conta);
+      await chamar("PATCH", `${API_INFO}/${conta.local_nome}?updateMask=${encodeURIComponent(mascara.join(","))}`, token, local);
+      await k.auditar(env, request, k.sessao, orgId, "MARKETING", `Mudou no Google (${conta.local_titulo}): ${mascara.join(", ")}`).catch(() => {});
+      return json({ ok: true, mudou: mascara });
+    } catch (e) { return erroJson(e); }
+  }
+  // Visão geral de todos os perfis do Google da empresa (como numa agência): nota, avaliações sem resposta, posts e posições.
+  if (resto === "google/visao" && metodo === "GET") {
+    const contas = (await env.DB.prepare(`SELECT g.marca_id, g.local_titulo, g.media_google, g.total_google, g.sincronizado_ms, g.erro, m.nome,
+      (SELECT COUNT(*) FROM plt_mk_avaliacoes a WHERE a.org_id=g.org_id AND a.marca_id=g.marca_id AND a.status='PENDENTE' AND a.google_id IS NOT NULL AND a.removida_ms IS NULL) sem_resposta,
+      (SELECT COUNT(*) FROM plt_mk_avaliacoes a WHERE a.org_id=g.org_id AND a.marca_id=g.marca_id AND a.google_id IS NOT NULL AND a.nota<=2 AND a.removida_ms IS NULL AND a.criado_ms>?) ruins_30d,
+      (SELECT COUNT(*) FROM plt_mk_posts p WHERE p.org_id=g.org_id AND p.marca_id=g.marca_id AND p.canais LIKE '%google%' AND p.status='PUBLICADO' AND p.atualizado_ms>?) posts_30d,
+      (SELECT COUNT(*) FROM plt_mk_posts p WHERE p.org_id=g.org_id AND p.marca_id=g.marca_id AND p.canais LIKE '%google%' AND p.status='APROVADO') programados
+      FROM plt_mk_google g JOIN plt_mk_marcas m ON m.id=g.marca_id WHERE g.org_id=? AND m.ativa=1 ORDER BY m.nome`).bind(k.agora(env) - 30 * 86400000, k.agora(env) - 30 * 86400000, orgId).all().catch(() => null))?.results || [];
+    const pos = (await env.DB.prepare(`SELECT w.marca_id, w.palavra, x.posicao, x.semana FROM plt_mk_palavras w JOIN plt_mk_posicoes x ON x.palavra_id=w.id WHERE w.org_id=? ORDER BY x.semana DESC`).bind(orgId).all().catch(() => null))?.results || [];
+    return json({ perfis: contas.map(c => {
+      const minhas = pos.filter(x => x.marca_id === c.marca_id), ultima = minhas[0]?.semana;
+      const atuais = minhas.filter(x => x.semana === ultima);
+      return { ...c, palavras: atuais.map(x => ({ palavra: x.palavra, posicao: x.posicao })) };
+    }) });
+  }
   if (resto === "google/sc/sites" && metodo === "GET") {
     const conta = await marcaDe();
     if (!conta) return json({ conectada: false });

@@ -5222,9 +5222,9 @@ Botão só com texto = resposta.` })),
     if (!vivo()) return;
     el.appendChild(cabeca("Google Meu Negócio", "Reputação, posição nas buscas e desempenho de cada perfil, acompanhados semana a semana."));
     if (!lista.length) { semMarcas(el); return; }
-    const abas = [["checagem", "Checagem do perfil"], ["publicacoes", "Posts e imagens"], ["avaliacoes", "Avaliações"], ["triagem", "Triagem 1★"], ["relatorio", "Relatório"], ["palavras", "Palavras-chave"], ["desempenho", "Desempenho"], ["conexao", "Conexão"]];
+    const abas = [["visao", "Visão geral"], ["checagem", "Checagem do perfil"], ["editar", "Editar perfil"], ["publicacoes", "Posts e imagens"], ["avaliacoes", "Avaliações"], ["pedir", "Pedir avaliações"], ["triagem", "Triagem 1★"], ["relatorio", "Relatório"], ["palavras", "Palavras-chave"], ["desempenho", "Desempenho"], ["conexao", "Conexão"]];
     abas.push(["seo", "Google orgânico"], ["ads", "Google Ads"], ["concorrentes", "Concorrentes"]);
-    const atual = abas.some(a => a[0] === aba) ? aba : "desempenho";
+    const atual = abas.some(a => a[0] === aba) ? aba : "visao";
     const sel = seletorMarca(lista, estado.marcaGoogle || lista[0].id);
     sel.addEventListener("change", () => { estado.marcaGoogle = sel.value; navegar(); });
     el.appendChild(h("div", { class: "pagina-cabeca" }, h("div", { class: "abas", role: "tablist" }, abas.map(([k, n]) => h("a", { class: "aba" + (k === atual ? " ativo" : ""), href: "#/google/" + k, role: "tab" }, n))), h("div", { style: "min-width:220px" }, sel)));
@@ -5232,7 +5232,10 @@ Botão só com texto = resposta.` })),
     el.appendChild(area);
     const marcaId = sel.value;
     try {
-      if (atual === "checagem") await abaChecagemPerfil(area, marcaId);
+      if (atual === "visao") await abaGoogleVisao(area, lista);
+      else if (atual === "editar") await abaEditarPerfilGoogle(area, lista.find(m => String(m.id) === String(marcaId)));
+      else if (atual === "pedir") await abaPedirAvaliacoes(area, lista.find(m => String(m.id) === String(marcaId)));
+      else if (atual === "checagem") await abaChecagemPerfil(area, marcaId);
       else if (atual === "avaliacoes") await abaAvaliacoes(area, marcaId);
       else if (atual === "relatorio") await abaRelatorio(area, marcaId);
       else if (atual === "triagem") await abaTriagem(area, marcaId);
@@ -5784,6 +5787,100 @@ Botão só com texto = resposta.` })),
         lista.slice(1).map(r => h("details", {}, h("summary", { text: `Semana de ${dataCurta(r.semana)}` }), h("div", { class: "relatorio-texto", text: r.texto })))) : null);
   }
   // Checagem do perfil (como o GBP Check): nota de 0 a 100 e o que falta para completar o perfil no Google.
+  // ----- Google: visão geral de todos os perfis (como uma agência acompanha a carteira)
+  async function abaGoogleVisao(area, lista) {
+    const d = await mk("google/visao");
+    const perfis = d.perfis || [];
+    if (!perfis.length) { trocar(area, h("section", { class: "cartao vidro" }, vazio("Nenhum perfil do Google conectado", "Conecte os perfis em Contas conectadas para acompanhar todos aqui."), pode("ADMIN") ? h("div", { class: "acoes", style: "justify-content:center" }, botao("Conectar conta do Google", () => conectarNovoPerfil("google"), "btn-primario")) : null)); return; }
+    const ir = (marcaId, aba) => { estado.marcaGoogle = String(marcaId); location.hash = "#/google/" + aba; };
+    const nota = v => v ? String(Math.round(v * 10) / 10).replace(".", ",") + " ★" : "—";
+    const tot = perfis.reduce((t, p) => ({ sem: t.sem + Number(p.sem_resposta || 0), ruins: t.ruins + Number(p.ruins_30d || 0), posts: t.posts + Number(p.posts_30d || 0), aval: t.aval + Number(p.total_google || 0) }), { sem: 0, ruins: 0, posts: 0, aval: 0 });
+    trocar(area,
+      h("section", { class: "grade grade-4" }, metrica("Perfis acompanhados", numero(perfis.length), "conectados ao Google"), metrica("Avaliações no total", numero(tot.aval), "somando todos os perfis"),
+        metrica("Sem resposta", numero(tot.sem), tot.sem ? "responda para subir no Maps" : "tudo respondido"), metrica("Posts nos últimos 30 dias", numero(tot.posts), "o Google valoriza 1 por semana")),
+      h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Perfis" }), h("p", { class: "dica", text: "O que pede atenção em cada perfil. Clique para ir direto ao que resolver." }),
+        h("div", { class: "tabela-caixa" }, h("table", {},
+          h("thead", {}, h("tr", {}, ["Perfil", "Nota", "Avaliações", "Sem resposta", "Ruins (30 dias)", "Posts (30 dias)", "Programados", "Posição nas buscas", ""].map(t => h("th", { text: t })))),
+          h("tbody", {}, perfis.map(p => h("tr", {},
+            h("td", {}, h("strong", { text: p.local_titulo || p.nome }), p.erro ? h("span", { class: "sub", style: "color:#f87171", text: "Conexão com problema: " + p.erro }) : h("span", { class: "sub", text: p.sincronizado_ms ? "Atualizado " + quando(p.sincronizado_ms) : "Aguardando a primeira leitura" })),
+            h("td", { text: nota(p.media_google) }), h("td", { text: numero(p.total_google || 0) }),
+            h("td", {}, Number(p.sem_resposta) ? h("a", { href: "#/google/avaliacoes", onclick: e => { e.preventDefault(); ir(p.marca_id, "avaliacoes"); }, text: numero(p.sem_resposta) + " responder" }) : "0"),
+            h("td", { text: numero(p.ruins_30d || 0) }),
+            h("td", {}, Number(p.posts_30d) ? numero(p.posts_30d) : h("a", { href: "#/google/publicacoes", onclick: e => { e.preventDefault(); ir(p.marca_id, "publicacoes"); }, text: "nenhum: criar" })),
+            h("td", { text: numero(p.programados || 0) }),
+            h("td", {}, (p.palavras || []).length ? (p.palavras || []).slice(0, 3).map(w => h("span", { class: "sub", style: "display:block", text: `${w.palavra}: ${w.posicao ? w.posicao + "º" : "fora do top 20"}` })) : h("a", { href: "#/google/palavras", onclick: e => { e.preventDefault(); ir(p.marca_id, "palavras"); }, text: "acompanhar" })),
+            h("td", { class: "td-acoes" }, h("div", { class: "acoes" }, botao("Checagem", () => ir(p.marca_id, "checagem"), "btn-secundario btn-pequeno"), botao("Editar", () => ir(p.marca_id, "editar"), "btn-secundario btn-pequeno"))))))))));
+  }
+
+  // ----- Google: editar o perfil pela DENIA
+  const DIAS_G = [["MONDAY", "Segunda"], ["TUESDAY", "Terça"], ["WEDNESDAY", "Quarta"], ["THURSDAY", "Quinta"], ["FRIDAY", "Sexta"], ["SATURDAY", "Sábado"], ["SUNDAY", "Domingo"]];
+  async function abaEditarPerfilGoogle(area, marca) {
+    const d = await mk(`google/perfil?marca=${marca.id}`);
+    if (!d.conectada) { trocar(area, h("section", { class: "cartao vidro" }, vazio("Conecte o Google deste perfil", "Depois de conectado, você muda descrição, telefone, site, horários e feriados por aqui."), pode("ADMIN") ? h("div", { class: "acoes" }, botao("Conectar Google", () => conectarGoogle(marca), "btn-primario")) : null)); return; }
+    const p = d.perfil, adm = pode("ADMIN");
+    const hhmm = t => t ? `${String(t.hours || 0).padStart(2, "0")}:${String(t.minutes || 0).padStart(2, "0")}` : "";
+    const salvarG = async (corpo, b, ok) => { if (b) { b.disabled = true; } try { await mk("google/perfil", { metodo: "POST", corpo: { marca_id: marca.id, ...corpo } }); aviso(ok, "ok"); navegar(); } catch (e) { aviso(e.message, "erro"); if (b) b.disabled = false; } };
+    // Descrição
+    const desc = h("textarea", { class: "entrada", maxlength: "750", style: "min-height:140px", readOnly: !adm, value: p.descricao });
+    const cont = h("p", { class: "dica" }); const contar = () => { cont.textContent = `${desc.value.length} de 750 letras. As primeiras 250 aparecem antes do "mais".`; }; desc.addEventListener("input", contar); contar();
+    const porQue = h("p", { class: "dica" });
+    const cDesc = h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Descrição" }), h("p", { class: "dica", text: "É o texto que aparece no perfil. Conta o que a empresa faz, onde e para quem. O Google não aceita link, telefone nem preço aqui." }), desc, cont, porQue,
+      adm ? h("div", { class: "acoes" }, botao("Escrever com a IA", async (_e, b) => { b.disabled = true; b.textContent = "Escrevendo…"; try { const r = await mk("google/descricao-ia", { metodo: "POST", corpo: { marca_id: marca.id, atual: desc.value, categoria: p.categoria } }); desc.value = r.descricao; contar(); porQue.textContent = r.por_que ? "Por que ficou melhor: " + r.por_que : ""; aviso("Pronto. Confira o texto e clique em Salvar no Google.", "ok"); } catch (e) { aviso(e.message, "erro"); } b.disabled = false; b.textContent = "Escrever com a IA"; }, "btn-secundario"),
+        botao("Salvar no Google", (_e, b) => salvarG({ descricao: desc.value }, b, "Descrição atualizada no Google. Pode levar alguns minutos para aparecer."), "btn-primario")) : null);
+    // Contato
+    const tel = h("input", { class: "entrada", value: p.telefone, readOnly: !adm, placeholder: "(21) 99999-9999" }), site = h("input", { class: "entrada", value: p.site, readOnly: !adm, placeholder: "https://" });
+    const cCont = h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Telefone e site" }), h("div", { class: "linha-form" }, campo("Telefone principal", tel), campo("Site (ou link do WhatsApp/Instagram)", site)),
+      adm ? h("div", { class: "acoes" }, botao("Salvar no Google", (_e, b) => salvarG({ telefone: tel.value, site: site.value }, b, "Telefone e site atualizados no Google."), "btn-primario")) : null);
+    // Horários
+    const linhasH = DIAS_G.map(([dia, nome]) => {
+      const per = p.horarios.find(x => x.openDay === dia);
+      const aberto = h("input", { type: "checkbox", checked: Boolean(per), disabled: !adm }), abre = h("input", { class: "entrada", type: "time", value: per ? hhmm(per.openTime) : "08:00", disabled: !adm }), fecha = h("input", { class: "entrada", type: "time", value: per ? hhmm(per.closeTime) : "18:00", disabled: !adm });
+      const ligar = () => { abre.disabled = fecha.disabled = !adm || !aberto.checked; };
+      aberto.addEventListener("change", ligar); ligar();
+      return { dia, aberto, abre, fecha, el: h("tr", {}, h("td", {}, h("label", { style: "display:flex;gap:8px;align-items:center" }, aberto, nome)), h("td", {}, abre), h("td", {}, fecha)) };
+    });
+    const cHor = h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Horário de funcionamento" }), h("p", { class: "dica", text: "Desmarque os dias em que fecha. Perfil com horário certo aparece mais e evita cliente na porta fechada." }),
+      h("div", { class: "tabela-caixa" }, h("table", {}, h("thead", {}, h("tr", {}, h("th", { text: "Dia (aberto)" }), h("th", { text: "Abre" }), h("th", { text: "Fecha" }))), h("tbody", {}, linhasH.map(l => l.el)))),
+      adm ? h("div", { class: "acoes" }, botao("Salvar no Google", (_e, b) => salvarG({ horarios: linhasH.filter(l => l.aberto.checked).map(l => ({ dia: l.dia, abre: l.abre.value, fecha: l.fecha.value })) }, b, "Horários atualizados no Google."), "btn-primario")) : null);
+    // Feriados
+    const dataG = o => o && o.year ? `${o.year}-${String(o.month).padStart(2, "0")}-${String(o.day).padStart(2, "0")}` : "";
+    const ja = new Map(p.feriados.map(f => [dataG(f.startDate), f]));
+    const linhasF = d.proximos_feriados.map(f => {
+      const atualF = ja.get(f.data);
+      const modo = h("select", { class: "entrada", disabled: !adm }, [["", "Não marcar"], ["fechado", "Fechado"], ["aberto", "Aberto em horário especial"]].map(([v, n]) => h("option", { value: v, text: n, selected: atualF ? (atualF.closed ? v === "fechado" : v === "aberto") : v === "" })));
+      const abre = h("input", { class: "entrada", type: "time", value: atualF && !atualF.closed ? hhmm(atualF.openTime) : "09:00", disabled: !adm }), fecha = h("input", { class: "entrada", type: "time", value: atualF && !atualF.closed ? hhmm(atualF.closeTime) : "13:00", disabled: !adm });
+      const ligar = () => { abre.disabled = fecha.disabled = !adm || modo.value !== "aberto"; };
+      modo.addEventListener("change", ligar); ligar();
+      return { data: f.data, modo, abre, fecha, el: h("tr", {}, h("td", {}, h("strong", { text: f.nome }), h("span", { class: "sub", style: "display:block", text: f.data.split("-").reverse().join("/") + (atualF ? " · já marcado no Google" : " · ainda não marcado") })), h("td", {}, modo), h("td", {}, abre), h("td", {}, fecha)) };
+    });
+    const outros = p.feriados.filter(f => !d.proximos_feriados.some(x => x.data === dataG(f.startDate)));
+    const cFer = h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Feriados (próximos 4 meses)" }), h("p", { class: "dica", text: "Os feriados nacionais aparecem sozinhos. Escolha fechado ou o horário especial e salve: o Google mostra isso para quem procura no dia." }),
+      linhasF.length ? h("div", { class: "tabela-caixa" }, h("table", {}, h("thead", {}, h("tr", {}, h("th", { text: "Feriado" }), h("th", { text: "No Google" }), h("th", { text: "Abre" }), h("th", { text: "Fecha" }))), h("tbody", {}, linhasF.map(l => l.el)))) : h("p", { class: "sub", text: "Nenhum feriado nacional nos próximos 4 meses." }),
+      outros.length ? h("p", { class: "sub", text: `Também estão marcadas no Google: ${outros.map(f => dataG(f.startDate).split("-").reverse().join("/")).join(", ")} (continuam como estão).` }) : null,
+      adm ? h("div", { class: "acoes" }, botao("Salvar feriados no Google", (_e, b) => salvarG({ feriados: [...outros.map(f => f.closed ? { data: dataG(f.startDate), fechado: true } : { data: dataG(f.startDate), abre: hhmm(f.openTime), fecha: hhmm(f.closeTime) }),
+        ...linhasF.filter(l => l.modo.value).map(l => l.modo.value === "fechado" ? { data: l.data, fechado: true } : { data: l.data, abre: l.abre.value, fecha: l.fecha.value })] }, b, "Feriados atualizados no Google."), "btn-primario")) : null);
+    trocar(area, h("section", { class: "cartao vidro" }, h("h3", { style: "margin:0", text: p.titulo }), h("p", { class: "sub", style: "margin:4px 0 0", text: `${p.categoria || "Sem categoria"}${p.cidade ? " · " + p.cidade : ""} · as mudanças vão direto para o Google e ficam registradas na Auditoria.` }),
+      p.maps ? h("div", { class: "acoes", style: "margin-top:10px" }, h("a", { class: "btn btn-secundario btn-pequeno", href: p.maps, target: "_blank", rel: "noopener" }, "Ver no Google Maps")) : null), cDesc, cCont, cHor, cFer,
+      adm ? null : h("p", { class: "nota", text: "Somente administradores mudam o perfil no Google." }));
+  }
+
+  // ----- Google: pedir avaliações (link direto e mensagem pronta)
+  async function abaPedirAvaliacoes(area, marca) {
+    const d = await mk(`google/perfil?marca=${marca.id}`);
+    if (!d.conectada) { trocar(area, h("section", { class: "cartao vidro" }, vazio("Conecte o Google deste perfil", "O link de avaliação vem do próprio perfil."))); return; }
+    const link = d.perfil.avaliar;
+    if (!link) { trocar(area, h("section", { class: "cartao vidro" }, vazio("O Google não devolveu o link de avaliação", "Isso acontece com perfis ainda não verificados. Verifique o perfil no Google e volte aqui."))); return; }
+    const msg = h("textarea", { class: "entrada", style: "min-height:110px", value: `Oi! Obrigado por escolher a ${d.perfil.titulo}. Se puder, conta pra gente como foi no Google? Leva menos de 1 minuto e ajuda muito: ${link}` });
+    const tel = h("input", { class: "entrada", placeholder: "WhatsApp do cliente (opcional), ex.: 21 99999-9999" });
+    trocar(area,
+      h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Link para o cliente avaliar" }), h("p", { class: "dica", text: "Abre direto a tela de escrever avaliação do seu perfil. Mande logo depois do atendimento, quando o cliente está satisfeito." }),
+        h("div", { class: "senha-mostrada" }, h("span", { style: "flex:1;word-break:break-all", text: link }), botao("Copiar", () => copiar(link), "btn-secundario btn-pequeno"))),
+      h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Mensagem pronta" }), msg, h("div", { class: "linha-form" }, campo("Enviar para", tel)),
+        h("div", { class: "acoes" }, botao("Copiar mensagem", () => copiar(msg.value), "btn-secundario"), botao("Abrir no WhatsApp", () => { const n = tel.value.replace(/\D/g, ""); window.open(`https://wa.me/${n ? (n.length <= 11 ? "55" + n : n) : ""}?text=${encodeURIComponent(msg.value)}`, "_blank", "noopener"); }, "btn-primario"))),
+      h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Regras do Google (para não perder o perfil)" }),
+        h("ul", { class: "lista-saude" }, h("li", {}, "Pode pedir para todos os clientes reais"), h("li", {}, "Não pode oferecer desconto ou brinde em troca de avaliação"), h("li", {}, "Não pode pedir só para quem gostou nem escrever pelo cliente"), h("li", {}, "Responda todas, inclusive as ruins: a DENIA ajuda em Avaliações"))));
+  }
+
   async function abaChecagemPerfil(area, marcaId) {
     const d = await mk(`google/checagem?marca=${marcaId}`);
     if (!d.conectada) { trocar(area, h("section", { class: "cartao vidro" }, vazio("Conecte o perfil do Google", "A checagem lê o perfil direto do Google. Conecte a marca em Conexão."), h("div", { class: "acoes" }, h("a", { class: "btn btn-primario", href: "#/google/conexao" }, "Conectar o Google")))); return; }
@@ -5792,8 +5889,12 @@ Botão só com texto = resposta.` })),
     const anel = h("div", { class: "chk-anel", style: `--p:${d.nota};--cor:${cor}`, role: "img", "aria-label": `Perfil ${d.nota}% completo` }, h("strong", { text: d.nota + "%" }), h("span", { text: "completo" }));
     const grupos = [...new Set(d.itens.map(i => i.grupo))];
     const icone = { ok: "✅", parcial: "🟡", falta: "❌", conferir: "ℹ️" };
+    // Onde resolver cada item sem sair da DENIA.
+    const ONDE = { descricao: ["editar", "Escrever com a IA"], telefone: ["editar", "Corrigir aqui"], site: ["editar", "Corrigir aqui"], horario: ["editar", "Corrigir aqui"], feriados: ["editar", "Marcar feriados"],
+      posts: ["publicacoes", "Criar post"], avaliacoes: ["pedir", "Pedir avaliações"], respostas: ["avaliacoes", "Responder"] };
     const linha = i => h("li", { class: "chk-item chk-" + i.ok }, h("span", { class: "chk-ic", text: icone[i.ok] }),
-      h("div", {}, h("strong", { text: i.titulo }), h("span", { class: "sub", text: ` · ${i.detalhe}` }), i.dica ? h("p", { class: "chk-dica", text: i.dica }) : null),
+      h("div", {}, h("strong", { text: i.titulo }), h("span", { class: "sub", text: ` · ${i.detalhe}` }), i.dica ? h("p", { class: "chk-dica", text: i.dica }) : null,
+        (i.ok === "parcial" || i.ok === "falta") && ONDE[i.chave] ? botao(ONDE[i.chave][1], () => { estado.marcaGoogle = String(marcaId); location.hash = "#/google/" + ONDE[i.chave][0]; }, "btn-secundario btn-pequeno") : null),
       h("span", { class: "chk-pts", text: i.ok === "conferir" ? "fora da nota" : `${String(i.pontos).replace(".", ",")}/${i.max}` }));
     const faltando = d.itens.filter(i => i.ok === "parcial" || i.ok === "falta").sort((a, b) => (b.max - b.pontos) - (a.max - a.pontos));
     trocar(area,

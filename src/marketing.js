@@ -538,6 +538,23 @@ export async function apiMarketing(request, env, k, orgId, papel, resto) {
   const exigir = (min) => { if (!pode(papel, min)) throw Object.assign(new Error("perm"), { resposta: json({ erro: "Seu perfil não tem permissão para esta ação." }, 403) }); };
   let m;
   try {
+    // ----- Google: descrição do perfil escrita pela IA (regras do Google: até 750 letras, sem link, sem telefone, sem exagero)
+    if (resto === "google/descricao-ia" && metodo === "POST") {
+      exigir("ADMIN");
+      const c = await corpoOu(4000);
+      const marca = await marcaDa(c.marca_id);
+      if (!marca) return json({ erro: "Escolha o perfil." }, 400);
+      if (!chave(env)) return json({ erro: "A IA está desligada: falta a chave da OpenAI em Integrações." }, 409);
+      const palavras = ((await env.DB.prepare("SELECT palavra FROM plt_mk_palavras WHERE org_id=? AND marca_id=? LIMIT 10").bind(orgId, marca.id).all().catch(() => null))?.results || []).map(x => x.palavra);
+      const r = await iaJSON(env, `Você é especialista em Perfil da Empresa no Google (Google Meu Negócio) e escreve a descrição do perfil.
+Regras do Google (obrigatórias): até 750 caracteres; sem links; sem telefone; sem preços ou promoções; sem CAIXA ALTA nem exagero ("o melhor do Brasil"); só fatos que estão nos dados.
+Para aparecer nas buscas: comece pelo que a empresa faz e onde (cidade/bairros) nas primeiras 250 letras; use de forma natural os serviços e as palavras-chave; diga para quem é e o diferencial; termine com um convite simples. Português do Brasil, 2 a 4 frases.
+Responda em JSON: {"descricao":"","por_que":"(uma frase dizendo o que melhorou)"}`,
+        `${resumoMarca(marca)}\nCategoria no Google: ${txt(c.categoria, 80) || "-"}\nPalavras-chave acompanhadas: ${palavras.join(", ") || "-"}\nDescrição atual: ${txt(c.atual, 800) || "(vazia)"}\nResponda em JSON.`, 900);
+      const d = String(r?.descricao || "").replace(/https?:\/\/\S+|www\.\S+/gi, "").replace(/\s+/g, " ").trim().slice(0, 750);
+      if (!d) return json({ erro: "A IA não conseguiu escrever agora. Tente de novo." }, 502);
+      return json({ descricao: d, por_que: txt(r?.por_que, 200) });
+    }
     // ----- Marcas
     if (resto === "marcas" && metodo === "GET") {
       const r = await env.DB.prepare("SELECT * FROM plt_mk_marcas WHERE org_id=? AND ativa=1 ORDER BY nome").bind(orgId).all();
