@@ -5859,8 +5859,36 @@ Botão só com texto = resposta.` })),
       outros.length ? h("p", { class: "sub", text: `Também estão marcadas no Google: ${outros.map(f => dataG(f.startDate).split("-").reverse().join("/")).join(", ")} (continuam como estão).` }) : null,
       adm ? h("div", { class: "acoes" }, botao("Salvar feriados no Google", (_e, b) => salvarG({ feriados: [...outros.map(f => f.closed ? { data: dataG(f.startDate), fechado: true } : { data: dataG(f.startDate), abre: hhmm(f.openTime), fecha: hhmm(f.closeTime) }),
         ...linhasF.filter(l => l.modo.value).map(l => l.modo.value === "fechado" ? { data: l.data, fechado: true } : { data: l.data, abre: l.abre.value, fecha: l.fecha.value })] }, b, "Feriados atualizados no Google."), "btn-primario")) : null);
+    // Serviços (aparecem no perfil e ajudam nas buscas por serviço)
+    const servs = (p.servicos || []).filter(x => x.livre).map(x => ({ ...x }));
+    const doCatalogo = (p.servicos || []).filter(x => !x.livre);
+    const listaS = h("div", {});
+    const desenharS = () => trocar(listaS, servs.length ? h("div", { class: "tabela-caixa" }, h("table", {}, h("thead", {}, h("tr", {}, h("th", { text: "Serviço" }), h("th", { text: "Descrição (opcional)" }), h("th", { text: "" }))),
+      h("tbody", {}, servs.map((x, i) => { const n = h("input", { class: "entrada", value: x.nome, maxlength: "140", readOnly: !adm, oninput: e => { x.nome = e.target.value; } }), d2 = h("input", { class: "entrada", value: x.descricao, maxlength: "300", readOnly: !adm, oninput: e => { x.descricao = e.target.value; } });
+        return h("tr", {}, h("td", {}, n), h("td", {}, d2), h("td", {}, adm ? botao("Tirar", () => { servs.splice(i, 1); desenharS(); }, "btn-secundario btn-pequeno") : null)); })))) : h("p", { class: "sub", text: "Nenhum serviço escrito ainda." }));
+    desenharS();
+    const cServ = h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Serviços" }), h("p", { class: "dica", text: "Os serviços aparecem no perfil e fazem a empresa aparecer em buscas como \"troca de piso\" ou \"conserto de vazamento\". Escreva como o cliente procura." }),
+      doCatalogo.length ? h("p", { class: "sub", text: `Do catálogo do Google (continuam como estão): ${doCatalogo.map(x => x.nome).join(", ")}.` }) : null, listaS,
+      adm ? h("div", { class: "acoes" }, botao("Adicionar serviço", () => { servs.push({ nome: "", descricao: "" }); desenharS(); }, "btn-secundario"), botao("Salvar serviços no Google", (_e, b) => salvarG({ servicos: servs.filter(x => String(x.nome).trim()) }, b, "Serviços atualizados no Google."), "btn-primario")) : null);
+    // Fotos
+    const NOMES_FOTO = { ADDITIONAL: "Foto", COVER: "Capa", LOGO: "Logo", EXTERIOR: "Fachada", INTERIOR: "Ambiente", PRODUCT: "Produto", AT_WORK: "Trabalhando", TEAM: "Equipe" };
+    const gradeF = h("div", { class: "grade grade-4" }, carregando());
+    const catF = h("select", { class: "entrada" }, Object.entries(NOMES_FOTO).map(([v, n]) => h("option", { value: v, text: n })));
+    const arqF = h("input", { type: "file", accept: "image/jpeg,image/png", multiple: true });
+    const cFotos = h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Fotos no Google" }), h("p", { class: "dica", text: "Perfis com fotos novas todo mês recebem mais visitas. Mande fotos reais: fachada, ambiente, equipe trabalhando e serviços prontos (sem texto por cima nem montagem)." }),
+      adm ? h("div", { class: "linha-form", style: "align-items:end" }, campo("Tipo da foto", catF), campo("Escolher fotos", arqF), botao("Enviar ao Google", async (_e, b) => {
+        const fs = [...arqF.files]; if (!fs.length) { aviso("Escolha uma ou mais fotos.", "erro"); return; }
+        b.disabled = true; let ok = 0;
+        for (const [i, f] of fs.entries()) { b.textContent = `Enviando ${i + 1} de ${fs.length}…`; try { await mk("google/foto", { metodo: "POST", corpo: { marca_id: marca.id, categoria: catF.value, dados: await reduzirFoto(f, 2000) } }); ok++; } catch (e) { aviso(`${f.name}: ${e.message}`, "erro"); } }
+        b.disabled = false; b.textContent = "Enviar ao Google"; if (ok) { aviso(`${ok} foto(s) enviada(s). O Google pode levar alguns minutos para mostrar.`, "ok"); navegar(); }
+      }, "btn-primario")) : null, gradeF);
+    mk(`google/fotos?marca=${marca.id}`).then(r => {
+      const fotos = (r.fotos || []).filter(x => x.tipo !== "VIDEO").slice(0, 24);
+      trocar(gradeF, ...(fotos.length ? fotos.map(x => h("figure", { class: "cartao", style: "margin:0;padding:8px" }, h("img", { src: x.url, alt: NOMES_FOTO[x.categoria] || "Foto", loading: "lazy", style: "width:100%;aspect-ratio:4/3;object-fit:cover;border-radius:10px" }),
+        h("figcaption", { class: "sub", text: `${NOMES_FOTO[x.categoria] || "Foto"} · ${x.quando ? new Date(x.quando).toLocaleDateString(LOCALE) : ""}${x.vistas ? " · " + numero(x.vistas) + " visualizações" : ""}` }))) : [h("p", { class: "sub", text: "Nenhuma foto no perfil ainda." })]));
+    }).catch(e => trocar(gradeF, h("p", { class: "nota nota-alerta", text: e.message })));
     trocar(area, h("section", { class: "cartao vidro" }, h("h3", { style: "margin:0", text: p.titulo }), h("p", { class: "sub", style: "margin:4px 0 0", text: `${p.categoria || "Sem categoria"}${p.cidade ? " · " + p.cidade : ""} · as mudanças vão direto para o Google e ficam registradas na Auditoria.` }),
-      p.maps ? h("div", { class: "acoes", style: "margin-top:10px" }, h("a", { class: "btn btn-secundario btn-pequeno", href: p.maps, target: "_blank", rel: "noopener" }, "Ver no Google Maps")) : null), cDesc, cCont, cHor, cFer,
+      p.maps ? h("div", { class: "acoes", style: "margin-top:10px" }, h("a", { class: "btn btn-secundario btn-pequeno", href: p.maps, target: "_blank", rel: "noopener" }, "Ver no Google Maps")) : null), cDesc, cCont, cHor, cFer, cServ, cFotos,
       adm ? null : h("p", { class: "nota", text: "Somente administradores mudam o perfil no Google." }));
   }
 
@@ -5891,7 +5919,7 @@ Botão só com texto = resposta.` })),
     const icone = { ok: "✅", parcial: "🟡", falta: "❌", conferir: "ℹ️" };
     // Onde resolver cada item sem sair da DENIA.
     const ONDE = { descricao: ["editar", "Escrever com a IA"], telefone: ["editar", "Corrigir aqui"], site: ["editar", "Corrigir aqui"], horario: ["editar", "Corrigir aqui"], feriados: ["editar", "Marcar feriados"],
-      posts: ["publicacoes", "Criar post"], avaliacoes: ["pedir", "Pedir avaliações"], respostas: ["avaliacoes", "Responder"] };
+      posts: ["publicacoes", "Criar post"], avaliacoes: ["pedir", "Pedir avaliações"], respostas: ["avaliacoes", "Responder"], fotos: ["editar", "Enviar fotos"], logo: ["editar", "Enviar logo"], capa: ["editar", "Enviar capa"] };
     const linha = i => h("li", { class: "chk-item chk-" + i.ok }, h("span", { class: "chk-ic", text: icone[i.ok] }),
       h("div", {}, h("strong", { text: i.titulo }), h("span", { class: "sub", text: ` · ${i.detalhe}` }), i.dica ? h("p", { class: "chk-dica", text: i.dica }) : null,
         (i.ok === "parcial" || i.ok === "falta") && ONDE[i.chave] ? botao(ONDE[i.chave][1], () => { estado.marcaGoogle = String(marcaId); location.hash = "#/google/" + ONDE[i.chave][0]; }, "btn-secundario btn-pequeno") : null),
