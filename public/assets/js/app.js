@@ -248,6 +248,7 @@
     clientes: { titulo: "Base de clientes", render: paginaClientes },
     integracoes: { titulo: "Integrações", render: paginaIntegracoes },
     consumo: { titulo: "Consumo e custos", render: paginaConsumo, minimo: "ADMIN" },
+    rotina: { titulo: "Rotina do especialista", render: paginaRotina },
     equipe: { titulo: "Equipe", render: paginaEquipe, minimo: "ADMIN" },
     auditoria: { titulo: "Auditoria", render: paginaAuditoria, minimo: "ADMIN" },
     empresas: { titulo: "Empresas", render: paginaEmpresas, superAdmin: true },
@@ -534,6 +535,70 @@
       h("a", { class: "metrica vidro metrica-botao", href: "#/relatorios" }, h("span", { text: "Mais procurado nos 7 dias" }), h("strong", { text: r.categorias[0] ? r.categorias[0].categoria : "Sem dados" }), h("small", { text: "Abrir relatórios" }))));
   }
   // Relatórios: números do período, planilha para baixar e o envio automático por e-mail.
+  // Rotina do especialista: tudo o que um especialista faz em cada canal (todo dia, toda semana, todo mês),
+  // com a situação real de cada perfil e o botão para fazer. Pensada para quem não é do ramo.
+  async function paginaRotina(el, _p, vivo) {
+    el.appendChild(cabeca("Rotina do especialista", "O que um especialista em Google, Instagram, Facebook e WhatsApp faz, e quando. Cada tarefa mostra se está em dia, por que importa e leva direto para fazer."));
+    const area = h("div", { class: "grade" }, carregando()); el.appendChild(area);
+    const [d, pb] = await Promise.all([temRecurso("marketing") ? mk("rotina", { fresco: true }) : Promise.resolve({ perfis: [] }), org("problemas").catch(() => ({ problemas: [] }))]);
+    if (!vivo()) return;
+    const ok = t => ({ estado: "ok", txt: t }), atencao = t => ({ estado: "atencao", txt: t }), info = t => ({ estado: "info", txt: t });
+    const SEL = { ok: ["Em dia", "ok"], atencao: ["Fazer agora", "alerta"], info: ["Conferir", "info"] };
+    const tarefa = (quando, titulo, porque, situacao, ir, rotuloIr) => ({ quando, titulo, porque, situacao, ir, rotuloIr });
+    const irPerfil = (chave, id, hash) => () => { estado[chave] = String(id); location.hash = hash; };
+    const MODOS = { DESLIGADO: "uma pessoa aprova cada resposta", CINCO: "responde sozinha só as de 5 estrelas", BOAS: "responde sozinha as de 4 e 5 estrelas", TODAS: "responde sozinha todas, menos as graves" };
+    const blocos = [];
+    // ---- Google
+    const comGoogle = d.perfis.filter(p => p.google);
+    const tg = [];
+    if (!comGoogle.length) tg.push(tarefa("Uma vez", "Conectar o perfil do Google da empresa", "É o que aparece quando alguém procura a empresa no Google e no Maps. Sem conectar, a DENIA não cuida das avaliações nem dos posts.", atencao("nenhum perfil conectado"), () => conectarNovoPerfil("google"), "Conectar Google"));
+    for (const p of comGoogle) {
+      const g = p.g;
+      tg.push(tarefa("Todo dia", `Responder avaliações — ${p.nome}`, "O Google mostra mais as empresas que respondem todas as avaliações, e o cliente vê que existe alguém cuidando.", g.sem_resposta ? (g.ruins_sem_resposta ? atencao(`${g.sem_resposta} sem resposta, ${g.ruins_sem_resposta} ruins (3★ ou menos)`) : atencao(`${g.sem_resposta} sem resposta`)) : ok("todas respondidas"), irPerfil("marcaGoogle", p.marca_id, "#/google/avaliacoes"), "Responder"));
+      tg.push(tarefa("Toda semana", `Publicar 1 post no perfil — ${p.nome}`, "Perfis com novidade toda semana sobem no Maps. Pode ser um serviço feito, uma dica ou uma oferta.", g.posts_7d ? ok(`${g.posts_7d} nos últimos 7 dias${g.programados ? ` · ${g.programados} programados` : ""}`) : g.programados ? info(`${g.programados} programados, nenhum publicado nos últimos 7 dias`) : atencao("nenhum post nos últimos 7 dias"), irPerfil("marcaGoogle", p.marca_id, "#/google/publicacoes"), "Criar post"));
+      tg.push(tarefa("Toda semana", `Pedir avaliações aos clientes — ${p.nome}`, "Avaliação nova e frequente é um dos maiores motivos de um perfil aparecer na frente dos concorrentes.", g.avaliacoes_30d >= 4 ? ok(`${g.avaliacoes_30d} avaliações novas em 30 dias`) : atencao(`${g.avaliacoes_30d} avaliação(ões) nova(s) em 30 dias — o ideal é 1 por semana ou mais`), irPerfil("marcaGoogle", p.marca_id, "#/google/pedir"), "Pegar o link"));
+      tg.push(tarefa("Toda semana", `Acompanhar a posição no Maps — ${p.nome}`, "Mostra se a empresa está subindo ou caindo quando alguém procura o serviço na cidade.", g.palavras ? ok(`${g.palavras} busca(s) acompanhadas, medidas sozinhas`) : atencao("nenhuma busca acompanhada"), irPerfil("marcaGoogle", p.marca_id, "#/google/palavras"), "Ver posições"));
+      tg.push(tarefa("Todo mês", `Checagem completa do perfil — ${p.nome}`, "Confere fotos, horários, feriados, descrição e serviços: perfil completo aparece mais.", info("abra para ver a nota de hoje"), irPerfil("marcaGoogle", p.marca_id, "#/google/checagem"), "Checar"));
+    }
+    if (comGoogle.length) tg.push(tarefa("Uma vez", "Resposta automática das avaliações", "A DENIA pode responder sozinha os elogios e deixar as reclamações para você.", d.modo_avaliacoes === "DESLIGADO" ? info("hoje: " + MODOS.DESLIGADO) : ok("hoje: " + (MODOS[d.modo_avaliacoes] || d.modo_avaliacoes)), () => { location.hash = "#/google/avaliacoes"; }, "Ajustar"));
+    blocos.push(["Google (perfil da empresa)", tg]);
+    // ---- Instagram e Facebook
+    for (const [c, nomeC, chaveSel] of [["instagram", "Instagram", "marcaInstagram"], ["facebook", "Facebook", "marcaFacebook"]]) {
+      const com = d.perfis.filter(p => p[c]);
+      const tl = [];
+      if (!com.length) tl.push(tarefa("Uma vez", `Conectar o ${nomeC}`, "Para a DENIA publicar, medir e responder comentários pela conta oficial.", info("não conectado (opcional)"), () => conectarNovoPerfil("meta"), "Conectar"));
+      for (const p of com) {
+        const x = p[c[0]];
+        tl.push(tarefa("Toda semana", `Ter 3 posts programados — ${p.nome}`, "Constância é o que mais faz o perfil crescer: 3 ou mais posts por semana, pelo menos 1 em vídeo (reels).", x.programados_7d >= 3 ? ok(`${x.programados_7d} programados para os próximos 7 dias`) : atencao(`${x.programados_7d} programado(s) para os próximos 7 dias`), irPerfil(chaveSel, p.marca_id, `#/${c}/agenda`), "Criar a semana com IA"));
+        if (x.aguardando) tl.push(tarefa("Todo dia", `Aprovar posts criados — ${p.nome}`, "Os posts só saem depois de aprovados.", atencao(`${x.aguardando} esperando aprovação`), () => { location.hash = "#/aprovacoes"; }, "Aprovar"));
+        tl.push(tarefa("Todo dia", `Responder comentários — ${p.nome}`, "Quem comenta e é respondido volta, e o algoritmo mostra mais o perfil que conversa.", info("abra para ver os que estão sem resposta"), irPerfil(chaveSel, p.marca_id, `#/${c}/comentarios`), "Responder"));
+        tl.push(tarefa("Toda semana", `Ver o que funciona — ${p.nome}`, "Mostra qual formato, dia e horário trazem mais gente, para repetir o que dá certo.", x.analise_em && Date.now() - x.analise_em < 8 * 86400000 ? ok("lido " + quando(x.analise_em)) : atencao("não lido nesta semana"), irPerfil(chaveSel, p.marca_id, `#/${c}/analise`), "Ver"));
+        tl.push(tarefa("Todo mês", `Checagem do perfil — ${p.nome}`, "Bio, link, chamada para ação e frequência: o básico que faz quem visita virar cliente.", info("abra para ver a nota de hoje"), irPerfil(chaveSel, p.marca_id, `#/${c}/checagem`), "Checar"));
+      }
+      blocos.push([nomeC, tl]);
+    }
+    // ---- WhatsApp
+    const pz = (pb.problemas || []).filter(x => ["WHATSAPP", "CLIENTES", "CENTRAL", "AGENDA"].includes(x.area) && !/^aval:/.test(x.chave || ""));
+    const tw = [
+      tarefa("Todo dia", "Clientes esperando a equipe ou mensagens que não chegaram", "Cliente sem resposta é venda perdida. A DENIA junta aqui o que precisa de uma pessoa.", pz.length ? atencao(`${pz.length} item(ns) precisando de atenção`) : ok("nada pendente"), () => { location.hash = "#/problemas"; }, "Ver"),
+      tarefa("Todo dia", "Pedidos de serviço parados", "Pedido sem retorno do profissional ou sem resposta do cliente esfria rápido.", info("abra e filtre por parados"), () => { location.hash = "#/atendimentos"; }, "Ver pedidos"),
+      tarefa("Toda semana", "Desempenho do atendimento", "Tempo de resposta e horários de pico: mostra onde o atendimento perde clientes.", info("abra para ver a semana"), () => { location.hash = "#/whatsapp/atendimento"; }, "Ver"),
+      tarefa("Toda semana", "Saúde do número", "Se muitos clientes bloqueiam ou denunciam, a Meta limita os envios.", info("abra para conferir"), () => { location.hash = "#/chatbot/saude"; }, "Conferir"),
+      tarefa("Todo mês", "Custos da Meta", "Quanto a Meta cobrou e a previsão do mês: campanhas de marketing são o que mais custa.", info("abra para ver a previsão"), () => { location.hash = "#/consumo"; }, "Ver custos")
+    ];
+    blocos.push(["WhatsApp", tw]);
+    // ---- Desenho
+    const ORDEM = ["Uma vez", "Todo dia", "Toda semana", "Todo mês"];
+    const pend = blocos.reduce((t, [, l]) => t + l.filter(x => x.situacao.estado === "atencao").length, 0);
+    trocar(area, h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: pend ? `${pend} tarefa(s) para fazer agora` : "Tudo em dia" }), h("p", { class: "dica", text: "A situação é lida dos seus dados. Toque no botão de cada tarefa para fazer na hora; ao voltar, a lista se atualiza." })),
+      ...blocos.map(([nome, l]) => h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: nome }),
+        h("ul", { class: "chk-lista" }, [...l].sort((a, b) => (a.situacao.estado === "atencao" ? 0 : 1) - (b.situacao.estado === "atencao" ? 0 : 1) || ORDEM.indexOf(a.quando) - ORDEM.indexOf(b.quando)).map(x =>
+          h("li", { class: "chk-item chk-" + (x.situacao.estado === "atencao" ? "falta" : x.situacao.estado === "ok" ? "ok" : "conferir") },
+            h("span", { class: "selo", text: x.quando }),
+            h("div", {}, h("strong", { text: x.titulo }), h("span", { class: "sub", text: " · " + x.situacao.txt }), h("p", { class: "chk-dica", text: x.porque }), botao(x.rotuloIr, x.ir, x.situacao.estado === "atencao" ? "btn-primario btn-pequeno" : "btn-secundario btn-pequeno")),
+            selo(...SEL[x.situacao.estado])))))));
+  }
+
   // Relatório geral de marketing: Google, Instagram e Facebook de todos os perfis, no mesmo período.
   async function blocoRelatorioMarketing(caixa, dias, vivo, atualizar) {
     trocar(caixa, h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Marketing: Google, Instagram e Facebook" }), carregando(), h("p", { class: "sub", text: "Lendo os números de cada perfil no Google e na Meta…" })));
@@ -3264,11 +3329,11 @@ Botão só com texto = resposta.` })),
 
   // ----- Plano e pagamento: teste grátis, planos (mensal/anual), assinatura (Pix, boleto, cartão) e histórico.
   const RECURSO_DA_ROTA = {
-    conversas: "ia_completa", atendimentos: "ia_completa", profissionais: "ia_completa", treinamento: "ia_completa", aprendizados: "ia_completa", clientes: "ia_completa", whatsapp: "ia_completa", guia: "ia_completa",
+    rotina: null, conversas: "ia_completa", atendimentos: "ia_completa", profissionais: "ia_completa", treinamento: "ia_completa", aprendizados: "ia_completa", clientes: "ia_completa", whatsapp: "ia_completa", guia: "ia_completa",
     chatbot: "chatbot", temporada: "temporada", estudio: "marketing", calendario: "marketing", aprovacoes: "marketing", marcas: "marketing", instagram: "marketing", facebook: "marketing", google: "marketing", social: "marketing", denia: "voz"
   };
   window.DENIA_RECURSOS = window.DENIA_RECURSOS || { chatbot: "Chatbot do WhatsApp com botões e listas", chatbot_ia: "IA no chatbot", ia_completa: "IA completa de atendimento (atende como uma pessoa, com memória)", marketing: "Instagram, Facebook e Google: posts, artes, comentários e avaliações", voz: "DENIA por voz, ao vivo", multiempresa: "Várias empresas, marcas e unidades", temporada: "Locação por temporada" };
-  const ROTAS_LIVRES = ["plano", "conta", "equipe", "auditoria", "empresas", "contatos", "painel", "integracoes", "consumo", "problemas", "relatorios"];
+  const ROTAS_LIVRES = ["plano", "conta", "equipe", "auditoria", "empresas", "contatos", "painel", "integracoes", "consumo", "problemas", "relatorios", "rotina"];
   const acessoAtual = () => (estado.org && estado.org.acesso) || { liberado: true, recursos: [], status: "?" };
   const temRecurso = r => !r || estado.eu.usuario.super_admin || (acessoAtual().liberado && (acessoAtual().recursos || []).includes(r));
   const NOME_STATUS_PLANO = { TESTE: "Teste grátis", ATIVO: "Ativo", ATRASADO: "Pagamento pendente", CANCELADO: "Cancelado (usa até o fim do período)", CORTESIA: "Cortesia — acesso total", BLOQUEADO: "Bloqueado", TESTE_ACABOU: "Teste encerrado" };
