@@ -3292,3 +3292,17 @@ test("Avaliação ruim no Google (3★ ou menos) que chegou agora: avisa a equip
   await rodar();
   assert.equal(avisos().length, 1, "não avisa duas vezes");
 });
+
+test("Rotina do especialista: situação real de cada perfil (avaliações sem resposta, posts, posições)", async () => {
+  const p = await criarPlataforma();
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  const marca = (await p.req("/api/orgs/1/mk/marcas", { metodo: "POST", quem: "admin", corpo: { nome: "Reforma Tudo RT" } })).dados.id;
+  await p.req("/api/orgs/1/mk/google/estado", { quem: "admin" });
+  await p.req("/api/orgs/1/mk/avaliacoes?marca=" + marca, { quem: "admin" });
+  p.env.DB.prepare("INSERT INTO plt_mk_google(org_id,marca_id,conta_nome,local_nome,local_titulo,token_cifrado,criado_ms,atualizado_ms) VALUES(1,?,'accounts/1','locations/1','Reforma Tudo RT','x',?,?)").bind(marca, Date.now(), Date.now()).run();
+  p.env.DB.prepare("INSERT INTO plt_mk_avaliacoes(org_id,marca_id,autor,nota,texto,status,criado_ms,google_id) VALUES(1,?,'Ana',2,'Ruim','PENDENTE',?,'g1')").bind(marca, Date.now()).run();
+  const r = (await p.req("/api/orgs/1/mk/rotina", { quem: "admin" })).dados;
+  const rt = r.perfis.find(x => x.nome === "Reforma Tudo RT");
+  assert.equal(rt.google, true); assert.equal(rt.g.sem_resposta, 1); assert.equal(rt.g.ruins_sem_resposta, 1); assert.equal(rt.g.posts_7d, 0);
+  assert.equal(rt.instagram, false); assert.equal(r.modo_avaliacoes, "DESLIGADO");
+});

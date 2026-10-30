@@ -541,6 +541,42 @@ export async function apiMarketing(request, env, k, orgId, papel, resto) {
   let m;
   try {
     // ----- Relatório geral de marketing: Google, Instagram e Facebook de todos os perfis num período (tela e planilha).
+    // ----- Rotina do especialista: o que fazer hoje, nesta semana e neste mês em cada canal, com a situação real.
+    if (resto === "rotina" && metodo === "GET") {
+      const t = agora(env), d7 = t - 7 * 86400000, d30 = t - 30 * 86400000, hoje = new Date(t - 3 * 3600000).toISOString().slice(0, 10);
+      const semana = semanaDe(hoje);
+      const um = async (sql, ...a) => (await env.DB.prepare(sql).bind(...a).first().catch(() => null)) || {};
+      const lista = (await env.DB.prepare("SELECT id, nome FROM plt_mk_marcas WHERE org_id=? AND ativa=1 ORDER BY nome").bind(orgId).all())?.results || [];
+      const google = new Set(((await env.DB.prepare("SELECT marca_id FROM plt_mk_google WHERE org_id=?").bind(orgId).all().catch(() => null))?.results || []).map(x => x.marca_id));
+      const meta = new Map(((await env.DB.prepare("SELECT marca_id, ig_id FROM plt_mk_contas WHERE org_id=?").bind(orgId).all().catch(() => null))?.results || []).map(x => [x.marca_id, x]));
+      const cfg = await um("SELECT avaliacoes_auto FROM plt_mk_config WHERE org_id=?", orgId);
+      const perfis = [];
+      for (const m of lista) {
+        const r = { marca_id: m.id, nome: m.nome, google: google.has(m.id), instagram: Boolean(meta.get(m.id)?.ig_id), facebook: meta.has(m.id) };
+        if (r.google) {
+          r.g = {
+            sem_resposta: Number((await um("SELECT COUNT(*) n FROM plt_mk_avaliacoes WHERE org_id=? AND marca_id=? AND google_id IS NOT NULL AND status='PENDENTE' AND removida_ms IS NULL", orgId, m.id)).n || 0),
+            ruins_sem_resposta: Number((await um("SELECT COUNT(*) n FROM plt_mk_avaliacoes WHERE org_id=? AND marca_id=? AND google_id IS NOT NULL AND status='PENDENTE' AND removida_ms IS NULL AND nota<=3", orgId, m.id)).n || 0),
+            posts_7d: Number((await um("SELECT COUNT(*) n FROM plt_mk_posts WHERE org_id=? AND marca_id=? AND canais LIKE '%google%' AND status='PUBLICADO' AND atualizado_ms>=?", orgId, m.id, d7)).n || 0),
+            programados: Number((await um("SELECT COUNT(*) n FROM plt_mk_posts WHERE org_id=? AND marca_id=? AND canais LIKE '%google%' AND status='APROVADO' AND data>=?", orgId, m.id, hoje)).n || 0),
+            palavras: Number((await um("SELECT COUNT(*) n FROM plt_mk_palavras WHERE org_id=? AND marca_id=?", orgId, m.id)).n || 0),
+            avaliacoes_30d: Number((await um("SELECT COUNT(*) n FROM plt_mk_avaliacoes WHERE org_id=? AND marca_id=? AND google_id IS NOT NULL AND criado_ms>=?", orgId, m.id, d30)).n || 0)
+          };
+        }
+        for (const c of ["instagram", "facebook"]) if (r[c]) {
+          const cache = await um("SELECT valor FROM plt_meta WHERE chave=?", `analise_${orgId}_${m.id}_${c}`);
+          let em = null; try { em = JSON.parse(cache.valor || "null")?.em || null; } catch { em = null; }
+          r[c[0]] = {
+            posts_7d: Number((await um(`SELECT COUNT(*) n FROM plt_mk_posts WHERE org_id=? AND marca_id=? AND canais LIKE '%${c}%' AND status='PUBLICADO' AND atualizado_ms>=?`, orgId, m.id, d7)).n || 0),
+            programados_7d: Number((await um(`SELECT COUNT(*) n FROM plt_mk_posts WHERE org_id=? AND marca_id=? AND canais LIKE '%${c}%' AND status='APROVADO' AND data>=? AND data<=?`, orgId, m.id, hoje, new Date(t + 7 * 86400000).toISOString().slice(0, 10))).n || 0),
+            aguardando: Number((await um(`SELECT COUNT(*) n FROM plt_mk_posts WHERE org_id=? AND marca_id=? AND canais LIKE '%${c}%' AND status='AGUARDANDO'`, orgId, m.id)).n || 0),
+            analise_em: em
+          };
+        }
+        perfis.push(r);
+      }
+      return json({ semana, modo_avaliacoes: cfg.avaliacoes_auto || "DESLIGADO", perfis });
+    }
     if (resto === "relatorio-marketing" && metodo === "GET") {
       const q = new URL(request.url).searchParams;
       const dias = [7, 30, 90].includes(Number(q.get("dias"))) ? Number(q.get("dias")) : 30;
