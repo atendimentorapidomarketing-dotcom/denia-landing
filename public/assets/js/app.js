@@ -241,8 +241,8 @@
     problemas: { titulo: "Problemas", render: paginaProblemas },
     relatorios: { titulo: "Relatórios", render: paginaRelatorios },
     conversas: { titulo: "Conversas", render: paginaConversas },
-    atendimentos: { titulo: "Atendimentos", render: paginaAtendimentos },
-    profissionais: { titulo: "Profissionais", render: paginaProfissionais },
+    atendimentos: { titulo: "Pedidos de serviço", render: paginaAtendimentos },
+    profissionais: { titulo: "Profissionais parceiros", render: paginaProfissionais },
     treinamento: { titulo: "Treinar IA", render: paginaTreinamento },
     aprendizados: { titulo: "Aprendizados", render: paginaAprendizados },
     clientes: { titulo: "Base de clientes", render: paginaClientes },
@@ -350,7 +350,21 @@
   // Inicialização
   // ---------------------------------------------------------------------------
 
-  function fecharMenu() { $("lateral").classList.remove("aberta"); $("veu").classList.remove("ativo"); $("abrir-menu").setAttribute("aria-expanded", "false"); }
+  // Celular: com o menu aberto, a tela de fundo fica parada (o dedo rola só o menu) e volta ao mesmo lugar ao fechar.
+  let rolagemGuardada = null;
+  function travarFundo(sim) {
+    const b = document.body;
+    if (sim && rolagemGuardada === null && telaPequena()) {
+      rolagemGuardada = window.scrollY;
+      b.classList.add("fundo-travado"); b.style.top = `-${rolagemGuardada}px`;
+    } else if (!sim && rolagemGuardada !== null) {
+      const y = rolagemGuardada; rolagemGuardada = null;
+      b.classList.remove("fundo-travado"); b.style.top = "";
+      window.scrollTo(0, y);
+    }
+  }
+  function abrirMenuLateral() { $("lateral").classList.add("aberta"); $("veu").classList.add("ativo"); $("abrir-menu").setAttribute("aria-expanded", "true"); travarFundo(true); }
+  function fecharMenu() { $("lateral").classList.remove("aberta"); $("veu").classList.remove("ativo"); $("abrir-menu").setAttribute("aria-expanded", "false"); travarFundo(false); }
   // No computador o mesmo botão (☰) recolhe o menu lateral para só os ícones, deixando a tela maior;
   // no celular ele abre e fecha a gaveta. A escolha fica guardada neste aparelho.
   const telaPequena = () => window.matchMedia("(max-width: 960px)").matches;
@@ -374,9 +388,7 @@
       aplicarRecolhido(recolhido);
       return;
     }
-    const aberto = $("lateral").classList.toggle("aberta");
-    $("veu").classList.toggle("ativo", aberto);
-    $("abrir-menu").setAttribute("aria-expanded", aberto ? "true" : "false");
+    if ($("lateral").classList.contains("aberta")) fecharMenu(); else abrirMenuLateral();
   });
   $("veu").addEventListener("click", fecharMenu);
   $("sair").addEventListener("click", async () => {
@@ -883,7 +895,7 @@
 
   // Atendimentos: lista com filtros por etapa (no lugar das colunas), busca, e a IA revisando em que pé cada caso está.
   async function paginaAtendimentos(el, _p, vivo) {
-    el.appendChild(cabeca("Atendimentos", "Todos os pedidos dos clientes. A IA move os casos sozinha quando tem certeza (agendado, em andamento, concluído) lendo as conversas com o cliente, com o profissional, as mensagens da equipe e os resumos de ligação. A equipe ajusta quando precisar.", botao("Atualizar", () => navegar())));
+    el.appendChild(cabeca("Pedidos de serviço", "Cada pedido de serviço de um cliente, com a etapa em que está (verificando com o profissional, proposta, agendado, concluído). Os números do atendimento (tempo de resposta, volume) ficam em Desempenho do atendimento. A IA move os casos sozinha quando tem certeza (agendado, em andamento, concluído) lendo as conversas com o cliente, com o profissional, as mensagens da equipe e os resumos de ligação. A equipe ajusta quando precisar.", botao("Atualizar", () => navegar())));
     const area = h("div", { class: "grade" }, carregando());
     el.appendChild(area);
     let casos;
@@ -2325,17 +2337,40 @@
         h("p", { class: "sub", text: "Planilha com cada cliente, o que procurou, o total por dia e as categorias, enviada por e-mail no dia e horário que você escolher." })),
       cartaoCustoMeta(de, ate));
   }
-  // Quanto a Meta cobrou pelo WhatsApp no período (com o token desta empresa).
+  // Custos da Meta (WhatsApp): o que foi cobrado no período, a previsão do mês e o custo por tipo de mensagem.
+  // Tudo com os valores que a própria Meta informa (pricing analytics) — nada estimado por tabela.
+  const NOMES_CATEGORIA_META = { MARKETING: "Marketing (campanhas e ofertas)", UTILITY: "Utilidade (lembretes, confirmações)", AUTHENTICATION: "Autenticação (códigos)", SERVICE: "Atendimento (respostas ao cliente)", AUTHENTICATION_INTERNATIONAL: "Autenticação internacional", MARKETING_LITE: "Marketing lite" };
+  async function custosMeta() {
+    // Chatbot: com o token da empresa; Central (IA): pelo motor.
+    if (estado.org && estado.org.chatbot) return async (de, ate) => { const c = await zap(`custos?de=${de}&ate=${ate}`); return { moeda: c.moeda, pontos: c.pontos || [] }; };
+    return async (de, ate) => { const u = await eng(`usage?de=${de}&ate=${ate}`, { fresco: true }); const m = u.meta || {}; if (m.erro) throw new Error(m.erro); if (m.configurado === false) throw Object.assign(new Error(m.ajuda || "Falta a variável WHATSAPP_WABA_ID na Hostinger para ler os custos da Meta."), { status: 409 }); return { moeda: m.moeda, pontos: m.pontos || [] }; };
+  }
   function cartaoCustoMeta(de, ate) {
-    const caixa = h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Custo do WhatsApp (cobrado pela Meta)" }), carregando());
-    const NOMES = { MARKETING: "Marketing", UTILITY: "Utilidade", AUTHENTICATION: "Autenticação", SERVICE: "Atendimento", AUTHENTICATION_INTERNATIONAL: "Autenticação internacional", MARKETING_LITE: "Marketing (lite)" };
-    zap(`custos?de=${de}&ate=${ate}`).then(c => {
+    const titulo = "Custos da Meta (WhatsApp)";
+    const caixa = h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: titulo }), carregando());
+    (async () => {
+      const ler = await custosMeta();
+      const hoje = isoLocal(new Date()), iniMes = hoje.slice(0, 8) + "01";
+      const [c, mes] = await Promise.all([ler(de, ate), ler(iniMes, hoje).catch(() => null)]);
       const moeda = v => new Intl.NumberFormat(LOCALE, { style: "currency", currency: c.moeda || "USD" }).format(v || 0);
-      caixa.replaceChildren(h("h3", { style: "margin-top:0", text: "Custo do WhatsApp (cobrado pela Meta)" }),
-        h("section", { class: "grade grade-3" }, metrica("Total no período", moeda(c.total), c.moeda || ""), metrica("Mensagens pagas", numero(c.pagas || 0), "modelos fora da janela de 24 h"), metrica("Mensagens grátis", numero(c.gratis || 0), "respostas dentro da janela e outras grátis")),
-        Object.keys(c.por_categoria || {}).length ? barras(Object.entries(c.por_categoria).map(([k, v]) => ({ rotulo: `${NOMES[k] || k} — ${moeda(v.custo)}`, valor: v.volume }))) : h("p", { class: "nota", text: "Nenhuma cobrança da Meta neste período." }),
-        h("p", { class: "sub", text: "Valores informados pela Meta (pricing analytics), com o token do WhatsApp desta empresa. Responder o cliente dentro de 24 h é grátis; modelos (campanhas e lembretes) são cobrados." }));
-    }).catch(e => caixa.replaceChildren(h("h3", { style: "margin-top:0", text: "Custo do WhatsApp (cobrado pela Meta)" }), h("p", { class: "nota" + (e.status === 409 ? "" : " nota-alerta"), text: e.message })));
+      const total = c.pontos.reduce((t, p) => t + p.custo, 0), pagas = c.pontos.filter(p => p.tipo === "REGULAR").reduce((t, p) => t + p.volume, 0), gratis = c.pontos.filter(p => p.tipo !== "REGULAR").reduce((t, p) => t + p.volume, 0);
+      const cat = {};
+      for (const p of c.pontos) { const x = cat[p.categoria] = cat[p.categoria] || { volume: 0, pagas: 0, custo: 0 }; x.volume += p.volume; x.custo += p.custo; if (p.tipo === "REGULAR") x.pagas += p.volume; }
+      let previsao = null;
+      if (mes) { const dia = Number(hoje.slice(8, 10)), d = new Date(), noMes = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate(); const ate0 = mes.pontos.reduce((t, p) => t + p.custo, 0); previsao = { ate: ate0, mes: dia ? ate0 / dia * noMes : ate0 }; }
+      trocar(caixa, h("h3", { style: "margin-top:0", text: titulo }),
+        h("section", { class: "grade grade-4" }, metrica("Cobrado no período", moeda(total), `${dataCompleta(de)} a ${dataCompleta(ate)}`),
+          metrica("Previsão do mês", previsao ? moeda(previsao.mes) : "—", previsao ? `${moeda(previsao.ate)} até hoje, no ritmo atual` : "sem dados do mês"),
+          metrica("Mensagens pagas", numero(pagas), pagas ? `${moeda(total / pagas)} em média cada` : "modelos fora da janela de 24 h"),
+          metrica("Mensagens grátis", numero(gratis), "respostas dentro de 24 h")),
+        Object.keys(cat).length ? h("div", { class: "tabela-caixa", style: "margin-top:12px" }, h("table", {}, h("thead", {}, h("tr", {}, ["Tipo de mensagem", "Enviadas", "Pagas", "Custo", "Custo médio da paga"].map(t => h("th", { text: t })))),
+          h("tbody", {}, Object.entries(cat).sort((a, b) => b[1].custo - a[1].custo).map(([k, v]) => h("tr", {}, h("td", { text: NOMES_CATEGORIA_META[k] || k }), h("td", { text: numero(v.volume) }), h("td", { text: numero(v.pagas) }), h("td", { text: moeda(v.custo) }), h("td", { text: v.pagas ? moeda(v.custo / v.pagas) : "grátis" }))))))
+          : h("p", { class: "nota", text: "Nenhuma cobrança da Meta neste período." }),
+        h("ul", { class: "lista-saude", style: "margin-top:12px" },
+          h("li", { text: "Responder o cliente em até 24 h depois da última mensagem dele é grátis (atendimento)." }),
+          h("li", { text: "Modelos aprovados são cobrados por mensagem entregue: marketing é o mais caro; utilidade é grátis se enviada dentro das 24 h." }),
+          h("li", { text: "Valores informados pela própria Meta, na moeda da conta. A previsão segue o ritmo do mês até hoje." })));
+    })().catch(e => trocar(caixa, h("h3", { style: "margin-top:0", text: titulo }), h("p", { class: "nota" + (e.status === 409 ? "" : " nota-alerta"), text: e.message })));
     return caixa;
   }
   async function abaZapConversas(area, vivo) {
@@ -3468,12 +3503,12 @@ Botão só com texto = resposta.` })),
     const botaoItem = (ic, rotulo, fn, ativo) => h("button", { type: "button", class: "barra-app-item" + (ativo ? " ativo" : ""), onclick: fn }, svgIc(ic), h("span", { text: rotulo }));
     if (modo) {
       const primeiros = visiveis.slice(0, 4), resto = visiveis.slice(4);
-      const curto = { "Visão geral e evolução": "Visão", "Mensagens dos hóspedes": "Mensagens", "Calendário e preços": "Calendário", "Desempenho e cliques": "Desempenho", "Estúdio de criação": "Estúdio", "Calendário de posts": "Calendário", "Visão do chatbot": "Visão", "Métricas de atendimento": "Métricas", "Avaliações 1★ (triagem)": "1 estrela", "Imóveis (todos)": "Imóveis", "Conexões e idiomas": "Conexões", "Palavras-chave e buscas": "Palavras", "Relatório semanal": "Relatório", "Posicionamento no Google": "Posição", "Google orgânico (SEO)": "SEO", "Concorrentes no Maps": "Concorrentes", "Clientes e etiquetas": "Clientes", "Modelos de mensagem": "Modelos", "Saúde do número": "Saúde", "Respostas rápidas": "Rápidas", "Perfil comercial": "Perfil", "Melhores horários": "Horários", "Recomendações": "Avaliações", "Melhorias e manutenção": "Melhorias", "Inventário e checklist": "Inventário", "Avaliações dos hóspedes": "Avaliações" };
+      const curto = { "Desempenho do atendimento": "Desempenho", "Pedidos de serviço": "Pedidos", "Profissionais parceiros": "Profissionais", "Entregas das mensagens": "Entregas", "Palavras-chave e posição no Maps": "Palavras", "Avaliações ruins (triagem)": "Ruins", "Posts no perfil": "Posts", "Calendário e criação com IA": "Calendário", "Visão geral (todos os perfis)": "Visão", "Custos da Meta": "Custos", "Número, qualidade e custos": "Número", "Visão geral e evolução": "Visão", "Mensagens dos hóspedes": "Mensagens", "Calendário e preços": "Calendário", "Desempenho e cliques": "Desempenho", "Estúdio de criação": "Estúdio", "Calendário de posts": "Calendário", "Visão do chatbot": "Visão", "Métricas de atendimento": "Métricas", "Avaliações 1★ (triagem)": "1 estrela", "Imóveis (todos)": "Imóveis", "Conexões e idiomas": "Conexões", "Palavras-chave e buscas": "Palavras", "Relatório semanal": "Relatório", "Posicionamento no Google": "Posição", "Google orgânico (SEO)": "SEO", "Concorrentes no Maps": "Concorrentes", "Clientes e etiquetas": "Clientes", "Modelos de mensagem": "Modelos", "Saúde do número": "Saúde", "Respostas rápidas": "Rápidas", "Perfil comercial": "Perfil", "Melhores horários": "Horários", "Recomendações": "Avaliações", "Melhorias e manutenção": "Melhorias", "Inventário e checklist": "Inventário", "Avaliações dos hóspedes": "Avaliações" };
       b.replaceChildren(...primeiros.map(a => { const t = a.textContent.replace("›", "").trim(); return item(a, curto[t] || t.split(" ")[0]); }), botaoItem(IC.mais, "Mais", () => maisDoModo(modo, resto), resto.some(a => a.classList.contains("ativo"))));
     } else {
       const entra = m => nav.querySelector(`[data-entra="${m}"]`);
       const lista = [nav.querySelector('a[data-rota="painel"]'), entra("whatsapp"), temRecurso("temporada") ? entra("temporada") : entra("instagram"), entra("google")].filter(a => a && !a.classList.contains("oculto"));
-      b.replaceChildren(...lista.map(a => item(a, a.textContent.replace("›", "").replace("Locação por temporada", "Temporada").trim())), botaoItem(IC.menu, "Menu", () => { $("lateral").classList.add("aberta"); $("veu").classList.add("ativo"); $("abrir-menu").setAttribute("aria-expanded", "true"); }, false));
+      b.replaceChildren(...lista.map(a => item(a, a.textContent.replace("›", "").replace("Locação por temporada", "Temporada").trim())), botaoItem(IC.menu, "Menu", () => abrirMenuLateral(), false));
       // Número vermelho de Problemas também no botão Menu do celular.
       const cp = $("contador-problemas"), menuB = b.lastElementChild;
       if (cp && menuB) menuB.appendChild(h("b", { class: "contador contador-alerta barra-contador" + (cp.classList.contains("oculto") ? " oculto" : ""), id: "contador-barra", text: cp.textContent }));
@@ -4313,7 +4348,7 @@ Botão só com texto = resposta.` })),
   async function paginaWhatsapp(el, aba, vivo) {
     el.appendChild(cabeca("WhatsApp", "Atendimento aos clientes e conversa com os profissionais pela API oficial: números, qualidade, entregas e diagnóstico."));
     if (!estado.org.conectada) { falha(el, new ErroApi("A IA desta empresa ainda não foi conectada.", 503, { codigo: "ENGINE_NAO_CONFIGURADO" })); return; }
-    const abas = [["visao", "Visão geral"], ["atendimento", "Atendimento"], ["atendimentos", "Atendimentos"], ["profissionais", "Profissionais"], ["entregas", "Entregas"], ["diagnostico", "Diagnóstico"], ["conexao", "Conexão"]].filter(a => !(modoGuia() && ["atendimentos", "profissionais"].includes(a[0])));
+    const abas = [["visao", "Visão geral"], ["atendimento", "Desempenho do atendimento"], ["atendimentos", "Pedidos de serviço"], ["profissionais", "Profissionais parceiros"], ["entregas", "Entregas das mensagens"], ["diagnostico", "Diagnóstico"], ["conexao", "Conexão"]].filter(a => !(modoGuia() && ["atendimentos", "profissionais"].includes(a[0])));
     const atual = abas.some(a => a[0] === aba) ? aba : "visao";
     el.appendChild(h("div", { class: "abas", role: "tablist" }, abas.map(([k, n]) => h("a", { class: "aba" + (k === atual ? " ativo" : ""), href: "#/whatsapp/" + k, role: "tab" }, n))));
     const f = estado.numerosZap = estado.numerosZap || { dias: 30, metrica: "recebidas" };
@@ -6395,6 +6430,7 @@ Botão só com texto = resposta.` })),
       grupos.set(k, g);
     }
     const listaIA = [...grupos.values()].sort((a, b) => b.custo - a.custo);
+    if (estado.org.chatbot || estado.org.conectada) el.appendChild(h("div", { id: "custos-meta" }, cartaoCustoMeta(uso.de, uso.ate)));
     el.appendChild(h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Inteligência artificial (OpenAI) — onde foi usada" }),
       h("p", { class: "sub", text: "Estimativa pelos tokens que a OpenAI devolve em cada resposta e pela tabela de preços abaixo. O valor cobrado de verdade aparece em \"Fatura da OpenAI\"." }),
       listaIA.length ? h("div", { class: "tabela-caixa lista-rolavel" }, h("table", {}, h("thead", {}, h("tr", {}, ["Recurso", "Tipo", "Modelo", "Chamadas", "Tokens de entrada", "Tokens de saída", "Custo estimado"].map(t => h("th", { text: t })))),
