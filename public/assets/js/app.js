@@ -4481,7 +4481,7 @@ Botão só com texto = resposta.` })),
   let cacheMarcas = null;
   async function marcas(forcar) {
     if (!forcar && cacheMarcas && cacheMarcas.org === estado.org.id) return cacheMarcas.lista;
-    const l = (await mk("marcas")).marcas || [];
+    const l = (await mk("marcas", forcar ? { fresco: true } : undefined)).marcas || [];
     cacheMarcas = { org: estado.org.id, lista: l };
     return l;
   }
@@ -4791,7 +4791,7 @@ Botão só com texto = resposta.` })),
   let cacheMeta = null;
   async function estadoMeta(forcar) {
     if (!forcar && cacheMeta && cacheMeta.org === estado.org.id && Date.now() - cacheMeta.em < 30000) return cacheMeta.d;
-    const d = await mk("meta/estado").catch(e => ({ configurada: false, contas: [], erro: e.message }));
+    const d = await mk("meta/estado", forcar ? { fresco: true } : undefined).catch(e => ({ configurada: false, contas: [], erro: e.message }));
     cacheMeta = { org: estado.org.id, em: Date.now(), d };
     return d;
   }
@@ -4872,7 +4872,7 @@ Botão só com texto = resposta.` })),
   let cacheGoogle = null;
   async function estadoGoogle(forcar) {
     if (!forcar && cacheGoogle && cacheGoogle.org === estado.org.id && Date.now() - cacheGoogle.em < 30000) return cacheGoogle.d;
-    const d = await mk("google/estado").catch(e => ({ configurada: false, contas: [], erro: e.message }));
+    const d = await mk("google/estado", forcar ? { fresco: true } : undefined).catch(e => ({ configurada: false, contas: [], erro: e.message }));
     cacheGoogle = { org: estado.org.id, em: Date.now(), d };
     return d;
   }
@@ -4929,17 +4929,14 @@ Botão só com texto = resposta.` })),
       const conta = contaDa(meta, m.id), contaG = contaGoogleDa(goo, m.id);
       return h("article", { class: "cartao vidro marca-cartao" },
         h("div", { class: "marca-topo" }, m.logo_midia_id ? h("img", { class: "empresa-avatar marca-logo", src: `/api/orgs/${estado.org.id}/mk/midias/${m.logo_midia_id}`, alt: "" }) : h("span", { class: "empresa-avatar", text: iniciais(m.nome) }), h("div", {}, h("h3", { style: "margin:0", text: m.nome }), h("span", { class: "sub", text: [m.segmento, m.cidade].filter(Boolean).join(" · ") || "—" }))),
+        // Cada canal com a sua situação e o seu botão. Nenhum depende do outro: o Google funciona sozinho.
         h("ul", { class: "lista-saude" },
-          h("li", {}, "Instagram", conta && conta.ig_usuario ? selo(`Conectado · @${conta.ig_usuario}`, "ok") : m.instagram ? h("span", { class: "selo", text: "@" + m.instagram }) : selo("Não informado", "alerta")),
-          h("li", {}, "Facebook", conta ? selo(`Conectado · ${String(conta.pagina_nome || "").slice(0, 24)}`, "ok") : m.facebook ? h("span", { class: "selo", text: m.facebook.slice(0, 28) }) : selo("Não informado", "alerta")),
-          h("li", {}, "Google Meu Negócio", contaG ? selo(`Conectado · ${String(contaG.local_titulo || "").slice(0, 24)}`, "ok") : m.google ? h("span", { class: "selo", text: m.google.slice(0, 28) }) : selo("Não informado", "alerta"))),
-        conta ? h("p", { class: "nota", text: "Publicação automática ligada: os posts aprovados saem sozinhos no dia e horário do calendário." })
-          : h("p", { class: "nota nota-alerta", text: "Ainda não conectada: a DENIA cria e aprova os posts, mas não publica sozinha." }),
+          h("li", {}, h("span", {}, h("strong", { text: "Google (perfil da empresa)" }), h("span", { class: "sub", style: "display:block", text: contaG ? String(contaG.local_titulo || "").slice(0, 60) : "Avaliações, posts, posição no Maps e desempenho" })),
+            contaG ? h("span", { class: "acoes" }, selo("Conectado", "ok"), pode("ADMIN") ? botao("Desconectar Google", async () => { if (!(await modal({ titulo: `Desconectar o Google de ${m.nome}?`, conteudo: "A DENIA para de publicar e de buscar avaliações no perfil do Google desta marca.", confirmar: "Desconectar", perigo: true }))) return; try { await mk("google/desconectar", { metodo: "POST", corpo: { marca_id: m.id } }); cacheGoogle = null; navegar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno") : null) : pode("ADMIN") ? botao("Conectar Google", () => conectarGoogle(m), "btn-primario btn-pequeno") : selo("Não conectado", "alerta")),
+          h("li", {}, h("span", {}, h("strong", { text: "Instagram e Facebook (opcional)" }), h("span", { class: "sub", style: "display:block", text: conta ? `${conta.ig_usuario ? "@" + conta.ig_usuario + " · " : ""}${String(conta.pagina_nome || "").slice(0, 40)}` : "Só se quiser que a DENIA publique e responda lá também" })),
+            conta ? h("span", { class: "acoes" }, selo("Conectado", "ok"), pode("ADMIN") ? botao("Desconectar", async () => { if (!(await modal({ titulo: `Desconectar ${m.nome}?`, conteudo: "A DENIA para de publicar sozinha nesta marca.", confirmar: "Desconectar", perigo: true }))) return; try { await mk("meta/desconectar", { metodo: "POST", corpo: { marca_id: m.id } }); cacheMeta = null; navegar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno") : null) : pode("ADMIN") ? botao("Conectar", () => conectarMeta(m), "btn-secundario btn-pequeno") : selo("Não conectado", "info"))),
+        h("p", { class: "nota" + (!contaG && !conta ? " nota-alerta" : ""), text: contaG && conta ? "Tudo conectado: a DENIA cuida do Google, do Instagram e do Facebook deste perfil." : contaG ? "Google conectado: avaliações, posts e números do Google já funcionam. Instagram e Facebook são opcionais." : conta ? "Instagram e Facebook conectados. Conecte o Google para cuidar também das avaliações e do Maps." : "Nada conectado ainda: conecte o Google, o Instagram/Facebook ou os dois." }),
         pode("ADMIN") ? h("div", { class: "acoes", style: "margin-top:14px" },
-          conta ? botao("Desconectar", async () => { if (!(await modal({ titulo: `Desconectar ${m.nome}?`, conteudo: "A DENIA para de publicar sozinha nesta marca.", confirmar: "Desconectar", perigo: true }))) return; try { await mk("meta/desconectar", { metodo: "POST", corpo: { marca_id: m.id } }); cacheMeta = null; navegar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno")
-            : botao("Conectar Instagram e Facebook", () => conectarMeta(m), "btn-primario btn-pequeno"),
-          contaG ? botao("Desconectar Google", async () => { if (!(await modal({ titulo: `Desconectar o Google de ${m.nome}?`, conteudo: "A DENIA para de publicar e de buscar avaliações no perfil do Google desta marca.", confirmar: "Desconectar", perigo: true }))) return; try { await mk("google/desconectar", { metodo: "POST", corpo: { marca_id: m.id } }); cacheGoogle = null; navegar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno")
-            : botao("Conectar Google", () => conectarGoogle(m), "btn-primario btn-pequeno"),
           botao("Editar", () => formMarca(m), "btn-secundario btn-pequeno"),
           botao("Remover", async () => { if (!(await modal({ titulo: `Remover ${m.nome}?`, conteudo: "Os posts já criados continuam guardados.", confirmar: "Remover", perigo: true }))) return; await mk(`marcas/${m.id}/remover`, { metodo: "POST", corpo: {} }); navegar(); }, "btn-perigo btn-pequeno")) : null);
     }));
