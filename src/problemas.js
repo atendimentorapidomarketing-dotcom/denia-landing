@@ -138,12 +138,12 @@ export async function listarProblemas(env, orgId, agora = agoraDe(env)) {
   }
 
   // 6. Avaliações do Google que precisam de uma pessoa (a DENIA não deve responder sozinha).
-  for (const a of await linhas(env, "SELECT a.id, a.autor, a.nota, a.texto, a.analise, a.criado_ms, m.nome marca FROM plt_mk_avaliacoes a LEFT JOIN plt_mk_marcas m ON m.id=a.marca_id WHERE a.org_id=? AND a.status='PENDENTE' AND a.removida_ms IS NULL AND (a.nota<=2 OR a.analise IS NOT NULL) ORDER BY a.id DESC LIMIT 60", orgId)) {
+  for (const a of await linhas(env, "SELECT a.id, a.autor, a.nota, a.texto, a.analise, a.criado_ms, m.nome marca FROM plt_mk_avaliacoes a LEFT JOIN plt_mk_marcas m ON m.id=a.marca_id WHERE a.org_id=? AND a.status='PENDENTE' AND a.removida_ms IS NULL AND (a.nota<=3 OR a.analise IS NOT NULL) ORDER BY a.id DESC LIMIT 60", orgId)) {
     let an = null;
     try { an = JSON.parse(a.analise || "null"); } catch { an = null; }
-    const precisa = (an && (an.precisa_humano || an.viola_politica || an.urgencia === "ALTA")) || Number(a.nota) <= 2;
+    const precisa = (an && (an.precisa_humano || an.viola_politica || an.urgencia === "ALTA")) || Number(a.nota) <= 3;
     if (!precisa) continue;
-    add({ chave: `aval:${a.id}`, area: "CLIENTES", titulo: `Avaliação ${a.nota || "?"}★ de ${a.autor || "um cliente"} no Google sem resposta${a.marca ? " (" + a.marca + ")" : ""}`, motivo: an?.viola_politica ? "Pode violar as regras do Google: dá para pedir a remoção." : an?.motivo || an?.resumo || (Number(a.nota) <= 2 ? "Avaliação negativa: precisa de uma resposta pensada por uma pessoa." : "A DENIA achou melhor uma pessoa responder."), detalhe: a.texto ? '"' + cortar(a.texto, 240) + '"' : "", dica: "Abra Google → Avaliações para ver a resposta sugerida e publicar.", link: "#/google/avaliacoes", gravidade: Number(a.nota) <= 2 ? "ALTA" : "MEDIA", ms: a.criado_ms });
+    add({ chave: `aval:${a.id}`, area: "CLIENTES", titulo: `Avaliação ${a.nota || "?"}★ de ${a.autor || "um cliente"} no Google sem resposta${a.marca ? " (" + a.marca + ")" : ""}`, motivo: an?.viola_politica ? "Pode violar as regras do Google: dá para pedir a remoção." : an?.motivo || an?.resumo || (Number(a.nota) <= 3 ? "Avaliação negativa: precisa de uma resposta pensada por uma pessoa." : "A DENIA achou melhor uma pessoa responder."), detalhe: a.texto ? '"' + cortar(a.texto, 240) + '"' : "", dica: "Abra Google → Avaliações para ver a resposta sugerida e publicar.", link: "#/google/avaliacoes", gravidade: Number(a.nota) <= 2 ? "ALTA" : "MEDIA", ms: a.criado_ms });
   }
 
   // 7. Locação por temporada: calendários que não atualizaram e avaliações ruins de hóspedes.

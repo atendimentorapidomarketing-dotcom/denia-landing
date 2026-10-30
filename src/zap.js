@@ -159,6 +159,16 @@ async function destinoTelegram(env, k, conta) {
   if (!conta?.telegram_cifrado) return null;
   try { const t = JSON.parse(await k.decifrar(env, conta.telegram_cifrado) || "{}"); return t.token && t.chat ? t : null; } catch { return null; }
 }
+// Aviso para o grupo do Telegram da empresa (o mesmo dos avisos do WhatsApp). Sem grupo conectado, devolve false.
+export async function avisarTelegramDaEmpresa(env, k, orgId, texto) {
+  const conta = await env.DB.prepare("SELECT * FROM plt_zap_contas WHERE org_id=?").bind(orgId).first().catch(() => null);
+  let d = conta ? await destinoTelegram(env, k, conta) : null;
+  // Central de Atendimento: o grupo da equipe configurado nas variáveis (TELEGRAM_BOT_TOKEN e TELEGRAM_CHAT_ID).
+  if (!d && k.ehCentral && String(env.TELEGRAM_BOT_TOKEN || "").trim() && String(env.TELEGRAM_CHAT_ID || "").trim()) d = { token: String(env.TELEGRAM_BOT_TOKEN).trim(), chat: String(env.TELEGRAM_CHAT_ID).trim() };
+  if (!d) return false;
+  const r = await tgApi(d.token, "sendMessage", { chat_id: d.chat, text: cortar(texto, 3500), disable_web_page_preview: true });
+  return Boolean(r?.ok);
+}
 async function tgApi(token, metodo, corpo) {
   try {
     const r = await fetch(`https://api.telegram.org/bot${token}/${metodo}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(corpo), signal: AbortSignal.timeout(10000) });

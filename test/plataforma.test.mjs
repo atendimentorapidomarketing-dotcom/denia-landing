@@ -3273,3 +3273,22 @@ test("Endereço antigo (ícone salvo antes da mudança, www, workers.dev): as p�
   assert.notEqual((await p.req("/api/eu")).status, 301, "a API continua respondendo");
   assert.notEqual((await p.req("/webhook/whatsapp?hub.mode=subscribe")).status, 301, "o webhook continua respondendo");
 });
+
+test("Avaliação ruim no Google (3★ ou menos) que chegou agora: avisa a equipe uma vez; antigas não avisam", async () => {
+  const p = await criarPlataforma({ RESEND_API_KEY: "re_teste", EMAIL_REMETENTE: "DENIA <nao-responda@denia.test>" });
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  const marca = (await p.req("/api/orgs/1/mk/marcas", { metodo: "POST", quem: "admin", corpo: { nome: "Reforma Tudo RT" } })).dados.id;
+  await p.req("/api/orgs/1/mk/avaliacoes?marca=" + marca, { quem: "admin" }); // cria as colunas
+  const hoje = new Date().toISOString().slice(0, 10);
+  const ins = (gid, nota, data) => p.env.DB.prepare("INSERT INTO plt_mk_avaliacoes(org_id,marca_id,autor,nota,texto,data,status,criado_ms,google_id) VALUES(1,?,?,?,?,?,'PENDENTE',?,?)").bind(marca, "Cliente " + gid, nota, "Demorou muito", data, Date.now(), gid).run();
+  await ins("g1", 2, hoje); await ins("g2", 5, hoje); await ins("g3", 1, "2024-01-10");
+  const mod = await import(new URL("../src/worker.js?t=aval" + Math.random(), import.meta.url).href);
+  const rodar = async () => { await mod.default.scheduled({}, p.env, { waitUntil: pr => pr }); await new Promise(r => setTimeout(r, 50)); };
+  await rodar();
+  const avisos = () => p.emails.filter(e => /avaliação \d★ no Google/.test(e.subject));
+  assert.equal(avisos().length, 1, JSON.stringify(p.emails.map(e => e.subject)));
+  assert.match(avisos()[0].subject, /avaliação 2★ no Google \(Reforma Tudo RT\)/);
+  assert.match(avisos()[0].text, /Demorou muito/);
+  await rodar();
+  assert.equal(avisos().length, 1, "não avisa duas vezes");
+});

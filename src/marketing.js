@@ -39,7 +39,7 @@ const prontos = new WeakSet();
 async function garantir(env) {
   if (prontos.has(env.DB)) return;
   await env.DB.batch(DDL.map(s => env.DB.prepare(s)));
-  for (const alter of ["ALTER TABLE plt_mk_marcas ADD COLUMN idioma TEXT", "ALTER TABLE plt_mk_marcas ADD COLUMN horarios TEXT", "ALTER TABLE plt_mk_marcas ADD COLUMN logo_midia_id INTEGER", "ALTER TABLE plt_mk_posts ADD COLUMN texto_arte TEXT", "ALTER TABLE plt_mk_marcas ADD COLUMN ofertas TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN analise TEXT", "ALTER TABLE plt_mk_config ADD COLUMN avaliacoes_auto TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN triagem TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN denuncia TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN removida_ms INTEGER", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN google_id TEXT"])
+  for (const alter of ["ALTER TABLE plt_mk_marcas ADD COLUMN idioma TEXT", "ALTER TABLE plt_mk_marcas ADD COLUMN horarios TEXT", "ALTER TABLE plt_mk_marcas ADD COLUMN logo_midia_id INTEGER", "ALTER TABLE plt_mk_posts ADD COLUMN texto_arte TEXT", "ALTER TABLE plt_mk_marcas ADD COLUMN ofertas TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN analise TEXT", "ALTER TABLE plt_mk_config ADD COLUMN avaliacoes_auto TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN triagem TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN denuncia TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN removida_ms INTEGER", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN google_id TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN avisado_ms INTEGER"])
     await env.DB.prepare(alter).run().catch(() => { }); // coluna já existe
   prontos.add(env.DB);
 }
