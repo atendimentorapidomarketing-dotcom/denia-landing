@@ -183,3 +183,15 @@ test("Servidor Node — responde na hora enquanto copia da Cloudflare, e mostra 
     } finally { await s.parar(); }
   } finally { globalThis.fetch = original; rmSync(pasta, { recursive: true, force: true }); }
 });
+
+test("Servidor Node — www vai para o endereço oficial, e o retorno do Google usa sempre o endereço oficial", async () => {
+  const pasta = mkdtempSync(path.join(os.tmpdir(), "denia-srv-"));
+  const s = await iniciar({ env: base({ DENIA_DADOS: pasta, GOOGLE_CLIENT_ID: "x.apps.googleusercontent.com", GOOGLE_CLIENT_SECRET: "y" }), porta: 0, ip: "127.0.0.1", semRelogio: true, silencioso: true });
+  try {
+    const http = await import("node:http");
+    const pedir = (caminho, host) => new Promise((ok, erro) => { const r = http.request({ host: "127.0.0.1", port: s.porta, path: caminho, headers: { host } }, res => { res.resume(); ok({ status: res.statusCode, local: res.headers.location }); }); r.on("error", erro); r.end(); });
+    const w = await pedir("/app?x=1", "www.denia.test");
+    assert.equal(w.status, 301); assert.equal(w.local, "https://denia.test/app?x=1");
+    assert.equal((await pedir("/entrar", "denia.test")).status, 200, "o endereço oficial abre normal");
+  } finally { await s.parar(); rmSync(pasta, { recursive: true, force: true }); }
+});

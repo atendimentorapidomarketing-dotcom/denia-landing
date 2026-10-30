@@ -50,7 +50,15 @@ async function garantir(env) {
 
 export const googleConfigurada = env => Boolean(String(env.GOOGLE_CLIENT_ID || "").trim() && String(env.GOOGLE_CLIENT_SECRET || "").trim());
 const faltando = env => ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"].filter(n => !String(env[n] || "").trim());
-const baseDe = request => new URL(request.url).origin;
+// Endereço público da plataforma para os retornos do Google e da Meta: sempre o oficial (SITE_URL), senão o do
+// pedido sem "www" e com https. Assim o endereço de retorno é o mesmo no computador e no celular.
+const baseDe = (request, env) => {
+  const site = String(env?.SITE_URL || "").trim().replace(/\/+$/, "");
+  if (/^https:\/\/[^/\s]+$/.test(site)) return site;
+  const u = new URL(request.url);
+  const local = /^(localhost|127\.|\[::1\])/.test(u.hostname) || u.hostname.endsWith(".test");
+  return local ? u.origin : `https://${u.host.replace(/^www\./i, "")}`;
+};
 
 // ----- Chamadas à API do Google
 function explicarErro(d, status) {
@@ -166,7 +174,7 @@ export async function rotasGoogle(request, env, k, orgId, papel, resto) {
     await env.DB.prepare("INSERT OR REPLACE INTO plt_meta(chave,valor) VALUES(?,?)").bind("google_n_" + nonce, await k.cifrar(env, JSON.stringify(reg))).run();
     const dialogo = new URL("https://accounts.google.com/o/oauth2/v2/auth");
     dialogo.searchParams.set("client_id", String(env.GOOGLE_CLIENT_ID).trim());
-    dialogo.searchParams.set("redirect_uri", baseDe(request) + "/api/google/retorno");
+    dialogo.searchParams.set("redirect_uri", baseDe(request, env) + "/api/google/retorno");
     dialogo.searchParams.set("response_type", "code");
     dialogo.searchParams.set("scope", escoposPedidos(env, String(url.searchParams.get("extra") || "").slice(0, 10)));
     dialogo.searchParams.set("include_granted_scopes", "true");
@@ -267,7 +275,7 @@ export async function retornoGoogle(request, env, k) {
   const code = String(url.searchParams.get("code") || "");
   if (!code) return pagina("Conexão não concluída", "O Google não devolveu a autorização. Tente de novo.", "/app#/marcas");
   try {
-    const t = await trocarToken(env, { grant_type: "authorization_code", code, redirect_uri: baseDe(request) + "/api/google/retorno" });
+    const t = await trocarToken(env, { grant_type: "authorization_code", code, redirect_uri: baseDe(request, env) + "/api/google/retorno" });
     if (!t.refresh_token) return pagina("Conexão não concluída", "O Google não liberou o acesso permanente. Em myaccount.google.com → Segurança → Apps de terceiros, remova o acesso da DENIA e conecte de novo.", "/app#/marcas");
     const contas = (await chamar("GET", `${API_CONTAS}/accounts?pageSize=20`, t.access_token)).accounts || [];
     const locais = [];
@@ -1015,7 +1023,7 @@ async function rotasGoogleExtra(request, env, k, orgId, papel, resto, url) {
     const n = await env.DB.prepare("INSERT INTO plt_mk_midias(org_id,mime,dados,prompt,criado_ms) VALUES(?,?,?,?,?) RETURNING id").bind(orgId, mime, dados, "foto google", k.agora(env)).first();
     try {
       const { urlPublicaMidia } = await import("./meta.js");
-      const fonte = await urlPublicaMidia({ ...k, env }, baseDe(request), n.id);
+      const fonte = await urlPublicaMidia({ ...k, env }, baseDe(request, env), n.id);
       const token = await tokenDa(env, k, conta);
       const r = await chamar("POST", `${API_V4}/${caminhoV4(conta)}/media`, token, { mediaFormat: "PHOTO", locationAssociation: { category: categoria }, sourceUrl: fonte });
       await k.auditar(env, request, k.sessao, orgId, "MARKETING", `Enviou foto ao Google (${conta.local_titulo}, ${categoria})`).catch(() => {});

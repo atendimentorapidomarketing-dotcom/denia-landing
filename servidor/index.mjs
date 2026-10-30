@@ -317,6 +317,9 @@ export async function iniciar(op = {}) {
       // Endereço do pedido: o SITE_URL configurado vale sempre (links de e-mail e retornos não podem ser
       // desviados por um cabeçalho forjado). Sem ele, usa o Host; X-Forwarded-Host só com DENIA_CONFIAR_HOST=1.
       const site = /^https?:\/\/[^/\s]+$/.test(String(ambiente.SITE_URL || "").trim().replace(/\/+$/, "")) ? new URL(String(ambiente.SITE_URL).trim()) : null;
+      // www.denia-ai.com → denia-ai.com: um endereço só (o login e os retornos do Google e da Meta valem nele).
+      const hostPedido = String(req.headers.host || "").split(",")[0].trim().toLowerCase();
+      if (site && hostPedido === "www." + site.host.toLowerCase()) { res.writeHead(301, { location: site.origin + req.url, "cache-control": "public, max-age=3600" }); res.end(); return; }
       const hostCab = ambiente.DENIA_CONFIAR_HOST === "1" ? req.headers["x-forwarded-host"] || req.headers.host : req.headers.host;
       const usaSite = site && !(hostIA && String(req.headers.host || "").toLowerCase() === hostIA);
       const host = site && !(hostIA && String(req.headers.host || "").toLowerCase() === hostIA) ? site.host : String(hostCab || "localhost").split(",")[0].trim();

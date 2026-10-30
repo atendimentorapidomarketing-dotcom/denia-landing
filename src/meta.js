@@ -108,7 +108,15 @@ export async function servirMidiaPublica(env, k, caminho) {
   return new Response(bin, { headers: { "content-type": r.mime || "image/jpeg", "cache-control": "public, max-age=86400" } });
 }
 
-const baseDe = request => new URL(request.url).origin;
+// Endereço público da plataforma para os retornos do Google e da Meta: sempre o oficial (SITE_URL), senão o do
+// pedido sem "www" e com https. Assim o endereço de retorno é o mesmo no computador e no celular.
+const baseDe = (request, env) => {
+  const site = String(env?.SITE_URL || "").trim().replace(/\/+$/, "");
+  if (/^https:\/\/[^/\s]+$/.test(site)) return site;
+  const u = new URL(request.url);
+  const local = /^(localhost|127\.|\[::1\])/.test(u.hostname) || u.hostname.endsWith(".test");
+  return local ? u.origin : `https://${u.host.replace(/^www\./i, "")}`;
+};
 async function guardarBase(env, base) {
   await env.DB.prepare("INSERT OR REPLACE INTO plt_meta(chave,valor) VALUES('base_url',?)").bind(base).run();
 }
@@ -135,7 +143,7 @@ export async function rotasMeta(request, env, k, orgId, papel, resto) {
     const marcaId = Number(url.searchParams.get("marca"));
     const marca = await env.DB.prepare("SELECT id FROM plt_mk_marcas WHERE id=? AND org_id=?").bind(marcaId, orgId).first();
     if (!marca) return json({ erro: "Marca não encontrada." }, 404);
-    const base = baseDe(request);
+    const base = baseDe(request, env);
     await guardarBase(env, base);
     const nonce = k.b64url(crypto.getRandomValues(new Uint8Array(18)));
     const state = await assinarState(k, { o: orgId, m: marcaId, u: sessao.usuario.id, n: nonce, e: agora(env) + VALIDADE_STATE_MS });
@@ -201,8 +209,8 @@ export async function rotasMeta(request, env, k, orgId, papel, resto) {
     const p = await env.DB.prepare("SELECT * FROM plt_mk_posts WHERE id=? AND org_id=?").bind(Number(pub[1]), orgId).first();
     if (!p) return json({ erro: "Post não encontrado." }, 404);
     if (p.status !== "APROVADO") return json({ erro: "Aprove o post antes de publicar." }, 409);
-    await guardarBase(env, baseDe(request));
-    const r = await publicarPost(env, k, p, baseDe(request));
+    await guardarBase(env, baseDe(request, env));
+    const r = await publicarPost(env, k, p, baseDe(request, env));
     await auditar(env, request, sessao, orgId, "MARKETING", `Post #${p.id}: publicar agora — ${r.resumo}`);
     return json(r, r.ok ? 200 : 502);
   }
@@ -230,7 +238,7 @@ export async function retornoMeta(request, env, k) {
   const code = String(url.searchParams.get("code") || "");
   if (!code) return pagina("Conexão não concluída", "A Meta não devolveu a autorização. Tente de novo.", "/app#/marcas");
   try {
-    const base = baseDe(request);
+    const base = baseDe(request, env);
     const curto = await graph(env, "GET", "oauth/access_token", { client_id: String(env.META_APP_ID).trim(), client_secret: String(env.META_APP_SECRET).trim(), redirect_uri: base + "/api/meta/retorno", code });
     const longo = await graph(env, "GET", "oauth/access_token", { grant_type: "fb_exchange_token", client_id: String(env.META_APP_ID).trim(), client_secret: String(env.META_APP_SECRET).trim(), fb_exchange_token: curto.access_token });
     const contas = await graph(env, "GET", "me/accounts", { fields: "id,name,access_token,instagram_business_account{id,username}", limit: "100", access_token: longo.access_token || curto.access_token });
@@ -324,7 +332,7 @@ export async function aoAprovar(request, env, k, p) {
     const [, mes, dia] = p.data.split("-");
     return { publicado: false, resumo: `Post aprovado. Ele sai sozinho em ${dia}/${mes} às ${p.hora || "00:00"} (horário de Brasília). Para publicar já, abra o post e clique em Publicar agora.` };
   }
-  const base = baseDe(request);
+  const base = baseDe(request, env);
   await guardarBase(env, base);
   const r = await publicarPost(env, k, { ...p, status: "APROVADO" }, base).catch(e => ({ ok: false, resumo: e.message }));
   return { publicado: r.ok, resumo: r.ok ? `Post aprovado e ${r.resumo.charAt(0).toLowerCase()}${r.resumo.slice(1)}` : `Post aprovado, mas a publicação falhou: ${r.resumo}` };
