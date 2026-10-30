@@ -31,7 +31,7 @@ import { DDL_ZAP, webhookZap, rotasZap, webhookTelegram, segredoTelegram, tokenT
 import { montarRelatorio, planilhaRelatorio, textoRelatorio, base64, ultimos7Dias, lerConfigRelatorio, horaDeEnviar, diaBR, dataBR, DIAS_SEMANA, inicioDoDia as inicioDoDiaBR } from "./relatorio.js";
 import { lerPlanos, acessoDa, recursoDaRota, planoMinimo, rotasPlano, webhookAsaas, lembretesDePlano, TESTE_DIAS, STATUS as STATUS_PLANO, PLANOS_PADRAO, RECURSOS } from "./planos.js";
 
-const VERSAO = "3.19.3";
+const VERSAO = "3.19.4";
 // Versão dos Termos de uso e da Política de privacidade aceitas no cadastro.
 const VERSAO_TERMOS = "2026-10-16";
 // WhatsApp da Central de Atendimento (botão flutuante do site).
@@ -137,6 +137,14 @@ function senhaTemporaria() {
 function origemPublica(env, request) {
   const site = String(env.SITE_URL || "").trim().replace(/\/+$/, "");
   return /^https:\/\/[^/\s]+$/.test(site) ? site : new URL(request.url).origin;
+}
+function paraEnderecoOficial(request, env) {
+  const site = String(env.SITE_URL || "").trim().replace(/\/+$/, "");
+  if (!/^https:\/\/[^/\s]+$/.test(site) || String(env.DENIA_SEM_REDIRECIONAR || "") === "1" || request.method !== "GET") return null;
+  const u = new URL(request.url), oficial = new URL(site);
+  if (u.host.toLowerCase() === oficial.host.toLowerCase() || /^(localhost|127\.)/.test(u.hostname)) return null;
+  const pagina = /^\/(app|entrar|cadastro|recuperar|redefinir|manifest\.webmanifest)?$/.test(u.pathname) || u.pathname.startsWith("/app/");
+  return pagina ? new Response(null, { status: 301, headers: { location: oficial.origin + u.pathname + u.search, "cache-control": "no-store" } }) : null;
 }
 function ipDe(request) { return request.headers.get("cf-connecting-ip") || "local"; }
 
@@ -1434,6 +1442,10 @@ function paginaBancoIndisponivel(b) {
 
 export default {
   async fetch(request, env, ctx) {
+    // Páginas abertas por um endereço antigo (ícone salvo na tela inicial do celular antes da mudança, www, workers.dev)
+    // vão para o endereço oficial. Webhooks, API e IA continuam respondendo onde estão.
+    const fora = paraEnderecoOficial(request, env);
+    if (fora) return fora;
     try { return comSeguranca(await rotear(request, env, ctx), request); }
     catch (e) {
       console.error("Erro não tratado:", e?.stack || e);

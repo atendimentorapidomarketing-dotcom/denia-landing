@@ -3264,3 +3264,12 @@ test("Relatório geral de marketing: Google de todos os perfis no período, com 
   for (const aba of ["Resumo", "Google", "Instagram", "Facebook"]) assert.match(z, new RegExp(`name="${aba}"`));
   assert.match(z, /Reforma Tudo RT/);
 });
+
+test("Endereço antigo (ícone salvo antes da mudança, www, workers.dev): as páginas vão para o endereço oficial; API e webhooks não", async () => {
+  const p = await criarPlataforma({ SITE_URL: "https://denia-ai.test" });
+  const app = await p.req("/app?origem=app");
+  assert.equal(app.status, 301); assert.equal(app.r.headers.get("location"), "https://denia-ai.test/app?origem=app");
+  assert.equal((await p.req("/entrar")).r.headers.get("location"), "https://denia-ai.test/entrar");
+  assert.notEqual((await p.req("/api/eu")).status, 301, "a API continua respondendo");
+  assert.notEqual((await p.req("/webhook/whatsapp?hub.mode=subscribe")).status, 301, "o webhook continua respondendo");
+});
