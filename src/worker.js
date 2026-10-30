@@ -27,11 +27,11 @@ import { comOrgUso, comRecurso, descarregarUso } from "./uso.js";
 import { DDL_TEMPORADA, ALTERS_TEMPORADA, rotasTemporada, icalPublico, webhookChannex, sincronizarTemporada, desligarInadimplentes, lembrarEstoque, limpezaPublica, avaliacoesDoCron } from "./temporada.js";
 import { openaiBruto } from "./marketing.js";
 import { DDL_PROBLEMAS, rotasProblemas, registrarProblema, resolverProblema, limparProblemas } from "./problemas.js";
-import { DDL_ZAP, webhookZap, rotasZap, webhookTelegram, segredoTelegram, tokenTelegramPlataforma, processarCampanhas, lembrarAgenda, brutoRelatorioZap } from "./zap.js";
+import { DDL_ZAP, webhookZap, rotasZap, webhookTelegram, segredoTelegram, tokenTelegramPlataforma, processarCampanhas, lembrarAgenda, brutoRelatorioZap, avisarTelegramDaEmpresa } from "./zap.js";
 import { montarRelatorio, planilhaRelatorio, textoRelatorio, base64, ultimos7Dias, lerConfigRelatorio, horaDeEnviar, diaBR, dataBR, DIAS_SEMANA, inicioDoDia as inicioDoDiaBR } from "./relatorio.js";
 import { lerPlanos, acessoDa, recursoDaRota, planoMinimo, rotasPlano, webhookAsaas, lembretesDePlano, TESTE_DIAS, STATUS as STATUS_PLANO, PLANOS_PADRAO, RECURSOS } from "./planos.js";
 
-const VERSAO = "3.20.0";
+const VERSAO = "3.20.1";
 // Versão dos Termos de uso e da Política de privacidade aceitas no cadastro.
 const VERSAO_TERMOS = "2026-10-16";
 // WhatsApp da Central de Atendimento (botão flutuante do site).
@@ -737,6 +737,18 @@ async function cuidarDasAvaliacoes(env, k) {
       `• ${x.marca} — ${x.autor || "Cliente"} (${x.nota}★): "${String(x.texto || "").slice(0, 300)}"\n  ${x.analise.motivo_humano || ""}${x.analise.viola_politica ? `\n  Pode violar as regras do Google (${x.analise.politica}). ${x.analise.como_remover}` : ""}`).join("\n\n") +
       `\n\nA resposta sugerida já está pronta em Google Meu Negócio → Avaliações${base ? ": " + base + "/app#/google/avaliacoes" : ""}. Nada foi publicado sem você.`;
     for (const para of await responsaveisDa(env, org_id)) await enviarEmail(env, para, "DENIA — avaliação do Google precisa de você", texto);
+  }
+  // Avaliação ruim (3 estrelas ou menos) que chegou agora: avisa a equipe na hora, no Telegram da empresa (ou por
+  // e-mail) — com ou sem IA, e nunca sobre as antigas trazidas ao conectar o perfil.
+  const desde = new Date(agora(env) - 3 * 86400000).toISOString().slice(0, 10);
+  const ruins = (await env.DB.prepare(`SELECT a.id, a.org_id, a.autor, a.nota, a.texto, a.data, m.nome marca FROM plt_mk_avaliacoes a LEFT JOIN plt_mk_marcas m ON m.id=a.marca_id
+    WHERE a.google_id IS NOT NULL AND a.nota<=3 AND a.avisado_ms IS NULL AND a.removida_ms IS NULL AND a.status='PENDENTE' AND a.data>=? ORDER BY a.id LIMIT 20`).bind(desde).all().catch(() => null))?.results || [];
+  const central = await primeiraEmpresa(env).catch(() => 0);
+  for (const a of ruins) {
+    const texto = `⚠️ Avaliação ${a.nota}★ no Google${a.marca ? " — " + a.marca : ""}\n${a.autor || "Cliente"}: "${String(a.texto || "(sem texto, só a nota)").slice(0, 600)}"\n\nA DENIA não respondeu sozinha. A resposta sugerida está em Google → Avaliações${base ? ": " + base + "/app#/google/avaliacoes" : ""}.`;
+    const foi = await avisarTelegramDaEmpresa(env, { ...kitBase(env), ehCentral: a.org_id === central }, a.org_id, texto).catch(() => false);
+    if (!foi && emailConfigurado(env)) for (const para of await responsaveisDa(env, a.org_id)) await enviarEmail(env, para, `DENIA — avaliação ${a.nota}★ no Google${a.marca ? " (" + a.marca + ")" : ""}`, texto);
+    await env.DB.prepare("UPDATE plt_mk_avaliacoes SET avisado_ms=? WHERE id=?").bind(agora(env), a.id).run().catch(() => {});
   }
   // Relatório semanal (segunda-feira), para as empresas com perfil do Google conectado.
   const comGoogle = (await env.DB.prepare("SELECT DISTINCT org_id FROM plt_mk_google LIMIT 20").all().catch(() => null))?.results || [];
