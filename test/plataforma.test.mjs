@@ -3352,3 +3352,41 @@ test("Google: pré-análise de qualquer empresa, mapa de posição em grade e si
   assert.equal(s.situacao, "suspenso");
   assert.deepEqual(s.mudancas_do_google, [{ campo: "telefone", no_google: "(21) 0000-0000", no_perfil: "(21) 3333-4444" }]);
 });
+
+test("Google: relatório em PDF para o cliente, envio automático (dia 1) e proposta comercial em PDF", async () => {
+  const p = await criarPlataforma({ GOOGLE_CLIENT_ID: "cliente.apps.googleusercontent.com", GOOGLE_CLIENT_SECRET: "segredo-google", RESEND_API_KEY: "re_teste", EMAIL_REMETENTE: "DENIA <nao-responda@denia.test>" });
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  const marca = (await p.req("/api/orgs/1/mk/marcas", { metodo: "POST", quem: "admin", corpo: { nome: "Reforma Tudo RT" } })).dados.id;
+  const ida = await p.req(`/api/orgs/1/mk/google/conectar?marca=${marca}`, { quem: "admin" });
+  const state = new URL(ida.r.headers.get("location")).searchParams.get("state");
+  p.google = (url) => {
+    if (url.startsWith("https://oauth2.googleapis.com/token")) return { access_token: "ya29.a", refresh_token: "1//p", expires_in: 3599 };
+    if (url.includes("/v1/accounts?")) return { accounts: [{ name: "accounts/111" }] };
+    if (url.includes("/accounts/111/locations?")) return { locations: [{ name: "locations/1", title: "Reforma Tudo RT" }] };
+    if (url.includes("/reviews?")) return { reviews: [] };
+    if (url.includes(":fetchMultiDailyMetricsTimeSeries")) return { multiDailyMetricTimeSeries: [{ dailyMetricTimeSeries: [{ dailyMetric: "CALL_CLICKS", timeSeries: { datedValues: [{ value: "7" }] } }, { dailyMetric: "BUSINESS_IMPRESSIONS_MOBILE_MAPS", timeSeries: { datedValues: [{ value: "90" }] } }] }] };
+    return { error: { code: 404, message: "inesperado " + url } };
+  };
+  const nonce = (await (await p.req(`/api/google/retorno?code=abc&state=${encodeURIComponent(state)}`)).r.text()).match(/\/app#\/marcas\/google-([A-Za-z0-9_-]+)/)[1];
+  await p.req("/api/orgs/1/mk/google/escolher", { metodo: "POST", quem: "admin", corpo: { n: nonce, local_id: "locations/1" } });
+  const pdf = (await p.req(`/api/orgs/1/mk/google/relatorio-pdf?marca=${marca}&dias=30`, { quem: "admin" })).dados;
+  assert.ok(pdf.base64, JSON.stringify(pdf)); const b = Buffer.from(pdf.base64, "base64");
+  assert.equal(b.subarray(0, 5).toString(), "%PDF-"); assert.match(pdf.nome, /^relatorio-google-reforma-tudo-rt-/);
+  assert.match(b.toString("latin1"), /Relat\xf3rio do Google/);
+  // Envio automático
+  assert.equal((await p.req("/api/orgs/1/mk/google/relatorio-envio", { metodo: "POST", quem: "admin", corpo: { marca_id: marca, ativo: true, frequencia: "mensal", emails: "errado" } })).status, 400);
+  await p.req("/api/orgs/1/mk/google/relatorio-envio", { metodo: "POST", quem: "admin", corpo: { marca_id: marca, ativo: true, frequencia: "mensal", emails: "cliente@empresa.test" } });
+  const mod = await import(new URL("../src/worker.js?t=relpdf" + Math.random(), import.meta.url).href);
+  const rodar = async () => { await mod.default.scheduled({}, p.env, { waitUntil: pr => pr }); await new Promise(r => setTimeout(r, 50)); };
+  const doCliente = () => p.emails.filter(e => e.to[0] === "cliente@empresa.test");
+  p.env.__agora = () => Date.parse("2026-11-02T12:00:00Z"); await rodar();
+  assert.equal(doCliente().length, 0, "dia 2: não é dia de mandar");
+  p.env.__agora = () => Date.parse("2026-12-01T12:00:00Z"); await rodar(); await rodar();
+  assert.equal(doCliente().length, 1, "dia 1: manda uma vez");
+  assert.match(doCliente()[0].attachments[0].filename, /\.pdf$/);
+  // Proposta
+  delete p.env.__agora;
+  const pr = (await p.req("/api/orgs/1/mk/google/proposta", { metodo: "POST", quem: "admin", corpo: { empresa: { nome: "Chaveiro Tijuca", nota: 4.5, avaliacoes: 20 }, analise: { nota: 61, itens: [{ titulo: "Fotos", detalhe: "3 foto(s)", dica: "Mande mais fotos.", ok: "parcial" }] }, concorrentes: [{ posicao: 1, nome: "Chaves Já", nota: 4.9, avaliacoes: 300 }], posicao: 4, busca: "Chaveiro Rio de Janeiro", valor: "R$ 890 por mês" } })).dados;
+  assert.ok(pr.base64, JSON.stringify(pr)); const bp = Buffer.from(pr.base64, "base64").toString("latin1");
+  assert.match(bp, /^%PDF-/); assert.match(bp, /R\$ 890 por m\xeas/); assert.match(bp, /Chaves J\xe1/);
+});

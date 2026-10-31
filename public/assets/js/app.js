@@ -535,6 +535,10 @@
       h("a", { class: "metrica vidro metrica-botao", href: "#/relatorios" }, h("span", { text: "Mais procurado nos 7 dias" }), h("strong", { text: r.categorias[0] ? r.categorias[0].categoria : "Sem dados" }), h("small", { text: "Abrir relatórios" }))));
   }
   // Relatórios: números do período, planilha para baixar e o envio automático por e-mail.
+  function baixarBase64(nome, base64, tipo) {
+    const bin = atob(base64), by = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) by[i] = bin.charCodeAt(i);
+    const url = URL.createObjectURL(new Blob([by], { type: tipo })); const a = h("a", { href: url, download: nome }); document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 5000);
+  }
   // Rotina do especialista: tudo o que um especialista faz em cada canal (todo dia, toda semana, todo mês),
   // com a situação real de cada perfil e o botão para fazer. Pensada para quem não é do ramo.
   async function paginaRotina(el, _p, vivo) {
@@ -5986,9 +5990,20 @@ Botão só com texto = resposta.` })),
       mais);
   }
   async function abaRelatorio(area, marcaId) {
-    const lista = (await mk(`relatorios?marca=${marcaId}`)).relatorios || [];
-    const atual = lista[0];
-    trocar(area, h("section", { class: "cartao vidro" },
+    const [lista0, env0] = await Promise.all([mk(`relatorios?marca=${marcaId}`), mk(`google/relatorio-envio?marca=${marcaId}`, { fresco: true }).catch(() => ({ config: { ativo: false, frequencia: "mensal", emails: "" } }))]);
+    const lista = lista0.relatorios || [];
+    const atual = lista[0], cfg = env0.config;
+    const dias = h("select", { class: "entrada" }, [["15", "Últimos 15 dias"], ["30", "Últimos 30 dias"], ["90", "Últimos 90 dias"]].map(([v, n]) => h("option", { value: v, text: n, selected: v === "30" })));
+    const ativo = h("input", { type: "checkbox", checked: Boolean(cfg.ativo), disabled: !pode("ADMIN") }), freq = h("select", { class: "entrada", disabled: !pode("ADMIN") }, [["mensal", "Todo mês (dia 1)"], ["quinzenal", "A cada 15 dias (dias 1 e 16)"]].map(([v, n]) => h("option", { value: v, text: n, selected: cfg.frequencia === v }))), emails = h("input", { class: "entrada", value: cfg.emails || "", placeholder: "cliente@empresa.com, gerente@empresa.com", readOnly: !pode("ADMIN") });
+    const cartaoPdf = h("section", { class: "cartao vidro formulario" }, h("h3", { style: "margin:0", text: "Relatório em PDF para o cliente" }),
+      h("p", { class: "dica", text: "Com a logo do perfil, os números do Google comparados com o período anterior, avaliações, posição nas buscas e os próximos passos. Pronto para mandar ao cliente." }),
+      h("div", { class: "linha-form", style: "align-items:end" }, campo("Período", dias), botao("Baixar PDF", async (_e, b) => { b.disabled = true; b.textContent = "Gerando o PDF…"; try { const r = await mk(`google/relatorio-pdf?marca=${marcaId}&dias=${dias.value}`, { fresco: true }); baixarBase64(r.nome, r.base64, "application/pdf"); } catch (e) { aviso(e.message, "erro"); } b.disabled = false; b.textContent = "Baixar PDF"; }, "btn-primario")),
+      h("h4", { style: "margin:14px 0 4px", text: "Envio automático por e-mail" }),
+      h("label", { style: "display:flex;gap:8px;align-items:center" }, ativo, "Mandar o PDF sozinho para estes e-mails"),
+      h("div", { class: "linha-form" }, campo("Quando", freq), campo("E-mails do cliente", emails)),
+      pode("ADMIN") ? h("div", { class: "acoes" }, botao("Salvar envio automático", async () => { try { await mk("google/relatorio-envio", { metodo: "POST", corpo: { marca_id: marcaId, ativo: ativo.checked, frequencia: freq.value, emails: emails.value } }); aviso(ativo.checked ? "Pronto: o relatório vai sozinho por e-mail." : "Envio automático desligado.", "ok"); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario")) : null,
+      h("p", { class: "sub", text: "Os e-mails saem pela plataforma (precisa de RESEND_API_KEY e EMAIL_REMETENTE na Hostinger). A logo do PDF é a do perfil em Contas conectadas (em JPG)." }));
+    trocar(area, cartaoPdf, h("section", { class: "cartao vidro" },
       h("div", { class: "sugestao-topo" }, h("h3", { style: "margin:0", text: atual ? `Relatório da semana de ${dataCurta(atual.semana)}` : "Relatório semanal" }),
         pode("AGENTE") ? botao("Gerar relatório agora", async (_e, b) => { b.textContent = "Analisando os dados…"; try { await mk("relatorios/gerar", { metodo: "POST", corpo: { marca_id: marcaId } }); navegar(); } catch (e) { aviso(e.message, "erro"); } finally { b.textContent = "Gerar relatório agora"; } }, "btn-primario btn-pequeno") : null),
       atual ? h("div", { class: "relatorio-texto", text: atual.texto }) : vazio("Nenhum relatório ainda", "Toda segunda-feira a DENIA analisa o Google e as redes de cada marca conectada e escreve o relatório com o plano da semana. Você também pode gerar agora.", ICONES.caixa)),
@@ -6011,6 +6026,10 @@ Botão só com texto = resposta.` })),
             h("p", { class: "fx-nota", text: `Nota ${e.nota ? String(e.nota).replace(".", ",") + " ★" : "—"} · ${numero(e.avaliacoes)} avaliações · ${e.fotos >= 10 ? "10+" : e.fotos} fotos${d.posicao_na_categoria != null ? ` · ${d.posicao_na_categoria ? d.posicao_na_categoria + "º lugar" : "fora do top 20"} em "${d.busca_concorrentes}"` : ""}` }),
             h("p", { class: "dica", text: "Feita só com o que o Google mostra publicamente: serve para conhecer uma empresa (cliente novo ou concorrente) sem pedir acesso. Com o perfil conectado, a Checagem completa vai além." }),
             e.maps ? h("div", { class: "acoes" }, h("a", { class: "btn btn-secundario btn-pequeno", href: e.maps, target: "_blank", rel: "noopener" }, "Abrir no Google Maps")) : null)),
+        h("section", { class: "cartao vidro formulario" }, h("h3", { style: "margin:0", text: "Proposta comercial em PDF" }), h("p", { class: "dica", text: "Transforma esta análise numa proposta para o cliente: diagnóstico, quem aparece na frente, o que vai ser feito e o investimento. Você só escreve o valor." }),
+          (() => { const valor = h("input", { class: "entrada", placeholder: "Ex.: R$ 890 por mês" }), servs = h("textarea", { class: "entrada", style: "min-height:110px", placeholder: "Um serviço por linha (deixe vazio para usar o padrão)" }), validade = h("input", { class: "entrada", type: "number", min: "1", max: "90", value: "15" }), contato = h("input", { class: "entrada", placeholder: "Ex.: Fale com a Ana: (21) 99999-9999" });
+            return h("div", {}, h("div", { class: "linha-form" }, campo("Investimento", valor), campo("Validade (dias)", validade)), campo("O que vai ser feito", servs), campo("Contato", contato),
+              h("div", { class: "acoes" }, botao("Gerar proposta em PDF", async (_e, b) => { b.disabled = true; b.textContent = "Gerando…"; try { const r = await mk("google/proposta", { metodo: "POST", corpo: { empresa: e, analise: a, concorrentes: d.concorrentes, posicao: d.posicao_na_categoria, busca: d.busca_concorrentes, valor: valor.value, servicos: servs.value.split("\n").map(x => x.trim()).filter(Boolean), validade: validade.value, contato: contato.value } }); baixarBase64(r.nome, r.base64, "application/pdf"); } catch (er) { aviso(er.message, "erro"); } b.disabled = false; b.textContent = "Gerar proposta em PDF"; }, "btn-primario"))); })()),
         h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "O que melhorar" }), h("ul", { class: "chk-lista" }, a.itens.slice().sort((x, y) => (y.max - y.pontos) - (x.max - x.pontos)).map(linha))),
         d.concorrentes.length ? h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: `Concorrentes em "${d.busca_concorrentes}"` }), h("div", { class: "tabela-caixa" }, h("table", {}, h("thead", {}, h("tr", {}, ["Posição", "Empresa", "Nota", "Avaliações", "Fotos", "Categoria"].map(t => h("th", { text: t })))),
           h("tbody", {}, d.concorrentes.map(c => h("tr", {}, h("td", { text: c.posicao + "º" }), h("td", {}, c.maps ? h("a", { href: c.maps, target: "_blank", rel: "noopener", text: c.nome }) : c.nome), h("td", { text: c.nota ? String(c.nota).replace(".", ",") + " ★" : "—" }), h("td", { text: numero(c.avaliacoes) }), h("td", { text: c.fotos >= 10 ? "10+" : String(c.fotos) }), h("td", { text: c.categoria }))))))) : null,
@@ -6163,6 +6182,14 @@ Botão só com texto = resposta.` })),
       adm ? null : h("p", { class: "nota", text: "Somente administradores mudam o perfil no Google." }));
   }
 
+  // QR code (biblioteca qrcode-generator, MIT) e páginas para imprimir os cartões de avaliação.
+  function qrSvg(texto) { const q = qrcode(0, "M"); q.addData(texto); q.make(); return q.createSvgTag({ cellSize: 6, margin: 2, scalable: true }); }
+  function qrSvgUrl(texto) { return URL.createObjectURL(new Blob([qrSvg(texto)], { type: "image/svg+xml" })); }
+  function imprimirCartoes(nome, link, tipo) {
+    const w = window.open(`/cartoes.html#${new URLSearchParams({ nome, link, tipo })}`, "_blank");
+    if (!w) aviso("O navegador bloqueou a janela. Permita pop-ups para imprimir.", "erro"); else w.opener = null;
+  }
+
   // ----- Google: pedir avaliações (link direto e mensagem pronta)
   async function abaPedirAvaliacoes(area, marca) {
     const d = await mk(`google/perfil?marca=${marca.id}`);
@@ -6176,6 +6203,8 @@ Botão só com texto = resposta.` })),
         h("div", { class: "senha-mostrada" }, h("span", { style: "flex:1;word-break:break-all", text: link }), botao("Copiar", () => copiar(link), "btn-secundario btn-pequeno"))),
       h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Mensagem pronta" }), msg, h("div", { class: "linha-form" }, campo("Enviar para", tel)),
         h("div", { class: "acoes" }, botao("Copiar mensagem", () => copiar(msg.value), "btn-secundario"), botao("Abrir no WhatsApp", () => { const n = tel.value.replace(/\D/g, ""); window.open(`https://wa.me/${n ? (n.length <= 11 ? "55" + n : n) : ""}?text=${encodeURIComponent(msg.value)}`, "_blank", "noopener"); }, "btn-primario"))),
+      h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Cartões e display com QR code" }), h("p", { class: "dica", text: "Para o balcão, a entrega ou junto da nota: o cliente aponta a câmera e cai direto na tela de avaliar. Abre pronto para imprimir (ou salvar em PDF)." }),
+        h("div", { class: "acoes" }, botao("Cartões (10 por folha A4)", () => imprimirCartoes(d.perfil.titulo, link, "cartoes"), "btn-primario"), botao("Display de balcão (A5)", () => imprimirCartoes(d.perfil.titulo, link, "display"), "btn-secundario"), botao("Baixar só o QR code", () => { const a2 = h("a", { href: qrSvgUrl(link), download: "qr-avaliacao.svg" }); document.body.appendChild(a2); a2.click(); a2.remove(); }, "btn-secundario"))),
       h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Regras do Google (para não perder o perfil)" }),
         h("ul", { class: "lista-saude" }, h("li", {}, "Pode pedir para todos os clientes reais"), h("li", {}, "Não pode oferecer desconto ou brinde em troca de avaliação"), h("li", {}, "Não pode pedir só para quem gostou nem escrever pelo cliente"), h("li", {}, "Responda todas, inclusive as ruins: a DENIA ajuda em Avaliações"))));
   }

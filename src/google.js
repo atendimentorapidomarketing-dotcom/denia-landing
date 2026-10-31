@@ -1,5 +1,6 @@
 import { registrarUso, orgDoUso } from "./uso.js";
 import { registrarProblema, resolverProblema } from "./problemas.js";
+import { gerarPdf, dimensoesJpeg } from "./pdf.js";
 // DENIA Platform — Google Perfil da Empresa (Google Meu Negócio), pela API oficial.
 // Conexão por marca (login do Google), publicação dos posts aprovados, avaliações (buscar e responder)
 // e desempenho do perfil (visualizações, ligações, rotas, cliques e as buscas que levam ao perfil).
@@ -1193,6 +1194,41 @@ async function rotasGoogleExtra(request, env, k, orgId, papel, resto, url) {
     if (!conta) return json({ conectada: false });
     try { return json({ conectada: true, ...(await situacaoDoPerfil(env, k, conta)) }); } catch (e) { return erroJson(e); }
   }
+  // ----- Relatório em PDF para o cliente, envio automático e proposta comercial.
+  if (resto === "google/relatorio-pdf" && metodo === "GET") {
+    const conta = await marcaDe();
+    if (!conta) return json({ erro: "Conecte o Google deste perfil primeiro." }, 409);
+    try { const r = await relatorioPdfDoPerfil(env, k, conta, [15, 30, 90].includes(Number(url.searchParams.get("dias"))) ? Number(url.searchParams.get("dias")) : 30); return json({ nome: r.nome, base64: paraBase64(r.bytes) }); }
+    catch (e) { return erroJson(e); }
+  }
+  if (resto === "google/relatorio-envio" && metodo === "GET") {
+    const id = Number(url.searchParams.get("marca"));
+    let cfg = null; try { cfg = JSON.parse((await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave=?").bind(`relpdf_${orgId}_${id}`).first())?.valor || "null"); } catch { cfg = null; }
+    return json({ config: cfg || { ativo: false, frequencia: "mensal", emails: "" } });
+  }
+  if (resto === "google/relatorio-envio" && metodo === "POST") {
+    if (!pode(papel, "ADMIN")) return json({ erro: "Somente administradores." }, 403);
+    const c = await corpoDe().catch(e => e);
+    if (c instanceof Error) return json({ erro: c.message }, 400);
+    const emails = String(c.emails || "").split(/[,;\s]+/).filter(Boolean);
+    if (emails.some(e => !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e))) return json({ erro: "Confira os e-mails (separe por vírgula)." }, 400);
+    if (c.ativo && !emails.length) return json({ erro: "Coloque pelo menos um e-mail." }, 400);
+    const cfg = { ativo: Boolean(c.ativo), frequencia: c.frequencia === "quinzenal" ? "quinzenal" : "mensal", emails: emails.join(", ") };
+    await env.DB.prepare("INSERT OR REPLACE INTO plt_meta(chave,valor) VALUES(?,?)").bind(`relpdf_${orgId}_${Number(c.marca_id)}`, JSON.stringify(cfg)).run();
+    return json({ ok: true, config: cfg });
+  }
+  if (resto === "google/proposta" && metodo === "POST") {
+    if (!pode(papel, "AGENTE")) return json({ erro: "Seu perfil não tem permissão para esta ação." }, 403);
+    const { corpo: c, erro } = await k.lerCorpo(request, 60000);
+    if (erro) return erro;
+    if (!c?.empresa?.nome) return json({ erro: "Faça a pré-análise da empresa antes." }, 400);
+    const org = await env.DB.prepare("SELECT nome FROM plt_organizacoes WHERE id=?").bind(orgId).first().catch(() => null);
+    const t = (v, n) => String(v ?? "").slice(0, n);
+    return json(propostaPdf({ agencia: t(c.agencia, 120) || org?.nome || "", empresa: { nome: t(c.empresa.nome, 120), nota: Number(c.empresa.nota) || null, avaliacoes: Number(c.empresa.avaliacoes) || 0 },
+      analise: { nota: Number(c.analise?.nota) || 0, itens: (c.analise?.itens || []).slice(0, 20).map(i => ({ titulo: t(i.titulo, 80), detalhe: t(i.detalhe, 120), dica: t(i.dica, 200), ok: t(i.ok, 10) })) },
+      concorrentes: (c.concorrentes || []).slice(0, 10).map(x => ({ posicao: Number(x.posicao) || 0, nome: t(x.nome, 80), nota: Number(x.nota) || null, avaliacoes: Number(x.avaliacoes) || 0 })),
+      posicao: c.posicao == null ? null : Number(c.posicao), busca: t(c.busca, 120), valor: t(c.valor, 200), servicos: (c.servicos || []).slice(0, 15).map(x => t(x, 200)).filter(Boolean), validade: Math.min(90, Math.max(1, Number(c.validade) || 15)), contato: t(c.contato, 300) }));
+  }
   // Visão geral de todos os perfis do Google da empresa (como numa agência): nota, avaliações sem resposta, posts e posições.
   if (resto === "google/visao" && metodo === "GET") {
     const contas = (await env.DB.prepare(`SELECT g.marca_id, g.local_titulo, g.media_google, g.total_google, g.sincronizado_ms, g.erro, m.nome,
@@ -1343,4 +1379,111 @@ export async function vigiarPerfis(env, k, avisar) {
     } else await resolverProblema(env, conta.org_id, chaveM);
   }
   return contas.length;
+}
+
+// ----- Relatório do perfil em PDF (para o cliente), com a logo do perfil, comparação com o período anterior,
+// avaliações, posições nas buscas e o que fazer a seguir.
+const fmtN = v => v == null ? "—" : Number(v).toLocaleString("pt-BR");
+const variacao = (a, b) => b ? `${a >= b ? "+" : ""}${Math.round((a / b - 1) * 100)}% vs. período anterior` : "";
+const dataBr = d => d.toISOString().slice(0, 10).split("-").reverse().join("/");
+async function logoDaMarca(env, orgId, marca) {
+  if (!marca?.logo_midia_id) return null;
+  const m = await env.DB.prepare("SELECT mime, dados FROM plt_mk_midias WHERE id=? AND org_id=?").bind(marca.logo_midia_id, orgId).first().catch(() => null);
+  if (!m || !/jpe?g/.test(m.mime || "")) return null;
+  const bytes = Uint8Array.from(atob(m.dados), c => c.charCodeAt(0)), d = dimensoesJpeg(bytes);
+  return d ? { bytes, ...d } : null;
+}
+export async function relatorioPdfDoPerfil(env, k, conta, dias = 30) {
+  const token = await tokenDa(env, k, conta);
+  const fim = new Date(k.agora(env) - ATRASO_DIAS * DIA_MS), ini = new Date(fim.getTime() - (dias - 1) * DIA_MS);
+  const fimA = new Date(ini.getTime() - DIA_MS), iniA = new Date(fimA.getTime() - (dias - 1) * DIA_MS);
+  const [atual, antes] = await Promise.all([metricas(conta, token, ini, fim), metricas(conta, token, iniA, fimA).catch(() => null)]);
+  const marca = await env.DB.prepare("SELECT * FROM plt_mk_marcas WHERE id=? AND org_id=?").bind(conta.marca_id, conta.org_id).first().catch(() => null);
+  const org = await env.DB.prepare("SELECT nome FROM plt_organizacoes WHERE id=?").bind(conta.org_id).first().catch(() => null);
+  const desde = ini.getTime(), um = async (sql, ...a) => (await env.DB.prepare(sql).bind(...a).first().catch(() => null)) || {};
+  const av = await um("SELECT COUNT(*) n, AVG(nota) media, SUM(CASE WHEN status='RESPONDIDA' THEN 1 ELSE 0 END) resp, SUM(CASE WHEN nota<=3 THEN 1 ELSE 0 END) ruins FROM plt_mk_avaliacoes WHERE org_id=? AND marca_id=? AND google_id IS NOT NULL AND removida_ms IS NULL AND criado_ms>=?", conta.org_id, conta.marca_id, desde);
+  const posts = await um("SELECT COUNT(*) n FROM plt_mk_posts WHERE org_id=? AND marca_id=? AND canais LIKE '%google%' AND status='PUBLICADO' AND atualizado_ms>=?", conta.org_id, conta.marca_id, desde);
+  const pal = (await env.DB.prepare("SELECT w.palavra, w.cidade, x.semana, x.posicao FROM plt_mk_palavras w JOIN plt_mk_posicoes x ON x.palavra_id=w.id WHERE w.org_id=? AND w.marca_id=? ORDER BY x.semana DESC").bind(conta.org_id, conta.marca_id).all().catch(() => null))?.results || [];
+  const porPalavra = new Map(); for (const x of pal) { const l = porPalavra.get(x.palavra) || []; l.push(x); porPalavra.set(x.palavra, l); }
+  const grade = await um("SELECT palavra, raio_km, media, top3, criado_ms FROM plt_mk_geogrid WHERE org_id=? AND marca_id=? ORDER BY id DESC LIMIT 1", conta.org_id, conta.marca_id);
+  const pos = v => v == null ? "—" : v === 0 ? "fora do top 20" : v + "º";
+  const acoes = Number(atual.ligacoes || 0) + Number(atual.rotas || 0) + Number(atual.cliques_site || 0) + Number(atual.mensagens || 0);
+  const acoesA = antes ? Number(antes.ligacoes || 0) + Number(antes.rotas || 0) + Number(antes.cliques_site || 0) + Number(antes.mensagens || 0) : 0;
+  const proximos = [];
+  if (Number(av.n || 0) < Math.max(4, Math.round(dias / 7))) proximos.push("Pedir avaliação a todo cliente satisfeito: avaliação nova e frequente é o que mais ajuda a subir no Maps.");
+  if (Number(posts.n || 0) < Math.max(2, Math.round(dias / 7))) proximos.push("Publicar pelo menos 1 post por semana no perfil (serviço feito, dica ou oferta).");
+  if (Number(av.n || 0) > Number(av.resp || 0)) proximos.push(`Responder as ${Number(av.n) - Number(av.resp || 0)} avaliação(ões) do período ainda sem resposta.`);
+  if (!porPalavra.size) proximos.push("Acompanhar as buscas mais importantes (ex.: o serviço principal + a cidade) para medir a posição toda semana.");
+  proximos.push("Enviar fotos novas todo mês: fachada, ambiente, equipe trabalhando e serviços prontos.");
+  const blocos = [
+    { tipo: "metricas", itens: [
+      { rotulo: "Visualizações do perfil", valor: fmtN(atual.visualizacoes), nota: antes ? variacao(atual.visualizacoes, antes.visualizacoes) : "" },
+      { rotulo: "Clientes que agiram", valor: fmtN(acoes), nota: antes ? variacao(acoes, acoesA) : "ligações, rotas, site e mensagens" },
+      { rotulo: "Ligações", valor: fmtN(atual.ligacoes), nota: antes ? variacao(atual.ligacoes, antes.ligacoes) : "" },
+      { rotulo: "Pedidos de rota", valor: fmtN(atual.rotas), nota: antes ? variacao(atual.rotas, antes.rotas) : "" }] },
+    { tipo: "metricas", itens: [
+      { rotulo: "Na Pesquisa Google", valor: fmtN(atual.buscas) }, { rotulo: "No Google Maps", valor: fmtN(atual.maps) },
+      { rotulo: "Cliques no site", valor: fmtN(atual.cliques_site) }, { rotulo: "Mensagens", valor: fmtN(atual.mensagens) }] },
+    { tipo: "titulo", texto: "Avaliações" },
+    { tipo: "metricas", itens: [
+      { rotulo: "Nota no Google", valor: conta.media_google ? String(Math.round(conta.media_google * 10) / 10).replace(".", ",") : "—", nota: conta.total_google ? `${fmtN(conta.total_google)} avaliações no total` : "" },
+      { rotulo: "Avaliações novas", valor: fmtN(av.n || 0), nota: av.media ? `nota média ${String(Math.round(av.media * 10) / 10).replace(".", ",")}` : "" },
+      { rotulo: "Respondidas", valor: fmtN(av.resp || 0), nota: av.n ? `de ${fmtN(av.n)} no período` : "" },
+      { rotulo: "Ruins (3 estrelas ou menos)", valor: fmtN(av.ruins || 0) }] },
+    { tipo: "titulo", texto: "Posição nas buscas" }
+  ];
+  if (porPalavra.size) blocos.push({ tipo: "tabela", colunas: ["Busca", "Posição agora", "Semana anterior", "Mudança"], larguras: [3, 1.2, 1.2, 1], linhas: [...porPalavra.entries()].map(([p, l]) => {
+    const a = l[0]?.posicao, b = l[1]?.posicao;
+    const m = a && b ? (b - a > 0 ? `subiu ${b - a}` : b - a < 0 ? `caiu ${a - b}` : "igual") : "—";
+    return [`${p}${l[0]?.cidade ? " (" + l[0].cidade + ")" : ""}`, pos(a), pos(b), m]; }) });
+  else blocos.push({ tipo: "texto", texto: "Nenhuma busca acompanhada ainda." });
+  if (grade.palavra) blocos.push({ tipo: "texto", texto: `Mapa de posição para "${grade.palavra}" (raio de ${String(grade.raio_km).replace(".", ",")} km): posição média ${grade.media != null ? String(grade.media).replace(".", ",") : "—"}, no top 3 em ${grade.top3}% dos pontos.` });
+  blocos.push({ tipo: "titulo", texto: "Trabalho no período" }, { tipo: "texto", texto: `${fmtN(posts.n || 0)} post(s) publicados no perfil e ${fmtN(av.resp || 0)} avaliação(ões) respondidas.` },
+    { tipo: "titulo", texto: "Próximos passos" }, { tipo: "lista", itens: proximos });
+  const logo = await logoDaMarca(env, conta.org_id, marca);
+  const bytes = gerarPdf({ titulo: `Relatório do Google — ${conta.local_titulo}`, subtitulo: `${dataBr(ini)} a ${dataBr(fim)}${org?.nome ? " · " + org.nome : ""}`, rodape: "Números do Google (Perfil da Empresa). O Google libera os dados com alguns dias de atraso.", logo, blocos });
+  return { nome: `relatorio-google-${String(conta.local_titulo || "perfil").toLowerCase().normalize("NFD").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}-${fim.toISOString().slice(0, 10)}.pdf`, bytes };
+}
+const paraBase64 = b => { let s = ""; for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode(...b.subarray(i, i + 0x8000)); return btoa(s); };
+// Proposta comercial a partir da pré-análise (o diagnóstico vem da tela; preços e serviços quem escreve é a agência).
+export function propostaPdf({ agencia, empresa, analise, concorrentes = [], posicao, busca, valor, servicos = [], validade = 15, contato = "" }) {
+  const falta = (analise?.itens || []).filter(i => i.ok === "falta" || i.ok === "parcial");
+  const media = concorrentes.length ? concorrentes.slice(0, 5).reduce((t, c) => t + Number(c.avaliacoes || 0), 0) / Math.min(5, concorrentes.length) : 0;
+  const blocos = [
+    { tipo: "texto", texto: `Preparamos esta proposta depois de analisar o perfil de ${empresa.nome} no Google e compará-lo com os concorrentes que aparecem na frente dele.` }, { tipo: "espaco", altura: 6 },
+    { tipo: "metricas", itens: [{ rotulo: "Nota do perfil hoje", valor: `${analise?.nota ?? "—"}%`, nota: "do ideal" }, { rotulo: "Nota no Google", valor: empresa.nota ? String(empresa.nota).replace(".", ",") : "—", nota: `${fmtN(empresa.avaliacoes)} avaliações` },
+      { rotulo: "Posição na categoria", valor: posicao ? posicao + "º" : posicao === 0 ? "20+" : "—", nota: busca || "" }, { rotulo: "Avaliações dos líderes", valor: media ? fmtN(Math.round(media)) : "—", nota: "média dos 5 primeiros" }] },
+    { tipo: "titulo", texto: "O que encontramos" },
+    falta.length ? { tipo: "lista", itens: falta.map(i => ({ texto: `${i.titulo}: ${i.detalhe}${i.dica ? " — " + i.dica : ""}` })) } : { tipo: "texto", texto: "O perfil já está bem cuidado; o trabalho é manter a constância e crescer nas avaliações." }
+  ];
+  if (concorrentes.length) blocos.push({ tipo: "titulo", texto: "Quem aparece na frente" }, { tipo: "tabela", colunas: ["Posição", "Empresa", "Nota", "Avaliações"], larguras: [0.8, 3, 0.8, 1], linhas: concorrentes.slice(0, 8).map(c => [c.posicao + "º", c.nome, c.nota ? String(c.nota).replace(".", ",") : "—", fmtN(c.avaliacoes)]) });
+  blocos.push({ tipo: "titulo", texto: "O que vamos fazer" }, { tipo: "lista", itens: (servicos.length ? servicos : ["Otimização completa do perfil (descrição, categorias, serviços, horários e fotos)", "Posts toda semana no perfil", "Resposta a todas as avaliações", "Campanha para pedir avaliações aos clientes", "Mapa de posição e relatório mensal com os resultados"]).map(t => ({ texto: String(t) })) });
+  if (valor) blocos.push({ tipo: "titulo", texto: "Investimento" }, { tipo: "texto", texto: String(valor), tamanho: 14, negrito: true }, { tipo: "texto", texto: `Proposta válida por ${validade} dias.` });
+  if (contato) blocos.push({ tipo: "texto", texto: contato });
+  const bytes = gerarPdf({ titulo: `Proposta — ${empresa.nome}`, subtitulo: `${agencia || ""}${agencia ? " · " : ""}${new Date().toLocaleDateString("pt-BR")}`, rodape: "Diagnóstico feito com os dados públicos do Google no dia da proposta.", blocos });
+  return { nome: `proposta-${String(empresa.nome || "empresa").toLowerCase().normalize("NFD").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}.pdf`, base64: paraBase64(bytes) };
+}
+// Envio automático do relatório em PDF para o cliente (quinzenal: dias 1 e 16; mensal: dia 1), a partir das 8h.
+export async function enviarRelatoriosPdf(env, k, enviar) {
+  const agoraBr = new Date(k.agora(env) - 3 * 3600000), dia = agoraBr.getUTCDate(), hoje = agoraBr.toISOString().slice(0, 10);
+  if (agoraBr.getUTCHours() < 8 || ![1, 16].includes(dia)) return 0;
+  const cfgs = (await env.DB.prepare("SELECT chave, valor FROM plt_meta WHERE chave LIKE 'relpdf_%'").all().catch(() => null))?.results || [];
+  let n = 0;
+  for (const c of cfgs) {
+    const m = c.chave.match(/^relpdf_(\d+)_(\d+)$/); if (!m) continue;
+    let cfg; try { cfg = JSON.parse(c.valor); } catch { continue; }
+    if (!cfg.ativo || !(cfg.emails || "").trim() || (cfg.frequencia !== "quinzenal" && dia !== 1)) continue;
+    const marca = `relpdf_env_${m[1]}_${m[2]}_${hoje}`;
+    if (await env.DB.prepare("SELECT 1 FROM plt_meta WHERE chave=?").bind(marca).first().catch(() => null)) continue;
+    await env.DB.prepare("INSERT OR REPLACE INTO plt_meta(chave,valor) VALUES(?,?)").bind(marca, "1").run();
+    const conta = await contaGoogleDe(env, Number(m[1]), Number(m[2])).catch(() => null);
+    if (!conta) continue;
+    try {
+      const r = await relatorioPdfDoPerfil(env, k, conta, cfg.frequencia === "quinzenal" ? 15 : 30);
+      for (const para of cfg.emails.split(/[,;\s]+/).filter(e => /@/.test(e)).slice(0, 10))
+        await enviar(para, `Relatório do Google — ${conta.local_titulo}`, `Olá!\n\nSegue em anexo o relatório do perfil ${conta.local_titulo} no Google: visualizações, clientes que ligaram e pediram rota, avaliações e posição nas buscas, com os próximos passos.\n\nQualquer dúvida, é só responder este e-mail.`, [{ nome: r.nome, base64: paraBase64(r.bytes) }]);
+      n++;
+    } catch (e) { console.error("relatório pdf", e?.message); }
+  }
+  return n;
 }
