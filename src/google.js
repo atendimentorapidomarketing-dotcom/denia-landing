@@ -298,6 +298,17 @@ export async function retornoGoogle(request, env, k) {
   }
 }
 
+// Conferência depois de publicar: o Google responde "processando" e só depois decide (pode recusar o post ou a foto).
+export async function conferirPostGoogle(env, k, conta, nome) {
+  const token = await tokenDa(env, k, conta);
+  const r = await chamar("GET", `${API_V4}/${nome}`, token);
+  return { estado: r.state || "", link: r.searchUrl || null, fotos: (r.media || []).length };
+}
+// Tira o post do ar no Google (publicado por engano).
+export async function apagarPostGoogle(env, k, conta, nome) {
+  const token = await tokenDa(env, k, conta);
+  await chamar("DELETE", `${API_V4}/${nome}`, token);
+}
 // ----- Publicação de post no perfil (texto + foto + botão)
 // Um botão por post (regra do Google). "Ligar agora" usa o telefone do perfil; os de link usam o endereço escolhido ou o site da marca.
 export function botaoDoPost(p, marca) {
@@ -356,7 +367,7 @@ export async function publicarGoogle(env, k, conta, p, imagem, video) {
   // Só conta como publicado com a confirmação do Google (nome do post) e sem recusa.
   if (r.state === "REJECTED") throw new Error("O Google recusou o post (fora das regras de conteúdo do Google: telefone, link, texto proibido ou imagem). Ajuste e publique de novo.");
   if (!r.name) throw new Error("O Google não confirmou a publicação. Tente Publicar agora de novo.");
-  return { id: r.name, link: r.searchUrl || null, ...(r.state && r.state !== "LIVE" ? { estado: r.state } : {}), ...(videoId ? { video: videoId } : {}) };
+  return { id: r.name, link: r.searchUrl || null, perfil: conta.local_titulo || "", com_foto: Boolean(corpo.media?.length), ...(r.state && r.state !== "LIVE" ? { estado: r.state } : {}), ...(videoId ? { video: videoId } : {}) };
 }
 
 // ----- Avaliações: busca no Google e grava (as novas ficam "sem resposta" para a DENIA sugerir).

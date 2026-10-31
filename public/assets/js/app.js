@@ -4677,7 +4677,17 @@ Botão só com texto = resposta.` })),
   // Fotos reais da empresa (ex.: serviço feito): a pessoa sobe as fotos, escreve uma frase e a IA monta cada post.
   function cartaoMinhasFotos(lista, canaisPadrao, recarregar) {
     const marca = seletorMarca(lista, estado.marcaCriador || (lista[0] && lista[0].id));
-    marca.addEventListener("change", () => { estado.marcaCriador = marca.value; });
+    const destino = h("p", { class: "nota destino" });
+    // Mostra em qual perfil de cada rede o post vai sair (evita publicar na empresa errada).
+    const verDestino = async () => {
+      const [g, m] = await Promise.all([estadoGoogle().catch(() => ({ contas: [] })), estadoMeta().catch(() => ({ contas: [] }))]);
+      const cg = (g.contas || []).find(x => String(x.marca_id) === String(marca.value)), cm = (m.contas || []).find(x => String(x.marca_id) === String(marca.value));
+      const marcadas = [...canais.querySelectorAll("input:checked")].map(i => i.value);
+      const partes = marcadas.map(c => c === "google" ? `Google: ${cg ? cg.local_titulo || "conectado" : "NÃO conectado"}` : c === "instagram" ? `Instagram: ${cm && cm.ig_usuario ? "@" + cm.ig_usuario : "NÃO conectado"}` : `Facebook: ${cm ? cm.pagina_nome || "conectado" : "NÃO conectado"}`);
+      destino.textContent = partes.length ? "Vai sair em → " + partes.join(" · ") : "";
+      destino.classList.toggle("nota-alerta", partes.some(x => x.includes("NÃO conectado")));
+    };
+    marca.addEventListener("change", () => { estado.marcaCriador = marca.value; verDestino(); });
     const entrada = h("input", { type: "file", accept: "image/*,video/mp4,video/quicktime,video/*", multiple: true, class: "oculto" });
     const previa = h("div", { class: "fotos-previa" });
     let fotos = [];
@@ -4701,13 +4711,14 @@ Botão só com texto = resposta.` })),
     const campoGoogle = h("div", { class: "grupo-google" }, h("strong", { text: "No Google" }), campo("Tipo do post", tipoGoogle), campo("Botão", botaoFotos),
       h("small", { class: "sub", text: "No Google a DENIA escreve um texto próprio: sem hashtags e sem telefone (o Google recusa), com serviço + bairro na primeira frase, e usa a foto no formato 4:3 sem texto escrito por cima." }));
     const verGoogle = () => campoGoogle.classList.toggle("oculto", !canais.querySelector('input[value="google"]').checked);
-    canais.addEventListener("change", verGoogle); setTimeout(verGoogle);
+    canais.addEventListener("change", () => { verGoogle(); verDestino(); }); setTimeout(() => { verGoogle(); verDestino(); });
     const verDatas = () => { linhaDatas.classList.toggle("oculto", quandoPub.value === "agora"); criar.textContent = quandoPub.value === "agora" ? "Criar e publicar agora" : "Criar os posts com as minhas fotos"; };
     quandoPub.addEventListener("change", () => verDatas());
     const criar = botao("Criar os posts com as minhas fotos", async (_e, b) => {
       const escolhidos = [...canais.querySelectorAll("input:checked")].map(i => i.value);
       if (!fotos.length) { aviso("Escolha pelo menos uma foto.", "erro"); return; }
       if (!escolhidos.length) { aviso("Marque onde publicar.", "erro"); return; }
+      if (quandoPub.value === "agora") { await verDestino(); const nomeM = marca.options[marca.selectedIndex] ? marca.options[marca.selectedIndex].text : ""; if (!(await modal({ titulo: "Publicar agora?", conteudo: [h("p", {}, h("strong", { text: nomeM })), h("p", { text: destino.textContent })], confirmar: "Publicar" }))) return; }
       b.disabled = true; progresso.classList.remove("oculto");
       const feitos = [];
       const agoraJa = quandoPub.value === "agora";
@@ -4769,7 +4780,7 @@ Botão só com texto = resposta.` })),
       h("p", { style: "margin:0;color:var(--texto-2);font-size:14px", text: "Suba fotos ou vídeos de um serviço (até 10). Explique do seu jeito o que você quer, e a DENIA olha cada foto ou vídeo e escreve tudo: legenda, hashtags, chamada com o WhatsApp e descrição. Vídeo vira Reels. Cada arquivo vira um post, um por dia, e vai para Aprovações; lá você ainda pode conversar com a IA para mudar o que quiser." }),
       campo("Empresa", marca), h("div", { class: "campo" }, h("label", { text: "Fotos e vídeos" }), previa, entrada),
       h("div", { class: "campo" }, h("label", { text: "Explique para a IA o que você precisa" }), pedido, h("small", { class: "sub", text: "Não precisa escrever a legenda: a IA escreve. Dá para falar em vez de digitar, tocando no microfone do teclado do celular." })),
-      h("div", { class: "campo" }, h("label", { text: "Onde publicar" }), canais),
+      h("div", { class: "campo" }, h("label", { text: "Onde publicar" }), canais, destino),
       campo("Texto escrito na foto", textoFoto),
       campoGoogle,
       campo("Quando publicar", quandoPub),
@@ -5057,10 +5068,14 @@ Botão só com texto = resposta.` })),
     // Resultado de cada rede, separado: só aparece "publicado" com a confirmação daquela rede.
     const publicacao = h("div", { class: "publicacao" }, pub.aviso ? h("p", { class: "nota nota-alerta", text: pub.aviso }) : null,
       pub.manual ? h("p", { class: "nota", text: `Marcado como publicado à mão${pub.manual.por ? " por " + pub.manual.por : ""} (publicado por fora da DENIA).` }) : null,
-      (p.status === "APROVADO" || p.status === "PUBLICADO" ? (p.canais || []) : (p.canais || []).filter(c => pub[c])).map(c => pub[c] && pub[c].id
-        ? h("p", { class: "nota nota-ok" }, `✓ ${NOME_CANAL[c]}: publicado${pub[c].estado === "PROCESSING" ? " (o Google ainda está processando)" : ""} `, pub[c].link ? h("a", { href: pub[c].link, target: "_blank", rel: "noopener noreferrer", text: "ver post" }) : null)
-        : pub[c] && pub[c].erro ? h("p", { class: "nota nota-alerta", text: `✗ ${NOME_CANAL[c]}: não publicado — ${pub[c].erro}` })
-          : h("p", { class: "nota", text: `… ${NOME_CANAL[c]}: ainda não publicado` })));
+      (p.status === "APROVADO" || p.status === "PUBLICADO" ? (p.canais || []) : (p.canais || []).filter(c => pub[c])).map(c => {
+        const r = pub[c] || {}, onde = r.perfil ? ` em ${r.perfil}` : "";
+        if (r.id) return h("div", {}, h("p", { class: "nota nota-ok" }, `✓ ${NOME_CANAL[c]}: publicado${onde}${r.estado === "PROCESSING" ? " (o Google ainda está analisando; a DENIA confere sozinha)" : r.conferido ? " · conferido no Google" : ""} `, r.link ? h("a", { href: r.link, target: "_blank", rel: "noopener noreferrer", text: "ver post" }) : null),
+          r.aviso ? h("p", { class: "nota nota-alerta", text: "⚠ " + r.aviso }) : null);
+        if (r.removido) return h("p", { class: "nota", text: `↩ ${NOME_CANAL[c]}: retirado do ar${r.perfil ? " (" + r.perfil + ")" : ""} em ${new Date(r.removido).toLocaleString(LOCALE)}` });
+        if (r.erro) return h("p", { class: "nota nota-alerta", text: `✗ ${NOME_CANAL[c]}: não publicado — ${r.erro}` });
+        return h("p", { class: "nota", text: `… ${NOME_CANAL[c]}: ainda não publicado` });
+      }));
     const revisao = h("div", {}, p.revisao ? h("p", { class: "nota" + (p.revisao.nota >= 8 ? "" : " nota-alerta"), text: `Revisão da IA: nota ${p.revisao.nota}/10 — ${p.revisao.comentario}` }) : null, p.comentario ? h("p", { class: "nota nota-alerta", text: "Comentário: " + p.comentario }) : null);
     const OPCOES_BOTAO = [["AUTO", "Automático (alterna Ligar agora e Site)"], ["CALL", "📞 Ligar agora"], ["LEARN_MORE", "🌐 Saiba mais (site)"], ["BOOK", "📅 Reservar"], ["ORDER", "🛒 Pedir on-line"], ["SHOP", "🛍️ Comprar"], ["SIGN_UP", "✍️ Cadastre-se"], ["NENHUM", "Sem botão"]];
     const botaoG = h("select", { class: "entrada" }, OPCOES_BOTAO.map(([v, t]) => h("option", { value: v, text: t, selected: (p.botao || "AUTO") === v })));
@@ -5108,6 +5123,17 @@ Botão só com texto = resposta.` })),
           aviso(r.resumo, "ok"); fechar(); recarregar && recarregar();
         } catch (e) { aviso(e.message, "erro"); } finally { b.textContent = "Publicar agora"; }
       }, "btn-primario") : null,
+      pode("ADMIN") && ["google", "facebook", "instagram"].some(c => pub[c] && pub[c].id) ? botao("Tirar do ar", async (_e, b) => {
+        const onde = ["google", "facebook", "instagram"].filter(c => pub[c] && pub[c].id).map(c => `${NOME_CANAL[c]}${pub[c].perfil ? " (" + pub[c].perfil + ")" : ""}`);
+        if (!(await modal({ titulo: "Tirar este post do ar?", conteudo: [h("p", { text: `Ele será apagado de: ${onde.join(", ")}.` }), pub.instagram && pub.instagram.id ? h("p", { class: "nota nota-alerta", text: "O Instagram não deixa apagar post por outro aplicativo. A DENIA abre o post para você apagar no app do Instagram (⋯ → Excluir)." }) : null], confirmar: "Tirar do ar", perigo: true }))) return;
+        b.disabled = true; b.textContent = "Tirando do ar…";
+        try {
+          const r = await mk(`posts/${p.id}/acao`, { metodo: "POST", corpo: { acao: "tirar_do_ar" } });
+          aviso(r.resumo, "ok");
+          if (r.instagram_link) { window.open(r.instagram_link, "_blank", "noopener"); if (await modal({ titulo: "Apagou no Instagram?", conteudo: [h("p", { text: "Abri o post no Instagram. Toque em ⋯ e depois em Excluir. Quando terminar, confirme aqui." })], confirmar: "Já apaguei" })) await mk(`posts/${p.id}/acao`, { metodo: "POST", corpo: { acao: "instagram_apagado" } }); }
+          fechar(); recarregar && recarregar();
+        } catch (e) { aviso(e.message, "erro"); b.disabled = false; b.textContent = "Tirar do ar"; }
+      }, "btn-perigo") : null,
       pode("AGENTE") && p.status === "APROVADO" ? botao("Marcar como publicado (fiz por fora)", async () => { if (!(await modal({ titulo: "Marcar como publicado?", conteudo: [h("p", { text: "Use só se você publicou este post por fora da DENIA (direto no Instagram, Facebook ou Google). A DENIA não vai publicar nem confirmar nada nas redes." })], confirmar: "Sim, publiquei por fora" }))) return; try { await acao("publicado"); aviso("Marcado como publicado.", "ok"); } catch (e) { aviso(e.message, "erro"); } }) : null,
       botao("Copiar legenda", () => copiar([legenda.value, hashtags.value].filter(Boolean).join("\n\n")), "btn-secundario"),
       p.midia_id ? h("a", { class: "btn btn-secundario", href: `/api/orgs/${estado.org.id}/mk/midias/${p.midia_id}`, download: `denia-post-${p.id}.jpg` }, "Baixar arte") : null,

@@ -8,7 +8,7 @@ import { registrarUso, lerLimitesMeta, orgDoUso, recursoDo, comOrgUso } from "./
 // O cookie de sessão da plataforma é SameSite=Strict, então a volta da Meta não traz a sessão:
 // ela é validada por um "state" assinado e de uso único.
 
-import { contaGoogleDe, publicarGoogle, googleConfigurada } from "./google.js";
+import { contaGoogleDe, publicarGoogle, googleConfigurada, conferirPostGoogle, apagarPostGoogle } from "./google.js";
 
 const GRAPH_PADRAO = "v25.0";
 // Publicar, ler os números (insights), responder e moderar comentários do Instagram e da página.
@@ -293,20 +293,20 @@ async function publicarInstagram(env, conta, token, p, imagem, video) {
   if (!pub?.id) throw new Error("O Instagram não confirmou a publicação.");
   let link = null;
   try { link = (await graph(env, "GET", pub.id, { fields: "permalink", access_token: token })).permalink || null; } catch { /* sem link */ }
-  return { id: pub.id, link };
+  return { id: pub.id, link, perfil: conta.ig_usuario ? "@" + conta.ig_usuario : "" };
 }
 async function publicarFacebook(env, conta, token, p, imagem, video) {
   if (video) {
     const v = await graph(env, "POST", `${conta.pagina_id}/videos`, { file_url: video.url, description: legendaDe(p, "facebook"), ...(p.titulo ? { title: String(p.titulo).slice(0, 250) } : {}), access_token: token });
     if (!v?.id) throw new Error("O Facebook não confirmou o vídeo.");
-    return { id: v.id, link: `https://www.facebook.com/${conta.pagina_id}/videos/${v.id}` };
+    return { id: v.id, link: `https://www.facebook.com/${conta.pagina_id}/videos/${v.id}`, perfil: conta.pagina_nome || "" };
   }
   const r = imagem
     ? await graph(env, "POST", `${conta.pagina_id}/photos`, { url: imagem, message: legendaDe(p, "facebook"), access_token: token })
     : await graph(env, "POST", `${conta.pagina_id}/feed`, { message: legendaDe(p, "facebook"), access_token: token });
   const id = r.post_id || r.id;
   if (!id) throw new Error("O Facebook não confirmou a publicação.");
-  return { id, link: `https://www.facebook.com/${id}` };
+  return { id, link: `https://www.facebook.com/${id}`, perfil: conta.pagina_nome || "" };
 }
 
 const NOME_CANAL = { instagram: "Instagram", facebook: "Facebook", google: "Google" };
@@ -343,7 +343,7 @@ export async function publicarPost(env, k, p, base) {
       const r = canal === "instagram" ? await publicarInstagram(env, conta, token, p, imagem, video)
         : canal === "facebook" ? await publicarFacebook(env, conta, token, p, imagem, video)
           : await publicarGoogle(env, k, contaG, p, p.midia_google_id && base && !video ? await urlPublicaMidia({ ...k, env }, base, p.midia_google_id) : imagem, video);
-      feito[canal] = { id: r.id, link: r.link, em: k.agora(env) };
+      feito[canal] = { id: r.id, link: r.link, em: k.agora(env), ...(r.perfil ? { perfil: r.perfil } : {}), ...(r.estado ? { estado: r.estado } : {}), ...(canal === "google" ? { com_foto: Boolean(r.com_foto) } : {}) };
     } catch (e) {
       feito[canal] = { erro: String(e.message || e).slice(0, 300), em: k.agora(env) };
       erros.push(`${NOME_CANAL[canal]}: ${feito[canal].erro}`);
@@ -374,6 +374,56 @@ export async function aoAprovar(request, env, k, p) {
   await guardarBase(env, base);
   const r = await publicarPost(env, k, { ...p, status: "APROVADO" }, base).catch(e => ({ ok: false, resumo: e.message }));
   return { publicado: r.ok, resumo: r.ok ? `Post aprovado e ${r.resumo.charAt(0).toLowerCase()}${r.resumo.slice(1)}` : `Post aprovado, mas a publicação falhou: ${r.resumo}` };
+}
+
+// Volta no Google para ver se o post ficou mesmo no ar (e com a foto): até 3 dias depois de publicar.
+async function conferirPublicadosGoogle(env, k) {
+  if (!googleConfigurada(env)) return;
+  const desde = k.agora(env) - 3 * 86400000;
+  const l = (await env.DB.prepare("SELECT * FROM plt_mk_posts WHERE json_extract(publicacao,'$.google.id') IS NOT NULL AND json_extract(publicacao,'$.google.conferido') IS NULL AND CAST(json_extract(publicacao,'$.google.em') AS INTEGER) >= ? LIMIT 10").bind(desde).all().catch(() => null))?.results || [];
+  for (const p of l) {
+    let pub = {}; try { pub = JSON.parse(p.publicacao || "{}") || {}; } catch { continue; }
+    const g = pub.google;
+    if (k.agora(env) - Number(g.em || 0) < 2 * 60000) continue; // dá um tempo para o Google processar
+    const conta = await contaGoogleDe(env, p.org_id, p.marca_id);
+    if (!conta) continue;
+    let c; try { c = await conferirPostGoogle(env, k, conta, g.id); } catch (e) {
+      if (e.status === 404 || /not found|NOT_FOUND/i.test(String(e.message))) c = { estado: "SUMIU" }; else continue;
+    }
+    if (c.estado === "PROCESSING") continue;
+    if (c.estado === "REJECTED" || c.estado === "SUMIU") {
+      pub.google = { erro: c.estado === "REJECTED" ? "O Google recusou o post depois de analisar (regras de conteúdo do Google: telefone, link, texto ou imagem). Ajuste e use Publicar agora." : "O post não está mais no Google (foi removido no perfil ou pelo Google).", em: k.agora(env), antes: g.id };
+      await env.DB.prepare("UPDATE plt_mk_posts SET publicacao=?, status=CASE WHEN status='PUBLICADO' THEN 'APROVADO' ELSE status END, tentativas=3, atualizado_ms=? WHERE id=?").bind(JSON.stringify(pub), k.agora(env), p.id).run();
+      await avisarPost(env, k, p, "não está no ar no Google", pub.google.erro);
+      continue;
+    }
+    pub.google = { ...g, conferido: k.agora(env), estado: c.estado || "LIVE", link: c.link || g.link, fotos_no_google: c.fotos };
+    if (g.com_foto && !c.fotos) pub.google.aviso = "O Google publicou o texto, mas sem a foto (a foto não foi aceita). Troque a foto e publique de novo.";
+    await env.DB.prepare("UPDATE plt_mk_posts SET publicacao=? WHERE id=?").bind(JSON.stringify(pub), p.id).run();
+    if (pub.google.aviso) await avisarPost(env, k, p, "saiu no Google sem a foto", pub.google.aviso);
+  }
+}
+// Tira um post do ar (publicado por engano): Google e Facebook pela API; o Instagram não permite apagar por API.
+export async function tirarDoAr(env, k, p) {
+  await garantir(env);
+  let pub = {}; try { pub = JSON.parse(p.publicacao || "{}") || {}; } catch { pub = {}; }
+  const res = {};
+  if (pub.google?.id) {
+    const conta = await contaGoogleDe(env, p.org_id, p.marca_id);
+    try { if (!conta) throw new Error("Google não está conectado nesta empresa."); await apagarPostGoogle(env, k, conta, pub.google.id); res.google = "removido"; pub.google = { removido: k.agora(env), antes: pub.google.id, perfil: pub.google.perfil }; }
+    catch (e) { if (e.status === 404 || /NOT_FOUND/i.test(String(e.message))) { res.google = "removido"; pub.google = { removido: k.agora(env), antes: pub.google.id }; } else res.google = "erro: " + e.message; }
+  }
+  if (pub.facebook?.id) {
+    const conta = await env.DB.prepare("SELECT * FROM plt_mk_contas WHERE org_id=? AND marca_id=?").bind(p.org_id, p.marca_id).first();
+    const token = conta ? await k.decifrar(env, conta.token_cifrado) : null;
+    try { if (!token) throw new Error("Facebook não está conectado."); await graph(env, "DELETE", pub.facebook.id, { access_token: token }); res.facebook = "removido"; pub.facebook = { removido: k.agora(env), antes: pub.facebook.id, perfil: pub.facebook.perfil }; }
+    catch (e) { res.facebook = "erro: " + e.message; }
+  }
+  if (pub.instagram?.id) res.instagram = "manual";
+  const sobrou = ["google", "facebook"].some(c => pub[c]?.id) || (pub.instagram?.id && !pub.instagram.removido_manual);
+  await env.DB.prepare("UPDATE plt_mk_posts SET publicacao=?, status=?, tentativas=3, atualizado_ms=? WHERE id=?").bind(JSON.stringify(pub), sobrou ? p.status : "RASCUNHO", k.agora(env), p.id).run();
+  await resolverAviso(env, p.org_id, `post_${p.id}`);
+  return { resultado: res, instagram_link: pub.instagram?.link || null };
 }
 
 // Aviso de post que não saiu: aparece em Problemas e vai uma vez para o Telegram da empresa.
@@ -414,6 +464,7 @@ export async function publicarPendentes(env, k) {
     else await avisarPost(env, k, p, "não foi publicado", res.resumo);
     try { await env.DB.prepare("INSERT INTO plt_auditoria(org_id,usuario_id,email,acao,detalhe,ip,criado_ms) VALUES(?,?,?,?,?,?,?)").bind(p.org_id, null, "DENIA (publicação automática)", "MARKETING", `Post #${p.id}: ${res.resumo}`.slice(0, 400), null, agoraMs).run(); } catch { /* auditoria opcional */ }
   }
+  await conferirPublicadosGoogle(env, k).catch(e => console.error("conferir Google", e?.message));
   // Posts cujo horário chegou mas ainda esperam aprovação: não saem sozinhos — avisa uma vez.
   const parados = (await env.DB.prepare(`SELECT p.* FROM plt_mk_posts p WHERE p.status='AGUARDANDO' AND p.data IS NOT NULL AND (p.data < ? OR (p.data = ? AND COALESCE(p.hora,'00:00') <= ?)) AND p.data >= ? LIMIT 20`)
     .bind(hoje, hoje, hora, new Date(agoraMs - 3 * 3600000 - 2 * 86400000).toISOString().slice(0, 10)).all().catch(() => null))?.results || [];

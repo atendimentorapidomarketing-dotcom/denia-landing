@@ -1095,6 +1095,36 @@ test("Google Meu Negócio — conectar o perfil, trazer avaliações e desempenh
   assert.equal(rr.publicado, false); assert.match(rr.resumo, /O Google recusou o post/);
   assert.equal(p.env.DB.q("SELECT status FROM plt_mk_posts WHERE id=?", recusado)[0].status, "APROVADO");
   p.google = antesG;
+
+  // Conferência depois de publicar: o Google recusou depois de analisar → volta para Aprovado e avisa.
+  const antes2 = p.google;
+  const ofertaRow = p.env.DB.q("SELECT publicacao FROM plt_mk_posts WHERE id=?", oferta)[0];
+  const nomeOferta = JSON.parse(ofertaRow.publicacao).google.id;
+  p.env.DB.prepare("UPDATE plt_mk_posts SET publicacao=json_set(publicacao,'$.google.em',?) WHERE id=?").bind(Date.now() - 10 * 60000, oferta).run();
+  p.env.DB.prepare("UPDATE plt_mk_posts SET publicacao=json_set(publicacao,'$.google.em',?) WHERE id=?").bind(Date.now() - 10 * 60000, post).run();
+  const nomePost = "accounts/111/locations/222/localPosts/live1";
+  p.env.DB.prepare("UPDATE plt_mk_posts SET publicacao=json_set(publicacao,'$.google.id',?) WHERE id=?").bind(nomePost, post).run();
+  p.google = (url, metodo, corpo) => {
+    if (metodo === "GET" && url.endsWith("/" + nomeOferta)) return { name: nomeOferta, state: "REJECTED" };
+    if (metodo === "GET" && url.endsWith("/" + nomePost)) return { name: nomePost, state: "LIVE", searchUrl: "https://local.google.com/p", media: [] };
+    return antes2(url, metodo, corpo);
+  };
+  const modW = await import("../src/worker.js");
+  await modW.default.scheduled({}, p.env, { waitUntil: pr => pr });
+  await new Promise(r => setTimeout(r, 50));
+  const ofertaDepois = p.env.DB.q("SELECT status, publicacao FROM plt_mk_posts WHERE id=?", oferta)[0];
+  assert.equal(ofertaDepois.status, "APROVADO", "recusado depois de analisar não fica como publicado");
+  assert.match(JSON.parse(ofertaDepois.publicacao).google.erro, /recusou o post depois de analisar/);
+  const postDepois = JSON.parse(p.env.DB.q("SELECT publicacao FROM plt_mk_posts WHERE id=?", post)[0].publicacao).google;
+  assert.ok(postDepois.conferido, JSON.stringify(postDepois)); assert.match(postDepois.aviso, /sem a foto/, "avisa quando o Google publicou sem a foto");
+  // Tirar do ar: apaga no Google
+  let apagou = "";
+  p.google = (url, metodo, corpo) => { if (metodo === "DELETE") { apagou = url; return {}; } return antes2(url, metodo, corpo); };
+  const td = (await p.req(`/api/orgs/1/mk/posts/${post}/acao`, { metodo: "POST", quem: "admin", corpo: { acao: "tirar_do_ar" } })).dados;
+  assert.ok(apagou.endsWith(nomePost)); assert.match(td.resumo, /Google: retirado/);
+  const tdRow = p.env.DB.q("SELECT status, publicacao FROM plt_mk_posts WHERE id=?", post)[0];
+  assert.equal(tdRow.status, "RASCUNHO"); assert.ok(JSON.parse(tdRow.publicacao).google.removido);
+  p.google = antes2;
   assert.match(envio.corpo.media[0].sourceUrl, /^https:\/\/plataforma\.test\/m\/1-/);
 });
 
