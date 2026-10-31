@@ -4658,7 +4658,7 @@ Botão só com texto = resposta.` })),
     }, "btn-primario");
     const novo = botao("+ Novo post", () => editorPost({ data: isoLocal(new Date()), marca_id: marcaSemana.value, canais: canaisPadrao, formato: canalFixo === "google" ? "google" : "post", hora: "18:00" }, lista, recarregar || (() => navegar())), "btn-secundario");
     const nomeCanal = canalFixo ? NOME_CANAL[canalFixo] : "as redes sociais";
-    return h("section", { class: "grade grade-2 criador" },
+    return h("div", { class: "criador-tudo" }, cartaoMinhasFotos(lista, canaisPadrao, recarregar), h("section", { class: "grade grade-2 criador" },
       h("div", { class: "cartao vidro formulario criador-cartao" }, h("h3", { style: "margin:0", text: `Posts da semana para ${nomeCanal}` }),
         h("p", { style: "margin:0;color:var(--texto-2);font-size:14px", text: "A DENIA planeja a semana, escreve legendas e hashtags e cria a arte de cada post. Tudo vai para Aprovações (ou é aprovado sozinho, no modo automático)." }),
         avisoIa(cfg),
@@ -4670,7 +4670,56 @@ Botão só com texto = resposta.` })),
         h("p", { style: "margin:0;color:var(--texto-2);font-size:14px", text: "Descreva a arte e a DENIA cria a imagem com as cores da marca, pronta para baixar ou virar um post." }),
         h("div", { class: "linha-form" }, campo("Marca", marcaImg), campo("Formato", formatoImg)),
         campo("O que a imagem deve mostrar", ideia),
-        h("div", { class: "acoes" }, criarImagem), resultado));
+        h("div", { class: "acoes" }, criarImagem), resultado)));
+  }
+
+  // Fotos reais da empresa (ex.: serviço feito): a pessoa sobe as fotos, escreve uma frase e a IA monta cada post.
+  function cartaoMinhasFotos(lista, canaisPadrao, recarregar) {
+    const marca = seletorMarca(lista, estado.marcaCriador || (lista[0] && lista[0].id));
+    marca.addEventListener("change", () => { estado.marcaCriador = marca.value; });
+    const entrada = h("input", { type: "file", accept: "image/*", multiple: true, class: "oculto" });
+    const previa = h("div", { class: "fotos-previa" });
+    let fotos = [];
+    const desenhar = () => previa.replaceChildren(...fotos.map((f, i) => h("div", { class: "foto-mini" }, h("img", { src: f.url, alt: "" }), h("button", { type: "button", class: "foto-tirar", title: "Tirar", "aria-label": "Tirar foto", onclick: () => { URL.revokeObjectURL(f.url); fotos.splice(i, 1); desenhar(); } }, "×"))),
+      fotos.length < 10 ? h("button", { type: "button", class: "foto-mini foto-mais", onclick: () => entrada.click() }, h("strong", { text: "+" }), h("span", { text: fotos.length ? "Mais fotos" : "Escolher fotos" })) : null);
+    entrada.addEventListener("change", () => { for (const f of [...entrada.files].slice(0, 10 - fotos.length)) fotos.push({ arquivo: f, url: URL.createObjectURL(f) }); entrada.value = ""; desenhar(); });
+    desenhar();
+    const pedido = h("textarea", { class: "entrada", maxlength: "800", style: "min-height:80px", placeholder: "Ex.: lavagem de tapete persa, ficou como novo. Buscamos e entregamos na Zona Sul. (Pode deixar em branco: a IA escreve olhando a foto.)" });
+    const canais = h("div", { class: "checks-linha" }, ["instagram", "facebook", "google"].map(c => h("label", {}, h("input", { type: "checkbox", value: c, checked: canaisPadrao.includes(c) }), NOME_CANAL[c])));
+    const amanha = isoLocal(somarDias(new Date(), 1));
+    const data = h("input", { class: "entrada", type: "date", value: amanha });
+    const hora = h("input", { class: "entrada", type: "time", value: "18:00" });
+    const progresso = h("p", { class: "nota oculto" });
+    const criar = botao("Criar os posts com as minhas fotos", async (_e, b) => {
+      const escolhidos = [...canais.querySelectorAll("input:checked")].map(i => i.value);
+      if (!fotos.length) { aviso("Escolha pelo menos uma foto.", "erro"); return; }
+      if (!escolhidos.length) { aviso("Marque onde publicar.", "erro"); return; }
+      b.disabled = true; progresso.classList.remove("oculto");
+      const feitos = [];
+      try {
+        for (const [i, f] of fotos.entries()) {
+          b.textContent = `Escrevendo o post ${i + 1} de ${fotos.length}…`;
+          progresso.textContent = "A DENIA está olhando a foto e escrevendo a legenda, as hashtags, a chamada com o número e a descrição da imagem.";
+          const foto = await reduzirFoto(f.arquivo, 1600);
+          const r = await mk("ia/post-foto", { metodo: "POST", corpo: { marca_id: marca.value, foto, pedido: pedido.value, canais: escolhidos, data: isoLocal(somarDias(new Date(data.value + "T12:00:00"), i)), hora: hora.value } });
+          feitos.push(r);
+        }
+        fotos.forEach(f => URL.revokeObjectURL(f.url)); fotos = []; desenhar(); pedido.value = "";
+        aviso(feitos.length === 1 ? "Post pronto. Confira e aprove." : `${feitos.length} posts prontos, um por dia. Confira e aprove em Aprovações.`, "ok");
+        atualizarAprovacoes();
+        if (feitos.length === 1) editorPost(feitos[0].post, lista, recarregar || (() => navegar()));
+        else if (recarregar) recarregar(); else location.hash = "#/aprovacoes";
+      } catch (e) { aviso(feitos.length ? `${feitos.length} post(s) criados; parou num erro: ${e.message}` : e.message, "erro"); }
+      finally { b.disabled = false; b.textContent = "Criar os posts com as minhas fotos"; progresso.classList.add("oculto"); }
+    }, "btn-primario");
+    return h("section", { class: "cartao vidro formulario criador-cartao minhas-fotos" },
+      h("h3", { style: "margin:0", text: "Postar as minhas fotos" }),
+      h("p", { style: "margin:0;color:var(--texto-2);font-size:14px", text: "Tirou fotos de um serviço? Suba aqui (até 10). A DENIA olha cada foto e escreve a legenda, as hashtags, a chamada com o WhatsApp da empresa e a descrição da imagem. Cada foto vira um post, um por dia, e vai para Aprovações." }),
+      campo("Empresa", marca), h("div", { class: "campo" }, h("label", { text: "Fotos" }), previa, entrada),
+      campo("O que você quer dizer (opcional)", pedido),
+      h("div", { class: "campo" }, h("label", { text: "Onde publicar" }), canais),
+      h("div", { class: "linha-form" }, campo("Primeiro post em", data), campo("Horário", hora)),
+      progresso, h("div", { class: "acoes" }, criar));
   }
 
   // Gaveta lateral (editor de post, formulários longos).
