@@ -39,7 +39,7 @@ const prontos = new WeakSet();
 async function garantir(env) {
   if (prontos.has(env.DB)) return;
   await env.DB.batch(DDL.map(s => env.DB.prepare(s)));
-  for (const alter of ["ALTER TABLE plt_mk_marcas ADD COLUMN idioma TEXT", "ALTER TABLE plt_mk_marcas ADD COLUMN horarios TEXT", "ALTER TABLE plt_mk_marcas ADD COLUMN logo_midia_id INTEGER", "ALTER TABLE plt_mk_posts ADD COLUMN texto_arte TEXT", "ALTER TABLE plt_mk_marcas ADD COLUMN ofertas TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN analise TEXT", "ALTER TABLE plt_mk_config ADD COLUMN avaliacoes_auto TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN triagem TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN denuncia TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN removida_ms INTEGER", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN google_id TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN avisado_ms INTEGER", "ALTER TABLE plt_mk_midias ADD COLUMN marca_id INTEGER", "ALTER TABLE plt_mk_midias ADD COLUMN nome_arquivo TEXT", "ALTER TABLE plt_mk_midias ADD COLUMN origem TEXT", "ALTER TABLE plt_mk_midias ADD COLUMN enviado_por TEXT", "ALTER TABLE plt_mk_midias ADD COLUMN descricao TEXT", "ALTER TABLE plt_mk_midias ADD COLUMN original_id INTEGER", "ALTER TABLE plt_mk_midias ADD COLUMN google_id TEXT"])
+  for (const alter of ["ALTER TABLE plt_mk_marcas ADD COLUMN idioma TEXT", "ALTER TABLE plt_mk_marcas ADD COLUMN horarios TEXT", "ALTER TABLE plt_mk_marcas ADD COLUMN logo_midia_id INTEGER", "ALTER TABLE plt_mk_posts ADD COLUMN texto_arte TEXT", "ALTER TABLE plt_mk_marcas ADD COLUMN ofertas TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN analise TEXT", "ALTER TABLE plt_mk_config ADD COLUMN avaliacoes_auto TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN triagem TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN denuncia TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN removida_ms INTEGER", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN google_id TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN avisado_ms INTEGER", "ALTER TABLE plt_mk_midias ADD COLUMN marca_id INTEGER", "ALTER TABLE plt_mk_midias ADD COLUMN nome_arquivo TEXT", "ALTER TABLE plt_mk_midias ADD COLUMN origem TEXT", "ALTER TABLE plt_mk_midias ADD COLUMN enviado_por TEXT", "ALTER TABLE plt_mk_midias ADD COLUMN descricao TEXT", "ALTER TABLE plt_mk_midias ADD COLUMN original_id INTEGER", "ALTER TABLE plt_mk_midias ADD COLUMN google_id TEXT", "ALTER TABLE plt_mk_midias ADD COLUMN arquivo TEXT", "ALTER TABLE plt_mk_midias ADD COLUMN tamanho INTEGER", "ALTER TABLE plt_mk_midias ADD COLUMN capa_id INTEGER", "ALTER TABLE plt_mk_midias ADD COLUMN duracao REAL"])
     await env.DB.prepare(alter).run().catch(() => { }); // coluna já existe
   prontos.add(env.DB);
 }
@@ -137,6 +137,22 @@ function linhaPost(p) {
 // Idiomas da plataforma (interface, conteúdo das marcas e conversa com a DENIA).
 export const IDIOMAS = { "pt-BR": "português do Brasil", en: "inglês (English)", es: "espanhol (español)", de: "alemão (Deutsch)", it: "italiano", fr: "francês (français)", ja: "japonês (日本語)", hi: "hindi (हिन्दी)" };
 export const idiomaDe = v => (IDIOMAS[String(v || "")] ? String(v) : "pt-BR");
+// Vídeo guardado em disco (env.ARQUIVOS), com faixa de bytes para o player do navegador e para a Meta/Google baixarem.
+export async function servirArquivo(env, request, r, baixar = false) {
+  if (!env.ARQUIVOS) return new Response("Armazenamento indisponível.", { status: 503 });
+  const faixa = /^bytes=(\d*)-(\d*)$/.exec(request.headers.get("range") || "");
+  let ini, fim;
+  if (faixa && (faixa[1] || faixa[2])) { if (faixa[1]) { ini = Number(faixa[1]); fim = faixa[2] ? Number(faixa[2]) : undefined; } else { ini = -Number(faixa[2]); } }
+  let a = await env.ARQUIVOS.get(r.arquivo, ini != null && ini >= 0 ? { inicio: ini, fim } : {});
+  if (!a) return new Response("Não encontrado.", { status: 404 });
+  if (ini != null && ini < 0) a = await env.ARQUIVOS.get(r.arquivo, { inicio: Math.max(0, a.tamanho + ini) });
+  const parcial = ini != null && (a.inicio > 0 || a.fim < a.tamanho - 1);
+  const cab = { "content-type": r.mime, "accept-ranges": "bytes", "content-length": String(a.fim - a.inicio + 1), "cache-control": "private, max-age=86400" };
+  if (parcial) cab["content-range"] = `bytes ${a.inicio}-${a.fim}/${a.tamanho}`;
+  if (baixar) cab["content-disposition"] = `attachment; filename="${(r.nome_arquivo || "video").replace(/[^a-z0-9-]/gi, "")}.${extDoMime(r.mime)}"`;
+  return new Response(request.method === "HEAD" ? null : a.body, { status: parcial ? 206 : 200, headers: cab });
+}
+export const extDoMime = m => m === "video/quicktime" ? "mov" : /^video\//.test(m || "") ? "mp4" : m === "image/png" ? "png" : m === "image/webp" ? "webp" : "jpg";
 // Nome de arquivo pensado para busca: serviço + bairro/cidade + marca, sem acentos, com hífens (ex.: conserto-tv-botafogo).
 export function slugSeo(t, max = 70) {
   return String(t || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, max).replace(/-+[^-]*$/, m => m.length > 1 && String(t).length > max ? "" : m).replace(/-+$/, "") || "foto";
@@ -178,6 +194,7 @@ Estilo: fale com o cliente ("você"), frases curtas, parágrafos de 1 ou 2 linha
 // Artes: qualidade alta, logo verdadeira e texto conferido
 // ---------------------------------------------------------------------------
 
+const LIMITE_VIDEO = 300 * 1024 * 1024; // o Instagram aceita Reels de até 300 MB pela API
 const LIMITE_LOGO_B64 = 1_900_000; // ~1,4 MB (limite de linha do D1 é 2 MB); o navegador reduz a logo antes de enviar
 function tipoDaImagem(b64) {
   if (!b64 || b64.length > LIMITE_LOGO_B64 || !/^[A-Za-z0-9+/=\s]+$/.test(b64)) return "";
@@ -739,7 +756,7 @@ Responda em JSON: {"descricao":"","por_que":"(uma frase dizendo o que melhorou)"
       const q = new URL(request.url).searchParams;
       const de = dataISO(q.get("de")) || "0000-01-01", ate = dataISO(q.get("ate")) || "9999-12-31";
       const marca = Number(q.get("marca") || 0), st = String(q.get("status") || "").toUpperCase(), canal = String(q.get("canal") || "");
-      let sql = "SELECT * FROM plt_mk_posts WHERE org_id=? AND (data IS NULL OR (data>=? AND data<=?))";
+      let sql = "SELECT p.*, (SELECT CASE WHEN m.arquivo IS NOT NULL THEN 1 ELSE 0 END FROM plt_mk_midias m WHERE m.id=p.midia_id) midia_video FROM plt_mk_posts p WHERE org_id=? AND (data IS NULL OR (data>=? AND data<=?))";
       const args = [orgId, de, ate];
       if (marca) { sql += " AND marca_id=?"; args.push(marca); }
       if (STATUS_POST.includes(st)) { sql += " AND status=?"; args.push(st); }
@@ -796,7 +813,9 @@ Responda em JSON: {"descricao":"","por_que":"(uma frase dizendo o que melhorou)"
       if (acao === "rascunho") { exigir("AGENTE"); return mudar("RASCUNHO"); }
       if (acao === "excluir") {
         exigir("ADMIN");
-        await env.DB.batch([env.DB.prepare("DELETE FROM plt_mk_posts WHERE id=?").bind(p.id), env.DB.prepare("DELETE FROM plt_mk_midias WHERE id=? AND org_id=?").bind(p.midia_id || 0, orgId)]);
+        const vid = p.midia_id ? await env.DB.prepare("SELECT arquivo, capa_id FROM plt_mk_midias WHERE id=? AND org_id=?").bind(p.midia_id, orgId).first() : null;
+        await env.DB.batch([env.DB.prepare("DELETE FROM plt_mk_posts WHERE id=?").bind(p.id), env.DB.prepare("DELETE FROM plt_mk_midias WHERE id=? AND org_id=?").bind(p.midia_id || 0, orgId), env.DB.prepare("DELETE FROM plt_mk_midias WHERE id=? AND org_id=?").bind(vid?.capa_id || 0, orgId)]);
+        if (vid?.arquivo && env.ARQUIVOS) await env.ARQUIVOS.delete(vid.arquivo).catch(() => {});
         return json({ ok: true });
       }
       if (acao === "revisar") {
@@ -811,9 +830,37 @@ Responda em JSON: {"descricao":"","por_que":"(uma frase dizendo o que melhorou)"
     }
 
     // ----- Imagens
+    // Envio de vídeo: o arquivo vem cru no corpo (sem base64) e vai direto para o disco, sem passar pelo banco.
+    if (resto === "videos/enviar" && metodo === "POST") {
+      exigir("AGENTE");
+      if (!env.ARQUIVOS) return json({ erro: "O envio de vídeos funciona no servidor da DENIA (Hostinger). Este ambiente não guarda arquivos grandes." }, 503);
+      const q = new URL(request.url).searchParams;
+      const marca = await marcaDa(q.get("marca"));
+      if (!marca) return json({ erro: "Escolha a empresa." }, 400);
+      const mime = String(request.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+      if (!["video/mp4", "video/quicktime", "video/x-m4v"].includes(mime)) return json({ erro: "Envie o vídeo em MP4 ou MOV (o formato do celular)." }, 400);
+      const tam = Number(request.headers.get("content-length") || 0);
+      if (tam > LIMITE_VIDEO) return json({ erro: "O vídeo passa de 300 MB. Corte ou envie numa qualidade menor." }, 413);
+      if (!request.body) return json({ erro: "Vídeo vazio." }, 400);
+      const chaveArq = `videos/${orgId}/${crypto.randomUUID()}.${extDoMime(mime)}`;
+      let gravado;
+      try { gravado = await env.ARQUIVOS.put(chaveArq, request.body, { limite: LIMITE_VIDEO }); }
+      catch (e) { return json({ erro: e.grande ? "O vídeo passa de 300 MB. Corte ou envie numa qualidade menor." : "Não consegui guardar o vídeo. Tente de novo." }, e.grande ? 413 : 500); }
+      if (!gravado.tamanho) { await env.ARQUIVOS.delete(chaveArq).catch(() => {}); return json({ erro: "Vídeo vazio." }, 400); }
+      const nomeIni = await nomeUnico(env, orgId, slugSeo(String(q.get("nome") || "video").replace(/\.[a-z0-9]{2,4}$/i, "")));
+      const n = await env.DB.prepare("INSERT INTO plt_mk_midias(org_id,mime,dados,prompt,criado_ms,marca_id,nome_arquivo,origem,enviado_por,arquivo,tamanho,duracao) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id")
+        .bind(orgId, mime === "video/x-m4v" ? "video/mp4" : mime, "", "video enviado", agora(env), marca.id, nomeIni, "video", autor, chaveArq, gravado.tamanho, Number(q.get("duracao")) || null).first();
+      return json({ ok: true, id: n.id, tamanho: gravado.tamanho });
+    }
     if ((m = resto.match(/^midias\/(\d{1,12})$/)) && metodo === "GET") {
-      const r = await env.DB.prepare("SELECT mime, dados, nome_arquivo FROM plt_mk_midias WHERE id=? AND org_id=?").bind(Number(m[1]), orgId).first();
+      const qm = new URL(request.url).searchParams;
+      let r = await env.DB.prepare("SELECT mime, dados, nome_arquivo, arquivo, capa_id FROM plt_mk_midias WHERE id=? AND org_id=?").bind(Number(m[1]), orgId).first();
       if (!r) return new Response("Não encontrado.", { status: 404 });
+      if (r.arquivo && qm.get("capa")) {
+        r = r.capa_id ? await env.DB.prepare("SELECT mime, dados, nome_arquivo, arquivo FROM plt_mk_midias WHERE id=? AND org_id=?").bind(r.capa_id, orgId).first() : null;
+        if (!r) return new Response("Sem capa.", { status: 404 });
+      }
+      if (r.arquivo) return servirArquivo(env, request, r, Boolean(qm.get("baixar")));
       const bin = Uint8Array.from(atob(r.dados), ch => ch.charCodeAt(0));
       const ext = r.mime === "image/png" ? "png" : r.mime === "image/webp" ? "webp" : "jpg";
       const cab = { "content-type": r.mime, "cache-control": "private, max-age=86400" };
@@ -823,10 +870,10 @@ Responda em JSON: {"descricao":"","por_que":"(uma frase dizendo o que melhorou)"
     // Biblioteca: todas as fotos e artes de cada empresa — quem subiu, quando, nome, descrição e onde foram usadas.
     if (resto === "midias" && metodo === "GET") {
       const q = new URL(request.url).searchParams, marca = Number(q.get("marca")) || 0, origem = String(q.get("origem") || "");
-      const onde = ["m.org_id=?", "COALESCE(m.origem,'') <> 'foto-original'"], args = [orgId];
+      const onde = ["m.org_id=?", "COALESCE(m.origem,'') NOT IN ('foto-original','capa')"], args = [orgId];
       if (marca) { onde.push("COALESCE(m.marca_id, (SELECT p.marca_id FROM plt_mk_posts p WHERE p.midia_id=m.id LIMIT 1))=?"); args.push(marca); }
       if (origem) { onde.push("COALESCE(m.origem, CASE WHEN m.prompt='logo' THEN 'logo' WHEN m.prompt='foto google' THEN 'foto-google' ELSE 'ia' END)=?"); args.push(origem); }
-      const r = await env.DB.prepare(`SELECT m.id, m.mime, m.criado_ms, m.nome_arquivo, m.descricao, m.enviado_por, m.google_id, m.original_id, LENGTH(m.dados) tam,
+      const r = await env.DB.prepare(`SELECT m.id, m.mime, m.criado_ms, m.nome_arquivo, m.descricao, m.enviado_por, m.google_id, m.original_id, COALESCE(m.tamanho, LENGTH(m.dados) * 3 / 4) tam, m.arquivo IS NOT NULL video, m.capa_id, m.duracao,
           COALESCE(m.origem, CASE WHEN m.prompt='logo' THEN 'logo' WHEN m.prompt='foto google' THEN 'foto-google' ELSE 'ia' END) origem,
           COALESCE(m.marca_id, (SELECT p.marca_id FROM plt_mk_posts p WHERE p.midia_id=m.id LIMIT 1), (SELECT x.id FROM plt_mk_marcas x WHERE x.logo_midia_id=m.id LIMIT 1)) marca_id
         FROM plt_mk_midias m WHERE ${onde.join(" AND ")} ORDER BY m.id DESC LIMIT 300`).bind(...args).all();
@@ -835,7 +882,7 @@ Responda em JSON: {"descricao":"","por_que":"(uma frase dizendo o que melhorou)"
       const posts = ids.length ? ((await env.DB.prepare(`SELECT id, midia_id, status, canais, data, titulo FROM plt_mk_posts WHERE org_id=? AND midia_id IN (${ids.map(() => "?").join(",")})`).bind(orgId, ...ids).all())?.results || []) : [];
       const nomes = new Map(((await env.DB.prepare("SELECT id, nome FROM plt_mk_marcas WHERE org_id=?").bind(orgId).all())?.results || []).map(x => [x.id, x.nome]));
       return json({ midias: lista.map(x => ({ id: x.id, criado_ms: x.criado_ms, nome_arquivo: x.nome_arquivo || null, descricao: x.descricao || "", enviado_por: x.enviado_por || (x.origem === "ia" ? "DENIA (IA)" : ""), origem: x.origem, google: Boolean(x.google_id) || x.origem === "foto-google", com_texto: Boolean(x.original_id),
-        tamanho_kb: Math.round((x.tam || 0) * 0.75 / 1024), marca_id: x.marca_id || null, marca: nomes.get(x.marca_id) || "",
+        tamanho_kb: Math.round((x.tam || 0) / 1024), video: Boolean(x.video), capa: Boolean(x.capa_id), duracao: x.duracao || null, marca_id: x.marca_id || null, marca: nomes.get(x.marca_id) || "",
         posts: posts.filter(p => p.midia_id === x.id).map(p => ({ id: p.id, status: p.status, canais: (() => { try { return JSON.parse(p.canais); } catch { return []; } })(), data: p.data, titulo: p.titulo })) })) });
     }
     // Renomear / redescrever uma foto.
@@ -969,6 +1016,68 @@ Responda em JSON: {"titulo":"","legenda":"","hashtags":"","chamada":"","texto_ar
           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`).bind(orgId, marca.id, JSON.stringify(post.canais), post.formato, post.data, post.hora, post.titulo, post.legenda, post.hashtags, post.chamada, post.ideia_imagem, textoArte || null, md.id, status, revisao ? JSON.stringify(revisao) : null, autor, status === "APROVADO" ? "DENIA (aprovação automática)" : null, agora(env), agora(env)).first();
         await auditar(env, request, sessao, orgId, "MARKETING", `IA escreveu o post #${n.id} a partir de uma foto enviada (${marca.nome})`);
         return json({ ok: true, id: n.id, status, nome_arquivo: nomeArq, descricao_foto: txt(r.descricao_foto, 400), texto_arte: textoArte, post: { ...post, id: n.id, midia_id: md.id, marca_id: marca.id, status } });
+      }
+      // Vídeo já enviado: a IA olha alguns quadros (tirados no navegador) e o pedido, e escreve o post (Reels/vídeo).
+      if (resto === "ia/post-video" && metodo === "POST") {
+        exigir("AGENTE");
+        const c = await corpoOu(2_600_000);
+        const marca = await marcaDa(c.marca_id);
+        if (!marca) return json({ erro: "Escolha a empresa." }, 400);
+        const vid = await env.DB.prepare("SELECT * FROM plt_mk_midias WHERE id=? AND org_id=? AND arquivo IS NOT NULL").bind(Number(c.midia_id), orgId).first();
+        if (!vid) return json({ erro: "Envie o vídeo primeiro." }, 400);
+        const quadros = (Array.isArray(c.quadros) ? c.quadros : []).slice(0, 4).map(q => String(q || "").replace(/^data:[^,]*,/, "")).filter(q => tipoDaImagem(q) && q.length < 700_000);
+        const canais = canaisOk(c.canais && c.canais.length ? c.canais : ["instagram", "facebook"]);
+        const formato = c.formato === "story" ? "story" : "reels";
+        const pedido = txt(c.pedido, 1500);
+        const r = await (async () => {
+          const d = await openai(env, "responses", {
+            model: String(env.OPENAI_MODEL || MODELO_TEXTO).trim(),
+            instructions: `Você é a social media sênior da empresa. Você recebe quadros de um VÍDEO REAL feito pela própria empresa e o que o dono explicou, com as palavras dele. Entenda o pedido (pode vir solto, falado, sem pontuação) e escreva o post do vídeo. ${REGRAS_CONTEUDO}
+${COPY_QUE_VENDE}
+Regras: fale só do que dá para ver ou do que o dono disse (não invente preço, prazo ou resultado). Legenda de Reels: gancho forte na 1ª linha, curta e direta. ${canais.includes("google") && canais.length === 1 ? "Não coloque telefone (o Google recusa)." : "Termine chamando para o WhatsApp da marca, com o número exatamente como informado nos dados da marca (se não houver, chame para o direct)."}
+nome_arquivo: 3 a 7 palavras em minúsculas, sem acentos, separadas por hífen — SERVIÇO + BAIRRO/CIDADE (ex.: lavagem-tapete-persa-zona-sul-sp). descricao: 1 a 2 frases do que o vídeo mostra, com serviço e bairro/cidade. capa: o número do quadro (1 a ${Math.max(1, quadros.length)}) que fica melhor como capa.
+Responda em JSON: {"titulo":"","legenda":"","hashtags":"","chamada":"","nome_arquivo":"","descricao":"","capa":1}`,
+            input: [{ role: "user", content: [{ type: "input_text", text: `${resumoMarca(marca)}\n\nCanais: ${canais.join(", ")}. Formato: ${formato}.\nO que o dono explicou: ${pedido || "(nada: escreva a partir do vídeo)"}\nResponda em JSON.` },
+              ...quadros.map(q => ({ type: "input_image", image_url: `data:image/jpeg;base64,${q}`, detail: "low" }))] }],
+            text: { format: { type: "json_object" } }, max_output_tokens: 2500, store: false
+          });
+          try { return JSON.parse(textoDaResposta(d)); } catch { return null; }
+        })();
+        if (!r) return json({ erro: "A IA respondeu num formato inesperado. Tente de novo." }, 502);
+        const nomeArq = await nomeUnico(env, orgId, slugSeo(r.nome_arquivo || `${r.titulo || ""} ${marca.cidade || ""}`));
+        let capaId = null;
+        const q = quadros[Math.min(quadros.length, Math.max(1, Number(r.capa) || 1)) - 1];
+        if (q) capaId = (await env.DB.prepare("INSERT INTO plt_mk_midias(org_id,mime,dados,prompt,criado_ms,marca_id,nome_arquivo,origem,enviado_por) VALUES(?,?,?,?,?,?,?,?,?) RETURNING id").bind(orgId, tipoDaImagem(q), q, "capa do vídeo", agora(env), marca.id, nomeArq + "-capa", "capa", autor).first()).id;
+        await env.DB.prepare("UPDATE plt_mk_midias SET nome_arquivo=?, descricao=?, capa_id=COALESCE(?,capa_id), marca_id=? WHERE id=?").bind(nomeArq, txt(r.descricao, 400), capaId, marca.id, vid.id).run();
+        const cfg = (await env.DB.prepare("SELECT * FROM plt_mk_config WHERE org_id=?").bind(orgId).first()) || { modo: "HUMANO", nota_minima: 8 };
+        const post = { canais, formato, data: dataISO(c.data) || new Date(agora(env)).toISOString().slice(0, 10), hora: horaOk(c.hora) || "18:00",
+          titulo: txt(r.titulo, 200), legenda: txt(r.legenda, 2200), hashtags: txt(r.hashtags, 600), chamada: txt(r.chamada, 200), ideia_imagem: "Vídeo real enviado pela empresa: " + txt(r.descricao, 600), texto_arte: "" };
+        let status = "AGUARDANDO", revisao = null;
+        if (cfg.modo === "AUTOMATICO") {
+          revisao = await revisar(env, marca, post).catch(() => null);
+          status = revisao && revisao.aprovado && revisao.nota >= cfg.nota_minima ? "APROVADO" : "AGUARDANDO";
+        }
+        const n = await env.DB.prepare(`INSERT INTO plt_mk_posts(org_id,marca_id,canais,formato,data,hora,titulo,legenda,hashtags,chamada,ideia_imagem,texto_arte,midia_id,status,revisao,criado_por,aprovado_por,criado_ms,atualizado_ms)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`).bind(orgId, marca.id, JSON.stringify(post.canais), post.formato, post.data, post.hora, post.titulo, post.legenda, post.hashtags, post.chamada, post.ideia_imagem, null, vid.id, status, revisao ? JSON.stringify(revisao) : null, autor, status === "APROVADO" ? "DENIA (aprovação automática)" : null, agora(env), agora(env)).first();
+        await auditar(env, request, sessao, orgId, "MARKETING", `IA escreveu o post #${n.id} a partir de um vídeo enviado (${marca.nome})`);
+        return json({ ok: true, id: n.id, status, nome_arquivo: nomeArq, post: { ...post, id: n.id, midia_id: vid.id, midia_video: 1, marca_id: marca.id, status } });
+      }
+      // Conversa com a IA sobre um post: a pessoa explica do jeito dela o que mudar e a IA reescreve (não salva sozinha).
+      if (resto === "ia/ajustar" && metodo === "POST") {
+        exigir("AGENTE");
+        const c = await corpoOu(12000);
+        const marca = await marcaDa(c.marca_id);
+        if (!marca) return json({ erro: "Escolha a empresa." }, 400);
+        const pedido = txt(c.pedido, 1500);
+        if (pedido.length < 2) return json({ erro: "Diga para a IA o que você quer mudar." }, 400);
+        const a = c.atual || {};
+        const historico = (Array.isArray(c.historico) ? c.historico : []).slice(-6).map(x => "- " + txt(x, 300)).join("\n");
+        const r = await iaJSON(env, `Você é a social media sênior da empresa e está ajustando um post junto com o dono. Ele fala do jeito dele (às vezes solto, falado, sem pontuação). Entenda o que ele quer e reescreva o post aplicando o pedido; mantenha o que ele não pediu para mudar. ${REGRAS_CONTEUDO}
+${COPY_QUE_VENDE}
+Se o pedido for uma pergunta, responda em "resposta" e devolva o post sem mudanças. Em "resposta", diga em 1 frase curta o que você mudou.
+Responda em JSON: {"titulo":"","legenda":"","hashtags":"","chamada":"","texto_arte":"","resposta":""}`,
+          `${resumoMarca(marca)}\n\nCanais: ${canaisOk(c.canais).join(", ")}.\nPost atual:\nTítulo: ${txt(a.titulo, 200)}\nLegenda: ${txt(a.legenda, 2200)}\nHashtags: ${txt(a.hashtags, 600)}\nChamada: ${txt(a.chamada, 200)}\nTexto na arte: ${txt(a.texto_arte, 80)}\n${historico ? "Pedidos anteriores nesta conversa:\n" + historico + "\n" : ""}\nPedido agora: ${pedido}\nResponda em JSON.`);
+        return json({ ok: true, sugestao: { titulo: txt(r.titulo, 200) || txt(a.titulo, 200), legenda: txt(r.legenda, 2200) || txt(a.legenda, 2200), hashtags: txt(r.hashtags, 600), chamada: txt(r.chamada, 200), texto_arte: txt(r.texto_arte, 80) }, resposta: txt(r.resposta, 400) });
       }
       if (resto === "ia/imagem" && metodo === "POST") {
         exigir("AGENTE");

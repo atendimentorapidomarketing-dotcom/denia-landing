@@ -4678,14 +4678,15 @@ Botão só com texto = resposta.` })),
   function cartaoMinhasFotos(lista, canaisPadrao, recarregar) {
     const marca = seletorMarca(lista, estado.marcaCriador || (lista[0] && lista[0].id));
     marca.addEventListener("change", () => { estado.marcaCriador = marca.value; });
-    const entrada = h("input", { type: "file", accept: "image/*", multiple: true, class: "oculto" });
+    const entrada = h("input", { type: "file", accept: "image/*,video/mp4,video/quicktime,video/*", multiple: true, class: "oculto" });
     const previa = h("div", { class: "fotos-previa" });
     let fotos = [];
-    const desenhar = () => previa.replaceChildren(...fotos.map((f, i) => h("div", { class: "foto-mini" }, h("img", { src: f.url, alt: "" }), h("button", { type: "button", class: "foto-tirar", title: "Tirar", "aria-label": "Tirar foto", onclick: () => { URL.revokeObjectURL(f.url); fotos.splice(i, 1); desenhar(); } }, "×"))),
-      fotos.length < 10 ? h("button", { type: "button", class: "foto-mini foto-mais", onclick: () => entrada.click() }, h("strong", { text: "+" }), h("span", { text: fotos.length ? "Mais fotos" : "Escolher fotos" })) : null);
-    entrada.addEventListener("change", () => { for (const f of [...entrada.files].slice(0, 10 - fotos.length)) fotos.push({ arquivo: f, url: URL.createObjectURL(f) }); entrada.value = ""; desenhar(); });
+    const ehVideo = f => /^video\//.test(f.type || "") || /\.(mp4|mov|m4v)$/i.test(f.name || "");
+    const desenhar = () => previa.replaceChildren(...fotos.map((f, i) => h("div", { class: "foto-mini" + (f.video ? " foto-video" : "") }, f.video ? h("video", { src: f.url + "#t=0.5", muted: true, playsinline: true, preload: "metadata" }) : h("img", { src: f.url, alt: "" }), h("button", { type: "button", class: "foto-tirar", title: "Tirar", "aria-label": "Tirar foto", onclick: () => { URL.revokeObjectURL(f.url); fotos.splice(i, 1); desenhar(); } }, "×"))),
+      fotos.length < 10 ? h("button", { type: "button", class: "foto-mini foto-mais", onclick: () => entrada.click() }, h("strong", { text: "+" }), h("span", { text: fotos.length ? "Mais" : "Fotos ou vídeos" })) : null);
+    entrada.addEventListener("change", () => { for (const f of [...entrada.files].slice(0, 10 - fotos.length)) fotos.push({ arquivo: f, url: URL.createObjectURL(f), video: ehVideo(f) }); entrada.value = ""; desenhar(); });
     desenhar();
-    const pedido = h("textarea", { class: "entrada", maxlength: "800", style: "min-height:80px", placeholder: "Ex.: lavagem de tapete persa, ficou como novo. Buscamos e entregamos na Zona Sul. (Pode deixar em branco: a IA escreve olhando a foto.)" });
+    const pedido = h("textarea", { class: "entrada", maxlength: "1500", style: "min-height:100px", placeholder: "Fale do seu jeito, como explicaria para um funcionário. Ex.: esse é um tapete persa que lavamos ontem, tava muito sujo de pet, quero mostrar o antes e depois e falar que buscamos e entregamos na Zona Sul, coloca que esse mês tem 10% pra quem mandar mensagem" });
     const canais = h("div", { class: "checks-linha" }, ["instagram", "facebook", "google"].map(c => h("label", {}, h("input", { type: "checkbox", value: c, checked: canaisPadrao.includes(c) }), NOME_CANAL[c])));
     const amanha = isoLocal(somarDias(new Date(), 1));
     const data = h("input", { class: "entrada", type: "date", value: amanha });
@@ -4703,6 +4704,17 @@ Botão só com texto = resposta.` })),
         for (const [i, f] of fotos.entries()) {
           b.textContent = `Escrevendo o post ${i + 1} de ${fotos.length}…`;
           progresso.textContent = "A DENIA está olhando a foto e escrevendo a legenda, as hashtags, a chamada com o número e a descrição da imagem.";
+          if (f.video) {
+            b.textContent = `Enviando o vídeo ${i + 1} de ${fotos.length}…`;
+            const quadros = await quadrosDoVideo(f.arquivo).catch(() => ({ quadros: [], duracao: null }));
+            const env = await enviarVideo(f.arquivo, marca.value, quadros.duracao, pct => { progresso.textContent = `Enviando o vídeo: ${pct}%`; });
+            b.textContent = `Escrevendo o post ${i + 1} de ${fotos.length}…`;
+            progresso.textContent = "A DENIA está assistindo ao vídeo e escrevendo a legenda, as hashtags e a chamada com o número.";
+            const rv = await mk("ia/post-video", { metodo: "POST", corpo: { marca_id: marca.value, midia_id: env.id, quadros: quadros.quadros, pedido: pedido.value, canais: escolhidos, data: isoLocal(somarDias(new Date(data.value + "T12:00:00"), i)), hora: hora.value } });
+            feitos.push(rv);
+            feitosLista.append(h("p", { class: "sub" }, h("span", { text: `${f.arquivo.name} → ` }), h("strong", { text: `${rv.nome_arquivo}.mp4` }), h("span", { text: " · Reels" })));
+            continue;
+          }
           const foto = await reduzirFoto(f.arquivo, 1600);
           const r = await mk("ia/post-foto", { metodo: "POST", corpo: { marca_id: marca.value, foto, pedido: pedido.value, canais: escolhidos, texto_na_foto: textoFoto.value, nome_original: f.arquivo.name, data: isoLocal(somarDias(new Date(data.value + "T12:00:00"), i)), hora: hora.value } });
           if (r.texto_arte) {
@@ -4722,10 +4734,10 @@ Botão só com texto = resposta.` })),
       finally { b.disabled = false; b.textContent = "Criar os posts com as minhas fotos"; progresso.classList.add("oculto"); }
     }, "btn-primario");
     return h("section", { class: "cartao vidro formulario criador-cartao minhas-fotos" },
-      h("h3", { style: "margin:0", text: "Postar as minhas fotos" }),
-      h("p", { style: "margin:0;color:var(--texto-2);font-size:14px", text: "Tirou fotos de um serviço? Suba aqui (até 10). A DENIA olha cada foto e escreve a legenda, as hashtags, a chamada com o WhatsApp da empresa e a descrição da imagem. Cada foto vira um post, um por dia, e vai para Aprovações." }),
-      campo("Empresa", marca), h("div", { class: "campo" }, h("label", { text: "Fotos" }), previa, entrada),
-      campo("O que você quer dizer (opcional)", pedido),
+      h("h3", { style: "margin:0", text: "Postar as minhas fotos e vídeos" }),
+      h("p", { style: "margin:0;color:var(--texto-2);font-size:14px", text: "Suba fotos ou vídeos de um serviço (até 10). Explique do seu jeito o que você quer, e a DENIA olha cada foto ou vídeo e escreve tudo: legenda, hashtags, chamada com o WhatsApp e descrição. Vídeo vira Reels. Cada arquivo vira um post, um por dia, e vai para Aprovações; lá você ainda pode conversar com a IA para mudar o que quiser." }),
+      campo("Empresa", marca), h("div", { class: "campo" }, h("label", { text: "Fotos e vídeos" }), previa, entrada),
+      h("div", { class: "campo" }, h("label", { text: "Explique para a IA o que você precisa" }), pedido, h("small", { class: "sub", text: "Não precisa escrever a legenda: a IA escreve. Dá para falar em vez de digitar, tocando no microfone do teclado do celular." })),
       h("div", { class: "campo" }, h("label", { text: "Onde publicar" }), canais),
       campo("Texto escrito na foto", textoFoto),
       h("div", { class: "linha-form" }, campo("Primeiro post em", data), campo("Horário", hora)),
@@ -4733,7 +4745,7 @@ Botão só com texto = resposta.` })),
   }
 
   // ----- Fotos e mídias: tudo o que cada empresa subiu ou a IA criou, com nome pensado para o Google e onde foi usado.
-  const ORIGEM_MIDIA = { foto: "Foto enviada para post", "foto-google": "Foto enviada ao perfil do Google", ia: "Arte criada pela IA", logo: "Logo" };
+  const ORIGEM_MIDIA = { foto: "Foto enviada para post", video: "Vídeo enviado", "foto-google": "Foto enviada ao perfil do Google", ia: "Arte criada pela IA", logo: "Logo" };
   async function paginaMidias(el, _p, vivo) {
     const lista = await marcas(true);
     if (!vivo()) return;
@@ -4749,14 +4761,15 @@ Botão só com texto = resposta.` })),
       const ms = d.midias || [];
       const conta = o => ms.filter(x => x.origem === o).length;
       const porMarca = new Map();
-      for (const x of ms) { const k = x.marca || "Sem empresa"; const t = porMarca.get(k) || { foto: 0, "foto-google": 0, ia: 0, ultima: 0 }; t[x.origem] = (t[x.origem] || 0) + 1; t.ultima = Math.max(t.ultima, x.criado_ms || 0); porMarca.set(k, t); }
+      for (const x of ms) { const k = x.marca || "Sem empresa"; const t = porMarca.get(k) || { foto: 0, "foto-google": 0, ia: 0, ultima: 0 }; const o2 = x.origem === "video" ? "foto" : x.origem; t[o2] = (t[o2] || 0) + 1; t.ultima = Math.max(t.ultima, x.criado_ms || 0); porMarca.set(k, t); }
       const base = `/api/orgs/${estado.org.id}/mk/midias/`;
       const cartao = x => {
         const usado = x.posts.length ? x.posts.map(p => h("span", { class: "selo selo-" + ((NOME_STATUS[p.status] || [])[1] || ""), text: `${(NOME_STATUS[p.status] || [p.status])[0]} · ${(p.canais || []).map(c => NOME_CANAL[c] || c).join(", ")}${p.data ? " · " + p.data.split("-").reverse().join("/") : ""}` })) : [h("span", { class: "sub", text: x.google ? "No perfil do Google" : "Ainda não usada num post" })];
         const pendente = x.posts.find(p => p.status !== "PUBLICADO");
         return h("div", { class: "cartao vidro midia-cartao" },
-          h("a", { href: base + x.id, target: "_blank", rel: "noopener" }, h("img", { src: base + x.id, alt: x.descricao || x.nome_arquivo || "", loading: "lazy" })),
-          h("strong", { class: "midia-nome", text: (x.nome_arquivo || "sem-nome") + ".jpg" }),
+          x.video ? h("video", { src: base + x.id, poster: x.capa ? base + x.id + "?capa=1" : undefined, controls: true, playsinline: true, preload: "none" })
+            : h("a", { href: base + x.id, target: "_blank", rel: "noopener" }, h("img", { src: base + x.id, alt: x.descricao || x.nome_arquivo || "", loading: "lazy" })),
+          h("strong", { class: "midia-nome", text: (x.nome_arquivo || "sem-nome") + (x.video ? ".mp4" : ".jpg") }),
           x.descricao ? h("p", { class: "sub", text: x.descricao }) : null,
           h("p", { class: "sub", text: `${x.marca || "Sem empresa"} · ${ORIGEM_MIDIA[x.origem] || x.origem}${x.com_texto ? " (com texto)" : ""}` }),
           h("p", { class: "sub", text: `${x.enviado_por ? x.enviado_por + " · " : ""}${new Date(x.criado_ms).toLocaleString(LOCALE)} · ${numero(x.tamanho_kb)} KB` }),
@@ -4772,15 +4785,46 @@ Botão só com texto = resposta.` })),
             x.com_texto && pendente && pode("AGENTE") ? botao("Usar sem texto", async () => { try { await mk(`posts/${pendente.id}/foto`, { metodo: "POST", corpo: { original: true } }); aviso("O post voltou para a foto sem texto.", "ok"); carregar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno") : null));
       };
       trocar(area,
-        h("section", { class: "grade grade-4" }, metrica("Arquivos", numero(ms.length), "no filtro escolhido"), metrica("Fotos enviadas", numero(conta("foto")), "fotos reais para posts"), metrica("Enviadas ao Google", numero(conta("foto-google")), "direto no perfil"), metrica("Artes da IA", numero(conta("ia")), "criadas pela DENIA")),
+        h("section", { class: "grade grade-4" }, metrica("Arquivos", numero(ms.length), "no filtro escolhido"), metrica("Fotos e vídeos enviados", numero(conta("foto") + conta("video")), `${numero(conta("video"))} vídeo(s)`), metrica("Enviadas ao Google", numero(conta("foto-google")), "direto no perfil"), metrica("Artes da IA", numero(conta("ia")), "criadas pela DENIA")),
         porMarca.size > 1 ? h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Por empresa" }), h("div", { class: "tabela-caixa" }, h("table", {},
-          h("thead", {}, h("tr", {}, ["Empresa", "Fotos enviadas", "Ao Google", "Artes da IA", "Última"].map(t => h("th", { text: t })))),
+          h("thead", {}, h("tr", {}, ["Empresa", "Fotos e vídeos", "Ao Google", "Artes da IA", "Última"].map(t => h("th", { text: t })))),
           h("tbody", {}, [...porMarca].map(([n, t]) => h("tr", {}, h("td", { text: n }), h("td", { text: numero(t.foto || 0) }), h("td", { text: numero(t["foto-google"] || 0) }), h("td", { text: numero(t.ia || 0) }), h("td", { text: t.ultima ? quando(t.ultima) : "—" }))))))) : null,
         ms.length ? h("section", { class: "midias-grade" }, ms.map(cartao)) : h("section", { class: "cartao vidro" }, vazio("Nenhuma foto ainda", "Use \"Postar as minhas fotos\" no Estúdio ou envie fotos no Google → Editar perfil.", ICONES.caixa)));
     };
     fMarca.addEventListener("change", () => carregar().catch(e => aviso(e.message, "erro")));
     fOrigem.addEventListener("change", () => carregar().catch(e => aviso(e.message, "erro")));
     await carregar();
+  }
+
+  // Quadros de um vídeo (tirados no navegador) para a IA "assistir", e a duração.
+  function quadrosDoVideo(arquivo, n = 3) {
+    return new Promise((ok, erro) => {
+      const v = document.createElement("video"), url = URL.createObjectURL(arquivo);
+      v.muted = true; v.playsInline = true; v.preload = "auto"; v.src = url;
+      const quadros = []; let i = 0;
+      const fim = () => { URL.revokeObjectURL(url); ok({ quadros, duracao: isFinite(v.duration) ? Math.round(v.duration * 10) / 10 : null }); };
+      const tempo = setTimeout(fim, 20000);
+      const proximo = () => { if (i >= n || !isFinite(v.duration)) { clearTimeout(tempo); fim(); return; } v.currentTime = v.duration * [0.12, 0.5, 0.85, 0.3][i]; };
+      v.addEventListener("loadedmetadata", proximo);
+      v.addEventListener("seeked", () => {
+        try { const e = Math.min(1, 720 / Math.max(v.videoWidth, v.videoHeight)); const c = document.createElement("canvas"); c.width = Math.round(v.videoWidth * e); c.height = Math.round(v.videoHeight * e); c.getContext("2d").drawImage(v, 0, 0, c.width, c.height); if (c.width) quadros.push(c.toDataURL("image/jpeg", 0.8)); } catch { }
+        i++; proximo();
+      });
+      v.addEventListener("error", () => { clearTimeout(tempo); URL.revokeObjectURL(url); erro(new Error("Não consegui abrir o vídeo.")); });
+    });
+  }
+  // Envia o vídeo cru (sem base64), com progresso.
+  function enviarVideo(arquivo, marcaId, duracao, aoProgredir) {
+    return new Promise((ok, erro) => {
+      const x = new XMLHttpRequest();
+      const tipo = arquivo.type || (/\.mov$/i.test(arquivo.name) ? "video/quicktime" : "video/mp4");
+      x.open("POST", `/api/orgs/${estado.org.id}/mk/videos/enviar?marca=${encodeURIComponent(marcaId)}&nome=${encodeURIComponent(arquivo.name || "video")}${duracao ? "&duracao=" + duracao : ""}`);
+      x.setRequestHeader("x-denia", "1"); x.setRequestHeader("content-type", tipo); x.setRequestHeader("accept", "application/json");
+      x.upload.onprogress = e => { if (e.lengthComputable && aoProgredir) aoProgredir(Math.round(e.loaded / e.total * 100)); };
+      x.onload = () => { let d = null; try { d = JSON.parse(x.responseText); } catch { } if (x.status >= 200 && x.status < 300 && d) { limparMemorias(); ok(d); } else erro(new Error((d && d.erro) || (x.status === 413 ? "O vídeo é grande demais para o servidor. Envie numa qualidade menor." : "Não consegui enviar o vídeo."))); };
+      x.onerror = () => erro(new Error("Sem conexão. O vídeo não foi enviado."));
+      x.send(arquivo);
+    });
   }
 
   // Escreve uma frase curta na foto (faixa escura embaixo, letra branca forte), no próprio navegador.
@@ -4911,7 +4955,11 @@ Botão só com texto = resposta.` })),
     else aviso(c ? "Arte criada e conferida." : "Arte criada.", "ok");
   }
   function miniatura(p, classe) {
-    return p.midia_id ? h("img", { class: classe || "post-img", src: `/api/orgs/${estado.org.id}/mk/midias/${p.midia_id}`, alt: "", loading: "lazy" }) : null;
+    if (!p.midia_id) return null;
+    const src = `/api/orgs/${estado.org.id}/mk/midias/${p.midia_id}`;
+    if (p.midia_video && classe === "post-arte-img") return h("video", { class: classe, src, controls: true, playsinline: true, preload: "metadata" });
+    if (p.midia_video) return h("span", { class: "midia-video-capa" }, h("img", { class: classe || "post-img", src: src + "?capa=1", alt: "", loading: "lazy" }), h("i", { class: "selo-play", "aria-label": "Vídeo" }, "▶"));
+    return h("img", { class: classe || "post-img", src, alt: "", loading: "lazy" });
   }
   function cartaoPost(p, lista, recarregar) {
     const marca = lista.find(m => m.id === p.marca_id);
@@ -4978,7 +5026,7 @@ Botão só com texto = resposta.` })),
           aviso("Texto criado. Revise e salve.", "ok");
         } catch (e) { aviso(e.message, "erro"); } finally { b.textContent = "Escrever com IA"; }
       }),
-      botao("Criar arte com IA", async (_e, b) => {
+      p.midia_video ? null : botao("Criar arte com IA", async (_e, b) => {
         b.textContent = "Criando e conferindo a arte… (até 2 minutos)";
         try {
           await salvar(true);
@@ -4993,7 +5041,32 @@ Botão só com texto = resposta.` })),
         try { await salvar(true); const r = await mk(`posts/${p.id}/acao`, { metodo: "POST", corpo: { acao: "revisar" } }); revisao.replaceChildren(h("p", { class: "nota" + (r.revisao.nota >= 8 ? "" : " nota-alerta"), text: `Revisão da IA: nota ${r.revisao.nota}/10 — ${r.revisao.comentario}` })); }
         catch (e) { aviso(e.message, "erro"); } finally { b.textContent = "Revisar com IA"; }
       })) : null;
+    // Conversa com a IA: a pessoa explica do jeito dela o que mudar e a IA reescreve a legenda na hora.
+    const falas = h("div", { class: "falas" });
+    const pedidoIa = h("textarea", { class: "entrada", maxlength: "1500", style: "min-height:64px", placeholder: "Ex.: deixa mais curto e fala que tem 10% esse mês · coloca mais emoção · troca as hashtags pra falar da Zona Sul" });
+    const historicoIa = [];
+    const conversa = pode("AGENTE") ? h("div", { class: "conversa-ia" },
+      h("strong", { text: "Converse com a IA sobre este post" }),
+      h("small", { class: "sub", text: "Diga o que quer mudar, do seu jeito (dá para falar pelo microfone do teclado). A IA reescreve; depois é só salvar." }),
+      falas, pedidoIa,
+      h("div", { class: "acoes" }, botao("Pedir para a IA", async (_e, b) => {
+        const txt = pedidoIa.value.trim();
+        if (!txt) { aviso("Escreva o que a IA deve mudar.", "erro"); pedidoIa.focus(); return; }
+        b.disabled = true; b.textContent = "A IA está reescrevendo…";
+        falas.append(h("div", { class: "fala eu", text: txt }));
+        try {
+          const d = dados();
+          const r = await mk("ia/ajustar", { metodo: "POST", corpo: { marca_id: marca.value, canais: d.canais, pedido: txt, historico: historicoIa, atual: { titulo: tituloP.value, legenda: legenda.value, hashtags: hashtags.value, chamada: chamada.value, texto_arte: textoArte.value } } });
+          historicoIa.push(txt);
+          tituloP.value = r.sugestao.titulo; legenda.value = r.sugestao.legenda; hashtags.value = r.sugestao.hashtags; chamada.value = r.sugestao.chamada; if (r.sugestao.texto_arte || !textoArte.value) textoArte.value = r.sugestao.texto_arte;
+          falas.append(h("div", { class: "fala", text: r.resposta || "Pronto, reescrevi. Confira a legenda abaixo e salve." }));
+          pedidoIa.value = "";
+          [legenda, tituloP].forEach(x => { x.classList.add("piscar"); setTimeout(() => x.classList.remove("piscar"), 1200); });
+        } catch (e) { falas.lastChild && falas.lastChild.remove(); aviso(e.message, "erro"); }
+        finally { b.disabled = false; b.textContent = "Pedir para a IA"; }
+      }, "btn-primario"))) : null;
     const fechar = gaveta(p.id ? `Post #${p.id}` : "Novo post", [
+      conversa,
       h("div", { class: "sugestao-topo" }, p.status ? seloStatus(p.status) : selo("Novo"), p.aprovado_por ? h("span", { class: "selo", text: "Aprovado por " + p.aprovado_por }) : null, p.criado_por ? h("span", { class: "selo", text: "Criado por " + p.criado_por }) : null),
       publicacao, revisao, ia,
       h("div", { class: "editor-grade" },
