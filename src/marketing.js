@@ -1,4 +1,4 @@
-import { rotasMeta, aoAprovar } from "./meta.js";
+import { rotasMeta, aoAprovar, tirarDoAr } from "./meta.js";
 import { rotasSocial } from "./social.js";
 import { rotasVoz, falarComVoz, configVoz } from "./voz.js";
 import { rotasUso, registrarUso, custoOpenAI, tokensDe, precosDaOrg, orgDoUso, recursoDo, comRecurso } from "./uso.js";
@@ -922,6 +922,21 @@ Responda em JSON: {"descricao":"","por_que":"(uma frase dizendo o que melhorou)"
         return json({ ok: true, status: r.publicado ? "PUBLICADO" : "APROVADO", publicado: r.publicado, resumo: r.resumo });
       }
       if (acao === "rejeitar") { exigir("ADMIN"); return mudar("REJEITADO", { comentario: txt(c.comentario, 400) || "Rejeitado" }); }
+      if (acao === "tirar_do_ar") {
+        exigir("ADMIN");
+        const r = await tirarDoAr(env, k, p);
+        const partes = Object.entries(r.resultado).map(([c, v]) => `${{ google: "Google", facebook: "Facebook", instagram: "Instagram" }[c]}: ${v === "removido" ? "retirado" : v === "manual" ? "apague no app do Instagram (o Instagram não deixa apagar por fora)" : v}`);
+        await auditar(env, request, sessao, orgId, "MARKETING", `Post #${p.id}: tirar do ar — ${partes.join(" · ")}`.slice(0, 400));
+        return json({ ok: true, resumo: partes.join(" · ") || "Nada publicado para tirar do ar.", instagram_link: r.instagram_link, resultado: r.resultado });
+      }
+      if (acao === "instagram_apagado") {
+        exigir("AGENTE");
+        let pub = {}; try { pub = JSON.parse(p.publicacao || "{}") || {}; } catch { }
+        if (pub.instagram?.id) pub.instagram = { removido: agora(env), antes: pub.instagram.id, perfil: pub.instagram.perfil, removido_manual: true };
+        const sobrou = ["google", "facebook", "instagram"].some(c => pub[c]?.id);
+        await env.DB.prepare("UPDATE plt_mk_posts SET publicacao=?, status=?, atualizado_ms=? WHERE id=?").bind(JSON.stringify(pub), sobrou ? p.status : "RASCUNHO", agora(env), p.id).run();
+        return json({ ok: true });
+      }
       if (acao === "publicado") {
         exigir("AGENTE"); if (p.status !== "APROVADO") return json({ erro: "Só posts aprovados podem ser marcados como publicados." }, 409);
         // Marcação manual: fica registrado que foi publicado por fora (a DENIA não confirmou em nenhuma rede).
