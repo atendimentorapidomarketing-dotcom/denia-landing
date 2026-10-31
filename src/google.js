@@ -299,10 +299,20 @@ export async function retornoGoogle(request, env, k) {
 }
 
 // ----- Publicação de post no perfil (texto + foto + botão)
+export function semTelefone(t) {
+  const fone = /(?:\+?\d{1,3}[\s.-]?)?(?:\(?\d{2}\)?[\s.-]?)?\d{4,5}[\s.-]?\d{4}\b/g;
+  return String(t || "").split("\n").map(l => {
+    if (l.search(fone) < 0) return l;
+    const r = l.replace(fone, "").replace(/\s{2,}/g, " ").trim();
+    // Linha que era só o contato ("WhatsApp: …", "Chame já: …") some inteira.
+    return /^[^\p{L}]*$/u.test(r) || /[:–-]$/.test(r) || r.length < 4 ? null : r;
+  }).filter(l => l !== null).join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
 export async function publicarGoogle(env, k, conta, p, imagem) {
   const token = await tokenDa(env, k, conta);
   const marca = await env.DB.prepare("SELECT site, idioma FROM plt_mk_marcas WHERE id=?").bind(p.marca_id).first();
-  const resumo = [p.legenda, p.chamada].map(x => String(x || "").trim()).filter(Boolean).filter((x, i, a) => a.indexOf(x) === i).join("\n\n").slice(0, 1500);
+  // O Google recusa posts com telefone no texto: o número sai (o botão "Ligar" do post já leva ao telefone do perfil).
+  const resumo = semTelefone([p.legenda, p.chamada].map(x => String(x || "").trim()).filter(Boolean).filter((x, i, a) => a.indexOf(x) === i).join("\n\n")).slice(0, 1500);
   if (!resumo) throw new Error("O post do Google precisa de texto (a legenda está vazia).");
   const corpo = { languageCode: IDIOMA_GOOGLE[marca?.idioma] || "pt-BR", summary: resumo, topicType: "STANDARD" };
   if (imagem) corpo.media = [{ mediaFormat: "PHOTO", sourceUrl: imagem }];

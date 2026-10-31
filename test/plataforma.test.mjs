@@ -3390,3 +3390,28 @@ test("Google: relatório em PDF para o cliente, envio automático (dia 1) e prop
   assert.ok(pr.base64, JSON.stringify(pr)); const bp = Buffer.from(pr.base64, "base64").toString("latin1");
   assert.match(bp, /^%PDF-/); assert.match(bp, /R\$ 890 por m\xeas/); assert.match(bp, /Chaves J\xe1/);
 });
+
+test("Postar as minhas fotos — a IA olha a foto, escreve o post com o WhatsApp e ele vai para aprovação; no Google o telefone sai", async () => {
+  const p = await criarPlataforma({ OPENAI_API_KEY: "sk-teste" });
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  const m = await p.req("/api/orgs/1/mk/marcas", { metodo: "POST", quem: "admin", corpo: { nome: "Limpeza Zona Sul", whatsapp: "11 98765-4321", cidade: "Zona Sul de SP" } });
+  let pedido = null;
+  p.openai = (url, corpo) => { pedido = corpo; return { output: [{ content: [{ type: "output_text", text: JSON.stringify({ titulo: "Tapete como novo", legenda: "Seu tapete merece!\n\n📱 WhatsApp: 11 98765-4321", hashtags: "#tapete", chamada: "Peça já", descricao_foto: "Tapete persa limpo estendido no chão" }) }] }] }; };
+  const jpeg = "data:image/jpeg;base64," + Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 16, 74, 70, 73, 70, 0, 1, 1, 0, 0, 1, 0, 1, 0, 0, 0xff, 0xd9]).toString("base64");
+  const r = await p.req("/api/orgs/1/mk/ia/post-foto", { metodo: "POST", quem: "admin", corpo: { marca_id: m.dados.id, foto: jpeg, pedido: "lavagem de tapete persa", canais: ["instagram", "facebook"], data: "2026-11-02", hora: "18:00" } });
+  assert.equal(r.status, 200, JSON.stringify(r.dados));
+  const conteudo = pedido.input[0].content;
+  assert.equal(conteudo[1].type, "input_image", "a IA recebe a foto");
+  assert.match(conteudo[0].text, /98765-4321/, "a IA recebe o WhatsApp da marca");
+  assert.match(conteudo[0].text, /lavagem de tapete persa/);
+  assert.equal(r.dados.status, "AGUARDANDO");
+  assert.ok(r.dados.post.midia_id, "a própria foto vira a imagem do post");
+  const foto = await p.req(`/api/orgs/1/mk/midias/${r.dados.post.midia_id}`, { quem: "admin" });
+  assert.equal(foto.status, 200);
+  const sem = await p.req("/api/orgs/1/mk/ia/post-foto", { metodo: "POST", quem: "admin", corpo: { marca_id: m.dados.id, foto: "data:text/plain;base64,aGVsbG8=" } });
+  assert.equal(sem.status, 400, "só aceita imagem");
+  await p.req("/api/orgs/1/mk/ia/post-foto", { metodo: "POST", quem: "admin", corpo: { marca_id: m.dados.id, foto: jpeg, canais: ["google"] } });
+  assert.match(pedido.instructions, /NÃO coloque telefone/, "no Google a IA não põe telefone");
+  const { semTelefone } = await import("../src/google.js");
+  assert.equal(semTelefone("Seu tapete merece!\n\n📱 WhatsApp: 11 98765-4321\nZona Sul."), "Seu tapete merece!\n\nZona Sul.");
+});

@@ -1031,3 +1031,13 @@ input.fx-titulo:focus { outline: none; border-color: var(--azul); background: rg
 .ferramenta strong { font-size:14px }
 .ferramenta span { font-size:12.5px; opacity:.75; line-height:1.35 }
 @media (max-width:640px) { .ferramentas-grade { grid-template-columns:1fr 1fr } .ferramenta span { display:none } }
+
+/* Postar as minhas fotos */
+.criador-tudo { display:grid; gap:16px }
+.fotos-previa { display:flex; flex-wrap:wrap; gap:10px }
+.foto-mini { position:relative; width:92px; height:92px; border-radius:12px; overflow:hidden; border:1px solid rgba(255,255,255,.12); background:rgba(255,255,255,.03) }
+.foto-mini img { width:100%; height:100%; object-fit:cover; display:block }
+.foto-tirar { position:absolute; top:4px; right:4px; width:24px; height:24px; border-radius:50%; border:0; background:rgba(0,0,0,.65); color:#fff; font-size:16px; line-height:24px; cursor:pointer; padding:0 }
+.foto-mais { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px; cursor:pointer; color:inherit; border-style:dashed; font:inherit }
+.foto-mais strong { font-size:26px; line-height:1 }
+.foto-mais span { font-size:12px; opacity:.8 }

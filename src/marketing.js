@@ -844,6 +844,46 @@ ${COPY_QUE_VENDE}
 Responda em JSON: {"titulo":"","legenda":"","hashtags":"","chamada":"","texto_arte":"","ideia_imagem":""} — texto_arte: frase curta (até 6 palavras) escrita na arte, com acentos perfeitos; ideia_imagem: a cena, sem texto escrito.`, `${resumoMarca(marca)}\n\nTema: ${txt(c.tema, 600)}\nFormato: ${FORMATOS.includes(c.formato) ? c.formato : "post"}\nCanal: ${CANAIS.includes(c.canal) ? c.canal : "instagram"}\nResponda em JSON.`, 1500);
         return json({ ok: true, sugestao: { titulo: txt(r.titulo, 200), legenda: txt(r.legenda, 2200), hashtags: txt(r.hashtags, 600), chamada: txt(r.chamada, 200), texto_arte: txt(r.texto_arte, 80), ideia_imagem: txt(r.ideia_imagem, 1000) } });
       }
+      // Foto real tirada pela empresa (ex.: lavagem de tapete): a IA olha a foto e escreve o post inteiro.
+      if (resto === "ia/post-foto" && metodo === "POST") {
+        exigir("AGENTE");
+        const c = await corpoOu(LIMITE_LOGO_B64 + 6000);
+        const marca = await marcaDa(c.marca_id);
+        if (!marca) return json({ erro: "Escolha a empresa." }, 400);
+        const dados = String(c.foto || "").replace(/^data:[^,]*,/, "");
+        const mime = tipoDaImagem(dados);
+        if (!mime) return json({ erro: "Envie a foto em JPG, PNG ou WEBP." }, 400);
+        const canais = canaisOk(c.canais && c.canais.length ? c.canais : ["instagram", "facebook"]);
+        const formato = FORMATOS.includes(c.formato) && c.formato !== "carrossel" ? c.formato : (canais.length === 1 && canais[0] === "google" ? "google" : "post");
+        const pedido = txt(c.pedido, 800);
+        const sóGoogle = canais.length === 1 && canais[0] === "google";
+        const d = await openai(env, "responses", {
+          model: String(env.OPENAI_MODEL || MODELO_TEXTO).trim(),
+          instructions: `Você é a social media sênior da empresa. Você recebe uma FOTO REAL de um serviço feito pela própria empresa e o pedido do dono. Escreva o post sobre o que aparece na foto. ${REGRAS_CONTEUDO}
+${COPY_QUE_VENDE}
+Regras da foto: descreva só o que dá para ver de verdade (não invente antes/depois, preço, prazo ou resultado que a foto e o pedido não mostram). Use o pedido do dono como prioridade.
+${sóGoogle ? "É um post do Google: NÃO coloque telefone nem WhatsApp no texto (o Google recusa); o botão do post já leva ao contato. Cite o bairro/cidade." : "Termine a legenda chamando para o WhatsApp da marca, com o número exatamente como informado nos dados da marca (se não houver número, chame para o direct). Cite o bairro/cidade da marca quando houver."}
+Responda em JSON: {"titulo":"","legenda":"","hashtags":"","chamada":"","descricao_foto":""} — descricao_foto: 1 frase descrevendo a foto para quem não pode vê-la (texto alternativo).`,
+          input: [{ role: "user", content: [
+            { type: "input_text", text: `${resumoMarca(marca)}\n\nCanais: ${canais.join(", ")}. Formato: ${formato}.\nPedido do dono: ${pedido || "(sem pedido: escreva a partir da foto)"}\nResponda em JSON.` },
+            { type: "input_image", image_url: `data:${mime};base64,${dados}`, detail: "high" }] }],
+          text: { format: { type: "json_object" } }, max_output_tokens: 2500, store: false
+        });
+        let r; try { r = JSON.parse(textoDaResposta(d)); } catch { return json({ erro: "A IA respondeu num formato inesperado. Tente de novo." }, 502); }
+        const md = await env.DB.prepare("INSERT INTO plt_mk_midias(org_id,mime,dados,prompt,criado_ms) VALUES(?,?,?,?,?) RETURNING id").bind(orgId, mime, dados, "foto enviada: " + txt(r.descricao_foto, 400), agora(env)).first();
+        const cfg = (await env.DB.prepare("SELECT * FROM plt_mk_config WHERE org_id=?").bind(orgId).first()) || { modo: "HUMANO", nota_minima: 8 };
+        const post = { canais, formato, data: dataISO(c.data) || new Date(agora(env)).toISOString().slice(0, 10), hora: horaOk(c.hora) || "18:00",
+          titulo: txt(r.titulo, 200), legenda: txt(r.legenda, 2200), hashtags: sóGoogle ? "" : txt(r.hashtags, 600), chamada: txt(r.chamada, 200), ideia_imagem: "Foto real enviada pela empresa: " + txt(r.descricao_foto, 600), texto_arte: "" };
+        let status = "AGUARDANDO", revisao = null;
+        if (cfg.modo === "AUTOMATICO") {
+          revisao = await revisar(env, marca, post).catch(() => null);
+          status = revisao && revisao.aprovado && revisao.nota >= cfg.nota_minima ? "APROVADO" : "AGUARDANDO";
+        }
+        const n = await env.DB.prepare(`INSERT INTO plt_mk_posts(org_id,marca_id,canais,formato,data,hora,titulo,legenda,hashtags,chamada,ideia_imagem,texto_arte,midia_id,status,revisao,criado_por,aprovado_por,criado_ms,atualizado_ms)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`).bind(orgId, marca.id, JSON.stringify(post.canais), post.formato, post.data, post.hora, post.titulo, post.legenda, post.hashtags, post.chamada, post.ideia_imagem, null, md.id, status, revisao ? JSON.stringify(revisao) : null, autor, status === "APROVADO" ? "DENIA (aprovação automática)" : null, agora(env), agora(env)).first();
+        await auditar(env, request, sessao, orgId, "MARKETING", `IA escreveu o post #${n.id} a partir de uma foto enviada (${marca.nome})`);
+        return json({ ok: true, id: n.id, status, post: { ...post, id: n.id, midia_id: md.id, marca_id: marca.id, status } });
+      }
       if (resto === "ia/imagem" && metodo === "POST") {
         exigir("AGENTE");
         const c = await corpoOu(4000);
