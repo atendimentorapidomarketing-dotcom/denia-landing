@@ -137,6 +137,50 @@ function linhaPost(p) {
 // Idiomas da plataforma (interface, conteúdo das marcas e conversa com a DENIA).
 export const IDIOMAS = { "pt-BR": "português do Brasil", en: "inglês (English)", es: "espanhol (español)", de: "alemão (Deutsch)", it: "italiano", fr: "francês (français)", ja: "japonês (日本語)", hi: "hindi (हिन्दी)" };
 export const idiomaDe = v => (IDIOMAS[String(v || "")] ? String(v) : "pt-BR");
+// Legenda de post a partir de foto ou vídeo REAL: texto de venda com palavras-chave (SEO local), nunca uma descrição da imagem.
+const pareceDescricao = (leg, desc) => {
+  const l = String(leg || "").trim(), palavras = t => new Set(String(t || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").match(/[a-z0-9]{4,}/g) || []);
+  if (l.length < 160) return true;
+  if (/^(a |o |na |no |uma |um )?(foto|imagem|v[ií]deo) (mostra|apresenta|exibe)|^(nesta|nessa|na) (foto|imagem)/i.test(l)) return true;
+  const a = palavras(l), b = palavras(desc);
+  if (!b.size) return false;
+  let comuns = 0; for (const w of b) if (a.has(w)) comuns++;
+  return comuns / b.size > 0.8 && l.length < 320;
+};
+export async function legendaDeMidia(env, marca, { imagens = [], pedido = "", canais = ["instagram"], formato = "post", tipo = "foto", modoTexto = "nao", palavras = [] }) {
+  const sóGoogle = canais.length === 1 && canais[0] === "google";
+  const nome = tipo === "video" ? "VÍDEO" : "FOTO";
+  const instrucoes = `Você é a social media e especialista em SEO local de uma agência de marketing de alto nível. A empresa te mandou uma ${nome} REAL de um serviço que ela fez${pedido ? " e explicou, com as palavras dela, o que quer" : ""}. Sua tarefa é escrever a LEGENDA DE UM POST QUE VENDE — não uma descrição da imagem.
+${REGRAS_CONTEUDO}
+${COPY_QUE_VENDE}
+A LEGENDA (campo "legenda"):
+- NUNCA comece com "A foto mostra", "Nesta imagem", "Na foto" nem descreva a cena como um catálogo. A ${nome.toLowerCase()} serve de prova; a legenda fala com o CLIENTE: a dor ou o desejo dele, o resultado, por que escolher a empresa.
+- 1ª linha: gancho forte (pergunta, dor, curiosidade ou resultado) que faz parar de rolar.
+- Depois, 2 a 4 frases curtas: o serviço com o nome que o cliente busca no Google, o resultado/benefício, um detalhe concreto do que se vê (prova), diferenciais da empresa.
+- Use de forma natural 2 a 4 PALAVRAS-CHAVE de busca local: SERVIÇO + BAIRRO/CIDADE (ex.: "lavagem de tapete na Zona Sul", "conserto de TV em Botafogo"). ${palavras.length ? `Prefira estas, que a empresa acompanha no Google: ${palavras.join(", ")}.` : ""}
+- ${sóGoogle ? "É post do Google: NÃO coloque telefone nem WhatsApp (o Google recusa); termine com convite para pedir orçamento pelo botão do perfil." : "Termine com chamada clara para o WhatsApp, com o número exatamente como está nos dados da marca (se não houver número, chame para o direct)."}
+- Quebras de linha entre as ideias, emojis com moderação, entre 400 e 1200 caracteres.
+- Se o dono pediu algo (oferta, tom, assunto, o que destacar), isso tem prioridade. Não invente preço, prazo, desconto ou resultado que ele não disse e a ${nome.toLowerCase()} não mostra.
+HASHTAGS ("hashtags"): ${sóGoogle ? "vazio." : "8 a 15, misturando serviço, serviço+bairro/cidade, cidade e nicho (ex.: #lavagemdetapete #tapetelimpo #zonasulsp #lavagemdetapetezonasul). Sem acentos."}
+OUTROS CAMPOS: titulo (interno, até 8 palavras); chamada (botão/CTA curto); palavras_chave (lista das palavras-chave de busca que você usou); texto_arte (${modoTexto === "sim" ? "OBRIGATÓRIO: frase curta e forte de até 6 palavras para escrever na imagem" : modoTexto === "nao" ? "vazio" : "frase de até 6 palavras só se ajudar a vender; senão vazio"}); nome_arquivo (3 a 7 palavras sem acentos com hífen: SERVIÇO + BAIRRO/CIDADE, ex.: lavagem-tapete-persa-zona-sul-sp); descricao_foto (1 a 2 frases, SÓ para uso interno/acessibilidade, dizendo o que a imagem mostra com serviço e bairro)${tipo === "video" ? `; capa (número do quadro, de 1 a ${Math.max(1, imagens.length)}, que fica melhor como capa)` : ""}.
+Responda em JSON: {"titulo":"","legenda":"","hashtags":"","chamada":"","palavras_chave":[],"texto_arte":"","nome_arquivo":"","descricao_foto":""${tipo === "video" ? ',"capa":1' : ""}}`;
+  const entrada = `${resumoMarca(marca)}\n\nCanais: ${canais.join(", ")}. Formato: ${formato}.\nO que o dono explicou: ${pedido || "(nada — escreva a partir da imagem e dos dados da marca)"}\nResponda em JSON.`;
+  const d = await openai(env, "responses", {
+    model: String(env.OPENAI_MODEL || MODELO_TEXTO).trim(), instructions: instrucoes,
+    input: [{ role: "user", content: [{ type: "input_text", text: entrada }, ...imagens.map(i => ({ type: "input_image", image_url: `data:${i.mime};base64,${i.b64}`, detail: tipo === "video" ? "low" : "high" }))] }],
+    text: { format: { type: "json_object" } }, max_output_tokens: 3000, store: false
+  });
+  let r; try { r = JSON.parse(textoDaResposta(d)); } catch { return null; }
+  // Conferência: se saiu com cara de descrição da imagem, reescreve como legenda de venda.
+  if (pareceDescricao(r.legenda, r.descricao_foto)) {
+    const n = await iaJSON(env, `${instrucoes}\n\nO texto abaixo saiu como DESCRIÇÃO da imagem, não como legenda. Reescreva como legenda de post que vende, seguindo todas as regras acima. Mantenha os fatos.`,
+      `${entrada}\n\nO que a imagem mostra: ${String(r.descricao_foto || "").slice(0, 600)}\nTexto que saiu errado: ${String(r.legenda || "").slice(0, 1500)}\nResponda em JSON.`, 3000).catch(() => null);
+    if (n?.legenda && !pareceDescricao(n.legenda, r.descricao_foto)) r = { ...r, ...n, descricao_foto: r.descricao_foto, nome_arquivo: r.nome_arquivo || n.nome_arquivo, capa: r.capa };
+    r.reescrita = true;
+  }
+  r.palavras_chave = (Array.isArray(r.palavras_chave) ? r.palavras_chave : String(r.palavras_chave || "").split(/[,;\n]/)).map(x => String(x).trim()).filter(Boolean).slice(0, 8);
+  return r;
+}
 // Vídeo guardado em disco (env.ARQUIVOS), com faixa de bytes para o player do navegador e para a Meta/Google baixarem.
 export async function servirArquivo(env, request, r, baixar = false) {
   if (!env.ARQUIVOS) return new Response("Armazenamento indisponível.", { status: 503 });
@@ -982,24 +1026,12 @@ Responda em JSON: {"titulo":"","legenda":"","hashtags":"","chamada":"","texto_ar
         if (!mime) return json({ erro: "Envie a foto em JPG, PNG ou WEBP." }, 400);
         const canais = canaisOk(c.canais && c.canais.length ? c.canais : ["instagram", "facebook"]);
         const formato = FORMATOS.includes(c.formato) && c.formato !== "carrossel" ? c.formato : (canais.length === 1 && canais[0] === "google" ? "google" : "post");
-        const pedido = txt(c.pedido, 800);
+        const pedido = txt(c.pedido, 1500);
         const sóGoogle = canais.length === 1 && canais[0] === "google";
         const modoTexto = ["sim", "nao"].includes(c.texto_na_foto) ? c.texto_na_foto : "auto";
-        const d = await openai(env, "responses", {
-          model: String(env.OPENAI_MODEL || MODELO_TEXTO).trim(),
-          instructions: `Você é a social media sênior da empresa. Você recebe uma FOTO REAL de um serviço feito pela própria empresa e o pedido do dono. Escreva o post sobre o que aparece na foto. ${REGRAS_CONTEUDO}
-${COPY_QUE_VENDE}
-Regras da foto: descreva só o que dá para ver de verdade (não invente antes/depois, preço, prazo ou resultado que a foto e o pedido não mostram). Use o pedido do dono como prioridade.
-${sóGoogle ? "É um post do Google: NÃO coloque telefone nem WhatsApp no texto (o Google recusa); o botão do post já leva ao contato. Cite o bairro/cidade." : "Termine a legenda chamando para o WhatsApp da marca, com o número exatamente como informado nos dados da marca (se não houver número, chame para o direct). Cite o bairro/cidade da marca quando houver."}
-Texto escrito na foto: ${modoTexto === "sim" ? "OBRIGATÓRIO — texto_arte com uma frase curta e forte (até 6 palavras)." : modoTexto === "nao" ? "PROIBIDO — texto_arte vazio." : "você decide: preencha texto_arte (até 6 palavras) só se uma frase na imagem ajudar a vender (ex.: oferta, antes/depois); senão deixe vazio."}
-Nome do arquivo e descrição pensados para o Google (SEO local): nome_arquivo com 3 a 7 palavras em minúsculas, sem acentos, separadas por hífen — SERVIÇO que aparece + BAIRRO/CIDADE da marca (ex.: conserto-tv-samsung-botafogo, lavagem-tapete-persa-zona-sul-sp), sem "img", "foto" ou datas; descricao_foto com 1 a 2 frases naturais (até 250 letras) do que a foto mostra, com o serviço e o bairro/cidade, sem inventar.
-Responda em JSON: {"titulo":"","legenda":"","hashtags":"","chamada":"","texto_arte":"","nome_arquivo":"","descricao_foto":""}`,
-          input: [{ role: "user", content: [
-            { type: "input_text", text: `${resumoMarca(marca)}\n\nCanais: ${canais.join(", ")}. Formato: ${formato}.\nPedido do dono: ${pedido || "(sem pedido: escreva a partir da foto)"}\nResponda em JSON.` },
-            { type: "input_image", image_url: `data:${mime};base64,${dados}`, detail: "high" }] }],
-          text: { format: { type: "json_object" } }, max_output_tokens: 2500, store: false
-        });
-        let r; try { r = JSON.parse(textoDaResposta(d)); } catch { return json({ erro: "A IA respondeu num formato inesperado. Tente de novo." }, 502); }
+        const palavrasMarca = ((await env.DB.prepare("SELECT palavra FROM plt_mk_palavras WHERE org_id=? AND marca_id=? LIMIT 8").bind(orgId, marca.id).all().catch(() => null))?.results || []).map(x => x.palavra);
+        const r = await legendaDeMidia(env, marca, { imagens: [{ mime, b64: dados }], pedido, canais, formato, tipo: "foto", modoTexto, palavras: palavrasMarca });
+        if (!r) return json({ erro: "A IA respondeu num formato inesperado. Tente de novo." }, 502);
         const nomeArq = await nomeUnico(env, orgId, slugSeo(r.nome_arquivo || `${r.titulo || ""} ${marca.cidade || ""}`));
         const md = await env.DB.prepare("INSERT INTO plt_mk_midias(org_id,mime,dados,prompt,criado_ms,marca_id,nome_arquivo,origem,enviado_por,descricao) VALUES(?,?,?,?,?,?,?,?,?,?) RETURNING id")
           .bind(orgId, mime, dados, "foto enviada", agora(env), marca.id, nomeArq, "foto", autor, txt(r.descricao_foto, 400)).first();
@@ -1015,7 +1047,7 @@ Responda em JSON: {"titulo":"","legenda":"","hashtags":"","chamada":"","texto_ar
         const n = await env.DB.prepare(`INSERT INTO plt_mk_posts(org_id,marca_id,canais,formato,data,hora,titulo,legenda,hashtags,chamada,ideia_imagem,texto_arte,midia_id,status,revisao,criado_por,aprovado_por,criado_ms,atualizado_ms)
           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`).bind(orgId, marca.id, JSON.stringify(post.canais), post.formato, post.data, post.hora, post.titulo, post.legenda, post.hashtags, post.chamada, post.ideia_imagem, textoArte || null, md.id, status, revisao ? JSON.stringify(revisao) : null, autor, status === "APROVADO" ? "DENIA (aprovação automática)" : null, agora(env), agora(env)).first();
         await auditar(env, request, sessao, orgId, "MARKETING", `IA escreveu o post #${n.id} a partir de uma foto enviada (${marca.nome})`);
-        return json({ ok: true, id: n.id, status, nome_arquivo: nomeArq, descricao_foto: txt(r.descricao_foto, 400), texto_arte: textoArte, post: { ...post, id: n.id, midia_id: md.id, marca_id: marca.id, status } });
+        return json({ ok: true, id: n.id, status, nome_arquivo: nomeArq, descricao_foto: txt(r.descricao_foto, 400), palavras_chave: r.palavras_chave, texto_arte: textoArte, post: { ...post, id: n.id, midia_id: md.id, marca_id: marca.id, status } });
       }
       // Vídeo já enviado: a IA olha alguns quadros (tirados no navegador) e o pedido, e escreve o post (Reels/vídeo).
       if (resto === "ia/post-video" && metodo === "POST") {
@@ -1029,20 +1061,9 @@ Responda em JSON: {"titulo":"","legenda":"","hashtags":"","chamada":"","texto_ar
         const canais = canaisOk(c.canais && c.canais.length ? c.canais : ["instagram", "facebook"]);
         const formato = c.formato === "story" ? "story" : "reels";
         const pedido = txt(c.pedido, 1500);
-        const r = await (async () => {
-          const d = await openai(env, "responses", {
-            model: String(env.OPENAI_MODEL || MODELO_TEXTO).trim(),
-            instructions: `Você é a social media sênior da empresa. Você recebe quadros de um VÍDEO REAL feito pela própria empresa e o que o dono explicou, com as palavras dele. Entenda o pedido (pode vir solto, falado, sem pontuação) e escreva o post do vídeo. ${REGRAS_CONTEUDO}
-${COPY_QUE_VENDE}
-Regras: fale só do que dá para ver ou do que o dono disse (não invente preço, prazo ou resultado). Legenda de Reels: gancho forte na 1ª linha, curta e direta. ${canais.includes("google") && canais.length === 1 ? "Não coloque telefone (o Google recusa)." : "Termine chamando para o WhatsApp da marca, com o número exatamente como informado nos dados da marca (se não houver, chame para o direct)."}
-nome_arquivo: 3 a 7 palavras em minúsculas, sem acentos, separadas por hífen — SERVIÇO + BAIRRO/CIDADE (ex.: lavagem-tapete-persa-zona-sul-sp). descricao: 1 a 2 frases do que o vídeo mostra, com serviço e bairro/cidade. capa: o número do quadro (1 a ${Math.max(1, quadros.length)}) que fica melhor como capa.
-Responda em JSON: {"titulo":"","legenda":"","hashtags":"","chamada":"","nome_arquivo":"","descricao":"","capa":1}`,
-            input: [{ role: "user", content: [{ type: "input_text", text: `${resumoMarca(marca)}\n\nCanais: ${canais.join(", ")}. Formato: ${formato}.\nO que o dono explicou: ${pedido || "(nada: escreva a partir do vídeo)"}\nResponda em JSON.` },
-              ...quadros.map(q => ({ type: "input_image", image_url: `data:image/jpeg;base64,${q}`, detail: "low" }))] }],
-            text: { format: { type: "json_object" } }, max_output_tokens: 2500, store: false
-          });
-          try { return JSON.parse(textoDaResposta(d)); } catch { return null; }
-        })();
+        const palavrasMarca = ((await env.DB.prepare("SELECT palavra FROM plt_mk_palavras WHERE org_id=? AND marca_id=? LIMIT 8").bind(orgId, marca.id).all().catch(() => null))?.results || []).map(x => x.palavra);
+        const r = await legendaDeMidia(env, marca, { imagens: quadros.map(q => ({ mime: "image/jpeg", b64: q })), pedido, canais, formato, tipo: "video", modoTexto: "nao", palavras: palavrasMarca });
+        if (r) r.descricao = r.descricao_foto;
         if (!r) return json({ erro: "A IA respondeu num formato inesperado. Tente de novo." }, 502);
         const nomeArq = await nomeUnico(env, orgId, slugSeo(r.nome_arquivo || `${r.titulo || ""} ${marca.cidade || ""}`));
         let capaId = null;
@@ -1060,7 +1081,7 @@ Responda em JSON: {"titulo":"","legenda":"","hashtags":"","chamada":"","nome_arq
         const n = await env.DB.prepare(`INSERT INTO plt_mk_posts(org_id,marca_id,canais,formato,data,hora,titulo,legenda,hashtags,chamada,ideia_imagem,texto_arte,midia_id,status,revisao,criado_por,aprovado_por,criado_ms,atualizado_ms)
           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`).bind(orgId, marca.id, JSON.stringify(post.canais), post.formato, post.data, post.hora, post.titulo, post.legenda, post.hashtags, post.chamada, post.ideia_imagem, null, vid.id, status, revisao ? JSON.stringify(revisao) : null, autor, status === "APROVADO" ? "DENIA (aprovação automática)" : null, agora(env), agora(env)).first();
         await auditar(env, request, sessao, orgId, "MARKETING", `IA escreveu o post #${n.id} a partir de um vídeo enviado (${marca.nome})`);
-        return json({ ok: true, id: n.id, status, nome_arquivo: nomeArq, post: { ...post, id: n.id, midia_id: vid.id, midia_video: 1, marca_id: marca.id, status } });
+        return json({ ok: true, id: n.id, status, nome_arquivo: nomeArq, palavras_chave: r.palavras_chave, post: { ...post, id: n.id, midia_id: vid.id, midia_video: 1, marca_id: marca.id, status } });
       }
       // Conversa com a IA sobre um post: a pessoa explica do jeito dela o que mudar e a IA reescreve (não salva sozinha).
       if (resto === "ia/ajustar" && metodo === "POST") {
