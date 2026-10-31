@@ -4691,6 +4691,7 @@ Botão só com texto = resposta.` })),
     const amanha = isoLocal(somarDias(new Date(), 1));
     const data = h("input", { class: "entrada", type: "date", value: amanha });
     const hora = h("input", { class: "entrada", type: "time", value: "18:00" });
+    const botaoFotos = h("select", { class: "entrada" }, [["AUTO", "Automático (alterna Ligar agora e Site)"], ["CALL", "📞 Ligar agora"], ["LEARN_MORE", "🌐 Saiba mais (site)"], ["NENHUM", "Sem botão"]].map(([v, t]) => h("option", { value: v, text: t })));
     const textoFoto = h("select", { class: "entrada" }, h("option", { value: "auto", text: "A IA decide (só quando ajuda a vender)" }), h("option", { value: "sim", text: "Sim, escrever uma frase na foto" }), h("option", { value: "nao", text: "Não, foto limpa sem texto" }));
     const feitosLista = h("div", { class: "lista-nomes" });
     const progresso = h("p", { class: "nota oculto" });
@@ -4710,13 +4711,13 @@ Botão só com texto = resposta.` })),
             const env = await enviarVideo(f.arquivo, marca.value, quadros.duracao, pct => { progresso.textContent = `Enviando o vídeo: ${pct}%`; });
             b.textContent = `Escrevendo o post ${i + 1} de ${fotos.length}…`;
             progresso.textContent = "A DENIA está assistindo ao vídeo e escrevendo a legenda, as hashtags e a chamada com o número.";
-            const rv = await mk("ia/post-video", { metodo: "POST", corpo: { marca_id: marca.value, midia_id: env.id, quadros: quadros.quadros, pedido: pedido.value, canais: escolhidos, data: isoLocal(somarDias(new Date(data.value + "T12:00:00"), i)), hora: hora.value } });
+            const rv = await mk("ia/post-video", { metodo: "POST", corpo: { marca_id: marca.value, midia_id: env.id, quadros: quadros.quadros, pedido: pedido.value, canais: escolhidos, botao: botaoFotos.value, data: isoLocal(somarDias(new Date(data.value + "T12:00:00"), i)), hora: hora.value } });
             feitos.push(rv);
             feitosLista.append(h("p", { class: "sub" }, h("span", { text: `${f.arquivo.name} → ` }), h("strong", { text: `${rv.nome_arquivo}.mp4` }), h("span", { text: " · Reels" }), (rv.palavras_chave || []).length ? h("span", { text: ` · palavras-chave: ${rv.palavras_chave.join(", ")}` }) : null));
             continue;
           }
           const foto = await reduzirFoto(f.arquivo, 1600);
-          const r = await mk("ia/post-foto", { metodo: "POST", corpo: { marca_id: marca.value, foto, pedido: pedido.value, canais: escolhidos, texto_na_foto: textoFoto.value, nome_original: f.arquivo.name, data: isoLocal(somarDias(new Date(data.value + "T12:00:00"), i)), hora: hora.value } });
+          const r = await mk("ia/post-foto", { metodo: "POST", corpo: { marca_id: marca.value, foto, pedido: pedido.value, canais: escolhidos, botao: botaoFotos.value, texto_na_foto: textoFoto.value, nome_original: f.arquivo.name, data: isoLocal(somarDias(new Date(data.value + "T12:00:00"), i)), hora: hora.value } });
           if (r.texto_arte) {
             const comTexto = await escreverNaFoto(foto, r.texto_arte);
             const t = await mk(`posts/${r.id}/foto`, { metodo: "POST", corpo: { dados: comTexto, texto_arte: r.texto_arte } });
@@ -4740,6 +4741,7 @@ Botão só com texto = resposta.` })),
       h("div", { class: "campo" }, h("label", { text: "Explique para a IA o que você precisa" }), pedido, h("small", { class: "sub", text: "Não precisa escrever a legenda: a IA escreve. Dá para falar em vez de digitar, tocando no microfone do teclado do celular." })),
       h("div", { class: "campo" }, h("label", { text: "Onde publicar" }), canais),
       campo("Texto escrito na foto", textoFoto),
+      campo("Botão no post do Google", botaoFotos),
       h("div", { class: "linha-form" }, campo("Primeiro post em", data), campo("Horário", hora)),
       progresso, h("div", { class: "acoes" }, criar), feitosLista);
   }
@@ -4990,7 +4992,13 @@ Botão só com texto = resposta.` })),
         ? h("p", { class: "nota" }, `${NOME_CANAL[c]}: publicado `, pub[c].link ? h("a", { href: pub[c].link, target: "_blank", rel: "noopener noreferrer", text: "ver post" }) : null)
         : h("p", { class: "nota nota-alerta", text: `${NOME_CANAL[c]}: ${pub[c].erro}` })));
     const revisao = h("div", {}, p.revisao ? h("p", { class: "nota" + (p.revisao.nota >= 8 ? "" : " nota-alerta"), text: `Revisão da IA: nota ${p.revisao.nota}/10 — ${p.revisao.comentario}` }) : null, p.comentario ? h("p", { class: "nota nota-alerta", text: "Comentário: " + p.comentario }) : null);
-    const dados = () => ({ id: p.id, marca_id: marca.value, canais: [...canais.querySelectorAll("input:checked")].map(i => i.value), formato: formato.value, data: data.value, hora: hora.value, titulo: tituloP.value, legenda: legenda.value, hashtags: hashtags.value, chamada: chamada.value, texto_arte: textoArte.value, ideia_imagem: ideia.value });
+    const OPCOES_BOTAO = [["AUTO", "Automático (alterna Ligar agora e Site)"], ["CALL", "📞 Ligar agora"], ["LEARN_MORE", "🌐 Saiba mais (site)"], ["BOOK", "📅 Reservar"], ["ORDER", "🛒 Pedir on-line"], ["SHOP", "🛍️ Comprar"], ["SIGN_UP", "✍️ Cadastre-se"], ["NENHUM", "Sem botão"]];
+    const botaoG = h("select", { class: "entrada" }, OPCOES_BOTAO.map(([v, t]) => h("option", { value: v, text: t, selected: (p.botao || "AUTO") === v })));
+    const botaoUrl = ent(p.botao_url, { type: "url", placeholder: "https://… (vazio = site da empresa)" });
+    const campoUrl = campo("Endereço do botão", botaoUrl);
+    const ajustarBotao = () => campoUrl.classList.toggle("oculto", ["AUTO", "CALL", "NENHUM"].includes(botaoG.value));
+    botaoG.addEventListener("change", ajustarBotao); ajustarBotao();
+    const dados = () => ({ id: p.id, botao: botaoG.value, botao_url: botaoUrl.value, marca_id: marca.value, canais: [...canais.querySelectorAll("input:checked")].map(i => i.value), formato: formato.value, data: data.value, hora: hora.value, titulo: tituloP.value, legenda: legenda.value, hashtags: hashtags.value, chamada: chamada.value, texto_arte: textoArte.value, ideia_imagem: ideia.value });
     const salvar = async (silencioso) => { const r = await mk("posts", { metodo: "POST", corpo: dados() }); p.id = r.id; if (!silencioso) aviso("Post salvo.", "ok"); return r.id; };
     const acao = async (a, extra = {}) => { await salvar(true); const r = await mk(`posts/${p.id}/acao`, { metodo: "POST", corpo: { acao: a, ...extra } }); fechar(); recarregar && recarregar(); atualizarAprovacoes(); return r; };
     const editar = pode("AGENTE") && p.status !== "PUBLICADO";
@@ -5073,6 +5081,7 @@ Botão só com texto = resposta.` })),
         h("div", { class: "formulario" },
           h("div", { class: "linha-form" }, campo("Marca", marca), campo("Formato", formato)),
           h("div", { class: "campo" }, h("label", { text: "Canais" }), canais),
+          h("div", { class: "campo" }, h("label", { text: "Botão no post do Google" }), botaoG, h("small", { class: "sub", text: "O Google aceita um botão por post. \"Ligar agora\" liga direto para o telefone do perfil. No Instagram e no Facebook o contato vai na legenda (essas redes não têm botão em post comum)." })), campoUrl,
           h("div", { class: "linha-form" }, campo("Data", data), campo("Horário", hora)),
           campo("Título (interno)", tituloP), campo("Legenda", legenda), campo("Hashtags", hashtags), campo("Chamada para ação", chamada), campo("Texto escrito na arte", textoArte, "A DENIA escreve exatamente isto na arte e confere a ortografia."), campo("Ideia da arte (a cena)", ideia)),
         h("div", { class: "formulario" }, h("label", { style: "font-weight:600;color:var(--texto-2);font-size:14px", text: "Arte" }), imagem,

@@ -299,6 +299,15 @@ export async function retornoGoogle(request, env, k) {
 }
 
 // ----- Publicação de post no perfil (texto + foto + botão)
+// Um botão por post (regra do Google). "Ligar agora" usa o telefone do perfil; os de link usam o endereço escolhido ou o site da marca.
+export function botaoDoPost(p, marca) {
+  const site = String(marca?.site || "").trim(), url = /^https:\/\//i.test(String(p.botao_url || "")) ? p.botao_url : /^https?:\/\//i.test(site) ? site : "";
+  const b = p.botao || "AUTO";
+  if (b === "NENHUM") return null;
+  if (b === "CALL") return { actionType: "CALL" };
+  if (b === "AUTO") return url && Number(p.id || 0) % 2 === 0 ? { actionType: "LEARN_MORE", url } : { actionType: "CALL" };
+  return url ? { actionType: b, url } : { actionType: "CALL" };
+}
 export function semTelefone(t) {
   const fone = /(?:\+?\d{1,3}[\s.-]?)?(?:\(?\d{2}\)?[\s.-]?)?\d{4,5}[\s.-]?\d{4}\b/g;
   return String(t || "").split("\n").map(l => {
@@ -319,8 +328,8 @@ export async function publicarGoogle(env, k, conta, p, imagem, video) {
   if (!resumo) throw new Error("O post do Google precisa de texto (a legenda está vazia).");
   const corpo = { languageCode: IDIOMA_GOOGLE[marca?.idioma] || "pt-BR", summary: resumo, topicType: "STANDARD" };
   if (imagem) corpo.media = [{ mediaFormat: "PHOTO", sourceUrl: imagem }];
-  const site = String(marca?.site || "").trim();
-  corpo.callToAction = /^https?:\/\//i.test(site) ? { actionType: "LEARN_MORE", url: site } : { actionType: "CALL" };
+  corpo.callToAction = botaoDoPost(p, marca);
+  if (!corpo.callToAction) delete corpo.callToAction;
   const r = await chamar("POST", `${API_V4}/${caminhoV4(conta)}/localPosts`, token, corpo);
   return { id: r.name || "google", link: r.searchUrl || null, ...(videoId ? { video: videoId } : {}) };
 }
