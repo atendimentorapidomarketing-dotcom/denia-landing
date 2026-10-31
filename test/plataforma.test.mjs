@@ -3306,3 +3306,49 @@ test("Rotina do especialista: situação real de cada perfil (avaliações sem r
   assert.equal(rt.google, true); assert.equal(rt.g.sem_resposta, 1); assert.equal(rt.g.ruins_sem_resposta, 1); assert.equal(rt.g.posts_7d, 0);
   assert.equal(rt.instagram, false); assert.equal(r.modo_avaliacoes, "DESLIGADO");
 });
+
+test("Google: pré-análise de qualquer empresa, mapa de posição em grade e situação do perfil (suspensão e mudanças do Google)", async () => {
+  const p = await criarPlataforma({ GOOGLE_CLIENT_ID: "cliente.apps.googleusercontent.com", GOOGLE_CLIENT_SECRET: "segredo-google", GOOGLE_PLACES_API_KEY: "chave-places" });
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  const marca = (await p.req("/api/orgs/1/mk/marcas", { metodo: "POST", quem: "admin", corpo: { nome: "Reforma Tudo RT" } })).dados.id;
+  const ida = await p.req(`/api/orgs/1/mk/google/conectar?marca=${marca}`, { quem: "admin" });
+  const state = new URL(ida.r.headers.get("location")).searchParams.get("state");
+  let buscasGrade = 0;
+  p.google = (url, metodo, corpo) => {
+    if (url.startsWith("https://oauth2.googleapis.com/token")) return { access_token: "ya29.a", refresh_token: "1//p", expires_in: 3599 };
+    if (url.includes("/v1/accounts?")) return { accounts: [{ name: "accounts/111" }] };
+    if (url.includes("/accounts/111/locations?")) return { locations: [{ name: "locations/1", title: "Reforma Tudo RT" }] };
+    if (url.includes("/reviews?")) return { reviews: [] };
+    if (url.includes("readMask=latlng")) return { title: "Reforma Tudo RT", latlng: { latitude: -22.92, longitude: -43.23 }, metadata: { placeId: "PLACE_RT" } };
+    if (url.includes(":getGoogleUpdated")) return { location: { phoneNumbers: { primaryPhone: "(21) 0000-0000" } }, diffMask: "phoneNumbers" };
+    if (url.includes("VoiceOfMerchantState")) return { hasVoiceOfMerchant: false, complyWithGuidelines: { recommendationReason: "BUSINESS_LOCATION_SUSPENDED" } };
+    if (url.includes("/locations/1?readMask=")) return { title: "Reforma Tudo RT", phoneNumbers: { primaryPhone: "(21) 3333-4444" }, metadata: {} };
+    if (url.startsWith("https://places.googleapis.com/v1/places:searchText")) {
+      if (corpo.locationBias && corpo.textQuery === "pedreiro") { buscasGrade++; return { places: buscasGrade % 2 ? [{ id: "PLACE_RT", displayName: { text: "Reforma Tudo RT" } }] : [{ id: "X", displayName: { text: "Outro" } }, { id: "Y" }, { id: "PLACE_RT" }] }; }
+      if (corpo.locationBias) return { places: [{ id: "C1", displayName: { text: "Concorrente 1" }, rating: 4.9, userRatingCount: 300, types: ["general_contractor", "roofing_contractor"], primaryTypeDisplayName: { text: "Empreiteiro" } }, { id: "PLACE_RT" }, { id: "C2", displayName: { text: "Concorrente 2" }, rating: 4.6, userRatingCount: 100, types: ["general_contractor"] }] };
+      return { places: [{ id: "PLACE_RT", displayName: { text: "Reforma Tudo RT" }, formattedAddress: "Tijuca, Rio de Janeiro", rating: 4.8, userRatingCount: 40 }] };
+    }
+    if (url.startsWith("https://places.googleapis.com/v1/places/PLACE_RT")) return { id: "PLACE_RT", displayName: { text: "Reforma Tudo RT" }, rating: 4.8, userRatingCount: 40, primaryTypeDisplayName: { text: "Empreiteiro" }, types: ["general_contractor"], location: { latitude: -22.92, longitude: -43.23 }, businessStatus: "OPERATIONAL", photos: [1, 2, 3], addressComponents: [{ longText: "Rio de Janeiro", types: ["administrative_area_level_2"] }] };
+    return { error: { code: 404, message: "inesperado " + url } };
+  };
+  const nonce = (await (await p.req(`/api/google/retorno?code=abc&state=${encodeURIComponent(state)}`)).r.text()).match(/\/app#\/marcas\/google-([A-Za-z0-9_-]+)/)[1];
+  await p.req("/api/orgs/1/mk/google/escolher", { metodo: "POST", quem: "admin", corpo: { n: nonce, local_id: "locations/1" } });
+  // Pré-análise
+  const op = (await p.req("/api/orgs/1/mk/google/pre-analise", { metodo: "POST", quem: "admin", corpo: { busca: "Reforma Tudo RT Rio" } })).dados;
+  assert.equal(op.opcoes[0].id, "PLACE_RT");
+  const pa = (await p.req("/api/orgs/1/mk/google/pre-analise", { metodo: "POST", quem: "admin", corpo: { place_id: "PLACE_RT" } })).dados;
+  assert.equal(pa.posicao_na_categoria, 2, JSON.stringify(pa).slice(0, 300));
+  assert.equal(pa.concorrentes.length, 2);
+  assert.deepEqual(pa.categorias, [{ nome: "Empreiteiro", concorrentes: 1, voce: true }]);
+  assert.equal(pa.analise.itens.find(i => i.chave === "telefone").ok, "falta");
+  assert.equal(pa.analise.itens.find(i => i.chave === "descricao").ok, "conferir", "o que a busca pública não mostra fica fora da nota");
+  // Mapa em grade 3x3
+  const g = (await p.req("/api/orgs/1/mk/google/geogrid", { metodo: "POST", quem: "admin", corpo: { marca_id: marca, palavra: "pedreiro", raio_km: 2, tamanho: 3 } })).dados;
+  assert.equal(g.dados.pontos.length, 9); assert.equal(buscasGrade, 9);
+  assert.ok(g.dados.pontos.every(x => [1, 3].includes(x.posicao)));
+  assert.equal((await p.req(`/api/orgs/1/mk/google/geogrid?marca=${marca}`, { quem: "admin" })).dados.grades.length, 1);
+  // Situação
+  const s = (await p.req(`/api/orgs/1/mk/google/situacao?marca=${marca}`, { quem: "admin" })).dados;
+  assert.equal(s.situacao, "suspenso");
+  assert.deepEqual(s.mudancas_do_google, [{ campo: "telefone", no_google: "(21) 0000-0000", no_perfil: "(21) 3333-4444" }]);
+});

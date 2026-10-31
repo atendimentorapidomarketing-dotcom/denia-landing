@@ -1,4 +1,5 @@
 import { registrarUso, orgDoUso } from "./uso.js";
+import { registrarProblema, resolverProblema } from "./problemas.js";
 // DENIA Platform — Google Perfil da Empresa (Google Meu Negócio), pela API oficial.
 // Conexão por marca (login do Google), publicação dos posts aprovados, avaliações (buscar e responder)
 // e desempenho do perfil (visualizações, ligações, rotas, cliques e as buscas que levam ao perfil).
@@ -26,6 +27,7 @@ const ESTRELAS = { ONE: 1, TWO: 2, THREE: 3, FOUR: 4, FIVE: 5 };
 const IDIOMA_GOOGLE = { "pt-BR": "pt-BR", en: "en", es: "es", de: "de", it: "it", fr: "fr", ja: "ja", hi: "hi" };
 
 const DDL = [
+  `CREATE TABLE IF NOT EXISTS plt_mk_geogrid (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, marca_id INTEGER NOT NULL, palavra TEXT NOT NULL, raio_km REAL, tamanho INTEGER, media REAL, top3 INTEGER, dados TEXT, criado_ms INTEGER NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS plt_mk_concorrencia (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, marca_id INTEGER NOT NULL, busca TEXT NOT NULL, dia TEXT NOT NULL, posicao INTEGER, total INTEGER, dados TEXT, criado_ms INTEGER NOT NULL, UNIQUE(org_id, marca_id, busca, dia))`,
   `CREATE TABLE IF NOT EXISTS plt_mk_google (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, marca_id INTEGER NOT NULL, conta_nome TEXT NOT NULL, local_nome TEXT NOT NULL, local_titulo TEXT, token_cifrado TEXT NOT NULL, criado_por TEXT, criado_ms INTEGER NOT NULL, atualizado_ms INTEGER NOT NULL, sincronizado_ms INTEGER, UNIQUE(org_id, marca_id))`
 ];
@@ -460,6 +462,39 @@ async function preencherPeloGoogle(env, k, conta) {
     whatsapp: info.phoneNumbers?.primaryPhone, site: info.websiteUri, google: info.metadata?.mapsUri || info.title, horarios,
     sobre: info.profile?.description || "", logos
   });
+}
+const NOMES_CAMPO_GBP = { title: "nome", phoneNumbers: "telefone", websiteUri: "site", regularHours: "horário", specialHours: "horário de feriado", categories: "categorias", storefrontAddress: "endereço", profile: "descrição", serviceArea: "área de atendimento", openInfo: "aberto/fechado", latlng: "ponto no mapa" };
+export async function situacaoDoPerfil(env, k, conta) {
+  const token = await tokenDa(env, k, conta);
+  const campos = "title,phoneNumbers,websiteUri,regularHours,specialHours,categories,storefrontAddress,profile,serviceArea,openInfo";
+  const [atual, google, voz] = await Promise.all([
+    chamar("GET", `${API_INFO}/${conta.local_nome}?readMask=${campos},metadata`, token),
+    chamar("GET", `${API_INFO}/${conta.local_nome}:getGoogleUpdated?readMask=${campos}`, token).catch(e => ({ erro: e.message })),
+    chamar("GET", `https://mybusinessverifications.googleapis.com/v1/${conta.local_nome}/VoiceOfMerchantState`, token).catch(e => ({ erro: e.message }))]);
+  const diff = String(google?.diffMask || "").split(",").map(x => x.trim()).filter(Boolean);
+  const pend = String(google?.pendingMask || "").split(",").map(x => x.trim()).filter(Boolean);
+  const nome = c => NOMES_CAMPO_GBP[c.split(".")[0]] || c;
+  const mudancas = [...new Set(diff.map(c => c.split(".")[0]))].map(c => ({ campo: nome(c), no_google: resumoCampo(google?.location?.[c]), no_perfil: resumoCampo(atual?.[c]) }));
+  let estadoV = "desconhecido", motivo = "";
+  if (voz?.erro) { estadoV = "desconhecido"; motivo = /not been used|disabled/i.test(voz.erro) ? "Ative a \"My Business Verifications API\" no Google Cloud para a DENIA ler a situação." : voz.erro; }
+  else if (voz?.hasVoiceOfMerchant) estadoV = "ativo";
+  else if (voz?.complyWithGuidelines) { estadoV = "suspenso"; motivo = voz.complyWithGuidelines.recommendationReason === "BUSINESS_LOCATION_SUSPENDED" ? "Perfil suspenso pelo Google por não seguir as regras." : "O Google pede para o perfil seguir as diretrizes."; }
+  else if (voz?.verify) { estadoV = "nao_verificado"; motivo = "O perfil ainda não foi verificado no Google."; }
+  else if (voz?.resolveOwnershipConflict) { estadoV = "conflito"; motivo = "Outra pessoa também diz ser dona do perfil."; }
+  else if (voz?.waitForVoiceOfMerchant) { estadoV = "aguardando"; motivo = "O Google está analisando o perfil (pode levar alguns dias)."; }
+  return { situacao: estadoV, motivo, mudancas_do_google: mudancas, pendentes: [...new Set(pend.map(c => nome(c)))], pode_editar: Boolean(atual?.metadata?.canModifyServiceList ?? true), erro_alteracoes: google?.erro || null };
+}
+function resumoCampo(v) {
+  if (v == null) return "";
+  if (typeof v === "string") return v.slice(0, 120);
+  if (v.primaryPhone) return v.primaryPhone;
+  if (v.description) return String(v.description).slice(0, 120) + (String(v.description).length > 120 ? "…" : "");
+  if (v.primaryCategory) return v.primaryCategory.displayName || "";
+  if (v.periods) return `${v.periods.length} período(s)`;
+  if (v.specialHourPeriods) return `${v.specialHourPeriods.length} data(s)`;
+  if (v.addressLines) return [...v.addressLines, v.locality].filter(Boolean).join(", ");
+  if (v.status) return v.status;
+  return JSON.stringify(v).slice(0, 120);
 }
 export async function checagemDoPerfil(env, k, conta) {
   const token = await tokenDa(env, k, conta);
@@ -927,6 +962,58 @@ export async function buscarConcorrentes(env, k, conta, busca) {
   return { busca, dia, posicao: minha ? minha.posicao : null, lugares, media_nota: media, media_avaliacoes: outros.length ? Math.round(outros.reduce((s, p) => s + p.avaliacoes, 0) / outros.length) : null };
 }
 
+// ----- Places API (Google Maps): pré-análise de qualquer empresa, concorrentes e mapa de posição em grade.
+async function chamarPlaces(env, orgId, metodo, caminho, corpo, mascara) {
+  const chave = chavePlaces(env);
+  if (!chave) { const e = new Error("Falta a variável GOOGLE_PLACES_API_KEY (Places API do Google) na Hostinger."); e.status = 503; e.codigo = "PLACES_NAO_CONFIGURADO"; throw e; }
+  const inicio = Date.now();
+  const r = await fetch(`https://places.googleapis.com/v1/${caminho}`, { method: metodo, signal: AbortSignal.timeout(20000),
+    headers: { "content-type": "application/json", "X-Goog-Api-Key": chave, "X-Goog-FieldMask": mascara }, body: corpo ? JSON.stringify(corpo) : undefined });
+  registrarUso(orgId, "google", "lugares", caminho.startsWith("places:") ? caminho.slice(7) : "detalhes", { erro: !r.ok, limitada: r.status === 429, ms: Date.now() - inicio });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) { const e = new Error("Google Maps: " + String(d?.error?.message || `HTTP ${r.status}`).slice(0, 200)); e.status = 502; throw e; }
+  return d;
+}
+const CAMPOS_PLACE = "id,displayName,formattedAddress,location,rating,userRatingCount,primaryType,primaryTypeDisplayName,types,websiteUri,nationalPhoneNumber,regularOpeningHours,photos,editorialSummary,reviews,businessStatus,googleMapsUri,addressComponents";
+function cidadeDoPlace(p) { const c = (p.addressComponents || []).find(x => (x.types || []).includes("administrative_area_level_2")) || (p.addressComponents || []).find(x => (x.types || []).includes("locality")); return c?.longText || ""; }
+// Pré-análise (sem acesso ao perfil): só o que o Google mostra publicamente. O que a API pública não mostra fica como "conferir".
+export function preAnalisar(pl, concorrentes = []) {
+  const itens = [];
+  const add = (grupo, chave, titulo, max, pontos, detalhe, dica) => itens.push({ grupo, chave, titulo, max, pontos: Math.max(0, Math.min(max, Math.round(pontos))), ok: pontos >= max ? "ok" : pontos > 0 ? "parcial" : "falta", detalhe, dica });
+  const conferir = (grupo, chave, titulo, detalhe, dica) => itens.push({ grupo, chave, titulo, max: 0, pontos: 0, ok: "conferir", detalhe, dica });
+  const nota = Number(pl.rating || 0), total = Number(pl.userRatingCount || 0), fotos = (pl.photos || []).length;
+  const medN = concorrentes.length ? concorrentes.reduce((t, c) => t + Number(c.nota || 0), 0) / concorrentes.length : 0;
+  const medT = concorrentes.length ? concorrentes.reduce((t, c) => t + Number(c.avaliacoes || 0), 0) / concorrentes.length : 0;
+  add("Informações", "categoria", "Categoria principal", 10, pl.primaryTypeDisplayName?.text ? 10 : 0, pl.primaryTypeDisplayName?.text || "sem categoria", pl.primaryTypeDisplayName?.text ? "" : "Escolher a categoria principal certa é o que mais pesa para aparecer.");
+  add("Informações", "telefone", "Telefone", 8, pl.nationalPhoneNumber ? 8 : 0, pl.nationalPhoneNumber || "sem telefone", pl.nationalPhoneNumber ? "" : "Sem telefone o cliente não consegue ligar pelo Google.");
+  add("Informações", "site", "Site", 8, pl.websiteUri ? 8 : 0, pl.websiteUri || "sem site", pl.websiteUri ? "" : "Coloque o site ou o link do WhatsApp/Instagram.");
+  const dias = new Set((pl.regularOpeningHours?.periods || []).map(x => x.open?.day)).size;
+  add("Informações", "horario", "Horário de funcionamento", 8, dias ? 8 : 0, dias ? `${dias} dia(s) com horário` : "sem horário", dias ? "" : "Perfil sem horário aparece menos e gera visita com a porta fechada.");
+  add("Fotos", "fotos", "Fotos", 12, fotos >= 10 ? 12 : fotos * 1.2, fotos >= 10 ? "10 ou mais" : `${fotos} foto(s)`, fotos >= 10 ? "" : "Perfis com muitas fotos recebem mais cliques e pedidos de rota.");
+  add("Avaliações", "nota", "Nota média", 14, nota >= 4.7 ? 14 : nota >= 4.5 ? 11 : nota >= 4.2 ? 8 : nota >= 4 ? 5 : nota ? 2 : 0, nota ? String(nota).replace(".", ",") + " ★" + (medN ? ` (concorrentes: ${String(Math.round(medN * 10) / 10).replace(".", ",")})` : "") : "sem nota", nota >= 4.5 ? "" : "Responder todas as avaliações e pedir avaliação aos clientes satisfeitos sobe a nota.");
+  const metaT = Math.max(50, Math.round(medT));
+  add("Avaliações", "quantidade", "Quantidade de avaliações", 14, total >= metaT ? 14 : total / metaT * 14, `${total}${medT ? ` (concorrentes: ${Math.round(medT)} em média)` : ""}`, total >= metaT ? "" : `O ideal é passar de ${metaT}: peça avaliação depois de cada atendimento.`);
+  const recentes = (pl.reviews || []).map(r => Date.parse(r.publishTime || 0)).filter(Boolean);
+  const ultima = recentes.length ? Math.floor((Date.now() - Math.max(...recentes)) / 86400000) : null;
+  add("Avaliações", "recencia", "Avaliações recentes", 8, ultima == null ? 0 : ultima <= 30 ? 8 : ultima <= 90 ? 4 : 0, ultima == null ? "nenhuma" : `a mais recente há ${ultima} dia(s)`, ultima != null && ultima <= 30 ? "" : "O Google valoriza avaliação nova toda semana.");
+  add("Informações", "situacao", "Empresa aberta no Google", 6, pl.businessStatus === "OPERATIONAL" ? 6 : 0, pl.businessStatus === "OPERATIONAL" ? "aberta" : String(pl.businessStatus || "?").toLowerCase(), pl.businessStatus === "OPERATIONAL" ? "" : "O perfil aparece como fechado: isso derruba as visitas.");
+  conferir("Informações", "descricao", "Descrição da empresa", "a busca pública não mostra a descrição escrita pela empresa", "Com o perfil conectado, a checagem completa confere a descrição.");
+  conferir("Atividade", "posts", "Posts recentes", "a busca pública não mostra os posts", "Com o perfil conectado, a DENIA cria e publica os posts.");
+  conferir("Avaliações", "respostas", "Respostas às avaliações", "a busca pública não mostra as respostas da empresa", "Com o perfil conectado, a DENIA responde as avaliações.");
+  const max = itens.reduce((t, x) => t + x.max, 0), pts = itens.reduce((t, x) => t + x.pontos, 0);
+  return { nota: max ? Math.round(pts / max * 100) : 0, itens, faltam: itens.filter(x => x.ok === "parcial" || x.ok === "falta").length };
+}
+// Mapa de posição em grade: a mesma busca feita de vários pontos em volta da empresa.
+export function pontosDaGrade(lat, lng, raioKm, tamanho) {
+  const n = [3, 5, 7].includes(Number(tamanho)) ? Number(tamanho) : 5, meio = (n - 1) / 2, passo = raioKm / Math.max(1, meio);
+  const pts = [];
+  for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
+    const dy = (meio - i) * passo, dx = (j - meio) * passo;
+    pts.push({ linha: i, coluna: j, lat: lat + dy / 111.32, lng: lng + dx / (111.32 * Math.cos(lat * Math.PI / 180)), km: Math.round(Math.hypot(dx, dy) * 10) / 10 });
+  }
+  return { n, passo, pts };
+}
+
 async function rotasGoogleExtra(request, env, k, orgId, papel, resto, url) {
   const { json, pode } = k;
   const metodo = request.method;
@@ -1029,6 +1116,82 @@ async function rotasGoogleExtra(request, env, k, orgId, papel, resto, url) {
       await k.auditar(env, request, k.sessao, orgId, "MARKETING", `Enviou foto ao Google (${conta.local_titulo}, ${categoria})`).catch(() => {});
       return json({ ok: true, id: r.name || null });
     } catch (e) { return erroJson(e); }
+  }
+  // ----- Pré-análise de qualquer empresa (prospecção): busca pelo nome, escolhe e analisa, com concorrentes e categorias.
+  if (resto === "google/pre-analise" && metodo === "POST") {
+    if (!pode(papel, "AGENTE")) return json({ erro: "Seu perfil não tem permissão para esta ação." }, 403);
+    const c = await corpoDe().catch(e => e);
+    if (c instanceof Error) return json({ erro: c.message }, 400);
+    try {
+      if (!c.place_id) {
+        const busca = String(c.busca || "").trim().slice(0, 150);
+        if (busca.length < 3) return json({ erro: "Digite o nome da empresa e a cidade." }, 400);
+        const d = await chamarPlaces(env, orgId, "POST", "places:searchText", { textQuery: busca, languageCode: "pt-BR", regionCode: "BR", pageSize: 8 }, "places.id,places.displayName,places.formattedAddress,places.rating,places.userRatingCount,places.primaryTypeDisplayName");
+        return json({ opcoes: (d.places || []).map(x => ({ id: x.id, nome: x.displayName?.text || "", endereco: x.formattedAddress || "", nota: x.rating ?? null, avaliacoes: x.userRatingCount || 0, categoria: x.primaryTypeDisplayName?.text || "" })) });
+      }
+      if (!/^[\w-]{3,300}$/.test(String(c.place_id))) return json({ erro: "Empresa inválida." }, 400);
+      const pl = await chamarPlaces(env, orgId, "GET", `places/${c.place_id}?languageCode=pt-BR`, null, CAMPOS_PLACE);
+      let concorrentes = [], posicao = null, categorias = [];
+      const cat = pl.primaryTypeDisplayName?.text;
+      if (cat && pl.location) {
+        const d = await chamarPlaces(env, orgId, "POST", "places:searchText", { textQuery: `${cat} ${cidadeDoPlace(pl)}`.trim(), languageCode: "pt-BR", regionCode: "BR", pageSize: 20, locationBias: { circle: { center: pl.location, radius: 5000 } } },
+          "places.id,places.displayName,places.rating,places.userRatingCount,places.primaryTypeDisplayName,places.types,places.formattedAddress,places.googleMapsUri,places.photos").catch(() => ({ places: [] }));
+        const lista = d.places || [];
+        const i = lista.findIndex(x => x.id === pl.id); posicao = i >= 0 ? i + 1 : 0;
+        concorrentes = lista.filter(x => x.id !== pl.id).slice(0, 10).map(x => ({ posicao: lista.indexOf(x) + 1, nome: x.displayName?.text || "", nota: x.rating ?? null, avaliacoes: x.userRatingCount || 0, categoria: x.primaryTypeDisplayName?.text || "", fotos: (x.photos || []).length, endereco: x.formattedAddress || "", maps: x.googleMapsUri || "" }));
+        // Categoria principal de cada concorrente, no nome em português que o Google mostra.
+        const cont = new Map();
+        for (const x of concorrentes) if (x.categoria) cont.set(x.categoria, (cont.get(x.categoria) || 0) + 1);
+        categorias = [...cont.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12).map(([nome, n]) => ({ nome, concorrentes: n, voce: nome === cat }));
+      }
+      const empresa = { id: pl.id, nome: pl.displayName?.text || "", endereco: pl.formattedAddress || "", categoria: cat || "", nota: pl.rating ?? null, avaliacoes: pl.userRatingCount || 0, telefone: pl.nationalPhoneNumber || "", site: pl.websiteUri || "", maps: pl.googleMapsUri || "", fotos: (pl.photos || []).length, resumo: pl.editorialSummary?.text || "",
+        ultimas_avaliacoes: (pl.reviews || []).slice(0, 5).map(r => ({ autor: r.authorAttribution?.displayName || "", nota: r.rating, texto: String(r.text?.text || "").slice(0, 400), quando: r.relativePublishTimeDescription || "" })) };
+      return json({ empresa, analise: preAnalisar(pl, concorrentes), posicao_na_categoria: posicao, busca_concorrentes: cat ? `${cat} ${cidadeDoPlace(pl)}`.trim() : "", concorrentes, categorias });
+    } catch (e) { return erroJson(e); }
+  }
+  // ----- Mapa de posição em grade (raio em volta da empresa). Cada ponto é uma busca no Google Maps: custa centavos.
+  if (resto === "google/geogrid" && metodo === "GET") {
+    const conta = await marcaDe();
+    if (!conta) return json({ conectada: false, grades: [] });
+    const r = (await env.DB.prepare("SELECT id, palavra, raio_km, tamanho, media, top3, dados, criado_ms FROM plt_mk_geogrid WHERE org_id=? AND marca_id=? ORDER BY id DESC LIMIT 12").bind(orgId, conta.marca_id).all().catch(() => null))?.results || [];
+    return json({ conectada: true, places_configurado: Boolean(chavePlaces(env)), grades: r.map(x => ({ ...x, dados: JSON.parse(x.dados || "{}") })) });
+  }
+  if (resto === "google/geogrid" && metodo === "POST") {
+    if (!pode(papel, "AGENTE")) return json({ erro: "Seu perfil não tem permissão para esta ação." }, 403);
+    const c = await corpoDe().catch(e => e);
+    if (c instanceof Error) return json({ erro: c.message }, 400);
+    const conta = await contaGoogleDe(env, orgId, Number(c.marca_id));
+    if (!conta) return json({ erro: "Conecte o Google deste perfil primeiro." }, 409);
+    const palavra = String(c.palavra || "").trim().slice(0, 100);
+    if (palavra.length < 2) return json({ erro: "Digite a busca, por exemplo \"pedreiro\"." }, 400);
+    const raio = Math.min(15, Math.max(0.5, Number(c.raio_km) || 3));
+    try {
+      const token = await tokenDa(env, k, conta);
+      const info = await chamar("GET", `${API_INFO}/${conta.local_nome}?readMask=latlng,metadata,title`, token);
+      const placeId = info.metadata?.placeId, ll = info.latlng;
+      if (!placeId || !ll?.latitude) return json({ erro: "O Google não informou a localização deste perfil (perfis só com área de atendimento, sem endereço, não têm ponto no mapa)." }, 409);
+      const { n, pts } = pontosDaGrade(ll.latitude, ll.longitude, raio, c.tamanho);
+      const raioBusca = Math.round(Math.max(500, Math.min(3000, raio * 1000 / Math.max(1, (n - 1) / 2))));
+      const res = [];
+      for (let i = 0; i < pts.length; i += 5) res.push(...await Promise.all(pts.slice(i, i + 5).map(async pt => {
+        const d = await chamarPlaces(env, orgId, "POST", "places:searchText", { textQuery: palavra, languageCode: "pt-BR", regionCode: "BR", pageSize: 20, locationBias: { circle: { center: { latitude: pt.lat, longitude: pt.lng }, radius: raioBusca } } }, "places.id,places.displayName").catch(() => null);
+        if (!d) return { ...pt, posicao: null, primeiro: "" };
+        const l = d.places || [], idx = l.findIndex(x => x.id === placeId);
+        return { ...pt, posicao: idx >= 0 ? idx + 1 : 0, primeiro: l[0]?.displayName?.text || "" };
+      })));
+      const medidos = res.filter(x => x.posicao != null);
+      const media = medidos.length ? Math.round(medidos.reduce((t, x) => t + (x.posicao || 21), 0) / medidos.length * 10) / 10 : null;
+      const top3 = medidos.length ? Math.round(medidos.filter(x => x.posicao && x.posicao <= 3).length / medidos.length * 100) : 0;
+      const dados = { n, centro: { lat: ll.latitude, lng: ll.longitude }, pontos: res };
+      const ins = await env.DB.prepare("INSERT INTO plt_mk_geogrid(org_id,marca_id,palavra,raio_km,tamanho,media,top3,dados,criado_ms) VALUES(?,?,?,?,?,?,?,?,?) RETURNING id").bind(orgId, conta.marca_id, palavra, raio, n, media, top3, JSON.stringify(dados), k.agora(env)).first();
+      return json({ id: ins.id, palavra, raio_km: raio, tamanho: n, media, top3, dados, criado_ms: k.agora(env) });
+    } catch (e) { return erroJson(e); }
+  }
+  // ----- Situação do perfil: suspensão/verificação e alterações feitas pelo Google ou por outras pessoas.
+  if (resto === "google/situacao" && metodo === "GET") {
+    const conta = await marcaDe();
+    if (!conta) return json({ conectada: false });
+    try { return json({ conectada: true, ...(await situacaoDoPerfil(env, k, conta)) }); } catch (e) { return erroJson(e); }
   }
   // Visão geral de todos os perfis do Google da empresa (como numa agência): nota, avaliações sem resposta, posts e posições.
   if (resto === "google/visao" && metodo === "GET") {
@@ -1158,4 +1321,26 @@ async function rotasGoogleExtra(request, env, k, orgId, papel, resto, url) {
     catch (e) { return json({ erro: e.message }, e.status || 502); }
   }
   return null;
+}
+
+// Uma vez por dia por perfil: suspensão/verificação e dados mudados pelo Google ou por outras pessoas viram aviso.
+export async function vigiarPerfis(env, k, avisar) {
+  await garantir(env);
+  const hoje = new Date(k.agora(env) - 3 * 3600000).toISOString().slice(0, 10);
+  const contas = (await env.DB.prepare("SELECT g.* FROM plt_mk_google g WHERE NOT EXISTS (SELECT 1 FROM plt_meta m WHERE m.chave='situacao_' || g.id || '_' || ?) LIMIT 3").bind(hoje).all().catch(() => null))?.results || [];
+  for (const conta of contas) {
+    await env.DB.prepare("INSERT OR REPLACE INTO plt_meta(chave,valor) VALUES(?,?)").bind(`situacao_${conta.id}_${hoje}`, "1").run().catch(() => {});
+    let s;
+    try { s = await situacaoDoPerfil(env, k, conta); } catch (e) { continue; }
+    const chaveS = `gbp_situacao:${conta.marca_id}`, chaveM = `gbp_mudancas:${conta.marca_id}`;
+    if (["suspenso", "nao_verificado", "conflito"].includes(s.situacao)) {
+      await registrarProblema(env, conta.org_id, { chave: chaveS, area: "PUBLICACOES", gravidade: "ALTA", titulo: `Perfil do Google com problema: ${conta.local_titulo}`, motivo: s.motivo, dica: "Abra o perfil em business.google.com para ver o aviso do Google e resolver.", link: "#/google/checagem" });
+      if (avisar) await avisar(conta.org_id, `⚠️ Perfil do Google com problema: ${conta.local_titulo}\n${s.motivo}`).catch(() => {});
+    } else if (s.situacao === "ativo") await resolverProblema(env, conta.org_id, chaveS);
+    if (s.mudancas_do_google.length) {
+      const lista = s.mudancas_do_google.map(m => `${m.campo}: "${m.no_google}"`).join("; ");
+      await registrarProblema(env, conta.org_id, { chave: chaveM, area: "PUBLICACOES", gravidade: "MEDIA", titulo: `O Google mudou dados do perfil ${conta.local_titulo}`, motivo: lista, dica: "Confira em Google → Checagem do perfil e, se estiver errado, corrija em Editar perfil.", link: "#/google/checagem" });
+    } else await resolverProblema(env, conta.org_id, chaveM);
+  }
+  return contas.length;
 }

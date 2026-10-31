@@ -22,7 +22,7 @@
 
 import { apiMarketing, apiAssistente, analisarAvaliacoesPendentes, relatoriosDaSemana, medirPosicoesDaSemana } from "./marketing.js";
 import { retornoMeta, servirMidiaPublica, publicarPendentes } from "./meta.js";
-import { retornoGoogle, sincronizarGooglePendentes } from "./google.js";
+import { retornoGoogle, sincronizarGooglePendentes , vigiarPerfis } from "./google.js";
 import { comOrgUso, comRecurso, descarregarUso } from "./uso.js";
 import { DDL_TEMPORADA, ALTERS_TEMPORADA, rotasTemporada, icalPublico, webhookChannex, sincronizarTemporada, desligarInadimplentes, lembrarEstoque, limpezaPublica, avaliacoesDoCron } from "./temporada.js";
 import { openaiBruto } from "./marketing.js";
@@ -31,7 +31,7 @@ import { DDL_ZAP, webhookZap, rotasZap, webhookTelegram, segredoTelegram, tokenT
 import { montarRelatorio, planilhaRelatorio, textoRelatorio, base64, ultimos7Dias, lerConfigRelatorio, horaDeEnviar, diaBR, dataBR, DIAS_SEMANA, inicioDoDia as inicioDoDiaBR } from "./relatorio.js";
 import { lerPlanos, acessoDa, recursoDaRota, planoMinimo, rotasPlano, webhookAsaas, lembretesDePlano, TESTE_DIAS, STATUS as STATUS_PLANO, PLANOS_PADRAO, RECURSOS } from "./planos.js";
 
-const VERSAO = "3.21.0";
+const VERSAO = "3.22.0";
 // Versão dos Termos de uso e da Política de privacidade aceitas no cadastro.
 const VERSAO_TERMOS = "2026-10-16";
 // WhatsApp da Central de Atendimento (botão flutuante do site).
@@ -750,6 +750,8 @@ async function cuidarDasAvaliacoes(env, k) {
     if (!foi && emailConfigurado(env)) for (const para of await responsaveisDa(env, a.org_id)) await enviarEmail(env, para, `DENIA — avaliação ${a.nota}★ no Google${a.marca ? " (" + a.marca + ")" : ""}`, texto);
     await env.DB.prepare("UPDATE plt_mk_avaliacoes SET avisado_ms=? WHERE id=?").bind(agora(env), a.id).run().catch(() => {});
   }
+  // Situação de cada perfil do Google (suspensão e mudanças feitas pelo Google), uma vez por dia.
+  await vigiarPerfis(env, k, (org, texto) => avisarTelegramDaEmpresa(env, { ...kitBase(env), ehCentral: org === central }, org, texto)).catch(e => console.error("vigiar perfis", e?.message));
   // Relatório semanal (segunda-feira), para as empresas com perfil do Google conectado.
   const comGoogle = (await env.DB.prepare("SELECT DISTINCT org_id FROM plt_mk_google LIMIT 20").all().catch(() => null))?.results || [];
   for (const { org_id } of comGoogle) {
