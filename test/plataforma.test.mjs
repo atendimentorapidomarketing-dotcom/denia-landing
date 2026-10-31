@@ -889,7 +889,7 @@ test("Instagram e Facebook — conectar a marca pela Meta, publicar no horário 
   const parte = await p.req(`/api/orgs/1/mk/midias/${sobe.dados.id}`, { quem: "admin", cabecalhos: { range: "bytes=100-199" } });
   assert.equal(parte.status, 206); assert.equal(parte.r.headers.get("content-range"), "bytes 100-199/5000");
   let pedidoIa = null;
-  p.openai = (url, corpo) => { pedidoIa = corpo; return { output: [{ content: [{ type: "output_text", text: JSON.stringify({ titulo: "Antes e depois", legenda: "Olha esse sorriso!", hashtags: "#niteroi", chamada: "Agende", nome_arquivo: "clareamento-dental-niteroi", descricao: "Paciente sorrindo depois do clareamento em Niterói", capa: 2 }) }] }] }; };
+  p.openai = (url, corpo) => { pedidoIa = corpo; return { output: [{ content: [{ type: "output_text", text: JSON.stringify({ titulo: "Antes e depois", legenda: "Seu tapete voltou a ter cor de novo? 😍\n\nLavagem de tapete na Zona Sul com secagem controlada, sem cheiro e sem manchas. Buscamos e entregamos na sua casa, com cuidado em cada fio.\n\nTapete persa, sisal ou felpudo: a gente trata do jeito certo.\n\n📱 WhatsApp: 11 98765-4321", hashtags: "#niteroi", chamada: "Agende", nome_arquivo: "clareamento-dental-niteroi", descricao: "Paciente sorrindo depois do clareamento em Niterói", capa: 2 }) }] }] }; };
   const quadro = "data:image/jpeg;base64," + Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 16, 74, 70, 73, 70, 0, 1, 1, 0, 0, 1, 0, 1, 0, 0, 0xff, 0xd9]).toString("base64");
   const pv = await p.req("/api/orgs/1/mk/ia/post-video", { metodo: "POST", quem: "admin", corpo: { marca_id: marca, midia_id: sobe.dados.id, quadros: [quadro, quadro], pedido: "mostra o antes e depois do clareamento", canais: ["instagram", "facebook"] } });
   assert.equal(pv.status, 200, JSON.stringify(pv.dados));
@@ -3467,7 +3467,7 @@ test("Postar as minhas fotos — a IA olha a foto, escreve o post com o WhatsApp
   await p.entrar("admin", ADMIN, SENHA_ADMIN);
   const m = await p.req("/api/orgs/1/mk/marcas", { metodo: "POST", quem: "admin", corpo: { nome: "Limpeza Zona Sul", whatsapp: "11 98765-4321", cidade: "Zona Sul de SP" } });
   let pedido = null;
-  p.openai = (url, corpo) => { pedido = corpo; return { output: [{ content: [{ type: "output_text", text: JSON.stringify({ titulo: "Tapete como novo", legenda: "Seu tapete merece!\n\n📱 WhatsApp: 11 98765-4321", hashtags: "#tapete", chamada: "Peça já", descricao_foto: "Tapete persa limpo estendido no chão" }) }] }] }; };
+  p.openai = (url, corpo) => { pedido = corpo; return { output: [{ content: [{ type: "output_text", text: JSON.stringify({ titulo: "Tapete como novo", legenda: "Seu tapete voltou a ter cor de novo? 😍\n\nLavagem de tapete na Zona Sul com secagem controlada, sem cheiro e sem manchas. Buscamos e entregamos na sua casa, com cuidado em cada fio.\n\nTapete persa, sisal ou felpudo: a gente trata do jeito certo.\n\n📱 WhatsApp: 11 98765-4321", hashtags: "#tapete", chamada: "Peça já", descricao_foto: "Tapete persa limpo estendido no chão" }) }] }] }; };
   const jpeg = "data:image/jpeg;base64," + Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 16, 74, 70, 73, 70, 0, 1, 1, 0, 0, 1, 0, 1, 0, 0, 0xff, 0xd9]).toString("base64");
   const r = await p.req("/api/orgs/1/mk/ia/post-foto", { metodo: "POST", quem: "admin", corpo: { marca_id: m.dados.id, foto: jpeg, pedido: "lavagem de tapete persa", canais: ["instagram", "facebook"], data: "2026-11-02", hora: "18:00" } });
   assert.equal(r.status, 200, JSON.stringify(r.dados));
@@ -3492,7 +3492,7 @@ test("Fotos e mídias — nome pensado para o Google, texto na foto opcional e c
   await p.entrar("admin", ADMIN, SENHA_ADMIN);
   const m = await p.req("/api/orgs/1/mk/marcas", { metodo: "POST", quem: "admin", corpo: { nome: "TV Rio", cidade: "Botafogo, Rio de Janeiro" } });
   let instr = "";
-  p.openai = (url, corpo) => { instr = corpo.instructions; return { output: [{ content: [{ type: "output_text", text: JSON.stringify({ titulo: "TV nova de novo", legenda: "l", hashtags: "", chamada: "", texto_arte: "Conserto no mesmo dia", nome_arquivo: "Conserto TV Samsung Botafogo", descricao_foto: "Técnico consertando TV Samsung em Botafogo" }) }] }] }; };
+  p.openai = (url, corpo) => { instr = corpo.instructions; return { output: [{ content: [{ type: "output_text", text: JSON.stringify({ titulo: "TV nova de novo", legenda: "Seu tapete voltou a ter cor de novo? 😍\n\nLavagem de tapete na Zona Sul com secagem controlada, sem cheiro e sem manchas. Buscamos e entregamos na sua casa, com cuidado em cada fio.\n\nTapete persa, sisal ou felpudo: a gente trata do jeito certo.\n\n📱 WhatsApp: 11 98765-4321", hashtags: "", chamada: "", texto_arte: "Conserto no mesmo dia", nome_arquivo: "Conserto TV Samsung Botafogo", descricao_foto: "Técnico consertando TV Samsung em Botafogo" }) }] }] }; };
   const jpeg = "data:image/jpeg;base64," + Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 16, 74, 70, 73, 70, 0, 1, 1, 0, 0, 1, 0, 1, 0, 0, 0xff, 0xd9]).toString("base64");
   const a = (await p.req("/api/orgs/1/mk/ia/post-foto", { metodo: "POST", quem: "admin", corpo: { marca_id: m.dados.id, foto: jpeg, texto_na_foto: "sim" } })).dados;
   assert.equal(a.nome_arquivo, "conserto-tv-samsung-botafogo");
@@ -3517,4 +3517,27 @@ test("Fotos e mídias — nome pensado para o Google, texto na foto opcional e c
   await p.req(`/api/orgs/1/mk/midias/${a.post.midia_id}`, { metodo: "POST", quem: "admin", corpo: { nome_arquivo: "Conserto de TV — Botafogo", descricao: "nova" } });
   lib = (await p.req(`/api/orgs/1/mk/midias?origem=foto`, { quem: "admin" })).dados.midias;
   assert.ok(lib.some(x => x.nome_arquivo === "conserto-de-tv-botafogo" && x.descricao === "nova"));
+});
+
+test("Legenda de foto — nunca sai como descrição da imagem: a IA reescreve como legenda de venda com palavras-chave", async () => {
+  const p = await criarPlataforma({ OPENAI_API_KEY: "sk-teste" });
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  const m = await p.req("/api/orgs/1/mk/marcas", { metodo: "POST", quem: "admin", corpo: { nome: "Limpeza Zona Sul", cidade: "Zona Sul de São Paulo", whatsapp: "11 98765-4321" } });
+  p.env.DB.prepare("INSERT INTO plt_mk_palavras(org_id,marca_id,palavra,criado_ms) VALUES(1,?,?,1)").bind(m.dados.id, "lavagem de tapete zona sul").run();
+  const pedidos = [];
+  const boa = "Tapete encardido de novo? 😩\n\nA lavagem de tapete na Zona Sul que devolve a cor e tira o cheiro de pet. Buscamos e entregamos na sua casa, com secagem controlada e cuidado em cada fio.\n\nPersa, sisal ou felpudo: cada tapete recebe o tratamento certo.\n\n📱 Chame no WhatsApp: 11 98765-4321";
+  p.openai = (url, corpo) => {
+    pedidos.push(corpo);
+    if (pedidos.length === 1) return { output: [{ content: [{ type: "output_text", text: JSON.stringify({ titulo: "Tapete", legenda: "A foto mostra um tapete persa limpo estendido no chão de uma sala.", hashtags: "", chamada: "", descricao_foto: "Tapete persa limpo estendido no chão de uma sala", nome_arquivo: "lavagem-tapete-persa-zona-sul" }) }] }] };
+    return { output: [{ content: [{ type: "output_text", text: JSON.stringify({ titulo: "Tapete como novo", legenda: boa, hashtags: "#lavagemdetapete #zonasulsp", chamada: "Chame no WhatsApp", palavras_chave: ["lavagem de tapete zona sul"] }) }] }] };
+  };
+  const jpeg = "data:image/jpeg;base64," + Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 16, 74, 70, 73, 70, 0, 1, 1, 0, 0, 1, 0, 1, 0, 0, 0xff, 0xd9]).toString("base64");
+  const r = (await p.req("/api/orgs/1/mk/ia/post-foto", { metodo: "POST", quem: "admin", corpo: { marca_id: m.dados.id, foto: jpeg, pedido: "quero legenda com palavras-chave" } })).dados;
+  assert.equal(pedidos.length, 2, "a conferência pediu para reescrever");
+  assert.match(pedidos[0].instructions, /não uma descrição da imagem/);
+  assert.match(pedidos[0].instructions, /lavagem de tapete zona sul/, "usa as palavras-chave que a empresa acompanha");
+  assert.equal(r.post.legenda, boa);
+  assert.deepEqual(r.palavras_chave, ["lavagem de tapete zona sul"]);
+  assert.equal(r.nome_arquivo, "lavagem-tapete-persa-zona-sul");
+  assert.match(r.post.ideia_imagem, /Tapete persa limpo/, "a descrição fica guardada à parte, fora da legenda");
 });

@@ -4712,7 +4712,7 @@ Botão só com texto = resposta.` })),
             progresso.textContent = "A DENIA está assistindo ao vídeo e escrevendo a legenda, as hashtags e a chamada com o número.";
             const rv = await mk("ia/post-video", { metodo: "POST", corpo: { marca_id: marca.value, midia_id: env.id, quadros: quadros.quadros, pedido: pedido.value, canais: escolhidos, data: isoLocal(somarDias(new Date(data.value + "T12:00:00"), i)), hora: hora.value } });
             feitos.push(rv);
-            feitosLista.append(h("p", { class: "sub" }, h("span", { text: `${f.arquivo.name} → ` }), h("strong", { text: `${rv.nome_arquivo}.mp4` }), h("span", { text: " · Reels" })));
+            feitosLista.append(h("p", { class: "sub" }, h("span", { text: `${f.arquivo.name} → ` }), h("strong", { text: `${rv.nome_arquivo}.mp4` }), h("span", { text: " · Reels" }), (rv.palavras_chave || []).length ? h("span", { text: ` · palavras-chave: ${rv.palavras_chave.join(", ")}` }) : null));
             continue;
           }
           const foto = await reduzirFoto(f.arquivo, 1600);
@@ -4723,7 +4723,7 @@ Botão só com texto = resposta.` })),
             r.post.midia_id = t.midia_id;
           }
           feitos.push(r);
-          feitosLista.append(h("p", { class: "sub" }, h("span", { text: `${f.arquivo.name} → ` }), h("strong", { text: `${r.nome_arquivo}.jpg` }), r.texto_arte ? h("span", { text: ` · texto na foto: "${r.texto_arte}"` }) : null));
+          feitosLista.append(h("p", { class: "sub" }, h("span", { text: `${f.arquivo.name} → ` }), h("strong", { text: `${r.nome_arquivo}.jpg` }), r.texto_arte ? h("span", { text: ` · texto na foto: "${r.texto_arte}"` }) : null, (r.palavras_chave || []).length ? h("span", { text: ` · palavras-chave: ${r.palavras_chave.join(", ")}` }) : null));
         }
         fotos.forEach(f => URL.revokeObjectURL(f.url)); fotos = []; desenhar(); pedido.value = "";
         aviso(feitos.length === 1 ? "Post pronto. Confira e aprove." : `${feitos.length} posts prontos, um por dia. Confira e aprove em Aprovações.`, "ok");
