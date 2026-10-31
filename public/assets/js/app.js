@@ -4691,16 +4691,23 @@ Botão só com texto = resposta.` })),
     const amanha = isoLocal(somarDias(new Date(), 1));
     const data = h("input", { class: "entrada", type: "date", value: amanha });
     const hora = h("input", { class: "entrada", type: "time", value: "18:00" });
+    const quandoPub = h("select", { class: "entrada" }, (pode("ADMIN") ? [["agora", "Publicar agora (sem esperar aprovação)"]] : []).concat([["agendar", "Agendar: um por dia a partir da data abaixo"], ["revisar", "Só criar: vou revisar em Aprovações"]]).map(([v, t]) => h("option", { value: v, text: t })));
     const botaoFotos = h("select", { class: "entrada" }, [["AUTO", "Automático (alterna Ligar agora e Site)"], ["CALL", "📞 Ligar agora"], ["LEARN_MORE", "🌐 Saiba mais (site)"], ["NENHUM", "Sem botão"]].map(([v, t]) => h("option", { value: v, text: t })));
     const textoFoto = h("select", { class: "entrada" }, h("option", { value: "auto", text: "A IA decide (só quando ajuda a vender)" }), h("option", { value: "sim", text: "Sim, escrever uma frase na foto" }), h("option", { value: "nao", text: "Não, foto limpa sem texto" }));
     const feitosLista = h("div", { class: "lista-nomes" });
     const progresso = h("p", { class: "nota oculto" });
+    const linhaDatas = h("div", { class: "linha-form" }, campo("Primeiro post em", data), campo("Horário", hora));
+    const verDatas = () => { linhaDatas.classList.toggle("oculto", quandoPub.value === "agora"); criar.textContent = quandoPub.value === "agora" ? "Criar e publicar agora" : "Criar os posts com as minhas fotos"; };
+    quandoPub.addEventListener("change", () => verDatas());
     const criar = botao("Criar os posts com as minhas fotos", async (_e, b) => {
       const escolhidos = [...canais.querySelectorAll("input:checked")].map(i => i.value);
       if (!fotos.length) { aviso("Escolha pelo menos uma foto.", "erro"); return; }
       if (!escolhidos.length) { aviso("Marque onde publicar.", "erro"); return; }
       b.disabled = true; progresso.classList.remove("oculto");
       const feitos = [];
+      const agoraJa = quandoPub.value === "agora";
+      const dataDoPost = i => agoraJa ? isoLocal(new Date()) : isoLocal(somarDias(new Date(data.value + "T12:00:00"), i));
+      const horaDoPost = () => { if (!agoraJa) return hora.value; const d = new Date(Date.now() - 60000); return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; };
       try {
         for (const [i, f] of fotos.entries()) {
           b.textContent = `Escrevendo o post ${i + 1} de ${fotos.length}…`;
@@ -4711,13 +4718,13 @@ Botão só com texto = resposta.` })),
             const env = await enviarVideo(f.arquivo, marca.value, quadros.duracao, pct => { progresso.textContent = `Enviando o vídeo: ${pct}%`; });
             b.textContent = `Escrevendo o post ${i + 1} de ${fotos.length}…`;
             progresso.textContent = "A DENIA está assistindo ao vídeo e escrevendo a legenda, as hashtags e a chamada com o número.";
-            const rv = await mk("ia/post-video", { metodo: "POST", corpo: { marca_id: marca.value, midia_id: env.id, quadros: quadros.quadros, pedido: pedido.value, canais: escolhidos, botao: botaoFotos.value, data: isoLocal(somarDias(new Date(data.value + "T12:00:00"), i)), hora: hora.value } });
+            const rv = await mk("ia/post-video", { metodo: "POST", corpo: { marca_id: marca.value, midia_id: env.id, quadros: quadros.quadros, pedido: pedido.value, canais: escolhidos, botao: botaoFotos.value, data: dataDoPost(i), hora: horaDoPost() } });
             feitos.push(rv);
             feitosLista.append(h("p", { class: "sub" }, h("span", { text: `${f.arquivo.name} → ` }), h("strong", { text: `${rv.nome_arquivo}.mp4` }), h("span", { text: " · Reels" }), (rv.palavras_chave || []).length ? h("span", { text: ` · palavras-chave: ${rv.palavras_chave.join(", ")}` }) : null));
             continue;
           }
-          const foto = await reduzirFoto(f.arquivo, 1600);
-          const r = await mk("ia/post-foto", { metodo: "POST", corpo: { marca_id: marca.value, foto, pedido: pedido.value, canais: escolhidos, botao: botaoFotos.value, texto_na_foto: textoFoto.value, nome_original: f.arquivo.name, data: isoLocal(somarDias(new Date(data.value + "T12:00:00"), i)), hora: hora.value } });
+          const foto = await proporcaoInstagram(await reduzirFoto(f.arquivo, 1600));
+          const r = await mk("ia/post-foto", { metodo: "POST", corpo: { marca_id: marca.value, foto, pedido: pedido.value, canais: escolhidos, botao: botaoFotos.value, texto_na_foto: textoFoto.value, nome_original: f.arquivo.name, data: dataDoPost(i), hora: horaDoPost() } });
           if (r.texto_arte) {
             const comTexto = await escreverNaFoto(foto, r.texto_arte);
             const t = await mk(`posts/${r.id}/foto`, { metodo: "POST", corpo: { dados: comTexto, texto_arte: r.texto_arte } });
@@ -4726,14 +4733,31 @@ Botão só com texto = resposta.` })),
           feitos.push(r);
           feitosLista.append(h("p", { class: "sub" }, h("span", { text: `${f.arquivo.name} → ` }), h("strong", { text: `${r.nome_arquivo}.jpg` }), r.texto_arte ? h("span", { text: ` · texto na foto: "${r.texto_arte}"` }) : null, (r.palavras_chave || []).length ? h("span", { text: ` · palavras-chave: ${r.palavras_chave.join(", ")}` }) : null));
         }
+        if (agoraJa) {
+          for (const [i, r] of feitos.entries()) {
+            b.textContent = `Publicando ${i + 1} de ${feitos.length}…`;
+            progresso.textContent = "Publicando nas redes. Vídeo pode levar alguns minutos (o Instagram processa antes de mostrar).";
+            try {
+              const ap = await mk(`posts/${r.id}/acao`, { metodo: "POST", corpo: { acao: "aprovar", agora: true } });
+              r.publicado = ap.publicado; r.resumo = ap.resumo;
+            } catch (e) { r.publicado = false; r.resumo = e.message; }
+            feitosLista.append(h("p", { class: "nota" + (r.publicado ? "" : " nota-alerta") }, h("strong", { text: `Post #${r.id}: ` }), h("span", { text: r.resumo || (r.publicado ? "Publicado." : "Não foi publicado.") })));
+          }
+        }
         fotos.forEach(f => URL.revokeObjectURL(f.url)); fotos = []; desenhar(); pedido.value = "";
-        aviso(feitos.length === 1 ? "Post pronto. Confira e aprove." : `${feitos.length} posts prontos, um por dia. Confira e aprove em Aprovações.`, "ok");
         atualizarAprovacoes();
+        if (agoraJa) {
+          const ok = feitos.filter(r => r.publicado).length;
+          aviso(ok === feitos.length ? `Publicado (${ok}). Veja os links abaixo.` : `${ok} de ${feitos.length} publicado(s). Veja abaixo o que faltou.`, ok === feitos.length ? "ok" : "erro");
+          return;
+        }
+        aviso(feitos.length === 1 ? "Post pronto. Confira e aprove." : `${feitos.length} posts prontos, um por dia. Confira e aprove em Aprovações.`, "ok");
         if (feitos.length === 1) editorPost(feitos[0].post, lista, recarregar || (() => navegar()));
         else if (recarregar) recarregar(); else location.hash = "#/aprovacoes";
       } catch (e) { aviso(feitos.length ? `${feitos.length} post(s) criados; parou num erro: ${e.message}` : e.message, "erro"); }
-      finally { b.disabled = false; b.textContent = "Criar os posts com as minhas fotos"; progresso.classList.add("oculto"); }
+      finally { b.disabled = false; progresso.classList.add("oculto"); verDatas(); }
     }, "btn-primario");
+    setTimeout(verDatas);
     return h("section", { class: "cartao vidro formulario criador-cartao minhas-fotos" },
       h("h3", { style: "margin:0", text: "Postar as minhas fotos e vídeos" }),
       h("p", { style: "margin:0;color:var(--texto-2);font-size:14px", text: "Suba fotos ou vídeos de um serviço (até 10). Explique do seu jeito o que você quer, e a DENIA olha cada foto ou vídeo e escreve tudo: legenda, hashtags, chamada com o WhatsApp e descrição. Vídeo vira Reels. Cada arquivo vira um post, um por dia, e vai para Aprovações; lá você ainda pode conversar com a IA para mudar o que quiser." }),
@@ -4742,7 +4766,8 @@ Botão só com texto = resposta.` })),
       h("div", { class: "campo" }, h("label", { text: "Onde publicar" }), canais),
       campo("Texto escrito na foto", textoFoto),
       campo("Botão no post do Google", botaoFotos),
-      h("div", { class: "linha-form" }, campo("Primeiro post em", data), campo("Horário", hora)),
+      campo("Quando publicar", quandoPub),
+      linhaDatas,
       progresso, h("div", { class: "acoes" }, criar), feitosLista);
   }
 
@@ -4798,6 +4823,22 @@ Botão só com texto = resposta.` })),
     await carregar();
   }
 
+  // O Instagram só aceita fotos entre 4:5 (em pé) e 1,91:1 (deitada). Foto de celular em pé (3:4, 9:16) é cortada no centro para 4:5.
+  function proporcaoInstagram(dataUrl) {
+    return new Promise(ok => {
+      const img = new Image();
+      img.onload = () => {
+        const r = img.width / img.height;
+        if (r >= 0.8 && r <= 1.91) { ok(dataUrl); return; }
+        const w = r < 0.8 ? img.width : Math.round(img.height * 1.91), hh = r < 0.8 ? Math.round(img.width / 0.8) : img.height;
+        const c = document.createElement("canvas"); c.width = w; c.height = hh;
+        c.getContext("2d").drawImage(img, (img.width - w) / 2, (img.height - hh) / 2, w, hh, 0, 0, w, hh);
+        ok(c.toDataURL("image/jpeg", 0.88));
+      };
+      img.onerror = () => ok(dataUrl);
+      img.src = dataUrl;
+    });
+  }
   // Quadros de um vídeo (tirados no navegador) para a IA "assistir", e a duração.
   function quadrosDoVideo(arquivo, n = 3) {
     return new Promise((ok, erro) => {

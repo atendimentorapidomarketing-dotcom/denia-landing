@@ -3559,3 +3559,13 @@ test("Botão do post no Google — Ligar agora, Site, outros botões, automátic
   await p.req("/api/orgs/1/mk/posts", { metodo: "POST", quem: "admin", corpo: { id, marca_id: m, canais: ["google"], legenda: "x", botao: "ORDER", botao_url: "javascript:alert(1)" } });
   assert.deepEqual(p.env.DB.q("SELECT botao, botao_url FROM plt_mk_posts WHERE id=?", id)[0], { botao: "ORDER", botao_url: null }, "só aceita link https");
 });
+
+test("Publicar agora — aprovar com agora=true publica na hora, mesmo com a data marcada para depois", async () => {
+  const p = await criarPlataforma();
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  const m = (await p.req("/api/orgs/1/mk/marcas", { metodo: "POST", quem: "admin", corpo: { nome: "Limpeza" } })).dados.id;
+  const id = (await p.req("/api/orgs/1/mk/posts", { metodo: "POST", quem: "admin", corpo: { marca_id: m, canais: ["instagram"], legenda: "x", data: "2099-01-01", hora: "18:00" } })).dados.id;
+  const r = (await p.req(`/api/orgs/1/mk/posts/${id}/acao`, { metodo: "POST", quem: "admin", corpo: { acao: "aprovar", agora: true } })).dados;
+  assert.doesNotMatch(r.resumo, /sai sozinho em/, "não fica agendado");
+  assert.notEqual(p.env.DB.q("SELECT data FROM plt_mk_posts WHERE id=?", id)[0].data, "2099-01-01");
+});

@@ -858,6 +858,12 @@ Responda em JSON: {"descricao":"","por_que":"(uma frase dizendo o que melhorou)"
       if (acao === "aprovar") {
         exigir("ADMIN");
         await mudar("APROVADO", { aprovado_por: autor });
+        // "Publicar agora": a data e a hora viram o momento atual (horário de Brasília), sem depender do relógio do celular.
+        if (c.agora) {
+          const local = new Date(agora(env) - 3 * 3600000).toISOString();
+          p.data = local.slice(0, 10); p.hora = local.slice(11, 16);
+          await env.DB.prepare("UPDATE plt_mk_posts SET data=?, hora=? WHERE id=?").bind(p.data, p.hora, p.id).run();
+        }
         const r = await aoAprovar(request, env, k, p);
         await auditar(env, request, sessao, orgId, "MARKETING", `Post #${p.id}: ${r.resumo}`.slice(0, 400));
         return json({ ok: true, status: r.publicado ? "PUBLICADO" : "APROVADO", publicado: r.publicado, resumo: r.resumo });
