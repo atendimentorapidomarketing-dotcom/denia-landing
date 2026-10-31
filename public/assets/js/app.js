@@ -249,6 +249,7 @@
     integracoes: { titulo: "Integrações", render: paginaIntegracoes },
     consumo: { titulo: "Consumo e custos", render: paginaConsumo, minimo: "ADMIN" },
     rotina: { titulo: "Rotina do especialista", render: paginaRotina },
+    midias: { titulo: "Fotos e mídias", render: paginaMidias },
     equipe: { titulo: "Equipe", render: paginaEquipe, minimo: "ADMIN" },
     auditoria: { titulo: "Auditoria", render: paginaAuditoria, minimo: "ADMIN" },
     empresas: { titulo: "Empresas", render: paginaEmpresas, superAdmin: true },
@@ -3334,7 +3335,7 @@ Botão só com texto = resposta.` })),
   // ----- Plano e pagamento: teste grátis, planos (mensal/anual), assinatura (Pix, boleto, cartão) e histórico.
   const RECURSO_DA_ROTA = {
     rotina: null, conversas: "ia_completa", atendimentos: "ia_completa", profissionais: "ia_completa", treinamento: "ia_completa", aprendizados: "ia_completa", clientes: "ia_completa", whatsapp: "ia_completa", guia: "ia_completa",
-    chatbot: "chatbot", temporada: "temporada", estudio: "marketing", calendario: "marketing", aprovacoes: "marketing", marcas: "marketing", instagram: "marketing", facebook: "marketing", google: "marketing", social: "marketing", denia: "voz"
+    chatbot: "chatbot", temporada: "temporada", estudio: "marketing", midias: "marketing", calendario: "marketing", aprovacoes: "marketing", marcas: "marketing", instagram: "marketing", facebook: "marketing", google: "marketing", social: "marketing", denia: "voz"
   };
   window.DENIA_RECURSOS = window.DENIA_RECURSOS || { chatbot: "Chatbot do WhatsApp com botões e listas", chatbot_ia: "IA no chatbot", ia_completa: "IA completa de atendimento (atende como uma pessoa, com memória)", marketing: "Instagram, Facebook e Google: posts, artes, comentários e avaliações", voz: "DENIA por voz, ao vivo", multiempresa: "Várias empresas, marcas e unidades", temporada: "Locação por temporada" };
   const ROTAS_LIVRES = ["plano", "conta", "equipe", "auditoria", "empresas", "contatos", "painel", "integracoes", "consumo", "problemas", "relatorios", "rotina"];
@@ -4689,6 +4690,8 @@ Botão só com texto = resposta.` })),
     const amanha = isoLocal(somarDias(new Date(), 1));
     const data = h("input", { class: "entrada", type: "date", value: amanha });
     const hora = h("input", { class: "entrada", type: "time", value: "18:00" });
+    const textoFoto = h("select", { class: "entrada" }, h("option", { value: "auto", text: "A IA decide (só quando ajuda a vender)" }), h("option", { value: "sim", text: "Sim, escrever uma frase na foto" }), h("option", { value: "nao", text: "Não, foto limpa sem texto" }));
+    const feitosLista = h("div", { class: "lista-nomes" });
     const progresso = h("p", { class: "nota oculto" });
     const criar = botao("Criar os posts com as minhas fotos", async (_e, b) => {
       const escolhidos = [...canais.querySelectorAll("input:checked")].map(i => i.value);
@@ -4701,8 +4704,14 @@ Botão só com texto = resposta.` })),
           b.textContent = `Escrevendo o post ${i + 1} de ${fotos.length}…`;
           progresso.textContent = "A DENIA está olhando a foto e escrevendo a legenda, as hashtags, a chamada com o número e a descrição da imagem.";
           const foto = await reduzirFoto(f.arquivo, 1600);
-          const r = await mk("ia/post-foto", { metodo: "POST", corpo: { marca_id: marca.value, foto, pedido: pedido.value, canais: escolhidos, data: isoLocal(somarDias(new Date(data.value + "T12:00:00"), i)), hora: hora.value } });
+          const r = await mk("ia/post-foto", { metodo: "POST", corpo: { marca_id: marca.value, foto, pedido: pedido.value, canais: escolhidos, texto_na_foto: textoFoto.value, nome_original: f.arquivo.name, data: isoLocal(somarDias(new Date(data.value + "T12:00:00"), i)), hora: hora.value } });
+          if (r.texto_arte) {
+            const comTexto = await escreverNaFoto(foto, r.texto_arte);
+            const t = await mk(`posts/${r.id}/foto`, { metodo: "POST", corpo: { dados: comTexto, texto_arte: r.texto_arte } });
+            r.post.midia_id = t.midia_id;
+          }
           feitos.push(r);
+          feitosLista.append(h("p", { class: "sub" }, h("span", { text: `${f.arquivo.name} → ` }), h("strong", { text: `${r.nome_arquivo}.jpg` }), r.texto_arte ? h("span", { text: ` · texto na foto: "${r.texto_arte}"` }) : null));
         }
         fotos.forEach(f => URL.revokeObjectURL(f.url)); fotos = []; desenhar(); pedido.value = "";
         aviso(feitos.length === 1 ? "Post pronto. Confira e aprove." : `${feitos.length} posts prontos, um por dia. Confira e aprove em Aprovações.`, "ok");
@@ -4718,8 +4727,88 @@ Botão só com texto = resposta.` })),
       campo("Empresa", marca), h("div", { class: "campo" }, h("label", { text: "Fotos" }), previa, entrada),
       campo("O que você quer dizer (opcional)", pedido),
       h("div", { class: "campo" }, h("label", { text: "Onde publicar" }), canais),
+      campo("Texto escrito na foto", textoFoto),
       h("div", { class: "linha-form" }, campo("Primeiro post em", data), campo("Horário", hora)),
-      progresso, h("div", { class: "acoes" }, criar));
+      progresso, h("div", { class: "acoes" }, criar), feitosLista);
+  }
+
+  // ----- Fotos e mídias: tudo o que cada empresa subiu ou a IA criou, com nome pensado para o Google e onde foi usado.
+  const ORIGEM_MIDIA = { foto: "Foto enviada para post", "foto-google": "Foto enviada ao perfil do Google", ia: "Arte criada pela IA", logo: "Logo" };
+  async function paginaMidias(el, _p, vivo) {
+    const lista = await marcas(true);
+    if (!vivo()) return;
+    el.appendChild(cabeca("Fotos e mídias", "Tudo o que cada empresa subiu e o que a IA criou: quem enviou, quando, o nome pensado para o Google e onde foi usado."));
+    const fMarca = h("select", { class: "entrada" }, h("option", { value: "", text: "Todas as empresas" }), lista.map(m => h("option", { value: m.id, text: m.nome, selected: String(estado.marcaMidias || "") === String(m.id) })));
+    const fOrigem = h("select", { class: "entrada" }, h("option", { value: "", text: "Todos os tipos" }), Object.entries(ORIGEM_MIDIA).map(([k, n]) => h("option", { value: k, text: n })));
+    const area = h("div", { class: "grade" }, carregando());
+    el.append(h("div", { class: "linha-form" }, campo("Empresa", fMarca), campo("Tipo", fOrigem)), area);
+    const carregar = async () => {
+      estado.marcaMidias = fMarca.value;
+      const q = new URLSearchParams(); if (fMarca.value) q.set("marca", fMarca.value); if (fOrigem.value) q.set("origem", fOrigem.value);
+      const d = await mk("midias?" + q, { fresco: true });
+      const ms = d.midias || [];
+      const conta = o => ms.filter(x => x.origem === o).length;
+      const porMarca = new Map();
+      for (const x of ms) { const k = x.marca || "Sem empresa"; const t = porMarca.get(k) || { foto: 0, "foto-google": 0, ia: 0, ultima: 0 }; t[x.origem] = (t[x.origem] || 0) + 1; t.ultima = Math.max(t.ultima, x.criado_ms || 0); porMarca.set(k, t); }
+      const base = `/api/orgs/${estado.org.id}/mk/midias/`;
+      const cartao = x => {
+        const usado = x.posts.length ? x.posts.map(p => h("span", { class: "selo selo-" + ((NOME_STATUS[p.status] || [])[1] || ""), text: `${(NOME_STATUS[p.status] || [p.status])[0]} · ${(p.canais || []).map(c => NOME_CANAL[c] || c).join(", ")}${p.data ? " · " + p.data.split("-").reverse().join("/") : ""}` })) : [h("span", { class: "sub", text: x.google ? "No perfil do Google" : "Ainda não usada num post" })];
+        const pendente = x.posts.find(p => p.status !== "PUBLICADO");
+        return h("div", { class: "cartao vidro midia-cartao" },
+          h("a", { href: base + x.id, target: "_blank", rel: "noopener" }, h("img", { src: base + x.id, alt: x.descricao || x.nome_arquivo || "", loading: "lazy" })),
+          h("strong", { class: "midia-nome", text: (x.nome_arquivo || "sem-nome") + ".jpg" }),
+          x.descricao ? h("p", { class: "sub", text: x.descricao }) : null,
+          h("p", { class: "sub", text: `${x.marca || "Sem empresa"} · ${ORIGEM_MIDIA[x.origem] || x.origem}${x.com_texto ? " (com texto)" : ""}` }),
+          h("p", { class: "sub", text: `${x.enviado_por ? x.enviado_por + " · " : ""}${new Date(x.criado_ms).toLocaleString(LOCALE)} · ${numero(x.tamanho_kb)} KB` }),
+          h("div", { class: "midia-usos" }, usado),
+          h("div", { class: "acoes" },
+            h("a", { class: "btn btn-secundario btn-pequeno", href: base + x.id + "?baixar=1" }, "Baixar"),
+            pode("AGENTE") ? botao("Renomear", async () => {
+              const nome = h("input", { class: "entrada", value: x.nome_arquivo || "", placeholder: "conserto-tv-botafogo" });
+              const desc = h("textarea", { class: "entrada", maxlength: "400", style: "min-height:70px" }); desc.value = x.descricao || "";
+              if (!(await modal({ titulo: "Nome e descrição da foto", conteudo: [campo("Nome do arquivo (palavras que o cliente busca)", nome), campo("Descrição", desc)], confirmar: "Salvar" }))) return;
+              try { await mk(`midias/${x.id}`, { metodo: "POST", corpo: { nome_arquivo: nome.value, descricao: desc.value } }); aviso("Salvo.", "ok"); carregar(); } catch (e) { aviso(e.message, "erro"); }
+            }, "btn-secundario btn-pequeno") : null,
+            x.com_texto && pendente && pode("AGENTE") ? botao("Usar sem texto", async () => { try { await mk(`posts/${pendente.id}/foto`, { metodo: "POST", corpo: { original: true } }); aviso("O post voltou para a foto sem texto.", "ok"); carregar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno") : null));
+      };
+      trocar(area,
+        h("section", { class: "grade grade-4" }, metrica("Arquivos", numero(ms.length), "no filtro escolhido"), metrica("Fotos enviadas", numero(conta("foto")), "fotos reais para posts"), metrica("Enviadas ao Google", numero(conta("foto-google")), "direto no perfil"), metrica("Artes da IA", numero(conta("ia")), "criadas pela DENIA")),
+        porMarca.size > 1 ? h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Por empresa" }), h("div", { class: "tabela-caixa" }, h("table", {},
+          h("thead", {}, h("tr", {}, ["Empresa", "Fotos enviadas", "Ao Google", "Artes da IA", "Última"].map(t => h("th", { text: t })))),
+          h("tbody", {}, [...porMarca].map(([n, t]) => h("tr", {}, h("td", { text: n }), h("td", { text: numero(t.foto || 0) }), h("td", { text: numero(t["foto-google"] || 0) }), h("td", { text: numero(t.ia || 0) }), h("td", { text: t.ultima ? quando(t.ultima) : "—" }))))))) : null,
+        ms.length ? h("section", { class: "midias-grade" }, ms.map(cartao)) : h("section", { class: "cartao vidro" }, vazio("Nenhuma foto ainda", "Use \"Postar as minhas fotos\" no Estúdio ou envie fotos no Google → Editar perfil.", ICONES.caixa)));
+    };
+    fMarca.addEventListener("change", () => carregar().catch(e => aviso(e.message, "erro")));
+    fOrigem.addEventListener("change", () => carregar().catch(e => aviso(e.message, "erro")));
+    await carregar();
+  }
+
+  // Escreve uma frase curta na foto (faixa escura embaixo, letra branca forte), no próprio navegador.
+  function escreverNaFoto(dataUrl, texto) {
+    return new Promise((ok, erro) => {
+      const img = new Image();
+      img.onload = () => {
+        const c = document.createElement("canvas"); c.width = img.width; c.height = img.height;
+        const g = c.getContext("2d"); g.drawImage(img, 0, 0);
+        const W = c.width, H = c.height, tam = Math.round(Math.min(W, H) * 0.075), margem = Math.round(W * 0.06);
+        g.font = `800 ${tam}px Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif`;
+        const palavras = String(texto).toUpperCase().split(/\s+/), linhas = [];
+        let atual = "";
+        for (const p of palavras) { const t = atual ? atual + " " + p : p; if (g.measureText(t).width > W - margem * 2 && atual) { linhas.push(atual); atual = p; } else atual = t; }
+        linhas.push(atual);
+        const alt = linhas.length * tam * 1.18 + margem * 1.6;
+        const grad = g.createLinearGradient(0, H - alt * 1.5, 0, H);
+        grad.addColorStop(0, "rgba(3,6,20,0)"); grad.addColorStop(0.45, "rgba(3,6,20,.72)"); grad.addColorStop(1, "rgba(3,6,20,.92)");
+        g.fillStyle = grad; g.fillRect(0, H - alt * 1.5, W, alt * 1.5);
+        const barra = g.createLinearGradient(margem, 0, margem + W * 0.18, 0); barra.addColorStop(0, "#22d3ee"); barra.addColorStop(1, "#a855f7");
+        g.fillStyle = barra; g.fillRect(margem, H - alt + margem * 0.2, Math.round(W * 0.18), Math.max(4, Math.round(tam * 0.12)));
+        g.fillStyle = "#ffffff"; g.textBaseline = "top"; g.shadowColor = "rgba(0,0,0,.45)"; g.shadowBlur = tam * 0.25;
+        linhas.forEach((l, i) => g.fillText(l, margem, H - alt + margem * 0.55 + i * tam * 1.18));
+        ok(c.toDataURL("image/jpeg", 0.88));
+      };
+      img.onerror = () => erro(new Error("Não consegui escrever na foto."));
+      img.src = dataUrl;
+    });
   }
 
   // Gaveta lateral (editor de post, formulários longos).
@@ -5482,7 +5571,7 @@ Botão só com texto = resposta.` })),
     if (!vivo()) return;
     el.appendChild(cabeca("Google Meu Negócio", "Reputação, posição nas buscas e desempenho de cada perfil, acompanhados semana a semana."));
     if (!lista.length) { semMarcas(el); return; }
-    const abas = [["visao", "Visão geral"], ["pre", "Pré-análise"], ["mapa", "Mapa de posição"], ["checagem", "Checagem do perfil"], ["editar", "Editar perfil"], ["publicacoes", "Posts e imagens"], ["avaliacoes", "Avaliações"], ["pedir", "Pedir avaliações"], ["triagem", "Triagem 1★"], ["relatorio", "Relatório"], ["palavras", "Palavras-chave"], ["desempenho", "Desempenho"], ["conexao", "Conexão"]];
+    const abas = [["visao", "Visão geral"], ["pre", "Pré-análise"], ["mapa", "Mapa de posição"], ["buscas", "Buscas no Google"], ["checagem", "Checagem do perfil"], ["editar", "Editar perfil"], ["publicacoes", "Posts e imagens"], ["avaliacoes", "Avaliações"], ["pedir", "Pedir avaliações"], ["triagem", "Triagem 1★"], ["relatorio", "Relatório"], ["palavras", "Palavras-chave"], ["desempenho", "Desempenho"], ["conexao", "Conexão"]];
     abas.push(["seo", "Google orgânico"], ["ads", "Google Ads"], ["concorrentes", "Concorrentes"]);
     const atual = abas.some(a => a[0] === aba) ? aba : "visao";
     const sel = seletorMarca(lista, estado.marcaGoogle || lista[0].id);
@@ -5495,6 +5584,7 @@ Botão só com texto = resposta.` })),
       if (atual === "visao") await abaGoogleVisao(area, lista);
       else if (atual === "pre") await abaPreAnalise(area);
       else if (atual === "mapa") await abaMapaPosicao(area, lista.find(m => String(m.id) === String(marcaId)));
+      else if (atual === "buscas") await abaBuscasGoogle(area, lista.find(m => String(m.id) === String(marcaId)));
       else if (atual === "editar") await abaEditarPerfilGoogle(area, lista.find(m => String(m.id) === String(marcaId)));
       else if (atual === "pedir") await abaPedirAvaliacoes(area, lista.find(m => String(m.id) === String(marcaId)));
       else if (atual === "checagem") await abaChecagemPerfil(area, marcaId);
@@ -6131,6 +6221,7 @@ Botão só com texto = resposta.` })),
   function ferramentasGoogle() {
     const itens = [
       ["pre", "Pré-análise + proposta em PDF", "Analise qualquer empresa pelo nome e gere a proposta comercial."],
+      ["buscas", "Buscas no Google", "O que as pessoas digitaram, quantas vezes, a posição e até onde o perfil chega."],
       ["mapa", "Mapa de posição", "Grade no mapa: em que posição o perfil aparece em cada ponto do bairro."],
       ["checagem", "Checagem do perfil", "Nota de 0 a 100 e a lista do que corrigir, com o motivo."],
       ["relatorio", "Relatório em PDF", "Baixe ou mande sozinho por e-mail, com a sua logo."],
@@ -6165,6 +6256,61 @@ Botão só com texto = resposta.` })),
             h("td", { text: numero(p.programados || 0) }),
             h("td", {}, (p.palavras || []).length ? (p.palavras || []).slice(0, 3).map(w => h("span", { class: "sub", style: "display:block", text: `${w.palavra}: ${w.posicao ? w.posicao + "º" : "fora do top 20"}` })) : h("a", { href: "#/google/palavras", onclick: e => { e.preventDefault(); ir(p.marca_id, "palavras"); }, text: "acompanhar" })),
             h("td", { class: "td-acoes" }, h("div", { class: "acoes" }, botao("Checagem", () => ir(p.marca_id, "checagem"), "btn-secundario btn-pequeno"), botao("Editar", () => ir(p.marca_id, "editar"), "btn-secundario btn-pequeno"))))))))));
+  }
+
+  // ----- Google: buscas (o que digitaram, quantas vezes, posição, por onde e até onde o perfil chega)
+  async function abaBuscasGoogle(area, marca) {
+    const meses = estado.mesesBuscas || "3";
+    const d = await mk(`google/buscas?marca=${marca.id}&meses=${meses}`, { fresco: true });
+    if (!d.conectada) { trocar(area, h("section", { class: "cartao vidro" }, vazio("Conecte o Google deste perfil", "Depois de conectado, as buscas aparecem aqui sozinhas."), pode("ADMIN") ? h("div", { class: "acoes" }, botao("Conectar Google", () => conectarGoogle(marca), "btn-primario")) : null)); return; }
+    const sel = h("select", { class: "entrada" }, [["1", "Mês passado"], ["3", "Últimos 3 meses"], ["6", "Últimos 6 meses"], ["12", "Últimos 12 meses"]].map(([v, t]) => h("option", { value: v, text: t, selected: v === meses })));
+    sel.addEventListener("change", () => { estado.mesesBuscas = sel.value; trocar(area, carregando()); abaBuscasGoogle(area, marca).catch(e => aviso(e.message, "erro")); });
+    const mes = v => v ? v.split("-").reverse().join("/") : "";
+    const qtd = x => x.buscas != null ? numero(x.buscas) : x.menos_de != null ? `menos de ${x.menos_de}` : "—";
+    const seta = (agora, antes, menorMelhor) => { if (agora == null || antes == null || agora === antes) return null; const melhor = menorMelhor ? (agora || 99) < (antes || 99) : agora > antes; return h("span", { class: "sub", style: `color:${melhor ? "#34d399" : "#f87171"};margin-left:6px`, text: melhor ? "▲" : "▼" }); };
+    const posTxt = p => p == null ? "—" : p === 0 ? "fora do top 20" : p + "º";
+    const medir = (x) => botao(x.palavra_id ? "Medir de novo" : "Medir posição", async (_e, b) => {
+      b.disabled = true; b.textContent = "Medindo…";
+      try {
+        if (x.palavra_id) await mk(`palavras/${x.palavra_id}/medir`, { metodo: "POST", corpo: {} });
+        else await mk("palavras", { metodo: "POST", corpo: { marca_id: marca.id, palavra: x.palavra } });
+        aviso("Posição medida. Daqui pra frente ela é medida toda semana.", "ok"); abaBuscasGoogle(area, marca);
+      } catch (e) { aviso(e.message, "erro"); b.disabled = false; b.textContent = "Medir posição"; }
+    }, "btn-secundario btn-pequeno");
+    const top = d.palavras.filter(x => !x.so_acompanhada);
+    const o = d.onde;
+    const totalVistas = o ? o.pesquisa_celular + o.pesquisa_computador + o.maps_celular + o.maps_computador : 0;
+    const pct = v => totalVistas ? Math.round(v / totalVistas * 100) + "%" : "—";
+    const barra = (rot, v) => h("div", { class: "barra-linha" }, h("span", { text: rot }), h("div", { class: "barra-trilho" }, h("i", { style: `width:${totalVistas ? Math.max(2, v / totalVistas * 100) : 0}%` })), h("strong", { text: `${numero(v)} · ${pct(v)}` }));
+    trocar(area,
+      h("div", { class: "linha-form" }, campo("Período", sel)),
+      h("section", { class: "grade grade-4" },
+        metrica("Buscas que mostraram o perfil", numero(d.total_buscas), `${mes(d.periodo.de)} a ${mes(d.periodo.ate)}`),
+        metrica("Termos diferentes", numero(top.length), "o que as pessoas digitaram"),
+        metrica("Vezes que o perfil apareceu", o ? numero(totalVistas) : "—", "Pesquisa + Maps"),
+        metrica("Pedidos de rota", o ? numero(o.rotas) : "—", "gente indo até você")),
+      h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "O que as pessoas pesquisaram" }),
+        h("p", { class: "dica", text: "Números oficiais do Google (só meses completos). O Google esconde o número exato das buscas pequenas e mostra \"menos de 15\". A posição é medida pela DENIA na busca do Google Maps da região do perfil." }),
+        top.length || d.palavras.length ? h("div", { class: "tabela-caixa" }, h("table", {},
+          h("thead", {}, h("tr", {}, ["Busca", "Pessoas que buscaram", "Período anterior", "Posição", "Medida em", ""].map(t => h("th", { text: t })))),
+          h("tbody", {}, d.palavras.slice(0, 200).map(x => h("tr", {},
+            h("td", {}, h("strong", { text: x.palavra }), x.so_acompanhada ? h("span", { class: "sub", text: "acompanhada (sem buscas registradas no período)" }) : null),
+            h("td", {}, qtd(x), seta(x.buscas, x.antes, false)),
+            h("td", { text: x.antes != null ? numero(x.antes) : "—" }),
+            h("td", {}, posTxt(x.posicao), seta(x.posicao, x.posicao_anterior, true)),
+            h("td", { text: x.medido_em ? x.medido_em.split("-").reverse().join("/") : "—" }),
+            h("td", { class: "td-acoes" }, pode("AGENTE") && d.places_configurado ? medir(x) : null)))))) : vazio("Sem buscas registradas ainda", "O Google libera as buscas do mês depois que ele fecha. Perfis novos podem levar algumas semanas.", ICONES.caixa),
+        !d.places_configurado ? h("p", { class: "nota nota-alerta", text: "Para medir a posição sozinha falta a chave GOOGLE_PLACES_API_KEY na Hostinger (Places API do Google)." }) : null),
+      o ? h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Por onde as pessoas viram o perfil" }),
+        h("div", { class: "barras" }, barra("Pesquisa Google no celular", o.pesquisa_celular), barra("Pesquisa Google no computador", o.pesquisa_computador), barra("Google Maps no celular", o.maps_celular), barra("Google Maps no computador", o.maps_computador)),
+        h("p", { class: "sub", text: `Ações depois de ver o perfil: ${numero(o.ligacoes)} ligações · ${numero(o.rotas)} pedidos de rota · ${numero(o.cliques_site)} cliques no site · ${numero(o.mensagens)} mensagens.` }),
+        h("p", { class: "nota", text: "O Google não informa o bairro ou a cidade de quem pesquisou (é privacidade do usuário; nenhuma ferramenta tem esse dado oficial). O que dá para medir é onde o perfil aparece bem: veja o alcance abaixo." })) : null,
+      h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Até onde o perfil chega no mapa" }),
+        d.alcance.length ? h("div", { class: "tabela-caixa" }, h("table", {},
+          h("thead", {}, h("tr", {}, ["Busca", "Top 3 até", "Top 10 até", "Aparece até", "Área no top 3", "Posição média", "Medido em"].map(t => h("th", { text: t })))),
+          h("tbody", {}, d.alcance.map(a => h("tr", {}, h("td", { text: a.palavra }), h("td", { text: a.top3_km ? a.top3_km.toLocaleString(LOCALE) + " km" : "não chega" }), h("td", { text: a.top10_km ? a.top10_km.toLocaleString(LOCALE) + " km" : "não chega" }), h("td", { text: a.aparece_km ? a.aparece_km.toLocaleString(LOCALE) + " km" : "—" }), h("td", { text: a.top3_pct + "%" }), h("td", { text: a.media != null ? String(a.media).replace(".", ",") + "º" : "—" }), h("td", { text: new Date(a.medido_ms).toLocaleDateString(LOCALE) }))))))
+          : h("p", { class: "dica", text: "Ainda não há medição. Rode o Mapa de posição para uma busca (ex.: o serviço principal) e o alcance aparece aqui." }),
+        h("div", { class: "acoes" }, h("a", { class: "btn btn-secundario", href: "#/google/mapa" }, "Abrir o Mapa de posição"))));
   }
 
   // ----- Google: editar o perfil pela DENIA

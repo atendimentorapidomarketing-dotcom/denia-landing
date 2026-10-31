@@ -3190,7 +3190,7 @@ test("Google: serviços e fotos pelo perfil (foto vai por link assinado; serviç
   const f = await p.req("/api/orgs/1/mk/google/foto", { metodo: "POST", quem: "admin", corpo: { marca_id: marca, categoria: "EXTERIOR", dados: jpg } });
   assert.equal(f.status, 200, JSON.stringify(f.dados));
   assert.equal(foto.locationAssociation.category, "EXTERIOR");
-  assert.match(foto.sourceUrl, /^https:\/\/plataforma\.test\/m\/\d+-[\w-]{32}\.jpg$/);
+  assert.match(foto.sourceUrl, /^https:\/\/plataforma\.test\/m\/\d+-[\w-]{32}\/[a-z0-9-]+\.jpg$/, "o endereço termina com o nome pensado para busca");
   const pub = await p.req(new URL(foto.sourceUrl).pathname);
   assert.equal(pub.status, 200, "o Google consegue baixar a foto pelo link assinado");
   assert.equal((await p.req("/api/orgs/1/mk/google/foto", { metodo: "POST", quem: "admin", corpo: { marca_id: marca, dados: "aGVsbG8=" } })).status, 400, "só JPG/PNG");
@@ -3328,6 +3328,8 @@ test("Google: pré-análise de qualquer empresa, mapa de posição em grade e si
       if (corpo.locationBias) return { places: [{ id: "C1", displayName: { text: "Concorrente 1" }, rating: 4.9, userRatingCount: 300, types: ["general_contractor", "roofing_contractor"], primaryTypeDisplayName: { text: "Empreiteiro" } }, { id: "PLACE_RT" }, { id: "C2", displayName: { text: "Concorrente 2" }, rating: 4.6, userRatingCount: 100, types: ["general_contractor"] }] };
       return { places: [{ id: "PLACE_RT", displayName: { text: "Reforma Tudo RT" }, formattedAddress: "Tijuca, Rio de Janeiro", rating: 4.8, userRatingCount: 40 }] };
     }
+    if (url.includes("/searchkeywords/impressions/monthly")) return { searchKeywordsCounts: [{ searchKeyword: "pedreiro tijuca", insightsValue: { value: "120" } }, { searchKeyword: "reforma apartamento", insightsValue: { threshold: "15" } }] };
+    if (url.includes(":fetchMultiDailyMetricsTimeSeries")) return { multiDailyMetricTimeSeries: [{ dailyMetricTimeSeries: [{ dailyMetric: "BUSINESS_IMPRESSIONS_MOBILE_SEARCH", timeSeries: { datedValues: [{ date: { year: 2026, month: 9, day: 1 }, value: "300" }] } }, { dailyMetric: "BUSINESS_IMPRESSIONS_MOBILE_MAPS", timeSeries: { datedValues: [{ date: { year: 2026, month: 9, day: 1 }, value: "100" }] } }, { dailyMetric: "BUSINESS_DIRECTION_REQUESTS", timeSeries: { datedValues: [{ date: { year: 2026, month: 9, day: 1 }, value: "7" }] } }] }] };
     if (url.startsWith("https://places.googleapis.com/v1/places/PLACE_RT")) return { id: "PLACE_RT", displayName: { text: "Reforma Tudo RT" }, rating: 4.8, userRatingCount: 40, primaryTypeDisplayName: { text: "Empreiteiro" }, types: ["general_contractor"], location: { latitude: -22.92, longitude: -43.23 }, businessStatus: "OPERATIONAL", photos: [1, 2, 3], addressComponents: [{ longText: "Rio de Janeiro", types: ["administrative_area_level_2"] }] };
     return { error: { code: 404, message: "inesperado " + url } };
   };
@@ -3347,6 +3349,15 @@ test("Google: pré-análise de qualquer empresa, mapa de posição em grade e si
   assert.equal(g.dados.pontos.length, 9); assert.equal(buscasGrade, 9);
   assert.ok(g.dados.pontos.every(x => [1, 3].includes(x.posicao)));
   assert.equal((await p.req(`/api/orgs/1/mk/google/geogrid?marca=${marca}`, { quem: "admin" })).dados.grades.length, 1);
+  // Buscas no Google: o que digitaram, quantas vezes, posição acompanhada, por onde viram e alcance no mapa
+  await p.req("/api/orgs/1/mk/palavras", { metodo: "POST", quem: "admin", corpo: { marca_id: marca, palavra: "Pedreiro Tijuca" } });
+  const bu = await p.req(`/api/orgs/1/mk/google/buscas?marca=${marca}&meses=3`, { quem: "admin" });
+  assert.equal(bu.status, 200, JSON.stringify(bu.dados));
+  assert.equal(bu.dados.palavras[0].palavra, "pedreiro tijuca"); assert.equal(bu.dados.palavras[0].buscas, 120);
+  assert.ok(bu.dados.palavras[0].palavra_id, "liga a busca do Google com a palavra acompanhada, sem diferenciar maiúsculas");
+  assert.equal(bu.dados.palavras[1].menos_de, 15);
+  assert.equal(bu.dados.onde.pesquisa_celular, 300); assert.equal(bu.dados.onde.rotas, 7);
+  assert.equal(bu.dados.alcance[0].palavra, "pedreiro"); assert.ok(bu.dados.alcance[0].top3_km > 0, "mede até quantos km o perfil fica no top 3");
   // Situação
   const s = (await p.req(`/api/orgs/1/mk/google/situacao?marca=${marca}`, { quem: "admin" })).dados;
   assert.equal(s.situacao, "suspenso");
@@ -3414,4 +3425,36 @@ test("Postar as minhas fotos — a IA olha a foto, escreve o post com o WhatsApp
   assert.match(pedido.instructions, /NÃO coloque telefone/, "no Google a IA não põe telefone");
   const { semTelefone } = await import("../src/google.js");
   assert.equal(semTelefone("Seu tapete merece!\n\n📱 WhatsApp: 11 98765-4321\nZona Sul."), "Seu tapete merece!\n\nZona Sul.");
+});
+
+test("Fotos e mídias — nome pensado para o Google, texto na foto opcional e controle de quem subiu cada foto", async () => {
+  const p = await criarPlataforma({ OPENAI_API_KEY: "sk-teste" });
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  const m = await p.req("/api/orgs/1/mk/marcas", { metodo: "POST", quem: "admin", corpo: { nome: "TV Rio", cidade: "Botafogo, Rio de Janeiro" } });
+  let instr = "";
+  p.openai = (url, corpo) => { instr = corpo.instructions; return { output: [{ content: [{ type: "output_text", text: JSON.stringify({ titulo: "TV nova de novo", legenda: "l", hashtags: "", chamada: "", texto_arte: "Conserto no mesmo dia", nome_arquivo: "Conserto TV Samsung Botafogo", descricao_foto: "Técnico consertando TV Samsung em Botafogo" }) }] }] }; };
+  const jpeg = "data:image/jpeg;base64," + Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 16, 74, 70, 73, 70, 0, 1, 1, 0, 0, 1, 0, 1, 0, 0, 0xff, 0xd9]).toString("base64");
+  const a = (await p.req("/api/orgs/1/mk/ia/post-foto", { metodo: "POST", quem: "admin", corpo: { marca_id: m.dados.id, foto: jpeg, texto_na_foto: "sim" } })).dados;
+  assert.equal(a.nome_arquivo, "conserto-tv-samsung-botafogo");
+  assert.equal(a.texto_arte, "Conserto no mesmo dia");
+  assert.match(instr, /OBRIGATÓRIO/);
+  const b = (await p.req("/api/orgs/1/mk/ia/post-foto", { metodo: "POST", quem: "admin", corpo: { marca_id: m.dados.id, foto: jpeg, texto_na_foto: "nao" } })).dados;
+  assert.equal(b.nome_arquivo, "conserto-tv-samsung-botafogo-2", "nome repetido ganha número");
+  assert.equal(b.texto_arte, "", "sem texto quando a pessoa pede foto limpa");
+  // Foto com texto montada no navegador e volta para a original
+  const t = (await p.req(`/api/orgs/1/mk/posts/${a.id}/foto`, { metodo: "POST", quem: "admin", corpo: { dados: jpeg, texto_arte: "Conserto no mesmo dia" } })).dados;
+  assert.notEqual(t.midia_id, a.post.midia_id);
+  let lib = (await p.req(`/api/orgs/1/mk/midias?marca=${m.dados.id}`, { quem: "admin" })).dados.midias;
+  assert.equal(lib.length, 2, "a original fica guardada, mas não repete na lista");
+  const comTexto = lib.find(x => x.id === t.midia_id);
+  assert.equal(comTexto.com_texto, true); assert.equal(comTexto.nome_arquivo, "conserto-tv-samsung-botafogo");
+  assert.ok(comTexto.enviado_por); assert.equal(comTexto.origem, "foto"); assert.equal(comTexto.posts[0].id, a.id);
+  const volta = (await p.req(`/api/orgs/1/mk/posts/${a.id}/foto`, { metodo: "POST", quem: "admin", corpo: { original: true } })).dados;
+  assert.equal(volta.midia_id, a.post.midia_id);
+  // Baixar com o nome e renomear
+  const baixa = await p.req(`/api/orgs/1/mk/midias/${a.post.midia_id}?baixar=1`, { quem: "admin" });
+  assert.match(baixa.r.headers.get("content-disposition"), /conserto-tv-samsung-botafogo\.jpg/);
+  await p.req(`/api/orgs/1/mk/midias/${a.post.midia_id}`, { metodo: "POST", quem: "admin", corpo: { nome_arquivo: "Conserto de TV — Botafogo", descricao: "nova" } });
+  lib = (await p.req(`/api/orgs/1/mk/midias?origem=foto`, { quem: "admin" })).dados.midias;
+  assert.ok(lib.some(x => x.nome_arquivo === "conserto-de-tv-botafogo" && x.descricao === "nova"));
 });

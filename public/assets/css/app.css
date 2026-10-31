@@ -1041,3 +1041,20 @@ input.fx-titulo:focus { outline: none; border-color: var(--azul); background: rg
 .foto-mais { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px; cursor:pointer; color:inherit; border-style:dashed; font:inherit }
 .foto-mais strong { font-size:26px; line-height:1 }
 .foto-mais span { font-size:12px; opacity:.8 }
+
+/* Fotos e mídias */
+.midias-grade { display:grid; grid-template-columns:repeat(auto-fill,minmax(240px,1fr)); gap:14px }
+.midia-cartao { display:flex; flex-direction:column; gap:6px; padding:12px }
+.midia-cartao img { width:100%; aspect-ratio:1; object-fit:cover; border-radius:10px; display:block; background:rgba(255,255,255,.04) }
+.midia-nome { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12.5px; word-break:break-all }
+.midia-cartao .sub { margin:0 }
+.midia-usos { display:flex; flex-wrap:wrap; gap:6px }
+.lista-nomes p { margin:4px 0 }
+@media (max-width:640px) { .midias-grade { grid-template-columns:1fr 1fr; gap:10px } .midia-cartao .acoes .btn { padding:6px 8px } }
+
+/* Buscas: barras de "por onde viram" */
+.barras { display:grid; gap:10px; margin:6px 0 10px }
+.barra-linha { display:grid; grid-template-columns:minmax(150px,220px) 1fr auto; gap:10px; align-items:center; font-size:14px }
+.barra-trilho { height:10px; border-radius:999px; background:rgba(255,255,255,.06); overflow:hidden }
+.barra-trilho i { display:block; height:100%; border-radius:999px; background:linear-gradient(90deg,#22d3ee,#a855f7) }
+@media (max-width:640px) { .barra-linha { grid-template-columns:1fr auto } .barra-linha .barra-trilho { grid-column:1 / -1; order:3 } }
