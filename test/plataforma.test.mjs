@@ -1059,6 +1059,16 @@ test("Google Meu Negócio — conectar o perfil, trazer avaliações e desempenh
   const envio = p.googleChamadas.find(c => c.url.endsWith("/localPosts"));
   assert.equal(envio.corpo.summary, "Agora atendemos em Niterói!");
   assert.deepEqual(envio.corpo.callToAction, { actionType: "LEARN_MORE", url: "https://oficina.test" });
+  // Oferta no Google com texto próprio da rede: título, período, termos, sem hashtags e sem telefone, sem botão (o Google não aceita botão em oferta).
+  const oferta = (await p.req("/api/orgs/1/mk/posts", { metodo: "POST", quem: "admin", corpo: { marca_id: marca, canais: ["google"], formato: "google", data: "2020-01-01", hora: "09:00", titulo: "Oferta", legenda: "geral",
+    textos: { google: { tipo: "OFERTA", texto: "Revisão completa em Niterói com 10% de desconto em novembro. Ligue (21) 99999-8888 #oficina #niteroi", titulo: "10% na revisão", inicio: "2026-11-01", fim: "2026-11-30", termos: "Válido para carros de passeio." } } } })).dados.id;
+  await p.req(`/api/orgs/1/mk/posts/${oferta}/acao`, { metodo: "POST", quem: "admin", corpo: { acao: "aprovar" } });
+  const envioO = p.googleChamadas.filter(c => c.url.endsWith("/localPosts")).at(-1).corpo;
+  assert.equal(envioO.topicType, "OFFER");
+  assert.deepEqual(envioO.event, { title: "10% na revisão", schedule: { startDate: { year: 2026, month: 11, day: 1 }, endDate: { year: 2026, month: 11, day: 30 } } });
+  assert.equal(envioO.offer.termsConditions, "Válido para carros de passeio.");
+  assert.equal(envioO.summary, "Revisão completa em Niterói com 10% de desconto em novembro.", "sem telefone e sem hashtags");
+  assert.equal(envioO.callToAction, undefined);
   assert.match(envio.corpo.media[0].sourceUrl, /^https:\/\/plataforma\.test\/m\/1-/);
 });
 
@@ -3482,7 +3492,7 @@ test("Postar as minhas fotos — a IA olha a foto, escreve o post com o WhatsApp
   const sem = await p.req("/api/orgs/1/mk/ia/post-foto", { metodo: "POST", quem: "admin", corpo: { marca_id: m.dados.id, foto: "data:text/plain;base64,aGVsbG8=" } });
   assert.equal(sem.status, 400, "só aceita imagem");
   await p.req("/api/orgs/1/mk/ia/post-foto", { metodo: "POST", quem: "admin", corpo: { marca_id: m.dados.id, foto: jpeg, canais: ["google"] } });
-  assert.match(pedido.instructions, /NÃO coloque telefone/, "no Google a IA não põe telefone");
+  assert.match(pedido.instructions, /SEM telefone/, "no Google a IA não põe telefone");
   const { semTelefone } = await import("../src/google.js");
   assert.equal(semTelefone("Seu tapete merece!\n\n📱 WhatsApp: 11 98765-4321\nZona Sul."), "Seu tapete merece!\n\nZona Sul.");
 });
@@ -3534,7 +3544,7 @@ test("Legenda de foto — nunca sai como descrição da imagem: a IA reescreve c
   const jpeg = "data:image/jpeg;base64," + Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 16, 74, 70, 73, 70, 0, 1, 1, 0, 0, 1, 0, 1, 0, 0, 0xff, 0xd9]).toString("base64");
   const r = (await p.req("/api/orgs/1/mk/ia/post-foto", { metodo: "POST", quem: "admin", corpo: { marca_id: m.dados.id, foto: jpeg, pedido: "quero legenda com palavras-chave" } })).dados;
   assert.equal(pedidos.length, 2, "a conferência pediu para reescrever");
-  assert.match(pedidos[0].instructions, /não uma descrição da imagem/);
+  assert.match(pedidos[0].instructions, /nunca uma descrição da imagem/);
   assert.match(pedidos[0].instructions, /lavagem de tapete zona sul/, "usa as palavras-chave que a empresa acompanha");
   assert.equal(r.post.legenda, boa);
   assert.deepEqual(r.palavras_chave, ["lavagem de tapete zona sul"]);
@@ -3568,4 +3578,42 @@ test("Publicar agora — aprovar com agora=true publica na hora, mesmo com a dat
   const r = (await p.req(`/api/orgs/1/mk/posts/${id}/acao`, { metodo: "POST", quem: "admin", corpo: { acao: "aprovar", agora: true } })).dados;
   assert.doesNotMatch(r.resumo, /sai sozinho em/, "não fica agendado");
   assert.notEqual(p.env.DB.q("SELECT data FROM plt_mk_posts WHERE id=?", id)[0].data, "2099-01-01");
+});
+
+test("Post agendado sem aprovação — no horário a DENIA avisa em Problemas que ele não sai sem aprovar", async () => {
+  const p = await criarPlataforma({ SITE_URL: "https://plataforma.test" });
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  const m = (await p.req("/api/orgs/1/mk/marcas", { metodo: "POST", quem: "admin", corpo: { nome: "Limpeza" } })).dados.id;
+  const agora = new Date(Date.now() - 3 * 3600000 - 10 * 60000).toISOString();
+  const id = (await p.req("/api/orgs/1/mk/posts", { metodo: "POST", quem: "admin", corpo: { marca_id: m, canais: ["google"], legenda: "x", data: agora.slice(0, 10), hora: agora.slice(11, 16) } })).dados.id;
+  await p.req(`/api/orgs/1/mk/posts/${id}/acao`, { metodo: "POST", quem: "admin", corpo: { acao: "enviar" } });
+  p.env.DB.prepare("UPDATE plt_mk_posts SET status='AGUARDANDO' WHERE id=?").bind(id).run();
+  const mod = await import("../src/worker.js");
+  await mod.default.scheduled({}, p.env, { waitUntil: pr => pr });
+  await new Promise(r => setTimeout(r, 50));
+  const pb = p.env.DB.q("SELECT titulo, motivo FROM plt_problemas WHERE chave=?", `post_${id}`)[0];
+  assert.ok(pb, "registrou o problema");
+  assert.match(pb.titulo, /não saiu porque ainda não foi aprovado/);
+});
+
+test("Post por rede — texto próprio de Instagram, Facebook e Google, foto 4:3 para o Google e agendar já aprovado", async () => {
+  const p = await criarPlataforma({ OPENAI_API_KEY: "sk-teste" });
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  const m = (await p.req("/api/orgs/1/mk/marcas", { metodo: "POST", quem: "admin", corpo: { nome: "Limpeza Zona Sul", cidade: "Zona Sul de SP", whatsapp: "11 98765-4321" } })).dados.id;
+  const ig = "Seu tapete pede socorro? 😩\n\nLavagem de tapete na Zona Sul com secagem controlada. Buscamos e entregamos.\n\nTapete persa, sisal ou felpudo: tratamento certo para cada um, sem cheiro e sem manchas.\n\n📱 WhatsApp: 11 98765-4321";
+  let instr = "";
+  p.openai = (url, corpo) => { instr = corpo.instructions; return { output: [{ content: [{ type: "output_text", text: JSON.stringify({ titulo: "Tapete", instagram: { legenda: ig, hashtags: "#lavagemdetapete #zonasulsp" }, facebook: { legenda: "Tapete limpo de verdade na Zona Sul. Chame no WhatsApp: 11 98765-4321" }, google: { tipo: "OFERTA", texto: "Lavagem de tapete na Zona Sul com 10% de desconto em novembro. Toque em Ligar e peça seu orçamento.", titulo: "10% na lavagem de tapete", inicio: "2026-11-01", fim: "2026-11-30" }, chamada: "Chame no WhatsApp", palavras_chave: ["lavagem de tapete zona sul"], nome_arquivo: "lavagem-tapete-zona-sul", descricao_foto: "Tapete persa limpo" }) }] }] }; };
+  const jpeg = "data:image/jpeg;base64," + Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 16, 74, 70, 73, 70, 0, 1, 1, 0, 0, 1, 0, 1, 0, 0, 0xff, 0xd9]).toString("base64");
+  const r = (await p.req("/api/orgs/1/mk/ia/post-foto", { metodo: "POST", quem: "admin", corpo: { marca_id: m, foto: jpeg, foto_google: jpeg, canais: ["instagram", "facebook", "google"], aprovar: true, data: "2026-11-05", hora: "16:55" } })).dados;
+  assert.match(instr, /SEM hashtags, SEM telefone/); assert.match(instr, /OFERTA/); assert.match(instr, /FACEBOOK/);
+  assert.equal(r.status, "APROVADO", "agendar pelo cartão já aprova (senão não sai sozinho)");
+  assert.equal(r.textos.google.tipo, "OFERTA"); assert.equal(r.textos.facebook.legenda.startsWith("Tapete limpo"), true);
+  assert.equal(r.post.legenda, ig);
+  const row = p.env.DB.q("SELECT midia_google_id, aprovado_por FROM plt_mk_posts WHERE id=?", r.id)[0];
+  assert.ok(row.midia_google_id, "foto 4:3 do Google guardada à parte"); assert.ok(row.aprovado_por);
+  const lista = (await p.req("/api/orgs/1/mk/posts?status=APROVADO", { quem: "admin" })).dados.posts;
+  assert.equal(lista.find(x => x.id === r.id).textos.google.titulo, "10% na lavagem de tapete");
+  // "Só criar" continua indo para aprovação; quem não é administrador não consegue aprovar por aqui
+  const s2 = (await p.req("/api/orgs/1/mk/ia/post-foto", { metodo: "POST", quem: "admin", corpo: { marca_id: m, foto: jpeg, canais: ["google"], tipo_google: "NOVIDADE" } })).dados;
+  assert.equal(s2.status, "AGUARDANDO"); assert.equal(s2.textos.google.tipo, "NOVIDADE", "o tipo escolhido pela pessoa vale");
 });

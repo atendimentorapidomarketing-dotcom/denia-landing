@@ -312,7 +312,8 @@ export function semTelefone(t) {
   const fone = /(?:\+?\d{1,3}[\s.-]?)?(?:\(?\d{2}\)?[\s.-]?)?\d{4,5}[\s.-]?\d{4}\b/g;
   return String(t || "").split("\n").map(l => {
     if (l.search(fone) < 0) return l;
-    const r = l.replace(fone, "").replace(/\s{2,}/g, " ").trim();
+    const r = l.replace(fone, "").replace(/\s{2,}/g, " ").trim()
+      .replace(/[\s,;:–-]*(?:📱|📞|☎️|👉)?\s*(?:ligue(?: já| agora)?|chame(?: já)?(?: no whats(?:app)?)?|whats(?:app)?|telefone|tel\.?|fone|contato)[\s:–-]*$/i, "").trim();
     // Linha que era só o contato ("WhatsApp: …", "Chame já: …") some inteira.
     return /^[^\p{L}]*$/u.test(r) || /[:–-]$/.test(r) || r.length < 4 ? null : r;
   }).filter(l => l !== null).join("\n").replace(/\n{3,}/g, "\n\n").trim();
@@ -324,12 +325,33 @@ export async function publicarGoogle(env, k, conta, p, imagem, video) {
   if (video?.url) { const v = await chamar("POST", `${API_V4}/${caminhoV4(conta)}/media`, token, { mediaFormat: "VIDEO", locationAssociation: { category: "ADDITIONAL" }, sourceUrl: video.url }); videoId = v.name || null; }
   const marca = await env.DB.prepare("SELECT site, idioma FROM plt_mk_marcas WHERE id=?").bind(p.marca_id).first();
   // O Google recusa posts com telefone no texto: o número sai (o botão "Ligar" do post já leva ao telefone do perfil).
-  const resumo = semTelefone([p.legenda, p.chamada].map(x => String(x || "").trim()).filter(Boolean).filter((x, i, a) => a.indexOf(x) === i).join("\n\n")).slice(0, 1500);
+  let t = {}; try { t = (typeof p.textos === "string" ? JSON.parse(p.textos) : p.textos)?.google || {}; } catch { t = {}; }
+  const base = t.texto || [p.legenda, p.chamada].map(x => String(x || "").trim()).filter(Boolean).filter((x, i, a) => a.indexOf(x) === i).join("\n\n");
+  // Google: sem telefone (o botão "Ligar" faz isso) e sem hashtags (não funcionam na busca).
+  const resumo = semTelefone(String(base).replace(/(^|\s)#[\p{L}\p{N}_]+/gu, "$1")).replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim().slice(0, 1500);
   if (!resumo) throw new Error("O post do Google precisa de texto (a legenda está vazia).");
   const corpo = { languageCode: IDIOMA_GOOGLE[marca?.idioma] || "pt-BR", summary: resumo, topicType: "STANDARD" };
+  // Oferta e Evento: título e período (recursos próprios do Google). Oferta pode ter cupom, link de resgate e termos.
+  const tipo = ["OFERTA", "EVENTO"].includes(t.tipo) ? t.tipo : "NOVIDADE";
+  if (tipo !== "NOVIDADE") {
+    const hoje = new Date(k.agora(env) - 3 * 3600000).toISOString().slice(0, 10);
+    const ini = /^\d{4}-\d{2}-\d{2}$/.test(t.inicio || "") ? t.inicio : hoje;
+    let fim = /^\d{4}-\d{2}-\d{2}$/.test(t.fim || "") ? t.fim : (() => { const d = new Date(hoje + "T12:00:00Z"); d.setUTCMonth(d.getUTCMonth() + 1, 0); return d.toISOString().slice(0, 10); })();
+    if (fim < ini) fim = ini;
+    const data = s2 => { const [y, m, d] = s2.split("-").map(Number); return { year: y, month: m, day: d }; };
+    corpo.topicType = tipo === "OFERTA" ? "OFFER" : "EVENT";
+    corpo.event = { title: String(t.titulo || p.titulo || (tipo === "OFERTA" ? "Oferta especial" : "Evento")).slice(0, 58), schedule: { startDate: data(ini), endDate: data(fim), ...(tipo === "OFERTA" ? {} : { startTime: { hours: 0, minutes: 0 }, endTime: { hours: 23, minutes: 59 } }) } };
+    if (tipo === "OFERTA") {
+      corpo.offer = {};
+      if (t.cupom) corpo.offer.couponCode = String(t.cupom).slice(0, 58);
+      if (t.termos) corpo.offer.termsConditions = String(t.termos).slice(0, 5000);
+      const site = String(p.botao_url || marca?.site || "").trim();
+      if (/^https:\/\//i.test(site)) corpo.offer.redeemOnlineUrl = site;
+    }
+  }
   if (imagem) corpo.media = [{ mediaFormat: "PHOTO", sourceUrl: imagem }];
-  corpo.callToAction = botaoDoPost(p, marca);
-  if (!corpo.callToAction) delete corpo.callToAction;
+  // Oferta não leva botão no Google (o resgate vai em offer.redeemOnlineUrl).
+  if (corpo.topicType !== "OFFER") { corpo.callToAction = botaoDoPost(p, marca); if (!corpo.callToAction) delete corpo.callToAction; }
   const r = await chamar("POST", `${API_V4}/${caminhoV4(conta)}/localPosts`, token, corpo);
   return { id: r.name || "google", link: r.searchUrl || null, ...(videoId ? { video: videoId } : {}) };
 }
