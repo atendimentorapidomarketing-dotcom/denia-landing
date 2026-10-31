@@ -39,7 +39,7 @@ const prontos = new WeakSet();
 async function garantir(env) {
   if (prontos.has(env.DB)) return;
   await env.DB.batch(DDL.map(s => env.DB.prepare(s)));
-  for (const alter of ["ALTER TABLE plt_mk_marcas ADD COLUMN idioma TEXT", "ALTER TABLE plt_mk_marcas ADD COLUMN horarios TEXT", "ALTER TABLE plt_mk_marcas ADD COLUMN logo_midia_id INTEGER", "ALTER TABLE plt_mk_posts ADD COLUMN texto_arte TEXT", "ALTER TABLE plt_mk_marcas ADD COLUMN ofertas TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN analise TEXT", "ALTER TABLE plt_mk_config ADD COLUMN avaliacoes_auto TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN triagem TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN denuncia TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN removida_ms INTEGER", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN google_id TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN avisado_ms INTEGER", "ALTER TABLE plt_mk_midias ADD COLUMN marca_id INTEGER", "ALTER TABLE plt_mk_midias ADD COLUMN nome_arquivo TEXT", "ALTER TABLE plt_mk_midias ADD COLUMN origem TEXT", "ALTER TABLE plt_mk_midias ADD COLUMN enviado_por TEXT", "ALTER TABLE plt_mk_midias ADD COLUMN descricao TEXT", "ALTER TABLE plt_mk_midias ADD COLUMN original_id INTEGER", "ALTER TABLE plt_mk_midias ADD COLUMN google_id TEXT", "ALTER TABLE plt_mk_midias ADD COLUMN arquivo TEXT", "ALTER TABLE plt_mk_midias ADD COLUMN tamanho INTEGER", "ALTER TABLE plt_mk_midias ADD COLUMN capa_id INTEGER", "ALTER TABLE plt_mk_midias ADD COLUMN duracao REAL"])
+  for (const alter of ["ALTER TABLE plt_mk_marcas ADD COLUMN idioma TEXT", "ALTER TABLE plt_mk_marcas ADD COLUMN horarios TEXT", "ALTER TABLE plt_mk_marcas ADD COLUMN logo_midia_id INTEGER", "ALTER TABLE plt_mk_posts ADD COLUMN texto_arte TEXT", "ALTER TABLE plt_mk_marcas ADD COLUMN ofertas TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN analise TEXT", "ALTER TABLE plt_mk_config ADD COLUMN avaliacoes_auto TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN triagem TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN denuncia TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN removida_ms INTEGER", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN google_id TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN avisado_ms INTEGER", "ALTER TABLE plt_mk_midias ADD COLUMN marca_id INTEGER", "ALTER TABLE plt_mk_midias ADD COLUMN nome_arquivo TEXT", "ALTER TABLE plt_mk_midias ADD COLUMN origem TEXT", "ALTER TABLE plt_mk_midias ADD COLUMN enviado_por TEXT", "ALTER TABLE plt_mk_midias ADD COLUMN descricao TEXT", "ALTER TABLE plt_mk_midias ADD COLUMN original_id INTEGER", "ALTER TABLE plt_mk_midias ADD COLUMN google_id TEXT", "ALTER TABLE plt_mk_midias ADD COLUMN arquivo TEXT", "ALTER TABLE plt_mk_midias ADD COLUMN tamanho INTEGER", "ALTER TABLE plt_mk_midias ADD COLUMN capa_id INTEGER", "ALTER TABLE plt_mk_midias ADD COLUMN duracao REAL", "ALTER TABLE plt_mk_posts ADD COLUMN botao TEXT", "ALTER TABLE plt_mk_posts ADD COLUMN botao_url TEXT"])
     await env.DB.prepare(alter).run().catch(() => { }); // coluna já existe
   prontos.add(env.DB);
 }
@@ -137,6 +137,14 @@ function linhaPost(p) {
 // Idiomas da plataforma (interface, conteúdo das marcas e conversa com a DENIA).
 export const IDIOMAS = { "pt-BR": "português do Brasil", en: "inglês (English)", es: "espanhol (español)", de: "alemão (Deutsch)", it: "italiano", fr: "francês (français)", ja: "japonês (日本語)", hi: "hindi (हिन्दी)" };
 export const idiomaDe = v => (IDIOMAS[String(v || "")] ? String(v) : "pt-BR");
+// Botão do post no Google (o Google aceita um por post): AUTO alterna Ligar e Site; os de link usam o site da marca se não houver outro.
+export const BOTOES_GOOGLE = ["AUTO", "CALL", "LEARN_MORE", "BOOK", "ORDER", "SHOP", "SIGN_UP", "NENHUM"];
+async function gravarBotao(env, postId, c) {
+  if (c.botao === undefined && c.botao_url === undefined) return;
+  const b = BOTOES_GOOGLE.includes(c.botao) ? c.botao : "AUTO";
+  const u = String(c.botao_url || "").trim().slice(0, 500);
+  await env.DB.prepare("UPDATE plt_mk_posts SET botao=?, botao_url=? WHERE id=?").bind(b, /^https:\/\/[^\s]+$/i.test(u) ? u : null, postId).run();
+}
 // Legenda de post a partir de foto ou vídeo REAL: texto de venda com palavras-chave (SEO local), nunca uma descrição da imagem.
 const pareceDescricao = (leg, desc) => {
   const l = String(leg || "").trim(), palavras = t => new Set(String(t || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").match(/[a-z0-9]{4,}/g) || []);
@@ -823,6 +831,7 @@ Responda em JSON: {"descricao":"","por_que":"(uma frase dizendo o que melhorou)"
         const status = p.status === "APROVADO" && !pode(papel, "ADMIN") ? "AGUARDANDO" : p.status;
         await env.DB.prepare("UPDATE plt_mk_posts SET marca_id=?, canais=?, formato=?, data=?, hora=?, titulo=?, legenda=?, hashtags=?, chamada=?, ideia_imagem=?, texto_arte=?, status=?, atualizado_ms=? WHERE id=? AND org_id=?")
           .bind(marca.id, v.canais, v.formato, v.data, v.hora, v.titulo, v.legenda, v.hashtags, v.chamada, v.ideia_imagem, v.texto_arte || null, status, agora(env), Number(c.id), orgId).run();
+        await gravarBotao(env, Number(c.id), c);
         return json({ ok: true, id: Number(c.id) });
       }
       const n = await env.DB.prepare(`INSERT INTO plt_mk_posts(org_id,marca_id,canais,formato,data,hora,titulo,legenda,hashtags,chamada,ideia_imagem,texto_arte,status,criado_por,criado_ms,atualizado_ms)
@@ -832,6 +841,7 @@ Responda em JSON: {"descricao":"","por_que":"(uma frase dizendo o que melhorou)"
         const md = await env.DB.prepare("SELECT id FROM plt_mk_midias WHERE id=? AND org_id=?").bind(Number(c.midia_id), orgId).first();
         if (md) await env.DB.prepare("UPDATE plt_mk_posts SET midia_id=? WHERE id=?").bind(md.id, n.id).run();
       }
+      await gravarBotao(env, n.id, c);
       return json({ ok: true, id: n.id });
     }
     if ((m = resto.match(/^posts\/(\d{1,12})\/acao$/)) && metodo === "POST") {
@@ -1046,6 +1056,7 @@ Responda em JSON: {"titulo":"","legenda":"","hashtags":"","chamada":"","texto_ar
         }
         const n = await env.DB.prepare(`INSERT INTO plt_mk_posts(org_id,marca_id,canais,formato,data,hora,titulo,legenda,hashtags,chamada,ideia_imagem,texto_arte,midia_id,status,revisao,criado_por,aprovado_por,criado_ms,atualizado_ms)
           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`).bind(orgId, marca.id, JSON.stringify(post.canais), post.formato, post.data, post.hora, post.titulo, post.legenda, post.hashtags, post.chamada, post.ideia_imagem, textoArte || null, md.id, status, revisao ? JSON.stringify(revisao) : null, autor, status === "APROVADO" ? "DENIA (aprovação automática)" : null, agora(env), agora(env)).first();
+        await gravarBotao(env, n.id, c);
         await auditar(env, request, sessao, orgId, "MARKETING", `IA escreveu o post #${n.id} a partir de uma foto enviada (${marca.nome})`);
         return json({ ok: true, id: n.id, status, nome_arquivo: nomeArq, descricao_foto: txt(r.descricao_foto, 400), palavras_chave: r.palavras_chave, texto_arte: textoArte, post: { ...post, id: n.id, midia_id: md.id, marca_id: marca.id, status } });
       }
@@ -1080,6 +1091,7 @@ Responda em JSON: {"titulo":"","legenda":"","hashtags":"","chamada":"","texto_ar
         }
         const n = await env.DB.prepare(`INSERT INTO plt_mk_posts(org_id,marca_id,canais,formato,data,hora,titulo,legenda,hashtags,chamada,ideia_imagem,texto_arte,midia_id,status,revisao,criado_por,aprovado_por,criado_ms,atualizado_ms)
           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`).bind(orgId, marca.id, JSON.stringify(post.canais), post.formato, post.data, post.hora, post.titulo, post.legenda, post.hashtags, post.chamada, post.ideia_imagem, null, vid.id, status, revisao ? JSON.stringify(revisao) : null, autor, status === "APROVADO" ? "DENIA (aprovação automática)" : null, agora(env), agora(env)).first();
+        await gravarBotao(env, n.id, c);
         await auditar(env, request, sessao, orgId, "MARKETING", `IA escreveu o post #${n.id} a partir de um vídeo enviado (${marca.nome})`);
         return json({ ok: true, id: n.id, status, nome_arquivo: nomeArq, palavras_chave: r.palavras_chave, post: { ...post, id: n.id, midia_id: vid.id, midia_video: 1, marca_id: marca.id, status } });
       }

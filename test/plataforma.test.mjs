@@ -1052,7 +1052,7 @@ test("Google Meu Negócio — conectar o perfil, trazer avaliações e desempenh
 
   // Post para o Google: aprovar com o horário já chegado publica no perfil, com o botão para o site.
   p.env.DB.prepare("INSERT INTO plt_mk_midias(org_id,mime,dados,prompt,criado_ms) VALUES(1,'image/jpeg',?, 'x', 1)").bind(Buffer.from("JPEG").toString("base64")).run();
-  const post = (await p.req("/api/orgs/1/mk/posts", { metodo: "POST", quem: "admin", corpo: { marca_id: marca, canais: ["google"], formato: "google", data: "2020-01-01", hora: "09:00", titulo: "Novidade", legenda: "Agora atendemos em Niterói!", midia_id: 1 } })).dados.id;
+  const post = (await p.req("/api/orgs/1/mk/posts", { metodo: "POST", quem: "admin", corpo: { marca_id: marca, canais: ["google"], formato: "google", botao: "LEARN_MORE", data: "2020-01-01", hora: "09:00", titulo: "Novidade", legenda: "Agora atendemos em Niterói!", midia_id: 1 } })).dados.id;
   const ap = await p.req(`/api/orgs/1/mk/posts/${post}/acao`, { metodo: "POST", quem: "admin", corpo: { acao: "aprovar" } });
   assert.equal(ap.dados.publicado, true);
   assert.match(ap.dados.resumo, /Google: https:\/\/local\.google\.com/);
@@ -3540,4 +3540,22 @@ test("Legenda de foto — nunca sai como descrição da imagem: a IA reescreve c
   assert.deepEqual(r.palavras_chave, ["lavagem de tapete zona sul"]);
   assert.equal(r.nome_arquivo, "lavagem-tapete-persa-zona-sul");
   assert.match(r.post.ideia_imagem, /Tapete persa limpo/, "a descrição fica guardada à parte, fora da legenda");
+});
+
+test("Botão do post no Google — Ligar agora, Site, outros botões, automático e sem botão", async () => {
+  const { botaoDoPost } = await import("../src/google.js");
+  const marca = { site: "https://limpezazonasul.com.br" };
+  assert.deepEqual(botaoDoPost({ botao: "CALL" }, marca), { actionType: "CALL" });
+  assert.deepEqual(botaoDoPost({ botao: "LEARN_MORE" }, marca), { actionType: "LEARN_MORE", url: "https://limpezazonasul.com.br" });
+  assert.deepEqual(botaoDoPost({ botao: "BOOK", botao_url: "https://agenda.exemplo.com" }, marca), { actionType: "BOOK", url: "https://agenda.exemplo.com" });
+  assert.equal(botaoDoPost({ botao: "NENHUM" }, marca), null);
+  assert.deepEqual(botaoDoPost({ botao: "LEARN_MORE" }, {}), { actionType: "CALL" }, "sem site, o botão vira Ligar agora");
+  assert.deepEqual([botaoDoPost({ id: 1 }, marca).actionType, botaoDoPost({ id: 2 }, marca).actionType], ["CALL", "LEARN_MORE"], "automático alterna");
+  const p = await criarPlataforma();
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  const m = (await p.req("/api/orgs/1/mk/marcas", { metodo: "POST", quem: "admin", corpo: { nome: "Limpeza" } })).dados.id;
+  const id = (await p.req("/api/orgs/1/mk/posts", { metodo: "POST", quem: "admin", corpo: { marca_id: m, canais: ["google"], legenda: "x", botao: "CALL" } })).dados.id;
+  assert.equal(p.env.DB.q("SELECT botao FROM plt_mk_posts WHERE id=?", id)[0].botao, "CALL");
+  await p.req("/api/orgs/1/mk/posts", { metodo: "POST", quem: "admin", corpo: { id, marca_id: m, canais: ["google"], legenda: "x", botao: "ORDER", botao_url: "javascript:alert(1)" } });
+  assert.deepEqual(p.env.DB.q("SELECT botao, botao_url FROM plt_mk_posts WHERE id=?", id)[0], { botao: "ORDER", botao_url: null }, "só aceita link https");
 });
