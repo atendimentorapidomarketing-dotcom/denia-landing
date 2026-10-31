@@ -290,6 +290,7 @@ async function publicarInstagram(env, conta, token, p, imagem, video) {
     try { pub = await graph(env, "POST", `${conta.ig_id}/media_publish`, { creation_id: cont.id, access_token: token }); break; }
     catch (e) { if (e.codigo !== 9007 || i === 4) throw e; await new Promise(r => setTimeout(r, 1500 * (i + 1))); } // mídia ainda processando
   }
+  if (!pub?.id) throw new Error("O Instagram não confirmou a publicação.");
   let link = null;
   try { link = (await graph(env, "GET", pub.id, { fields: "permalink", access_token: token })).permalink || null; } catch { /* sem link */ }
   return { id: pub.id, link };
@@ -297,13 +298,15 @@ async function publicarInstagram(env, conta, token, p, imagem, video) {
 async function publicarFacebook(env, conta, token, p, imagem, video) {
   if (video) {
     const v = await graph(env, "POST", `${conta.pagina_id}/videos`, { file_url: video.url, description: legendaDe(p, "facebook"), ...(p.titulo ? { title: String(p.titulo).slice(0, 250) } : {}), access_token: token });
-    return { id: v.id, link: v.id ? `https://www.facebook.com/${conta.pagina_id}/videos/${v.id}` : null };
+    if (!v?.id) throw new Error("O Facebook não confirmou o vídeo.");
+    return { id: v.id, link: `https://www.facebook.com/${conta.pagina_id}/videos/${v.id}` };
   }
   const r = imagem
     ? await graph(env, "POST", `${conta.pagina_id}/photos`, { url: imagem, message: legendaDe(p, "facebook"), access_token: token })
     : await graph(env, "POST", `${conta.pagina_id}/feed`, { message: legendaDe(p, "facebook"), access_token: token });
   const id = r.post_id || r.id;
-  return { id, link: id ? `https://www.facebook.com/${id}` : null };
+  if (!id) throw new Error("O Facebook não confirmou a publicação.");
+  return { id, link: `https://www.facebook.com/${id}` };
 }
 
 const NOME_CANAL = { instagram: "Instagram", facebook: "Facebook", google: "Google" };
@@ -324,7 +327,11 @@ export async function publicarPost(env, k, p, base) {
   const video = md?.arquivo && base ? { url: await urlPublicaMidia({ ...k, env }, base, p.midia_id), capa: md.capa_id ? await urlPublicaMidia({ ...k, env }, base, md.capa_id) : null } : null;
   const imagem = video ? video.capa : p.midia_id && base ? await urlPublicaMidia({ ...k, env }, base, p.midia_id) : null;
   const marcados = canaisDe(p);
-  const alvo = marcados.filter(c => ((c === "instagram" || c === "facebook") && conta) || (c === "google" && contaG)).filter(c => !(c === "facebook" && p.formato === "story"));
+  // Cada rede marcada conta: só fica "Publicado" quando TODAS as redes do post confirmaram a publicação.
+  const todas = marcados.filter(c => NOME_CANAL[c]).filter(c => !(c === "facebook" && p.formato === "story"));
+  const conectada = c => ((c === "instagram" || c === "facebook") && conta) || (c === "google" && contaG);
+  const alvo = todas.filter(conectada);
+  for (const c of todas) if (!conectada(c) && !feito[c]?.id) feito[c] = { erro: `${NOME_CANAL[c]} não está conectado nesta empresa (Contas conectadas → Conectar).`, em: k.agora(env) };
   if (!alvo.length) {
     const falta = marcados.filter(c => NOME_CANAL[c]).map(c => NOME_CANAL[c]).join(" e ");
     return { ok: false, resumo: falta ? `Este post é para ${falta}, mas esse canal ainda não está conectado nesta marca (Marcas → Conectar).` : "Este post não está marcado para nenhum canal." };
@@ -342,11 +349,13 @@ export async function publicarPost(env, k, p, base) {
       erros.push(`${NOME_CANAL[canal]}: ${feito[canal].erro}`);
     }
   }
-  const tudo = alvo.every(c => feito[c]?.id);
+  const tudo = todas.length > 0 && todas.every(c => feito[c]?.id);
   await env.DB.prepare("UPDATE plt_mk_posts SET publicacao=?, status=?, tentativas=?, atualizado_ms=? WHERE id=?")
     .bind(JSON.stringify(feito), tudo ? "PUBLICADO" : p.status, tudo ? Number(p.tentativas || 0) : Number(p.tentativas || 0) + 1, k.agora(env), p.id).run();
-  const links = alvo.filter(c => feito[c]?.link).map(c => `${NOME_CANAL[c]}: ${feito[c].link}`);
-  return { ok: tudo, publicacao: feito, resumo: tudo ? `Publicado. ${links.join(" · ")}`.trim() : erros.join(" | ") };
+  const links = todas.filter(c => feito[c]?.link).map(c => `${NOME_CANAL[c]}: ${feito[c].link}`);
+  const faltam = todas.filter(c => !feito[c]?.id).map(c => `${NOME_CANAL[c]}: ${feito[c]?.erro || "não publicado"}`);
+  const parcial = todas.filter(c => feito[c]?.id).map(c => NOME_CANAL[c]);
+  return { ok: tudo, publicacao: feito, resumo: tudo ? `Publicado. ${links.join(" · ")}`.trim() : `${parcial.length ? "Publicado só no " + parcial.join(" e ") + ". " : "Não publicado. "}${faltam.join(" | ")}` };
 }
 
 // Logo após aprovar: se o dia e a hora do post já chegaram (ou não há data), publica na hora;

@@ -39,9 +39,27 @@ const prontos = new WeakSet();
 async function garantir(env) {
   if (prontos.has(env.DB)) return;
   await env.DB.batch(DDL.map(s => env.DB.prepare(s)));
-  for (const alter of ["ALTER TABLE plt_mk_marcas ADD COLUMN idioma TEXT", "ALTER TABLE plt_mk_marcas ADD COLUMN horarios TEXT", "ALTER TABLE plt_mk_marcas ADD COLUMN logo_midia_id INTEGER", "ALTER TABLE plt_mk_posts ADD COLUMN texto_arte TEXT", "ALTER TABLE plt_mk_marcas ADD COLUMN ofertas TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN analise TEXT", "ALTER TABLE plt_mk_config ADD COLUMN avaliacoes_auto TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN triagem TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN denuncia TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN removida_ms INTEGER", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN google_id TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN avisado_ms INTEGER", "ALTER TABLE plt_mk_midias ADD COLUMN marca_id INTEGER", "ALTER TABLE plt_mk_midias ADD COLUMN nome_arquivo TEXT", "ALTER TABLE plt_mk_midias ADD COLUMN origem TEXT", "ALTER TABLE plt_mk_midias ADD COLUMN enviado_por TEXT", "ALTER TABLE plt_mk_midias ADD COLUMN descricao TEXT", "ALTER TABLE plt_mk_midias ADD COLUMN original_id INTEGER", "ALTER TABLE plt_mk_midias ADD COLUMN google_id TEXT", "ALTER TABLE plt_mk_midias ADD COLUMN arquivo TEXT", "ALTER TABLE plt_mk_midias ADD COLUMN tamanho INTEGER", "ALTER TABLE plt_mk_midias ADD COLUMN capa_id INTEGER", "ALTER TABLE plt_mk_midias ADD COLUMN duracao REAL", "ALTER TABLE plt_mk_posts ADD COLUMN botao TEXT", "ALTER TABLE plt_mk_posts ADD COLUMN botao_url TEXT", "ALTER TABLE plt_mk_posts ADD COLUMN textos TEXT", "ALTER TABLE plt_mk_posts ADD COLUMN midia_google_id INTEGER"])
+  for (const alter of ["ALTER TABLE plt_mk_marcas ADD COLUMN idioma TEXT", "ALTER TABLE plt_mk_marcas ADD COLUMN horarios TEXT", "ALTER TABLE plt_mk_marcas ADD COLUMN logo_midia_id INTEGER", "ALTER TABLE plt_mk_posts ADD COLUMN texto_arte TEXT", "ALTER TABLE plt_mk_marcas ADD COLUMN ofertas TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN analise TEXT", "ALTER TABLE plt_mk_config ADD COLUMN avaliacoes_auto TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN triagem TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN denuncia TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN removida_ms INTEGER", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN google_id TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN avisado_ms INTEGER", "ALTER TABLE plt_mk_midias ADD COLUMN marca_id INTEGER", "ALTER TABLE plt_mk_midias ADD COLUMN nome_arquivo TEXT", "ALTER TABLE plt_mk_midias ADD COLUMN origem TEXT", "ALTER TABLE plt_mk_midias ADD COLUMN enviado_por TEXT", "ALTER TABLE plt_mk_midias ADD COLUMN descricao TEXT", "ALTER TABLE plt_mk_midias ADD COLUMN original_id INTEGER", "ALTER TABLE plt_mk_midias ADD COLUMN google_id TEXT", "ALTER TABLE plt_mk_midias ADD COLUMN arquivo TEXT", "ALTER TABLE plt_mk_midias ADD COLUMN tamanho INTEGER", "ALTER TABLE plt_mk_midias ADD COLUMN capa_id INTEGER", "ALTER TABLE plt_mk_midias ADD COLUMN duracao REAL", "ALTER TABLE plt_mk_posts ADD COLUMN botao TEXT", "ALTER TABLE plt_mk_posts ADD COLUMN botao_url TEXT", "ALTER TABLE plt_mk_posts ADD COLUMN textos TEXT", "ALTER TABLE plt_mk_posts ADD COLUMN midia_google_id INTEGER", "ALTER TABLE plt_mk_posts ADD COLUMN publicacao TEXT", "ALTER TABLE plt_mk_posts ADD COLUMN tentativas INTEGER NOT NULL DEFAULT 0"])
     await env.DB.prepare(alter).run().catch(() => { }); // coluna já existe
+  await corrigirPublicados(env).catch(() => { });
   prontos.add(env.DB);
+}
+// Correção única: posts marcados "Publicado" pela DENIA sem ter saído em todas as redes marcadas voltam para "Aprovado"
+// (as redes que já saíram não se repetem; as que faltam aparecem no post para publicar).
+async function corrigirPublicados(env) {
+  const feito = await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave='corrigir_publicados_v1'").first().catch(() => null);
+  if (feito) return;
+  const l = (await env.DB.prepare("SELECT id, canais, formato, publicacao FROM plt_mk_posts WHERE status='PUBLICADO' AND publicacao IS NOT NULL").all())?.results || [];
+  for (const p of l) {
+    let pub = {}, canais = [];
+    try { pub = JSON.parse(p.publicacao || "{}") || {}; canais = JSON.parse(p.canais || "[]"); } catch { continue; }
+    if (pub.manual) continue;
+    const faltam = canais.filter(c => ["instagram", "facebook", "google"].includes(c) && !(c === "facebook" && p.formato === "story")).filter(c => !pub[c]?.id || pub[c].id === "google");
+    if (!faltam.length) continue;
+    for (const c of faltam) { if (pub[c]?.id === "google") delete pub[c].id; pub[c] = { ...(pub[c] || {}), erro: pub[c]?.erro || "Não foi confirmado nesta rede. Use Publicar agora." }; }
+    await env.DB.prepare("UPDATE plt_mk_posts SET status='APROVADO', publicacao=?, tentativas=3 WHERE id=?").bind(JSON.stringify(pub), p.id).run();
+  }
+  await env.DB.prepare("INSERT OR REPLACE INTO plt_meta(chave,valor) VALUES('corrigir_publicados_v1',?)").bind(String(Date.now())).run();
 }
 
 // ---------------------------------------------------------------------------
@@ -684,7 +702,7 @@ export async function apiMarketing(request, env, k, orgId, papel, resto) {
           r.g = {
             sem_resposta: Number((await um("SELECT COUNT(*) n FROM plt_mk_avaliacoes WHERE org_id=? AND marca_id=? AND google_id IS NOT NULL AND status='PENDENTE' AND removida_ms IS NULL", orgId, m.id)).n || 0),
             ruins_sem_resposta: Number((await um("SELECT COUNT(*) n FROM plt_mk_avaliacoes WHERE org_id=? AND marca_id=? AND google_id IS NOT NULL AND status='PENDENTE' AND removida_ms IS NULL AND nota<=3", orgId, m.id)).n || 0),
-            posts_7d: Number((await um("SELECT COUNT(*) n FROM plt_mk_posts WHERE org_id=? AND marca_id=? AND canais LIKE '%google%' AND status='PUBLICADO' AND atualizado_ms>=?", orgId, m.id, d7)).n || 0),
+            posts_7d: Number((await um("SELECT COUNT(*) n FROM plt_mk_posts WHERE org_id=? AND marca_id=? AND json_extract(publicacao,'$.google.id') IS NOT NULL AND atualizado_ms>=?", orgId, m.id, d7)).n || 0),
             programados: Number((await um("SELECT COUNT(*) n FROM plt_mk_posts WHERE org_id=? AND marca_id=? AND canais LIKE '%google%' AND status='APROVADO' AND data>=?", orgId, m.id, hoje)).n || 0),
             palavras: Number((await um("SELECT COUNT(*) n FROM plt_mk_palavras WHERE org_id=? AND marca_id=?", orgId, m.id)).n || 0),
             avaliacoes_30d: Number((await um("SELECT COUNT(*) n FROM plt_mk_avaliacoes WHERE org_id=? AND marca_id=? AND google_id IS NOT NULL AND criado_ms>=?", orgId, m.id, d30)).n || 0)
@@ -694,7 +712,7 @@ export async function apiMarketing(request, env, k, orgId, papel, resto) {
           const cache = await um("SELECT valor FROM plt_meta WHERE chave=?", `analise_${orgId}_${m.id}_${c}`);
           let em = null; try { em = JSON.parse(cache.valor || "null")?.em || null; } catch { em = null; }
           r[c[0]] = {
-            posts_7d: Number((await um(`SELECT COUNT(*) n FROM plt_mk_posts WHERE org_id=? AND marca_id=? AND canais LIKE '%${c}%' AND status='PUBLICADO' AND atualizado_ms>=?`, orgId, m.id, d7)).n || 0),
+            posts_7d: Number((await um(`SELECT COUNT(*) n FROM plt_mk_posts WHERE org_id=? AND marca_id=? AND json_extract(publicacao,'$.${c}.id') IS NOT NULL AND atualizado_ms>=?`, orgId, m.id, d7)).n || 0),
             programados_7d: Number((await um(`SELECT COUNT(*) n FROM plt_mk_posts WHERE org_id=? AND marca_id=? AND canais LIKE '%${c}%' AND status='APROVADO' AND data>=? AND data<=?`, orgId, m.id, hoje, new Date(t + 7 * 86400000).toISOString().slice(0, 10))).n || 0),
             aguardando: Number((await um(`SELECT COUNT(*) n FROM plt_mk_posts WHERE org_id=? AND marca_id=? AND canais LIKE '%${c}%' AND status='AGUARDANDO'`, orgId, m.id)).n || 0),
             analise_em: em
@@ -904,7 +922,12 @@ Responda em JSON: {"descricao":"","por_que":"(uma frase dizendo o que melhorou)"
         return json({ ok: true, status: r.publicado ? "PUBLICADO" : "APROVADO", publicado: r.publicado, resumo: r.resumo });
       }
       if (acao === "rejeitar") { exigir("ADMIN"); return mudar("REJEITADO", { comentario: txt(c.comentario, 400) || "Rejeitado" }); }
-      if (acao === "publicado") { exigir("AGENTE"); if (p.status !== "APROVADO") return json({ erro: "Só posts aprovados podem ser marcados como publicados." }, 409); return mudar("PUBLICADO"); }
+      if (acao === "publicado") {
+        exigir("AGENTE"); if (p.status !== "APROVADO") return json({ erro: "Só posts aprovados podem ser marcados como publicados." }, 409);
+        // Marcação manual: fica registrado que foi publicado por fora (a DENIA não confirmou em nenhuma rede).
+        await env.DB.prepare("UPDATE plt_mk_posts SET publicacao=json_set(COALESCE(publicacao,'{}'),'$.manual',json(?)) WHERE id=?").bind(JSON.stringify({ por: autor, em: agora(env) }), p.id).run();
+        return mudar("PUBLICADO");
+      }
       if (acao === "rascunho") { exigir("AGENTE"); return mudar("RASCUNHO"); }
       if (acao === "excluir") {
         exigir("ADMIN");

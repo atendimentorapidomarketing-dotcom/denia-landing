@@ -880,6 +880,24 @@ test("Instagram e Facebook — conectar a marca pela Meta, publicar no horário 
   assert.match(na_hora.dados.resumo, /^Post aprovado e publicado\. Facebook: https:\/\/www\.facebook\.com\/PAG1_100/);
   assert.equal(p.env.DB.q("SELECT status FROM plt_mk_posts WHERE id=?", jaPassou)[0].status, "PUBLICADO");
 
+  // 6b) Post para Instagram e Google com só a Meta conectada: sai no Instagram, mas NÃO vira "Publicado" (o Google não saiu).
+  p.meta = (url) => {
+    if (url.includes("/IG1/media_publish")) return { id: "IGPOST9" };
+    if (url.includes("/IG1/media")) return { id: "CONT9" };
+    if (url.includes("/IGPOST9")) return { permalink: "https://www.instagram.com/p/nove/" };
+    return { error: { message: "inesperado " + url } };
+  };
+  const misto = (await p.req("/api/orgs/1/mk/posts", { metodo: "POST", quem: "admin", corpo: { marca_id: marca, canais: ["instagram", "google"], data: "2020-01-01", hora: "09:00", titulo: "Misto", legenda: "z", midia_id: 1 } })).dados.id;
+  const rm = await p.req(`/api/orgs/1/mk/posts/${misto}/acao`, { metodo: "POST", quem: "admin", corpo: { acao: "aprovar" } });
+  assert.equal(rm.dados.publicado, false);
+  assert.match(rm.dados.resumo, /Publicado só no Instagram.*Google: Google não está conectado/);
+  const rowM = p.env.DB.q("SELECT status, publicacao FROM plt_mk_posts WHERE id=?", misto)[0];
+  assert.equal(rowM.status, "APROVADO", "não marca como publicado quando uma rede do post não saiu");
+  assert.ok(JSON.parse(rowM.publicacao).instagram.id);
+  // Marcar à mão fica registrado como "por fora"
+  await p.req(`/api/orgs/1/mk/posts/${misto}/acao`, { metodo: "POST", quem: "admin", corpo: { acao: "publicado" } });
+  assert.ok(JSON.parse(p.env.DB.q("SELECT publicacao FROM plt_mk_posts WHERE id=?", misto)[0].publicacao).manual);
+
   // 7) Vídeo: envio cru para o disco, a IA escreve o Reels olhando os quadros e a publicação sai como REELS e vídeo da página.
   p.env.ARQUIVOS = cofreMemoria(); p.env.OPENAI_API_KEY = "sk-teste"; p.env.__esperaVideoMs = 1;
   const bytes = new Uint8Array(5000).map((_, i) => i % 251);
@@ -1069,6 +1087,14 @@ test("Google Meu Negócio — conectar o perfil, trazer avaliações e desempenh
   assert.equal(envioO.offer.termsConditions, "Válido para carros de passeio.");
   assert.equal(envioO.summary, "Revisão completa em Niterói com 10% de desconto em novembro.", "sem telefone e sem hashtags");
   assert.equal(envioO.callToAction, undefined);
+  // Google recusou: não conta como publicado
+  const antesG = p.google;
+  p.google = (url, metodo, corpo) => url.endsWith("/localPosts") && metodo === "POST" ? { name: "x/localPosts/9", state: "REJECTED" } : antesG(url, metodo, corpo);
+  const recusado = (await p.req("/api/orgs/1/mk/posts", { metodo: "POST", quem: "admin", corpo: { marca_id: marca, canais: ["google"], formato: "google", data: "2020-01-01", hora: "09:00", titulo: "R", legenda: "texto" } })).dados.id;
+  const rr = (await p.req(`/api/orgs/1/mk/posts/${recusado}/acao`, { metodo: "POST", quem: "admin", corpo: { acao: "aprovar" } })).dados;
+  assert.equal(rr.publicado, false); assert.match(rr.resumo, /O Google recusou o post/);
+  assert.equal(p.env.DB.q("SELECT status FROM plt_mk_posts WHERE id=?", recusado)[0].status, "APROVADO");
+  p.google = antesG;
   assert.match(envio.corpo.media[0].sourceUrl, /^https:\/\/plataforma\.test\/m\/1-/);
 });
 

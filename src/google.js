@@ -353,7 +353,10 @@ export async function publicarGoogle(env, k, conta, p, imagem, video) {
   // Oferta não leva botão no Google (o resgate vai em offer.redeemOnlineUrl).
   if (corpo.topicType !== "OFFER") { corpo.callToAction = botaoDoPost(p, marca); if (!corpo.callToAction) delete corpo.callToAction; }
   const r = await chamar("POST", `${API_V4}/${caminhoV4(conta)}/localPosts`, token, corpo);
-  return { id: r.name || "google", link: r.searchUrl || null, ...(videoId ? { video: videoId } : {}) };
+  // Só conta como publicado com a confirmação do Google (nome do post) e sem recusa.
+  if (r.state === "REJECTED") throw new Error("O Google recusou o post (fora das regras de conteúdo do Google: telefone, link, texto proibido ou imagem). Ajuste e publique de novo.");
+  if (!r.name) throw new Error("O Google não confirmou a publicação. Tente Publicar agora de novo.");
+  return { id: r.name, link: r.searchUrl || null, ...(r.state && r.state !== "LIVE" ? { estado: r.state } : {}), ...(videoId ? { video: videoId } : {}) };
 }
 
 // ----- Avaliações: busca no Google e grava (as novas ficam "sem resposta" para a DENIA sugerir).
@@ -554,7 +557,7 @@ export async function checagemDoPerfil(env, k, conta) {
   ]);
   const lidas = (rev.reviews || []).length, semResposta = (rev.reviews || []).filter(r => !r.reviewReply).length;
   const agoraMs = k.agora(env), hojeBr = new Date(agoraMs - 3 * 3600000).toISOString().slice(0, 10);
-  const pd = await env.DB.prepare(`SELECT SUM(CASE WHEN status='PUBLICADO' AND atualizado_ms>=? THEN 1 ELSE 0 END) u7, SUM(CASE WHEN status='PUBLICADO' AND atualizado_ms>=? THEN 1 ELSE 0 END) u30,
+  const pd = await env.DB.prepare(`SELECT SUM(CASE WHEN json_extract(publicacao,'$.google.id') IS NOT NULL AND atualizado_ms>=? THEN 1 ELSE 0 END) u7, SUM(CASE WHEN json_extract(publicacao,'$.google.id') IS NOT NULL AND atualizado_ms>=? THEN 1 ELSE 0 END) u30,
       SUM(CASE WHEN status='APROVADO' AND data>=? THEN 1 ELSE 0 END) ag FROM plt_mk_posts WHERE org_id=? AND marca_id=? AND canais LIKE '%google%'`).bind(agoraMs - 7 * 86400000, agoraMs - 30 * 86400000, hojeBr, conta.org_id, conta.marca_id).first().catch(() => null);
   const r = avaliarPerfil({ info, midias, posts, atributos, agoraMs, postsErro, postsDenia: { ultimos7: Number(pd?.u7 || 0), ultimos30: Number(pd?.u30 || 0), agendados: Number(pd?.ag || 0) }, avaliacoes: { total: Number(rev.totalReviewCount || 0), media: Number(rev.averageRating || 0), lidas, sem_resposta: semResposta } });
   return { perfil: info.title || conta.local_titulo, maps: info.metadata?.mapsUri || conta.maps_uri || null, ...r };
@@ -1331,7 +1334,7 @@ async function rotasGoogleExtra(request, env, k, orgId, papel, resto, url) {
     const contas = (await env.DB.prepare(`SELECT g.marca_id, g.local_titulo, g.media_google, g.total_google, g.sincronizado_ms, g.erro, m.nome,
       (SELECT COUNT(*) FROM plt_mk_avaliacoes a WHERE a.org_id=g.org_id AND a.marca_id=g.marca_id AND a.status='PENDENTE' AND a.google_id IS NOT NULL AND a.removida_ms IS NULL) sem_resposta,
       (SELECT COUNT(*) FROM plt_mk_avaliacoes a WHERE a.org_id=g.org_id AND a.marca_id=g.marca_id AND a.google_id IS NOT NULL AND a.nota<=2 AND a.removida_ms IS NULL AND a.criado_ms>?) ruins_30d,
-      (SELECT COUNT(*) FROM plt_mk_posts p WHERE p.org_id=g.org_id AND p.marca_id=g.marca_id AND p.canais LIKE '%google%' AND p.status='PUBLICADO' AND p.atualizado_ms>?) posts_30d,
+      (SELECT COUNT(*) FROM plt_mk_posts p WHERE p.org_id=g.org_id AND p.marca_id=g.marca_id AND json_extract(p.publicacao,'$.google.id') IS NOT NULL AND p.atualizado_ms>?) posts_30d,
       (SELECT COUNT(*) FROM plt_mk_posts p WHERE p.org_id=g.org_id AND p.marca_id=g.marca_id AND p.canais LIKE '%google%' AND p.status='APROVADO') programados
       FROM plt_mk_google g JOIN plt_mk_marcas m ON m.id=g.marca_id WHERE g.org_id=? AND m.ativa=1 ORDER BY m.nome`).bind(k.agora(env) - 30 * 86400000, k.agora(env) - 30 * 86400000, orgId).all().catch(() => null))?.results || [];
     const pos = (await env.DB.prepare(`SELECT w.marca_id, w.palavra, x.posicao, x.semana FROM plt_mk_palavras w JOIN plt_mk_posicoes x ON x.palavra_id=w.id WHERE w.org_id=? ORDER BY x.semana DESC`).bind(orgId).all().catch(() => null))?.results || [];
@@ -1499,7 +1502,7 @@ export async function relatorioPdfDoPerfil(env, k, conta, dias = 30) {
   const org = await env.DB.prepare("SELECT nome FROM plt_organizacoes WHERE id=?").bind(conta.org_id).first().catch(() => null);
   const desde = ini.getTime(), um = async (sql, ...a) => (await env.DB.prepare(sql).bind(...a).first().catch(() => null)) || {};
   const av = await um("SELECT COUNT(*) n, AVG(nota) media, SUM(CASE WHEN status='RESPONDIDA' THEN 1 ELSE 0 END) resp, SUM(CASE WHEN nota<=3 THEN 1 ELSE 0 END) ruins FROM plt_mk_avaliacoes WHERE org_id=? AND marca_id=? AND google_id IS NOT NULL AND removida_ms IS NULL AND criado_ms>=?", conta.org_id, conta.marca_id, desde);
-  const posts = await um("SELECT COUNT(*) n FROM plt_mk_posts WHERE org_id=? AND marca_id=? AND canais LIKE '%google%' AND status='PUBLICADO' AND atualizado_ms>=?", conta.org_id, conta.marca_id, desde);
+  const posts = await um("SELECT COUNT(*) n FROM plt_mk_posts WHERE org_id=? AND marca_id=? AND json_extract(publicacao,'$.google.id') IS NOT NULL AND atualizado_ms>=?", conta.org_id, conta.marca_id, desde);
   const pal = (await env.DB.prepare("SELECT w.palavra, w.cidade, x.semana, x.posicao FROM plt_mk_palavras w JOIN plt_mk_posicoes x ON x.palavra_id=w.id WHERE w.org_id=? AND w.marca_id=? ORDER BY x.semana DESC").bind(conta.org_id, conta.marca_id).all().catch(() => null))?.results || [];
   const porPalavra = new Map(); for (const x of pal) { const l = porPalavra.get(x.palavra) || []; l.push(x); porPalavra.set(x.palavra, l); }
   const grade = await um("SELECT palavra, raio_km, media, top3, criado_ms FROM plt_mk_geogrid WHERE org_id=? AND marca_id=? ORDER BY id DESC LIMIT 1", conta.org_id, conta.marca_id);
