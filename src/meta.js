@@ -256,7 +256,15 @@ export async function retornoMeta(request, env, k) {
 }
 
 // ----- Publicação
-const legendaDe = p => [p.legenda, p.hashtags].map(x => String(x || "").trim()).filter(Boolean).join("\n\n").slice(0, 2200);
+export const textosDe = p => { try { const t = typeof p.textos === "string" ? JSON.parse(p.textos) : p.textos; return t && typeof t === "object" ? t : {}; } catch { return {}; } };
+// Texto próprio de cada rede (quando a IA escreveu um por rede); senão a legenda geral.
+const legendaDe = (p, canal = "instagram") => {
+  const t = textosDe(p);
+  if (canal === "facebook" && t.facebook?.legenda) return String(t.facebook.legenda).slice(0, 5000);
+  const leg = canal === "instagram" && t.instagram?.legenda ? t.instagram.legenda : p.legenda;
+  const tags = canal === "instagram" && t.instagram?.hashtags ? t.instagram.hashtags : p.hashtags;
+  return [leg, tags].map(x => String(x || "").trim()).filter(Boolean).join("\n\n").slice(0, 2200);
+};
 const canaisDe = p => { try { const c = JSON.parse(p.canais || "[]"); return Array.isArray(c) ? c : []; } catch { return []; } };
 
 // Espera o Instagram/Facebook terminar de processar o vídeo (até ~3 minutos).
@@ -288,12 +296,12 @@ async function publicarInstagram(env, conta, token, p, imagem, video) {
 }
 async function publicarFacebook(env, conta, token, p, imagem, video) {
   if (video) {
-    const v = await graph(env, "POST", `${conta.pagina_id}/videos`, { file_url: video.url, description: legendaDe(p), ...(p.titulo ? { title: String(p.titulo).slice(0, 250) } : {}), access_token: token });
+    const v = await graph(env, "POST", `${conta.pagina_id}/videos`, { file_url: video.url, description: legendaDe(p, "facebook"), ...(p.titulo ? { title: String(p.titulo).slice(0, 250) } : {}), access_token: token });
     return { id: v.id, link: v.id ? `https://www.facebook.com/${conta.pagina_id}/videos/${v.id}` : null };
   }
   const r = imagem
-    ? await graph(env, "POST", `${conta.pagina_id}/photos`, { url: imagem, message: legendaDe(p), access_token: token })
-    : await graph(env, "POST", `${conta.pagina_id}/feed`, { message: legendaDe(p), access_token: token });
+    ? await graph(env, "POST", `${conta.pagina_id}/photos`, { url: imagem, message: legendaDe(p, "facebook"), access_token: token })
+    : await graph(env, "POST", `${conta.pagina_id}/feed`, { message: legendaDe(p, "facebook"), access_token: token });
   const id = r.post_id || r.id;
   return { id, link: id ? `https://www.facebook.com/${id}` : null };
 }
@@ -327,7 +335,7 @@ export async function publicarPost(env, k, p, base) {
     try {
       const r = canal === "instagram" ? await publicarInstagram(env, conta, token, p, imagem, video)
         : canal === "facebook" ? await publicarFacebook(env, conta, token, p, imagem, video)
-          : await publicarGoogle(env, k, contaG, p, imagem, video);
+          : await publicarGoogle(env, k, contaG, p, p.midia_google_id && base && !video ? await urlPublicaMidia({ ...k, env }, base, p.midia_google_id) : imagem, video);
       feito[canal] = { id: r.id, link: r.link, em: k.agora(env) };
     } catch (e) {
       feito[canal] = { erro: String(e.message || e).slice(0, 300), em: k.agora(env) };
@@ -359,6 +367,19 @@ export async function aoAprovar(request, env, k, p) {
   return { publicado: r.ok, resumo: r.ok ? `Post aprovado e ${r.resumo.charAt(0).toLowerCase()}${r.resumo.slice(1)}` : `Post aprovado, mas a publicação falhou: ${r.resumo}` };
 }
 
+// Aviso de post que não saiu: aparece em Problemas e vai uma vez para o Telegram da empresa.
+async function avisarPost(env, k, p, oque, motivo) {
+  try {
+    const { registrarProblema } = await import("./problemas.js");
+    const chave = `post_${p.id}`;
+    const ja = await env.DB.prepare("SELECT 1 FROM plt_problemas WHERE org_id=? AND chave=? AND resolvido_ms IS NULL").bind(p.org_id, chave).first().catch(() => null);
+    const quando = p.data ? `${p.data.split("-").reverse().slice(0, 2).join("/")} às ${p.hora || "00:00"}` : "";
+    await registrarProblema(env, p.org_id, { chave, area: "PUBLICACOES", titulo: `Post #${p.id}${quando ? " de " + quando : ""} ${oque}`, motivo: String(motivo || "").slice(0, 300), dica: "Abra o post para ver o detalhe e publicar de novo.", link: "#/aprovacoes", gravidade: "ALTA" });
+    if (!ja) { const { avisarTelegramDaEmpresa } = await import("./zap.js"); await avisarTelegramDaEmpresa(env, k, p.org_id, `⚠️ Post #${p.id}${quando ? " (" + quando + ")" : ""} ${oque}.\n${String(motivo || "").slice(0, 300)}`).catch(() => {}); }
+  } catch { /* aviso é melhor esforço */ }
+}
+async function resolverAviso(env, orgId, chave) { try { const { resolverProblema } = await import("./problemas.js"); await resolverProblema(env, orgId, chave); } catch { } }
+
 // Cron (a cada 5 min): publica os posts aprovados cujo dia e hora já chegaram.
 export async function publicarPendentes(env, k) {
   await garantir(env);
@@ -380,8 +401,13 @@ export async function publicarPendentes(env, k) {
       continue;
     }
     const res = await publicarPost(env, k, p, base).catch(e => ({ ok: false, resumo: e.message }));
-    if (res.ok) publicados++;
+    if (res.ok) { publicados++; await resolverAviso(env, p.org_id, `post_${p.id}`); }
+    else await avisarPost(env, k, p, "não foi publicado", res.resumo);
     try { await env.DB.prepare("INSERT INTO plt_auditoria(org_id,usuario_id,email,acao,detalhe,ip,criado_ms) VALUES(?,?,?,?,?,?,?)").bind(p.org_id, null, "DENIA (publicação automática)", "MARKETING", `Post #${p.id}: ${res.resumo}`.slice(0, 400), null, agoraMs).run(); } catch { /* auditoria opcional */ }
   }
+  // Posts cujo horário chegou mas ainda esperam aprovação: não saem sozinhos — avisa uma vez.
+  const parados = (await env.DB.prepare(`SELECT p.* FROM plt_mk_posts p WHERE p.status='AGUARDANDO' AND p.data IS NOT NULL AND (p.data < ? OR (p.data = ? AND COALESCE(p.hora,'00:00') <= ?)) AND p.data >= ? LIMIT 20`)
+    .bind(hoje, hoje, hora, new Date(agoraMs - 3 * 3600000 - 2 * 86400000).toISOString().slice(0, 10)).all().catch(() => null))?.results || [];
+  for (const p of parados) await avisarPost(env, k, p, "não saiu porque ainda não foi aprovado", "Abra Aprovações, aprove o post e toque em Publicar agora.");
   return { publicados };
 }

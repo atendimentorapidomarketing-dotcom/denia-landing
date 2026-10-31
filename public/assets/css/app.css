@@ -1072,3 +1072,9 @@ video.post-arte-img { width:100%; max-height:520px; border-radius:12px; backgrou
 .conversa-ia .fala { font-size:13.5px; padding:7px 10px; border-radius:10px; background:rgba(255,255,255,.05) }
 .conversa-ia .fala.eu { justify-self:end; background:rgba(79,140,255,.22) }
 .piscar { box-shadow:0 0 0 2px rgba(34,211,238,.7) !important; transition:box-shadow .3s }
+
+.grupo-google { display:grid; gap:10px; padding:12px; border-radius:12px; border:1px solid rgba(66,133,244,.35); background:rgba(66,133,244,.06) }
+.redes-textos { display:grid; gap:12px }
+.redes-textos details { border:1px solid rgba(255,255,255,.1); border-radius:12px; padding:10px 12px; background:rgba(255,255,255,.02) }
+.redes-textos summary { cursor:pointer; font-weight:600 }
+.redes-textos details[open] summary { margin-bottom:10px }

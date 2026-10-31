@@ -39,7 +39,7 @@ const prontos = new WeakSet();
 async function garantir(env) {
   if (prontos.has(env.DB)) return;
   await env.DB.batch(DDL.map(s => env.DB.prepare(s)));
-  for (const alter of ["ALTER TABLE plt_mk_marcas ADD COLUMN idioma TEXT", "ALTER TABLE plt_mk_marcas ADD COLUMN horarios TEXT", "ALTER TABLE plt_mk_marcas ADD COLUMN logo_midia_id INTEGER", "ALTER TABLE plt_mk_posts ADD COLUMN texto_arte TEXT", "ALTER TABLE plt_mk_marcas ADD COLUMN ofertas TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN analise TEXT", "ALTER TABLE plt_mk_config ADD COLUMN avaliacoes_auto TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN triagem TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN denuncia TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN removida_ms INTEGER", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN google_id TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN avisado_ms INTEGER", "ALTER TABLE plt_mk_midias ADD COLUMN marca_id INTEGER", "ALTER TABLE plt_mk_midias ADD COLUMN nome_arquivo TEXT", "ALTER TABLE plt_mk_midias ADD COLUMN origem TEXT", "ALTER TABLE plt_mk_midias ADD COLUMN enviado_por TEXT", "ALTER TABLE plt_mk_midias ADD COLUMN descricao TEXT", "ALTER TABLE plt_mk_midias ADD COLUMN original_id INTEGER", "ALTER TABLE plt_mk_midias ADD COLUMN google_id TEXT", "ALTER TABLE plt_mk_midias ADD COLUMN arquivo TEXT", "ALTER TABLE plt_mk_midias ADD COLUMN tamanho INTEGER", "ALTER TABLE plt_mk_midias ADD COLUMN capa_id INTEGER", "ALTER TABLE plt_mk_midias ADD COLUMN duracao REAL", "ALTER TABLE plt_mk_posts ADD COLUMN botao TEXT", "ALTER TABLE plt_mk_posts ADD COLUMN botao_url TEXT"])
+  for (const alter of ["ALTER TABLE plt_mk_marcas ADD COLUMN idioma TEXT", "ALTER TABLE plt_mk_marcas ADD COLUMN horarios TEXT", "ALTER TABLE plt_mk_marcas ADD COLUMN logo_midia_id INTEGER", "ALTER TABLE plt_mk_posts ADD COLUMN texto_arte TEXT", "ALTER TABLE plt_mk_marcas ADD COLUMN ofertas TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN analise TEXT", "ALTER TABLE plt_mk_config ADD COLUMN avaliacoes_auto TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN triagem TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN denuncia TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN removida_ms INTEGER", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN google_id TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN avisado_ms INTEGER", "ALTER TABLE plt_mk_midias ADD COLUMN marca_id INTEGER", "ALTER TABLE plt_mk_midias ADD COLUMN nome_arquivo TEXT", "ALTER TABLE plt_mk_midias ADD COLUMN origem TEXT", "ALTER TABLE plt_mk_midias ADD COLUMN enviado_por TEXT", "ALTER TABLE plt_mk_midias ADD COLUMN descricao TEXT", "ALTER TABLE plt_mk_midias ADD COLUMN original_id INTEGER", "ALTER TABLE plt_mk_midias ADD COLUMN google_id TEXT", "ALTER TABLE plt_mk_midias ADD COLUMN arquivo TEXT", "ALTER TABLE plt_mk_midias ADD COLUMN tamanho INTEGER", "ALTER TABLE plt_mk_midias ADD COLUMN capa_id INTEGER", "ALTER TABLE plt_mk_midias ADD COLUMN duracao REAL", "ALTER TABLE plt_mk_posts ADD COLUMN botao TEXT", "ALTER TABLE plt_mk_posts ADD COLUMN botao_url TEXT", "ALTER TABLE plt_mk_posts ADD COLUMN textos TEXT", "ALTER TABLE plt_mk_posts ADD COLUMN midia_google_id INTEGER"])
     await env.DB.prepare(alter).run().catch(() => { }); // coluna já existe
   prontos.add(env.DB);
 }
@@ -132,13 +132,18 @@ function linhaPost(p) {
   let canais = []; let revisao = null;
   try { canais = JSON.parse(p.canais || "[]"); } catch { canais = []; }
   try { revisao = p.revisao ? JSON.parse(p.revisao) : null; } catch { revisao = null; }
-  return { ...p, canais, revisao };
+  let textos = null; try { textos = p.textos ? JSON.parse(p.textos) : null; } catch { textos = null; }
+  return { ...p, canais, revisao, textos };
 }
 // Idiomas da plataforma (interface, conteúdo das marcas e conversa com a DENIA).
 export const IDIOMAS = { "pt-BR": "português do Brasil", en: "inglês (English)", es: "espanhol (español)", de: "alemão (Deutsch)", it: "italiano", fr: "francês (français)", ja: "japonês (日本語)", hi: "hindi (हिन्दी)" };
 export const idiomaDe = v => (IDIOMAS[String(v || "")] ? String(v) : "pt-BR");
 // Botão do post no Google (o Google aceita um por post): AUTO alterna Ligar e Site; os de link usam o site da marca se não houver outro.
 export const BOTOES_GOOGLE = ["AUTO", "CALL", "LEARN_MORE", "BOOK", "ORDER", "SHOP", "SIGN_UP", "NENHUM"];
+async function gravarTextos(env, postId, c, txt) {
+  if (c.textos === undefined) return;
+  await env.DB.prepare("UPDATE plt_mk_posts SET textos=? WHERE id=?").bind(JSON.stringify(textosLimpos(c.textos, txt)), postId).run();
+}
 async function gravarBotao(env, postId, c) {
   if (c.botao === undefined && c.botao_url === undefined) return;
   const b = BOTOES_GOOGLE.includes(c.botao) ? c.botao : "AUTO";
@@ -155,39 +160,69 @@ const pareceDescricao = (leg, desc) => {
   let comuns = 0; for (const w of b) if (a.has(w)) comuns++;
   return comuns / b.size > 0.8 && l.length < 320;
 };
-export async function legendaDeMidia(env, marca, { imagens = [], pedido = "", canais = ["instagram"], formato = "post", tipo = "foto", modoTexto = "nao", palavras = [] }) {
-  const sóGoogle = canais.length === 1 && canais[0] === "google";
+// Regras de cada rede (o que uma agência segue ao publicar em cada uma).
+const REGRAS_REDES = {
+  instagram: `INSTAGRAM (campo instagram.legenda + instagram.hashtags): primeiros 125 caracteres decidem se a pessoa toca em "mais" — gancho forte; 600 a 1500 caracteres com quebras de linha e emojis com moderação; link não é clicável (diga "chame no WhatsApp" ou "link na bio"); termine com o WhatsApp da marca; hashtags: 8 a 15, mistura de serviço, serviço+bairro/cidade, cidade e nicho, sem acentos (vão separadas da legenda).`,
+  facebook: `FACEBOOK (campo facebook.legenda): mais curto e conversado que o Instagram — 2 a 4 frases (até 500 caracteres); pode ter link clicável do site/WhatsApp (wa.me) se a marca tiver; no máximo 2 hashtags, no fim; termine com o WhatsApp.`,
+  google: `GOOGLE — PERFIL DA EMPRESA (campo google): é busca local, não rede social. Regras do Google: SEM hashtags, SEM telefone e SEM links no texto (o Google recusa ou ignora; o botão do post faz isso), sem emojis em excesso (no máximo 1 ou 2), nada de "clique no link da bio". Texto de 150 a 300 caracteres (máximo 1500): a primeira frase com SERVIÇO + BAIRRO/CIDADE (é o que aparece na busca e no Maps), depois benefício/prova e um convite para usar o botão (ex.: "Toque em Ligar e peça seu orçamento"). Escreva como um anúncio local profissional e direto.
+  google.tipo: "NOVIDADE" (padrão: serviço feito, dica, antes/depois), "OFERTA" (só se o dono falou de desconto/promoção/preço especial — então preencha google.titulo curto com a oferta, google.inicio e google.fim no formato AAAA-MM-DD, google.cupom se ele deu um código, google.termos com as condições que ele disse) ou "EVENTO" (só se houver data de acontecimento — google.titulo, google.inicio, google.fim). Não invente datas nem descontos: se o dono não disse a validade da oferta, use do dia de hoje até o fim deste mês.`
+};
+export async function legendaDeMidia(env, marca, { imagens = [], pedido = "", canais = ["instagram"], formato = "post", tipo = "foto", modoTexto = "nao", palavras = [], tipoGoogle = "auto", hoje = "" }) {
   const nome = tipo === "video" ? "VÍDEO" : "FOTO";
-  const instrucoes = `Você é a social media e especialista em SEO local de uma agência de marketing de alto nível. A empresa te mandou uma ${nome} REAL de um serviço que ela fez${pedido ? " e explicou, com as palavras dela, o que quer" : ""}. Sua tarefa é escrever a LEGENDA DE UM POST QUE VENDE — não uma descrição da imagem.
+  const redes = ["instagram", "facebook", "google"].filter(c => canais.includes(c));
+  const instrucoes = `Você é a equipe de uma agência de marketing de alto nível (social media + especialista em SEO local e Perfil da Empresa no Google). A empresa te mandou uma ${nome} REAL de um serviço que ela fez${pedido ? " e explicou, com as palavras dela, o que quer" : ""}. Escreva o POST PROFISSIONAL de cada rede marcada, seguindo as regras e os recursos próprios de cada uma — nunca uma descrição da imagem.
 ${REGRAS_CONTEUDO}
 ${COPY_QUE_VENDE}
-A LEGENDA (campo "legenda"):
-- NUNCA comece com "A foto mostra", "Nesta imagem", "Na foto" nem descreva a cena como um catálogo. A ${nome.toLowerCase()} serve de prova; a legenda fala com o CLIENTE: a dor ou o desejo dele, o resultado, por que escolher a empresa.
-- 1ª linha: gancho forte (pergunta, dor, curiosidade ou resultado) que faz parar de rolar.
-- Depois, 2 a 4 frases curtas: o serviço com o nome que o cliente busca no Google, o resultado/benefício, um detalhe concreto do que se vê (prova), diferenciais da empresa.
+Regras para TODAS as redes:
+- NUNCA comece com "A foto mostra", "Nesta imagem", "Na foto" nem descreva a cena como catálogo. A ${nome.toLowerCase()} é a prova; o texto fala com o CLIENTE: dor/desejo, resultado, por que escolher a empresa.
 - Use de forma natural 2 a 4 PALAVRAS-CHAVE de busca local: SERVIÇO + BAIRRO/CIDADE (ex.: "lavagem de tapete na Zona Sul", "conserto de TV em Botafogo"). ${palavras.length ? `Prefira estas, que a empresa acompanha no Google: ${palavras.join(", ")}.` : ""}
-- ${sóGoogle ? "É post do Google: NÃO coloque telefone nem WhatsApp (o Google recusa); termine com convite para pedir orçamento pelo botão do perfil." : "Termine com chamada clara para o WhatsApp, com o número exatamente como está nos dados da marca (se não houver número, chame para o direct)."}
-- Quebras de linha entre as ideias, emojis com moderação, entre 400 e 1200 caracteres.
-- Se o dono pediu algo (oferta, tom, assunto, o que destacar), isso tem prioridade. Não invente preço, prazo, desconto ou resultado que ele não disse e a ${nome.toLowerCase()} não mostra.
-HASHTAGS ("hashtags"): ${sóGoogle ? "vazio." : "8 a 15, misturando serviço, serviço+bairro/cidade, cidade e nicho (ex.: #lavagemdetapete #tapetelimpo #zonasulsp #lavagemdetapetezonasul). Sem acentos."}
-OUTROS CAMPOS: titulo (interno, até 8 palavras); chamada (botão/CTA curto); palavras_chave (lista das palavras-chave de busca que você usou); texto_arte (${modoTexto === "sim" ? "OBRIGATÓRIO: frase curta e forte de até 6 palavras para escrever na imagem" : modoTexto === "nao" ? "vazio" : "frase de até 6 palavras só se ajudar a vender; senão vazio"}); nome_arquivo (3 a 7 palavras sem acentos com hífen: SERVIÇO + BAIRRO/CIDADE, ex.: lavagem-tapete-persa-zona-sul-sp); descricao_foto (1 a 2 frases, SÓ para uso interno/acessibilidade, dizendo o que a imagem mostra com serviço e bairro)${tipo === "video" ? `; capa (número do quadro, de 1 a ${Math.max(1, imagens.length)}, que fica melhor como capa)` : ""}.
-Responda em JSON: {"titulo":"","legenda":"","hashtags":"","chamada":"","palavras_chave":[],"texto_arte":"","nome_arquivo":"","descricao_foto":""${tipo === "video" ? ',"capa":1' : ""}}`;
-  const entrada = `${resumoMarca(marca)}\n\nCanais: ${canais.join(", ")}. Formato: ${formato}.\nO que o dono explicou: ${pedido || "(nada — escreva a partir da imagem e dos dados da marca)"}\nResponda em JSON.`;
+- O que o dono pediu (oferta, tom, assunto, destaque) tem prioridade. Não invente preço, prazo, desconto ou resultado que ele não disse e a ${nome.toLowerCase()} não mostra.
+- Cada rede tem um texto PRÓPRIO (não copie o mesmo texto).
+Redes deste post: ${redes.join(", ")}.
+${redes.map(r => REGRAS_REDES[r]).join("\n")}
+${redes.includes("google") && tipoGoogle !== "auto" ? `O dono escolheu o tipo do post no Google: ${tipoGoogle}.` : ""}
+OUTROS CAMPOS: titulo (interno, até 8 palavras); chamada (CTA curto); palavras_chave (lista das palavras-chave de busca usadas); texto_arte (${modoTexto === "sim" ? "OBRIGATÓRIO: frase curta e forte de até 6 palavras para escrever na imagem" : modoTexto === "nao" ? "vazio" : "frase de até 6 palavras só se ajudar a vender; senão vazio"}); nome_arquivo (3 a 7 palavras sem acentos com hífen: SERVIÇO + BAIRRO/CIDADE, ex.: lavagem-tapete-persa-zona-sul-sp); descricao_foto (1 a 2 frases, SÓ para uso interno/acessibilidade, dizendo o que a imagem mostra)${tipo === "video" ? `; capa (número do quadro, de 1 a ${Math.max(1, imagens.length)}, que fica melhor como capa)` : ""}.
+Responda em JSON: {"titulo":"","instagram":{"legenda":"","hashtags":""},"facebook":{"legenda":""},"google":{"tipo":"NOVIDADE","texto":"","titulo":"","inicio":"","fim":"","cupom":"","termos":""},"chamada":"","palavras_chave":[],"texto_arte":"","nome_arquivo":"","descricao_foto":""${tipo === "video" ? ',"capa":1' : ""}} — deixe vazias as redes que não estão marcadas.`;
+  const entrada = `${resumoMarca(marca)}\n\nHoje: ${hoje || new Date().toISOString().slice(0, 10)}. Formato: ${formato}.\nO que o dono explicou: ${pedido || "(nada — escreva a partir da imagem e dos dados da marca)"}\nResponda em JSON.`;
   const d = await openai(env, "responses", {
     model: String(env.OPENAI_MODEL || MODELO_TEXTO).trim(), instructions: instrucoes,
     input: [{ role: "user", content: [{ type: "input_text", text: entrada }, ...imagens.map(i => ({ type: "input_image", image_url: `data:${i.mime};base64,${i.b64}`, detail: tipo === "video" ? "low" : "high" }))] }],
-    text: { format: { type: "json_object" } }, max_output_tokens: 3000, store: false
+    text: { format: { type: "json_object" } }, max_output_tokens: 4000, store: false
   });
   let r; try { r = JSON.parse(textoDaResposta(d)); } catch { return null; }
-  // Conferência: se saiu com cara de descrição da imagem, reescreve como legenda de venda.
-  if (pareceDescricao(r.legenda, r.descricao_foto)) {
-    const n = await iaJSON(env, `${instrucoes}\n\nO texto abaixo saiu como DESCRIÇÃO da imagem, não como legenda. Reescreva como legenda de post que vende, seguindo todas as regras acima. Mantenha os fatos.`,
-      `${entrada}\n\nO que a imagem mostra: ${String(r.descricao_foto || "").slice(0, 600)}\nTexto que saiu errado: ${String(r.legenda || "").slice(0, 1500)}\nResponda em JSON.`, 3000).catch(() => null);
-    if (n?.legenda && !pareceDescricao(n.legenda, r.descricao_foto)) r = { ...r, ...n, descricao_foto: r.descricao_foto, nome_arquivo: r.nome_arquivo || n.nome_arquivo, capa: r.capa };
+  normalizarRedes(r);
+  const principal = () => r.instagram?.legenda || r.facebook?.legenda || r.google?.texto || r.legenda || "";
+  // Conferência: se saiu com cara de descrição da imagem, reescreve como post de venda.
+  if (pareceDescricao(principal(), r.descricao_foto)) {
+    const n = await iaJSON(env, `${instrucoes}\n\nO texto abaixo saiu como DESCRIÇÃO da imagem, não como post. Reescreva os textos de cada rede como post profissional que vende, seguindo todas as regras acima. Mantenha os fatos.`,
+      `${entrada}\n\nO que a imagem mostra: ${String(r.descricao_foto || "").slice(0, 600)}\nTexto que saiu errado: ${String(principal()).slice(0, 1500)}\nResponda em JSON.`, 4000).catch(() => null);
+    if (n) { normalizarRedes(n); if (!pareceDescricao(n.instagram?.legenda || n.facebook?.legenda || n.google?.texto || n.legenda, r.descricao_foto)) r = { ...r, ...n, descricao_foto: r.descricao_foto, nome_arquivo: r.nome_arquivo || n.nome_arquivo, capa: r.capa }; }
     r.reescrita = true;
   }
   r.palavras_chave = (Array.isArray(r.palavras_chave) ? r.palavras_chave : String(r.palavras_chave || "").split(/[,;\n]/)).map(x => String(x).trim()).filter(Boolean).slice(0, 8);
+  // Campos principais (compatibilidade): legenda/hashtags = Instagram, senão Facebook, senão Google.
+  r.legenda = principal(); r.hashtags = r.instagram?.hashtags || "";
   return r;
+}
+// Aceita tanto a resposta por rede quanto a antiga (legenda/hashtags soltas).
+function normalizarRedes(r) {
+  if (!r || typeof r !== "object") return r;
+  for (const c of ["instagram", "facebook", "google"]) if (!r[c] || typeof r[c] !== "object") r[c] = {};
+  if (!r.instagram.legenda && r.legenda) r.instagram.legenda = r.legenda;
+  if (!r.instagram.hashtags && r.hashtags) r.instagram.hashtags = r.hashtags;
+  return r;
+}
+const TIPOS_GOOGLE = ["NOVIDADE", "OFERTA", "EVENTO"];
+// Textos por rede, limpos e validados (guardados em plt_mk_posts.textos).
+export function textosLimpos(t, txt) {
+  const o = t && typeof t === "object" ? t : {};
+  const ig = o.instagram || {}, fb = o.facebook || {}, g = o.google || {};
+  const dia = v => /^\d{4}-\d{2}-\d{2}$/.test(String(v || "")) ? String(v) : "";
+  return {
+    instagram: { legenda: txt(ig.legenda, 2200), hashtags: txt(ig.hashtags, 600) },
+    facebook: { legenda: txt(fb.legenda, 5000) },
+    google: { tipo: TIPOS_GOOGLE.includes(String(g.tipo || "").toUpperCase()) ? String(g.tipo).toUpperCase() : "NOVIDADE", texto: txt(g.texto, 1500), titulo: txt(g.titulo, 58), inicio: dia(g.inicio), fim: dia(g.fim), cupom: txt(g.cupom, 58), termos: txt(g.termos, 5000) }
+  };
 }
 // Vídeo guardado em disco (env.ARQUIVOS), com faixa de bytes para o player do navegador e para a Meta/Google baixarem.
 export async function servirArquivo(env, request, r, baixar = false) {
@@ -831,7 +866,7 @@ Responda em JSON: {"descricao":"","por_que":"(uma frase dizendo o que melhorou)"
         const status = p.status === "APROVADO" && !pode(papel, "ADMIN") ? "AGUARDANDO" : p.status;
         await env.DB.prepare("UPDATE plt_mk_posts SET marca_id=?, canais=?, formato=?, data=?, hora=?, titulo=?, legenda=?, hashtags=?, chamada=?, ideia_imagem=?, texto_arte=?, status=?, atualizado_ms=? WHERE id=? AND org_id=?")
           .bind(marca.id, v.canais, v.formato, v.data, v.hora, v.titulo, v.legenda, v.hashtags, v.chamada, v.ideia_imagem, v.texto_arte || null, status, agora(env), Number(c.id), orgId).run();
-        await gravarBotao(env, Number(c.id), c);
+        await gravarBotao(env, Number(c.id), c); await gravarTextos(env, Number(c.id), c, txt);
         return json({ ok: true, id: Number(c.id) });
       }
       const n = await env.DB.prepare(`INSERT INTO plt_mk_posts(org_id,marca_id,canais,formato,data,hora,titulo,legenda,hashtags,chamada,ideia_imagem,texto_arte,status,criado_por,criado_ms,atualizado_ms)
@@ -841,7 +876,7 @@ Responda em JSON: {"descricao":"","por_que":"(uma frase dizendo o que melhorou)"
         const md = await env.DB.prepare("SELECT id FROM plt_mk_midias WHERE id=? AND org_id=?").bind(Number(c.midia_id), orgId).first();
         if (md) await env.DB.prepare("UPDATE plt_mk_posts SET midia_id=? WHERE id=?").bind(md.id, n.id).run();
       }
-      await gravarBotao(env, n.id, c);
+      await gravarBotao(env, n.id, c); await gravarTextos(env, n.id, c, txt);
       return json({ ok: true, id: n.id });
     }
     if ((m = resto.match(/^posts\/(\d{1,12})\/acao$/)) && metodo === "POST") {
@@ -874,7 +909,7 @@ Responda em JSON: {"descricao":"","por_que":"(uma frase dizendo o que melhorou)"
       if (acao === "excluir") {
         exigir("ADMIN");
         const vid = p.midia_id ? await env.DB.prepare("SELECT arquivo, capa_id FROM plt_mk_midias WHERE id=? AND org_id=?").bind(p.midia_id, orgId).first() : null;
-        await env.DB.batch([env.DB.prepare("DELETE FROM plt_mk_posts WHERE id=?").bind(p.id), env.DB.prepare("DELETE FROM plt_mk_midias WHERE id=? AND org_id=?").bind(p.midia_id || 0, orgId), env.DB.prepare("DELETE FROM plt_mk_midias WHERE id=? AND org_id=?").bind(vid?.capa_id || 0, orgId)]);
+        await env.DB.batch([env.DB.prepare("DELETE FROM plt_mk_posts WHERE id=?").bind(p.id), env.DB.prepare("DELETE FROM plt_mk_midias WHERE id=? AND org_id=?").bind(p.midia_id || 0, orgId), env.DB.prepare("DELETE FROM plt_mk_midias WHERE id=? AND org_id=?").bind(vid?.capa_id || 0, orgId), env.DB.prepare("DELETE FROM plt_mk_midias WHERE id=? AND org_id=?").bind(p.midia_google_id || 0, orgId)]);
         if (vid?.arquivo && env.ARQUIVOS) await env.ARQUIVOS.delete(vid.arquivo).catch(() => {});
         return json({ ok: true });
       }
@@ -1046,7 +1081,7 @@ Responda em JSON: {"titulo":"","legenda":"","hashtags":"","chamada":"","texto_ar
         const sóGoogle = canais.length === 1 && canais[0] === "google";
         const modoTexto = ["sim", "nao"].includes(c.texto_na_foto) ? c.texto_na_foto : "auto";
         const palavrasMarca = ((await env.DB.prepare("SELECT palavra FROM plt_mk_palavras WHERE org_id=? AND marca_id=? LIMIT 8").bind(orgId, marca.id).all().catch(() => null))?.results || []).map(x => x.palavra);
-        const r = await legendaDeMidia(env, marca, { imagens: [{ mime, b64: dados }], pedido, canais, formato, tipo: "foto", modoTexto, palavras: palavrasMarca });
+        const r = await legendaDeMidia(env, marca, { imagens: [{ mime, b64: dados }], pedido, canais, formato, tipo: "foto", modoTexto, palavras: palavrasMarca, tipoGoogle: TIPOS_GOOGLE.includes(c.tipo_google) ? c.tipo_google : "auto", hoje: new Date(agora(env) - 3 * 3600000).toISOString().slice(0, 10) });
         if (!r) return json({ erro: "A IA respondeu num formato inesperado. Tente de novo." }, 502);
         const nomeArq = await nomeUnico(env, orgId, slugSeo(r.nome_arquivo || `${r.titulo || ""} ${marca.cidade || ""}`));
         const md = await env.DB.prepare("INSERT INTO plt_mk_midias(org_id,mime,dados,prompt,criado_ms,marca_id,nome_arquivo,origem,enviado_por,descricao) VALUES(?,?,?,?,?,?,?,?,?,?) RETURNING id")
@@ -1060,11 +1095,24 @@ Responda em JSON: {"titulo":"","legenda":"","hashtags":"","chamada":"","texto_ar
           revisao = await revisar(env, marca, post).catch(() => null);
           status = revisao && revisao.aprovado && revisao.nota >= cfg.nota_minima ? "APROVADO" : "AGUARDANDO";
         }
+        // Agendar/publicar pelo cartão (administrador): já sai aprovado, senão a publicação automática não envia.
+        let aprovadoPor = status === "APROVADO" ? "DENIA (aprovação automática)" : null;
+        if (c.aprovar && pode(papel, "ADMIN")) { status = "APROVADO"; aprovadoPor = autor; }
+        if (TIPOS_GOOGLE.includes(c.tipo_google)) r.google = { ...(r.google || {}), tipo: c.tipo_google };
+        const textosPost = JSON.stringify(textosLimpos(r, txt));
         const n = await env.DB.prepare(`INSERT INTO plt_mk_posts(org_id,marca_id,canais,formato,data,hora,titulo,legenda,hashtags,chamada,ideia_imagem,texto_arte,midia_id,status,revisao,criado_por,aprovado_por,criado_ms,atualizado_ms)
-          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`).bind(orgId, marca.id, JSON.stringify(post.canais), post.formato, post.data, post.hora, post.titulo, post.legenda, post.hashtags, post.chamada, post.ideia_imagem, textoArte || null, md.id, status, revisao ? JSON.stringify(revisao) : null, autor, status === "APROVADO" ? "DENIA (aprovação automática)" : null, agora(env), agora(env)).first();
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`).bind(orgId, marca.id, JSON.stringify(post.canais), post.formato, post.data, post.hora, post.titulo, post.legenda, post.hashtags, post.chamada, post.ideia_imagem, textoArte || null, md.id, status, revisao ? JSON.stringify(revisao) : null, autor, aprovadoPor, agora(env), agora(env)).first();
+        await env.DB.prepare("UPDATE plt_mk_posts SET textos=? WHERE id=?").bind(textosPost, n.id).run();
+        // Versão da foto no formato do Google (4:3), quando o navegador manda.
+        const dg = String(c.foto_google || "").replace(/^data:[^,]*,/, "");
+        if (canais.includes("google") && dg && tipoDaImagem(dg) && dg.length < LIMITE_LOGO_B64) {
+          const mg = await env.DB.prepare("INSERT INTO plt_mk_midias(org_id,mime,dados,prompt,criado_ms,marca_id,nome_arquivo,origem,enviado_por,descricao,original_id) VALUES(?,?,?,?,?,?,?,?,?,?,?) RETURNING id")
+            .bind(orgId, tipoDaImagem(dg), dg, "foto google 4:3", agora(env), marca.id, nomeArq + "-google", "foto-original", autor, txt(r.descricao_foto, 400), md.id).first();
+          await env.DB.prepare("UPDATE plt_mk_posts SET midia_google_id=? WHERE id=?").bind(mg.id, n.id).run();
+        }
         await gravarBotao(env, n.id, c);
         await auditar(env, request, sessao, orgId, "MARKETING", `IA escreveu o post #${n.id} a partir de uma foto enviada (${marca.nome})`);
-        return json({ ok: true, id: n.id, status, nome_arquivo: nomeArq, descricao_foto: txt(r.descricao_foto, 400), palavras_chave: r.palavras_chave, texto_arte: textoArte, post: { ...post, id: n.id, midia_id: md.id, marca_id: marca.id, status } });
+        return json({ ok: true, id: n.id, status, nome_arquivo: nomeArq, descricao_foto: txt(r.descricao_foto, 400), palavras_chave: r.palavras_chave, textos: JSON.parse(textosPost), texto_arte: textoArte, post: { ...post, id: n.id, midia_id: md.id, marca_id: marca.id, status } });
       }
       // Vídeo já enviado: a IA olha alguns quadros (tirados no navegador) e o pedido, e escreve o post (Reels/vídeo).
       if (resto === "ia/post-video" && metodo === "POST") {
@@ -1079,7 +1127,7 @@ Responda em JSON: {"titulo":"","legenda":"","hashtags":"","chamada":"","texto_ar
         const formato = c.formato === "story" ? "story" : "reels";
         const pedido = txt(c.pedido, 1500);
         const palavrasMarca = ((await env.DB.prepare("SELECT palavra FROM plt_mk_palavras WHERE org_id=? AND marca_id=? LIMIT 8").bind(orgId, marca.id).all().catch(() => null))?.results || []).map(x => x.palavra);
-        const r = await legendaDeMidia(env, marca, { imagens: quadros.map(q => ({ mime: "image/jpeg", b64: q })), pedido, canais, formato, tipo: "video", modoTexto: "nao", palavras: palavrasMarca });
+        const r = await legendaDeMidia(env, marca, { imagens: quadros.map(q => ({ mime: "image/jpeg", b64: q })), pedido, canais, formato, tipo: "video", modoTexto: "nao", palavras: palavrasMarca, tipoGoogle: TIPOS_GOOGLE.includes(c.tipo_google) ? c.tipo_google : "auto", hoje: new Date(agora(env) - 3 * 3600000).toISOString().slice(0, 10) });
         if (r) r.descricao = r.descricao_foto;
         if (!r) return json({ erro: "A IA respondeu num formato inesperado. Tente de novo." }, 502);
         const nomeArq = await nomeUnico(env, orgId, slugSeo(r.nome_arquivo || `${r.titulo || ""} ${marca.cidade || ""}`));
@@ -1095,28 +1143,39 @@ Responda em JSON: {"titulo":"","legenda":"","hashtags":"","chamada":"","texto_ar
           revisao = await revisar(env, marca, post).catch(() => null);
           status = revisao && revisao.aprovado && revisao.nota >= cfg.nota_minima ? "APROVADO" : "AGUARDANDO";
         }
+        // Agendar/publicar pelo cartão (administrador): já sai aprovado, senão a publicação automática não envia.
+        let aprovadoPor = status === "APROVADO" ? "DENIA (aprovação automática)" : null;
+        if (c.aprovar && pode(papel, "ADMIN")) { status = "APROVADO"; aprovadoPor = autor; }
+        if (TIPOS_GOOGLE.includes(c.tipo_google)) r.google = { ...(r.google || {}), tipo: c.tipo_google };
+        const textosPost = JSON.stringify(textosLimpos(r, txt));
         const n = await env.DB.prepare(`INSERT INTO plt_mk_posts(org_id,marca_id,canais,formato,data,hora,titulo,legenda,hashtags,chamada,ideia_imagem,texto_arte,midia_id,status,revisao,criado_por,aprovado_por,criado_ms,atualizado_ms)
-          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`).bind(orgId, marca.id, JSON.stringify(post.canais), post.formato, post.data, post.hora, post.titulo, post.legenda, post.hashtags, post.chamada, post.ideia_imagem, null, vid.id, status, revisao ? JSON.stringify(revisao) : null, autor, status === "APROVADO" ? "DENIA (aprovação automática)" : null, agora(env), agora(env)).first();
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`).bind(orgId, marca.id, JSON.stringify(post.canais), post.formato, post.data, post.hora, post.titulo, post.legenda, post.hashtags, post.chamada, post.ideia_imagem, null, vid.id, status, revisao ? JSON.stringify(revisao) : null, autor, aprovadoPor, agora(env), agora(env)).first();
+        await env.DB.prepare("UPDATE plt_mk_posts SET textos=? WHERE id=?").bind(textosPost, n.id).run();
         await gravarBotao(env, n.id, c);
         await auditar(env, request, sessao, orgId, "MARKETING", `IA escreveu o post #${n.id} a partir de um vídeo enviado (${marca.nome})`);
-        return json({ ok: true, id: n.id, status, nome_arquivo: nomeArq, palavras_chave: r.palavras_chave, post: { ...post, id: n.id, midia_id: vid.id, midia_video: 1, marca_id: marca.id, status } });
+        return json({ ok: true, id: n.id, status, nome_arquivo: nomeArq, palavras_chave: r.palavras_chave, textos: JSON.parse(textosPost), post: { ...post, id: n.id, midia_id: vid.id, midia_video: 1, marca_id: marca.id, status } });
       }
       // Conversa com a IA sobre um post: a pessoa explica do jeito dela o que mudar e a IA reescreve (não salva sozinha).
       if (resto === "ia/ajustar" && metodo === "POST") {
         exigir("AGENTE");
-        const c = await corpoOu(12000);
+        const c = await corpoOu(24000);
         const marca = await marcaDa(c.marca_id);
         if (!marca) return json({ erro: "Escolha a empresa." }, 400);
         const pedido = txt(c.pedido, 1500);
         if (pedido.length < 2) return json({ erro: "Diga para a IA o que você quer mudar." }, 400);
         const a = c.atual || {};
+        const canais = canaisOk(c.canais);
+        const tx = textosLimpos(a.textos, txt);
         const historico = (Array.isArray(c.historico) ? c.historico : []).slice(-6).map(x => "- " + txt(x, 300)).join("\n");
-        const r = await iaJSON(env, `Você é a social media sênior da empresa e está ajustando um post junto com o dono. Ele fala do jeito dele (às vezes solto, falado, sem pontuação). Entenda o que ele quer e reescreva o post aplicando o pedido; mantenha o que ele não pediu para mudar. ${REGRAS_CONTEUDO}
+        const r = await iaJSON(env, `Você é a equipe de uma agência de marketing de alto nível ajustando um post junto com o dono. Ele fala do jeito dele (às vezes solto, falado, sem pontuação). Entenda o que ele quer e reescreva aplicando o pedido em TODAS as redes marcadas, cada uma com o seu texto e as suas regras; mantenha o que ele não pediu para mudar. ${REGRAS_CONTEUDO}
 ${COPY_QUE_VENDE}
+${canais.map(r2 => REGRAS_REDES[r2]).join("\n")}
 Se o pedido for uma pergunta, responda em "resposta" e devolva o post sem mudanças. Em "resposta", diga em 1 frase curta o que você mudou.
-Responda em JSON: {"titulo":"","legenda":"","hashtags":"","chamada":"","texto_arte":"","resposta":""}`,
-          `${resumoMarca(marca)}\n\nCanais: ${canaisOk(c.canais).join(", ")}.\nPost atual:\nTítulo: ${txt(a.titulo, 200)}\nLegenda: ${txt(a.legenda, 2200)}\nHashtags: ${txt(a.hashtags, 600)}\nChamada: ${txt(a.chamada, 200)}\nTexto na arte: ${txt(a.texto_arte, 80)}\n${historico ? "Pedidos anteriores nesta conversa:\n" + historico + "\n" : ""}\nPedido agora: ${pedido}\nResponda em JSON.`);
-        return json({ ok: true, sugestao: { titulo: txt(r.titulo, 200) || txt(a.titulo, 200), legenda: txt(r.legenda, 2200) || txt(a.legenda, 2200), hashtags: txt(r.hashtags, 600), chamada: txt(r.chamada, 200), texto_arte: txt(r.texto_arte, 80) }, resposta: txt(r.resposta, 400) });
+Responda em JSON: {"titulo":"","instagram":{"legenda":"","hashtags":""},"facebook":{"legenda":""},"google":{"tipo":"NOVIDADE","texto":"","titulo":"","inicio":"","fim":"","cupom":"","termos":""},"chamada":"","texto_arte":"","resposta":""}`,
+          `${resumoMarca(marca)}\n\nHoje: ${new Date(agora(env) - 3 * 3600000).toISOString().slice(0, 10)}. Redes: ${canais.join(", ")}.\nPost atual:\nTítulo: ${txt(a.titulo, 200)}\nInstagram — legenda: ${txt(a.legenda, 2200)}\nInstagram — hashtags: ${txt(a.hashtags, 600)}\nFacebook: ${tx.facebook.legenda || "(usa a do Instagram)"}\nGoogle (${tx.google.tipo}): ${tx.google.texto || "(usa a legenda)"}${tx.google.titulo ? " · título: " + tx.google.titulo : ""}${tx.google.inicio ? " · de " + tx.google.inicio + " a " + tx.google.fim : ""}\nChamada: ${txt(a.chamada, 200)}\nTexto na arte: ${txt(a.texto_arte, 80)}\n${historico ? "Pedidos anteriores nesta conversa:\n" + historico + "\n" : ""}\nPedido agora: ${pedido}\nResponda em JSON.`, 4000);
+        normalizarRedes(r);
+        const novos = textosLimpos({ instagram: r.instagram, facebook: r.facebook.legenda ? r.facebook : tx.facebook, google: r.google.texto || r.google.tipo ? { ...tx.google, ...Object.fromEntries(Object.entries(r.google).filter(([, v]) => v)) } : tx.google }, txt);
+        return json({ ok: true, sugestao: { titulo: txt(r.titulo, 200) || txt(a.titulo, 200), legenda: txt(r.instagram.legenda, 2200) || txt(a.legenda, 2200), hashtags: txt(r.instagram.hashtags, 600) || txt(a.hashtags, 600), chamada: txt(r.chamada, 200) || txt(a.chamada, 200), texto_arte: txt(r.texto_arte, 80), textos: novos }, resposta: txt(r.resposta, 400) });
       }
       if (resto === "ia/imagem" && metodo === "POST") {
         exigir("AGENTE");
