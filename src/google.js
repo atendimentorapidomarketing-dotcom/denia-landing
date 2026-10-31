@@ -1118,14 +1118,24 @@ async function rotasGoogleExtra(request, env, k, orgId, papel, resto, url) {
     if (!mime) return json({ erro: "Envie a foto em JPG ou PNG." }, 400);
     if (dados.length < 14000) return json({ erro: "A foto é pequena demais para o Google (mínimo 10 KB e 250 pixels)." }, 400);
     const categoria = CATEGORIAS_FOTO.includes(c.categoria) ? c.categoria : "ADDITIONAL";
-    const n = await env.DB.prepare("INSERT INTO plt_mk_midias(org_id,mime,dados,prompt,criado_ms) VALUES(?,?,?,?,?) RETURNING id").bind(orgId, mime, dados, "foto google", k.agora(env)).first();
+    // A IA dá nome e descrição pensados para busca (ex.: conserto-tv-botafogo); sem chave da OpenAI, usa o que a pessoa escreveu.
+    const marcaRow = await env.DB.prepare("SELECT * FROM plt_mk_marcas WHERE id=? AND org_id=?").bind(conta.marca_id, orgId).first();
+    const mk = await import("./marketing.js");
+    let seo = { nome: mk.slugSeo(c.nome_arquivo || `${marcaRow?.segmento || "foto"} ${marcaRow?.cidade || ""} ${marcaRow?.nome || ""}`), descricao: String(c.descricao || "").trim().slice(0, 300) };
+    if (!c.nome_arquivo && env.OPENAI_API_KEY && marcaRow) seo = await mk.nomearFotoComIA(env, marcaRow, mime, dados, c.descricao || "").catch(() => seo);
+    const nomeArq = await mk.nomeUnico(env, orgId, seo.nome);
+    const n = await env.DB.prepare("INSERT INTO plt_mk_midias(org_id,mime,dados,prompt,criado_ms,marca_id,nome_arquivo,origem,enviado_por,descricao) VALUES(?,?,?,?,?,?,?,?,?,?) RETURNING id")
+      .bind(orgId, mime, dados, "foto google", k.agora(env), conta.marca_id, nomeArq, "foto-google", k.sessao?.usuario?.nome || k.sessao?.usuario?.email || "", seo.descricao).first();
     try {
       const { urlPublicaMidia } = await import("./meta.js");
       const fonte = await urlPublicaMidia({ ...k, env }, baseDe(request, env), n.id);
       const token = await tokenDa(env, k, conta);
-      const r = await chamar("POST", `${API_V4}/${caminhoV4(conta)}/media`, token, { mediaFormat: "PHOTO", locationAssociation: { category: categoria }, sourceUrl: fonte });
+      const corpoMidia = { mediaFormat: "PHOTO", locationAssociation: { category: categoria }, sourceUrl: fonte };
+      if (seo.descricao) corpoMidia.description = seo.descricao;
+      const r = await chamar("POST", `${API_V4}/${caminhoV4(conta)}/media`, token, corpoMidia);
+      if (r.name) await env.DB.prepare("UPDATE plt_mk_midias SET google_id=? WHERE id=?").bind(String(r.name).slice(0, 300), n.id).run();
       await k.auditar(env, request, k.sessao, orgId, "MARKETING", `Enviou foto ao Google (${conta.local_titulo}, ${categoria})`).catch(() => {});
-      return json({ ok: true, id: r.name || null });
+      return json({ ok: true, id: r.name || null, nome_arquivo: nomeArq, descricao: seo.descricao });
     } catch (e) { return erroJson(e); }
   }
   // ----- Pré-análise de qualquer empresa (prospecção): busca pelo nome, escolhe e analisa, com concorrentes e categorias.
@@ -1196,6 +1206,49 @@ async function rotasGoogleExtra(request, env, k, orgId, papel, resto, url) {
       const dados = { n, centro: { lat: ll.latitude, lng: ll.longitude }, pontos: res };
       const ins = await env.DB.prepare("INSERT INTO plt_mk_geogrid(org_id,marca_id,palavra,raio_km,tamanho,media,top3,dados,criado_ms) VALUES(?,?,?,?,?,?,?,?,?) RETURNING id").bind(orgId, conta.marca_id, palavra, raio, n, media, top3, JSON.stringify(dados), k.agora(env)).first();
       return json({ id: ins.id, palavra, raio_km: raio, tamanho: n, media, top3, dados, criado_ms: k.agora(env) });
+    } catch (e) { return erroJson(e); }
+  }
+  // ----- Buscas no Google: o que as pessoas digitaram e quantas vezes (dado oficial do Google), a posição medida
+  // em cada busca, por onde viram o perfil (Pesquisa/Maps, celular/computador) e até onde o perfil chega no mapa.
+  if (resto === "google/buscas" && metodo === "GET") {
+    const conta = await marcaDe();
+    if (!conta) return json({ conectada: false });
+    const meses = Math.min(12, Math.max(1, Number(url.searchParams.get("meses")) || 3));
+    try {
+      const token = await tokenDa(env, k, conta);
+      const agora = k.agora(env), hoje = new Date(agora);
+      const fimMes = new Date(Date.UTC(hoje.getUTCFullYear(), hoje.getUTCMonth(), 0)); // último dia do mês passado
+      const iniMes = new Date(Date.UTC(fimMes.getUTCFullYear(), fimMes.getUTCMonth() - (meses - 1), 1));
+      const [pal, serie, anterior] = await Promise.all([
+        palavrasDoPeriodo(conta, token, iniMes, fimMes, agora, 500),
+        serieDoPeriodo(conta, token, iniMes, fimMes).catch(() => null),
+        palavrasDoPeriodo(conta, token, new Date(Date.UTC(iniMes.getUTCFullYear(), iniMes.getUTCMonth() - meses, 1)), new Date(Date.UTC(iniMes.getUTCFullYear(), iniMes.getUTCMonth(), 0)), agora, 500).catch(() => null)
+      ]);
+      const norm = t => String(t || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/\s+/g, " ").trim();
+      const antes = new Map((anterior?.lista || []).map(x => [norm(x.palavra), x.buscas ?? null]));
+      const acomp = (await env.DB.prepare("SELECT id, palavra, cidade FROM plt_mk_palavras WHERE org_id=? AND marca_id=?").bind(orgId, conta.marca_id).all().catch(() => null))?.results || [];
+      const pos = acomp.length ? ((await env.DB.prepare(`SELECT palavra_id, semana, posicao FROM plt_mk_posicoes WHERE palavra_id IN (${acomp.map(() => "?").join(",")}) ORDER BY semana DESC`).bind(...acomp.map(a => a.id)).all())?.results || []) : [];
+      const posDe = id => { const l = pos.filter(x => x.palavra_id === id); return { atual: l[0] ? l[0].posicao : null, semana: l[0]?.semana || null, anterior: l[1] ? l[1].posicao : null }; };
+      const porPalavra = new Map(acomp.map(a => [norm(a.palavra), a]));
+      const lista = pal.lista.map(x => { const a = porPalavra.get(norm(x.palavra)); const p = a ? posDe(a.id) : null;
+        return { palavra: x.palavra, buscas: x.buscas, menos_de: x.menos_de, antes: antes.has(norm(x.palavra)) ? antes.get(norm(x.palavra)) : null, palavra_id: a?.id || null, posicao: p?.atual ?? null, posicao_anterior: p?.anterior ?? null, medido_em: p?.semana || null }; });
+      // Palavras acompanhadas que o Google não listou (ainda sem buscas registradas).
+      for (const a of acomp) if (!lista.some(x => norm(x.palavra) === norm(a.palavra))) { const p = posDe(a.id); lista.push({ palavra: a.palavra, buscas: null, menos_de: null, antes: null, palavra_id: a.id, posicao: p.atual, posicao_anterior: p.anterior, medido_em: p.semana, so_acompanhada: true }); }
+      const det = serie?.detalhe || null;
+      const onde = det ? { pesquisa_celular: det.pesquisa_celular, pesquisa_computador: det.pesquisa_computador, maps_celular: det.maps_celular, maps_computador: det.maps_computador, rotas: det.rotas, ligacoes: det.ligacoes, cliques_site: det.cliques_site, mensagens: det.mensagens } : null;
+      // Alcance no mapa: a partir das medições do Mapa de posição (uma por busca, a mais recente).
+      const grades = (await env.DB.prepare("SELECT palavra, raio_km, tamanho, media, top3, dados, criado_ms FROM plt_mk_geogrid WHERE org_id=? AND marca_id=? ORDER BY id DESC LIMIT 20").bind(orgId, conta.marca_id).all().catch(() => null))?.results || [];
+      const vistas = new Set(), alcance = [];
+      for (const g of grades) {
+        if (vistas.has(norm(g.palavra))) continue; vistas.add(norm(g.palavra));
+        const d = JSON.parse(g.dados || "{}"), c = d.centro;
+        if (!c) continue;
+        const km = (a, b) => { const R = 6371, r = x => x * Math.PI / 180, dl = r(b.lat - a.lat), dg = r(b.lng - a.lng); const h2 = Math.sin(dl / 2) ** 2 + Math.cos(r(a.lat)) * Math.cos(r(b.lat)) * Math.sin(dg / 2) ** 2; return 2 * R * Math.asin(Math.sqrt(h2)); };
+        const pts = (d.pontos || []).filter(p => p.posicao != null);
+        const ate = lim => { const l = pts.filter(p => p.posicao && p.posicao <= lim); return l.length ? Math.round(Math.max(...l.map(p => km(c, p))) * 10) / 10 : 0; };
+        alcance.push({ palavra: g.palavra, raio_km: g.raio_km, medido_ms: g.criado_ms, media: g.media, top3_pct: g.top3, top10_pct: pts.length ? Math.round(pts.filter(p => p.posicao && p.posicao <= 10).length / pts.length * 100) : 0, top3_km: ate(3), top10_km: ate(10), aparece_km: ate(20), pontos: pts.length });
+      }
+      return json({ conectada: true, periodo: { de: pal.mes_de, ate: pal.mes_ate, meses }, total_buscas: lista.reduce((t, x) => t + (x.buscas || 0), 0), palavras: lista, onde, alcance, places_configurado: Boolean(chavePlaces(env)) });
     } catch (e) { return erroJson(e); }
   }
   // ----- Situação do perfil: suspensão/verificação e alterações feitas pelo Google ou por outras pessoas.

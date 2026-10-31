@@ -39,7 +39,7 @@ const prontos = new WeakSet();
 async function garantir(env) {
   if (prontos.has(env.DB)) return;
   await env.DB.batch(DDL.map(s => env.DB.prepare(s)));
-  for (const alter of ["ALTER TABLE plt_mk_marcas ADD COLUMN idioma TEXT", "ALTER TABLE plt_mk_marcas ADD COLUMN horarios TEXT", "ALTER TABLE plt_mk_marcas ADD COLUMN logo_midia_id INTEGER", "ALTER TABLE plt_mk_posts ADD COLUMN texto_arte TEXT", "ALTER TABLE plt_mk_marcas ADD COLUMN ofertas TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN analise TEXT", "ALTER TABLE plt_mk_config ADD COLUMN avaliacoes_auto TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN triagem TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN denuncia TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN removida_ms INTEGER", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN google_id TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN avisado_ms INTEGER"])
+  for (const alter of ["ALTER TABLE plt_mk_marcas ADD COLUMN idioma TEXT", "ALTER TABLE plt_mk_marcas ADD COLUMN horarios TEXT", "ALTER TABLE plt_mk_marcas ADD COLUMN logo_midia_id INTEGER", "ALTER TABLE plt_mk_posts ADD COLUMN texto_arte TEXT", "ALTER TABLE plt_mk_marcas ADD COLUMN ofertas TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN analise TEXT", "ALTER TABLE plt_mk_config ADD COLUMN avaliacoes_auto TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN triagem TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN denuncia TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN removida_ms INTEGER", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN google_id TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN avisado_ms INTEGER", "ALTER TABLE plt_mk_midias ADD COLUMN marca_id INTEGER", "ALTER TABLE plt_mk_midias ADD COLUMN nome_arquivo TEXT", "ALTER TABLE plt_mk_midias ADD COLUMN origem TEXT", "ALTER TABLE plt_mk_midias ADD COLUMN enviado_por TEXT", "ALTER TABLE plt_mk_midias ADD COLUMN descricao TEXT", "ALTER TABLE plt_mk_midias ADD COLUMN original_id INTEGER", "ALTER TABLE plt_mk_midias ADD COLUMN google_id TEXT"])
     await env.DB.prepare(alter).run().catch(() => { }); // coluna já existe
   prontos.add(env.DB);
 }
@@ -137,6 +137,29 @@ function linhaPost(p) {
 // Idiomas da plataforma (interface, conteúdo das marcas e conversa com a DENIA).
 export const IDIOMAS = { "pt-BR": "português do Brasil", en: "inglês (English)", es: "espanhol (español)", de: "alemão (Deutsch)", it: "italiano", fr: "francês (français)", ja: "japonês (日本語)", hi: "hindi (हिन्दी)" };
 export const idiomaDe = v => (IDIOMAS[String(v || "")] ? String(v) : "pt-BR");
+// Nome de arquivo pensado para busca: serviço + bairro/cidade + marca, sem acentos, com hífens (ex.: conserto-tv-botafogo).
+export function slugSeo(t, max = 70) {
+  return String(t || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, max).replace(/-+[^-]*$/, m => m.length > 1 && String(t).length > max ? "" : m).replace(/-+$/, "") || "foto";
+}
+export async function nomeUnico(env, orgId, base) {
+  const usados = new Set(((await env.DB.prepare("SELECT nome_arquivo FROM plt_mk_midias WHERE org_id=? AND (nome_arquivo=? OR nome_arquivo LIKE ?)").bind(orgId, base, base + "-%").all())?.results || []).map(r => r.nome_arquivo));
+  if (!usados.has(base)) return base;
+  for (let i = 2; i < 1000; i++) if (!usados.has(`${base}-${i}`)) return `${base}-${i}`;
+  return `${base}-${Date.now()}`;
+}
+// A IA olha a foto e devolve o nome do arquivo e a descrição pensados para o Google (usado também nas fotos enviadas direto ao perfil).
+export async function nomearFotoComIA(env, marca, mime, dados, pedido = "") {
+  const d = await openai(env, "responses", {
+    model: String(env.OPENAI_MODEL || MODELO_TEXTO).trim(),
+    instructions: `Você é especialista em SEO local e Perfil da Empresa no Google. Olhe a foto real da empresa e devolva JSON {"nome_arquivo":"","descricao":""}.
+- nome_arquivo: 3 a 7 palavras em minúsculas, sem acentos, separadas por hífen, na ordem SERVIÇO-O-QUE-APARECE + BAIRRO ou CIDADE da marca (+ nome curto da marca se couber). Use as palavras que um cliente digitaria no Google. Ex.: conserto-tv-samsung-botafogo, lavagem-tapete-persa-zona-sul-sp. Nada de "img", "foto", datas ou números de câmera.
+- descricao: 1 a 2 frases naturais (até 250 letras) dizendo o que a foto mostra, com o serviço e o bairro/cidade, sem exagero e sem inventar nada que não aparece.`,
+    input: [{ role: "user", content: [{ type: "input_text", text: `${resumoMarca(marca)}\n${pedido ? "O dono disse: " + String(pedido).slice(0, 600) : ""}\nResponda em JSON.` }, { type: "input_image", image_url: `data:${mime};base64,${dados}`, detail: "low" }] }],
+    text: { format: { type: "json_object" } }, max_output_tokens: 600, store: false
+  });
+  let r = {}; try { r = JSON.parse(textoDaResposta(d)); } catch { }
+  return { nome: slugSeo(r.nome_arquivo || `${marca.segmento || "servico"} ${marca.cidade || ""} ${marca.nome}`), descricao: String(r.descricao || "").replace(/\s+/g, " ").trim().slice(0, 300) };
+}
 function resumoMarca(m) {
   return [`Marca: ${m.nome}`, `IDIOMA DO CONTEÚDO: ${IDIOMAS[idiomaDe(m.idioma)]} (escreva tudo neste idioma)`, m.segmento && `Segmento: ${m.segmento}`, m.cidade && `Cidade/região: ${m.cidade}`, m.publico && `Público: ${m.publico}`, m.tom && `Tom de voz: ${m.tom}`,
     m.diferenciais && `Diferenciais: ${m.diferenciais}`, m.ofertas && `Produtos, serviços e ofertas para divulgar: ${m.ofertas}`, m.cores && `Cores da marca: ${m.cores}`, m.horarios && `Dias e horários preferidos para publicar: ${m.horarios}`, m.whatsapp && `WhatsApp para contato: ${m.whatsapp}`, m.site && `Site: ${m.site}`].filter(Boolean).join("\n");
@@ -789,10 +812,67 @@ Responda em JSON: {"descricao":"","por_que":"(uma frase dizendo o que melhorou)"
 
     // ----- Imagens
     if ((m = resto.match(/^midias\/(\d{1,12})$/)) && metodo === "GET") {
-      const r = await env.DB.prepare("SELECT mime, dados FROM plt_mk_midias WHERE id=? AND org_id=?").bind(Number(m[1]), orgId).first();
+      const r = await env.DB.prepare("SELECT mime, dados, nome_arquivo FROM plt_mk_midias WHERE id=? AND org_id=?").bind(Number(m[1]), orgId).first();
       if (!r) return new Response("Não encontrado.", { status: 404 });
       const bin = Uint8Array.from(atob(r.dados), ch => ch.charCodeAt(0));
-      return new Response(bin, { headers: { "content-type": r.mime, "cache-control": "private, max-age=86400" } });
+      const ext = r.mime === "image/png" ? "png" : r.mime === "image/webp" ? "webp" : "jpg";
+      const cab = { "content-type": r.mime, "cache-control": "private, max-age=86400" };
+      if (new URL(request.url).searchParams.get("baixar")) cab["content-disposition"] = `attachment; filename="${(r.nome_arquivo || "denia-" + m[1]).replace(/[^a-z0-9-]/gi, "")}.${ext}"`;
+      return new Response(bin, { headers: cab });
+    }
+    // Biblioteca: todas as fotos e artes de cada empresa — quem subiu, quando, nome, descrição e onde foram usadas.
+    if (resto === "midias" && metodo === "GET") {
+      const q = new URL(request.url).searchParams, marca = Number(q.get("marca")) || 0, origem = String(q.get("origem") || "");
+      const onde = ["m.org_id=?", "COALESCE(m.origem,'') <> 'foto-original'"], args = [orgId];
+      if (marca) { onde.push("COALESCE(m.marca_id, (SELECT p.marca_id FROM plt_mk_posts p WHERE p.midia_id=m.id LIMIT 1))=?"); args.push(marca); }
+      if (origem) { onde.push("COALESCE(m.origem, CASE WHEN m.prompt='logo' THEN 'logo' WHEN m.prompt='foto google' THEN 'foto-google' ELSE 'ia' END)=?"); args.push(origem); }
+      const r = await env.DB.prepare(`SELECT m.id, m.mime, m.criado_ms, m.nome_arquivo, m.descricao, m.enviado_por, m.google_id, m.original_id, LENGTH(m.dados) tam,
+          COALESCE(m.origem, CASE WHEN m.prompt='logo' THEN 'logo' WHEN m.prompt='foto google' THEN 'foto-google' ELSE 'ia' END) origem,
+          COALESCE(m.marca_id, (SELECT p.marca_id FROM plt_mk_posts p WHERE p.midia_id=m.id LIMIT 1), (SELECT x.id FROM plt_mk_marcas x WHERE x.logo_midia_id=m.id LIMIT 1)) marca_id
+        FROM plt_mk_midias m WHERE ${onde.join(" AND ")} ORDER BY m.id DESC LIMIT 300`).bind(...args).all();
+      const lista = r?.results || [];
+      const ids = lista.map(x => x.id);
+      const posts = ids.length ? ((await env.DB.prepare(`SELECT id, midia_id, status, canais, data, titulo FROM plt_mk_posts WHERE org_id=? AND midia_id IN (${ids.map(() => "?").join(",")})`).bind(orgId, ...ids).all())?.results || []) : [];
+      const nomes = new Map(((await env.DB.prepare("SELECT id, nome FROM plt_mk_marcas WHERE org_id=?").bind(orgId).all())?.results || []).map(x => [x.id, x.nome]));
+      return json({ midias: lista.map(x => ({ id: x.id, criado_ms: x.criado_ms, nome_arquivo: x.nome_arquivo || null, descricao: x.descricao || "", enviado_por: x.enviado_por || (x.origem === "ia" ? "DENIA (IA)" : ""), origem: x.origem, google: Boolean(x.google_id) || x.origem === "foto-google", com_texto: Boolean(x.original_id),
+        tamanho_kb: Math.round((x.tam || 0) * 0.75 / 1024), marca_id: x.marca_id || null, marca: nomes.get(x.marca_id) || "",
+        posts: posts.filter(p => p.midia_id === x.id).map(p => ({ id: p.id, status: p.status, canais: (() => { try { return JSON.parse(p.canais); } catch { return []; } })(), data: p.data, titulo: p.titulo })) })) });
+    }
+    // Renomear / redescrever uma foto.
+    if ((m = resto.match(/^midias\/(\d{1,12})$/)) && metodo === "POST") {
+      exigir("AGENTE");
+      const c = await corpoOu(4000);
+      const md = await env.DB.prepare("SELECT id FROM plt_mk_midias WHERE id=? AND org_id=?").bind(Number(m[1]), orgId).first();
+      if (!md) return json({ erro: "Foto não encontrada." }, 404);
+      const nome = c.nome_arquivo !== undefined ? await nomeUnico(env, orgId, slugSeo(c.nome_arquivo)) : null;
+      await env.DB.prepare("UPDATE plt_mk_midias SET nome_arquivo=COALESCE(?,nome_arquivo), descricao=COALESCE(?,descricao) WHERE id=?").bind(nome, c.descricao !== undefined ? txt(c.descricao, 400) : null, md.id).run();
+      return json({ ok: true, nome_arquivo: nome });
+    }
+    // Foto do post com texto escrito (montada no navegador) ou de volta à foto original, sem texto.
+    if ((m = resto.match(/^posts\/(\d{1,12})\/foto$/)) && metodo === "POST") {
+      exigir("AGENTE");
+      const c = await corpoOu(LIMITE_LOGO_B64 + 2000);
+      const p = await env.DB.prepare("SELECT id, midia_id, marca_id, status FROM plt_mk_posts WHERE id=? AND org_id=?").bind(Number(m[1]), orgId).first();
+      if (!p || !p.midia_id) return json({ erro: "Post sem foto." }, 404);
+      if (p.status === "PUBLICADO") return json({ erro: "Este post já foi publicado." }, 409);
+      const atual = await env.DB.prepare("SELECT * FROM plt_mk_midias WHERE id=? AND org_id=?").bind(p.midia_id, orgId).first();
+      if (c.original) {
+        if (!atual?.original_id) return json({ ok: true, midia_id: p.midia_id });
+        await env.DB.batch([env.DB.prepare("UPDATE plt_mk_posts SET midia_id=?, texto_arte=NULL, atualizado_ms=? WHERE id=?").bind(atual.original_id, agora(env), p.id),
+          env.DB.prepare("UPDATE plt_mk_midias SET origem='foto' WHERE id=? AND org_id=?").bind(atual.original_id, orgId), env.DB.prepare("DELETE FROM plt_mk_midias WHERE id=?").bind(atual.id)]);
+        return json({ ok: true, midia_id: atual.original_id });
+      }
+      const dados = String(c.dados || "").replace(/^data:[^,]*,/, "");
+      const mime = tipoDaImagem(dados);
+      if (!mime) return json({ erro: "Imagem inválida." }, 400);
+      const original = atual?.original_id || p.midia_id;
+      const n = await env.DB.prepare("INSERT INTO plt_mk_midias(org_id,mime,dados,prompt,criado_ms,marca_id,nome_arquivo,origem,enviado_por,descricao,original_id) VALUES(?,?,?,?,?,?,?,?,?,?,?) RETURNING id")
+        .bind(orgId, mime, dados, "foto com texto", agora(env), p.marca_id, atual?.nome_arquivo || null, atual?.origem === "foto-com-texto" ? atual.origem : (atual?.origem || "foto"), atual?.enviado_por || autor, atual?.descricao || null, original).first();
+      const lote = [env.DB.prepare("UPDATE plt_mk_posts SET midia_id=?, texto_arte=COALESCE(?,texto_arte), atualizado_ms=? WHERE id=?").bind(n.id, c.texto_arte ? txt(c.texto_arte, 80) : null, agora(env), p.id),
+        env.DB.prepare("UPDATE plt_mk_midias SET origem='foto-original' WHERE id=? AND org_id=?").bind(original, orgId)];
+      if (atual?.original_id) lote.push(env.DB.prepare("DELETE FROM plt_mk_midias WHERE id=?").bind(atual.id));
+      await env.DB.batch(lote);
+      return json({ ok: true, midia_id: n.id });
     }
 
     // ----- IA: semana de conteúdo, legenda, imagem
@@ -857,32 +937,38 @@ Responda em JSON: {"titulo":"","legenda":"","hashtags":"","chamada":"","texto_ar
         const formato = FORMATOS.includes(c.formato) && c.formato !== "carrossel" ? c.formato : (canais.length === 1 && canais[0] === "google" ? "google" : "post");
         const pedido = txt(c.pedido, 800);
         const sóGoogle = canais.length === 1 && canais[0] === "google";
+        const modoTexto = ["sim", "nao"].includes(c.texto_na_foto) ? c.texto_na_foto : "auto";
         const d = await openai(env, "responses", {
           model: String(env.OPENAI_MODEL || MODELO_TEXTO).trim(),
           instructions: `Você é a social media sênior da empresa. Você recebe uma FOTO REAL de um serviço feito pela própria empresa e o pedido do dono. Escreva o post sobre o que aparece na foto. ${REGRAS_CONTEUDO}
 ${COPY_QUE_VENDE}
 Regras da foto: descreva só o que dá para ver de verdade (não invente antes/depois, preço, prazo ou resultado que a foto e o pedido não mostram). Use o pedido do dono como prioridade.
 ${sóGoogle ? "É um post do Google: NÃO coloque telefone nem WhatsApp no texto (o Google recusa); o botão do post já leva ao contato. Cite o bairro/cidade." : "Termine a legenda chamando para o WhatsApp da marca, com o número exatamente como informado nos dados da marca (se não houver número, chame para o direct). Cite o bairro/cidade da marca quando houver."}
-Responda em JSON: {"titulo":"","legenda":"","hashtags":"","chamada":"","descricao_foto":""} — descricao_foto: 1 frase descrevendo a foto para quem não pode vê-la (texto alternativo).`,
+Texto escrito na foto: ${modoTexto === "sim" ? "OBRIGATÓRIO — texto_arte com uma frase curta e forte (até 6 palavras)." : modoTexto === "nao" ? "PROIBIDO — texto_arte vazio." : "você decide: preencha texto_arte (até 6 palavras) só se uma frase na imagem ajudar a vender (ex.: oferta, antes/depois); senão deixe vazio."}
+Nome do arquivo e descrição pensados para o Google (SEO local): nome_arquivo com 3 a 7 palavras em minúsculas, sem acentos, separadas por hífen — SERVIÇO que aparece + BAIRRO/CIDADE da marca (ex.: conserto-tv-samsung-botafogo, lavagem-tapete-persa-zona-sul-sp), sem "img", "foto" ou datas; descricao_foto com 1 a 2 frases naturais (até 250 letras) do que a foto mostra, com o serviço e o bairro/cidade, sem inventar.
+Responda em JSON: {"titulo":"","legenda":"","hashtags":"","chamada":"","texto_arte":"","nome_arquivo":"","descricao_foto":""}`,
           input: [{ role: "user", content: [
             { type: "input_text", text: `${resumoMarca(marca)}\n\nCanais: ${canais.join(", ")}. Formato: ${formato}.\nPedido do dono: ${pedido || "(sem pedido: escreva a partir da foto)"}\nResponda em JSON.` },
             { type: "input_image", image_url: `data:${mime};base64,${dados}`, detail: "high" }] }],
           text: { format: { type: "json_object" } }, max_output_tokens: 2500, store: false
         });
         let r; try { r = JSON.parse(textoDaResposta(d)); } catch { return json({ erro: "A IA respondeu num formato inesperado. Tente de novo." }, 502); }
-        const md = await env.DB.prepare("INSERT INTO plt_mk_midias(org_id,mime,dados,prompt,criado_ms) VALUES(?,?,?,?,?) RETURNING id").bind(orgId, mime, dados, "foto enviada: " + txt(r.descricao_foto, 400), agora(env)).first();
+        const nomeArq = await nomeUnico(env, orgId, slugSeo(r.nome_arquivo || `${r.titulo || ""} ${marca.cidade || ""}`));
+        const md = await env.DB.prepare("INSERT INTO plt_mk_midias(org_id,mime,dados,prompt,criado_ms,marca_id,nome_arquivo,origem,enviado_por,descricao) VALUES(?,?,?,?,?,?,?,?,?,?) RETURNING id")
+          .bind(orgId, mime, dados, "foto enviada", agora(env), marca.id, nomeArq, "foto", autor, txt(r.descricao_foto, 400)).first();
+        const textoArte = modoTexto === "nao" ? "" : txt(r.texto_arte, 80);
         const cfg = (await env.DB.prepare("SELECT * FROM plt_mk_config WHERE org_id=?").bind(orgId).first()) || { modo: "HUMANO", nota_minima: 8 };
         const post = { canais, formato, data: dataISO(c.data) || new Date(agora(env)).toISOString().slice(0, 10), hora: horaOk(c.hora) || "18:00",
-          titulo: txt(r.titulo, 200), legenda: txt(r.legenda, 2200), hashtags: sóGoogle ? "" : txt(r.hashtags, 600), chamada: txt(r.chamada, 200), ideia_imagem: "Foto real enviada pela empresa: " + txt(r.descricao_foto, 600), texto_arte: "" };
+          titulo: txt(r.titulo, 200), legenda: txt(r.legenda, 2200), hashtags: sóGoogle ? "" : txt(r.hashtags, 600), chamada: txt(r.chamada, 200), ideia_imagem: "Foto real enviada pela empresa: " + txt(r.descricao_foto, 600), texto_arte: textoArte };
         let status = "AGUARDANDO", revisao = null;
         if (cfg.modo === "AUTOMATICO") {
           revisao = await revisar(env, marca, post).catch(() => null);
           status = revisao && revisao.aprovado && revisao.nota >= cfg.nota_minima ? "APROVADO" : "AGUARDANDO";
         }
         const n = await env.DB.prepare(`INSERT INTO plt_mk_posts(org_id,marca_id,canais,formato,data,hora,titulo,legenda,hashtags,chamada,ideia_imagem,texto_arte,midia_id,status,revisao,criado_por,aprovado_por,criado_ms,atualizado_ms)
-          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`).bind(orgId, marca.id, JSON.stringify(post.canais), post.formato, post.data, post.hora, post.titulo, post.legenda, post.hashtags, post.chamada, post.ideia_imagem, null, md.id, status, revisao ? JSON.stringify(revisao) : null, autor, status === "APROVADO" ? "DENIA (aprovação automática)" : null, agora(env), agora(env)).first();
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`).bind(orgId, marca.id, JSON.stringify(post.canais), post.formato, post.data, post.hora, post.titulo, post.legenda, post.hashtags, post.chamada, post.ideia_imagem, textoArte || null, md.id, status, revisao ? JSON.stringify(revisao) : null, autor, status === "APROVADO" ? "DENIA (aprovação automática)" : null, agora(env), agora(env)).first();
         await auditar(env, request, sessao, orgId, "MARKETING", `IA escreveu o post #${n.id} a partir de uma foto enviada (${marca.nome})`);
-        return json({ ok: true, id: n.id, status, post: { ...post, id: n.id, midia_id: md.id, marca_id: marca.id, status } });
+        return json({ ok: true, id: n.id, status, nome_arquivo: nomeArq, descricao_foto: txt(r.descricao_foto, 400), texto_arte: textoArte, post: { ...post, id: n.id, midia_id: md.id, marca_id: marca.id, status } });
       }
       if (resto === "ia/imagem" && metodo === "POST") {
         exigir("AGENTE");
@@ -899,7 +985,8 @@ Responda em JSON: {"titulo":"","legenda":"","hashtags":"","chamada":"","descrica
         const arte = await criarArte(env, { marca, ideia, textoArte, logo, tamanho: vertical ? "1024x1536" : "1024x1024" });
         const b64 = arte.b64;
         const prompt = arte.prompt;
-        const md = await env.DB.prepare("INSERT INTO plt_mk_midias(org_id,mime,dados,prompt,criado_ms) VALUES(?,?,?,?,?) RETURNING id").bind(orgId, "image/jpeg", b64, prompt.slice(0, 2000), agora(env)).first();
+        const nomeIa = await nomeUnico(env, orgId, slugSeo(`${p?.titulo || ideia.split(/[,.]/)[0]} ${marca.cidade || ""}`, 60));
+        const md = await env.DB.prepare("INSERT INTO plt_mk_midias(org_id,mime,dados,prompt,criado_ms,marca_id,nome_arquivo,origem,enviado_por,descricao) VALUES(?,?,?,?,?,?,?,?,?,?) RETURNING id").bind(orgId, "image/jpeg", b64, prompt.slice(0, 2000), agora(env), marca.id, nomeIa, "ia", "DENIA (IA), pedido por " + autor, txt(ideia, 400)).first();
         if (p) {
           await env.DB.prepare("UPDATE plt_mk_posts SET midia_id=?, atualizado_ms=? WHERE id=?").bind(md.id, agora(env), p.id).run();
           if (p.midia_id) await env.DB.prepare("DELETE FROM plt_mk_midias WHERE id=? AND org_id=?").bind(p.midia_id, orgId).run();

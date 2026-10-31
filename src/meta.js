@@ -95,10 +95,11 @@ async function lerState(k, state) {
 // ----- Link público e assinado da imagem (o Instagram busca a arte por um endereço aberto)
 export async function urlPublicaMidia(k, base, midiaId) {
   const sig = (await k.hmac(await k.segredo(k.env), "midia-publica:" + midiaId)).slice(0, 32);
-  return `${base}/m/${midiaId}-${sig}.jpg`;
+  const nome = await k.env?.DB?.prepare("SELECT nome_arquivo FROM plt_mk_midias WHERE id=?").bind(Number(midiaId)).first().then(r => r?.nome_arquivo).catch(() => null);
+  return nome ? `${base}/m/${midiaId}-${sig}/${String(nome).replace(/[^a-z0-9-]/gi, "")}.jpg` : `${base}/m/${midiaId}-${sig}.jpg`;
 }
 export async function servirMidiaPublica(env, k, caminho) {
-  const m = caminho.match(/^\/m\/(\d{1,12})-([A-Za-z0-9_-]{32})\.jpg$/);
+  const m = caminho.match(/^\/m\/(\d{1,12})-([A-Za-z0-9_-]{32})(?:\.jpg|\/[a-z0-9-]{1,90}\.jpg)$/i);
   if (!m) return new Response("Não encontrado.", { status: 404 });
   const certo = (await k.hmac(await k.segredo(env), "midia-publica:" + m[1])).slice(0, 32);
   if (certo !== m[2]) return new Response("Não encontrado.", { status: 404 });
