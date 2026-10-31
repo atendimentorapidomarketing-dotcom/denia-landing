@@ -308,8 +308,11 @@ export function semTelefone(t) {
     return /^[^\p{L}]*$/u.test(r) || /[:–-]$/.test(r) || r.length < 4 ? null : r;
   }).filter(l => l !== null).join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
-export async function publicarGoogle(env, k, conta, p, imagem) {
+export async function publicarGoogle(env, k, conta, p, imagem, video) {
   const token = await tokenDa(env, k, conta);
+  // Vídeo: vai para a galeria de vídeos do perfil (o Google não aceita vídeo dentro do post pela API); o post sai com a capa.
+  let videoId = null;
+  if (video?.url) { const v = await chamar("POST", `${API_V4}/${caminhoV4(conta)}/media`, token, { mediaFormat: "VIDEO", locationAssociation: { category: "ADDITIONAL" }, sourceUrl: video.url }); videoId = v.name || null; }
   const marca = await env.DB.prepare("SELECT site, idioma FROM plt_mk_marcas WHERE id=?").bind(p.marca_id).first();
   // O Google recusa posts com telefone no texto: o número sai (o botão "Ligar" do post já leva ao telefone do perfil).
   const resumo = semTelefone([p.legenda, p.chamada].map(x => String(x || "").trim()).filter(Boolean).filter((x, i, a) => a.indexOf(x) === i).join("\n\n")).slice(0, 1500);
@@ -319,7 +322,7 @@ export async function publicarGoogle(env, k, conta, p, imagem) {
   const site = String(marca?.site || "").trim();
   corpo.callToAction = /^https?:\/\//i.test(site) ? { actionType: "LEARN_MORE", url: site } : { actionType: "CALL" };
   const r = await chamar("POST", `${API_V4}/${caminhoV4(conta)}/localPosts`, token, corpo);
-  return { id: r.name || "google", link: r.searchUrl || null };
+  return { id: r.name || "google", link: r.searchUrl || null, ...(videoId ? { video: videoId } : {}) };
 }
 
 // ----- Avaliações: busca no Google e grava (as novas ficam "sem resposta" para a DENIA sugerir).

@@ -31,7 +31,7 @@ import { DDL_ZAP, webhookZap, rotasZap, webhookTelegram, segredoTelegram, tokenT
 import { montarRelatorio, planilhaRelatorio, textoRelatorio, base64, ultimos7Dias, lerConfigRelatorio, horaDeEnviar, diaBR, dataBR, DIAS_SEMANA, inicioDoDia as inicioDoDiaBR } from "./relatorio.js";
 import { lerPlanos, acessoDa, recursoDaRota, planoMinimo, rotasPlano, webhookAsaas, lembretesDePlano, TESTE_DIAS, STATUS as STATUS_PLANO, PLANOS_PADRAO, RECURSOS } from "./planos.js";
 
-const VERSAO = "3.25.0";
+const VERSAO = "3.26.0";
 // Versão dos Termos de uso e da Política de privacidade aceitas no cadastro.
 const VERSAO_TERMOS = "2026-10-16";
 // WhatsApp da Central de Atendimento (botão flutuante do site).
@@ -1404,7 +1404,7 @@ async function rotear(request, env, ctx) {
   }
 
   // Imagens dos posts com link assinado: o Instagram e o Facebook baixam a arte por aqui.
-  if (caminho.startsWith("/m/")) { await garantirSchema(env); return servirMidiaPublica(env, kitBase(env), caminho); }
+  if (caminho.startsWith("/m/")) { await garantirSchema(env); return servirMidiaPublica(env, kitBase(env), caminho, request); }
   const antigo = ANTIGOS[caminho.replace(/\.html$/, "")];
   if (antigo) return redirecionar(antigo);
   const ehPainel = caminho === "/app" || caminho === "/app.html" || caminho.startsWith("/app/");

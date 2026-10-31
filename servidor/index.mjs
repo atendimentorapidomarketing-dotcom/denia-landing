@@ -25,6 +25,7 @@ if (maior < 22 || (maior === 22 && menor < 5)) {
 
 const { BancoD1, MemoriaKV } = await import("./banco.mjs");
 const { criarArquivos } = await import("./arquivos.mjs");
+const { criarCofre } = await import("./cofre.mjs");
 const { exportarD1, aplicarDump, importarKV } = await import("./importar.mjs");
 
 let instancias = 0;
@@ -158,7 +159,7 @@ export async function iniciar(op = {}) {
   });
   const envEngine = { ...variaveisEngine, DB: d1("engine"), MEMORIA: kv, QUADROS_VIDEO: quadrosDoVideo, ...(op.extrasEngine || {}) };
   const envPlataforma = {
-    ...variaveis, DB: d1("plataforma"), ASSETS: criarArquivos(path.join(RAIZ, "public")),
+    ...variaveis, DB: d1("plataforma"), ASSETS: criarArquivos(path.join(RAIZ, "public")), ARQUIVOS: criarCofre(path.join(DADOS, "arquivos")),
     ENGINE: { fetch: (req, init) => engine.fetch(req instanceof Request && !init ? req : new Request(req, init), envEngine, contexto()) },
     ...(op.extrasPlataforma || {})
   };

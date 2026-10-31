@@ -95,16 +95,18 @@ async function lerState(k, state) {
 // ----- Link público e assinado da imagem (o Instagram busca a arte por um endereço aberto)
 export async function urlPublicaMidia(k, base, midiaId) {
   const sig = (await k.hmac(await k.segredo(k.env), "midia-publica:" + midiaId)).slice(0, 32);
-  const nome = await k.env?.DB?.prepare("SELECT nome_arquivo FROM plt_mk_midias WHERE id=?").bind(Number(midiaId)).first().then(r => r?.nome_arquivo).catch(() => null);
-  return nome ? `${base}/m/${midiaId}-${sig}/${String(nome).replace(/[^a-z0-9-]/gi, "")}.jpg` : `${base}/m/${midiaId}-${sig}.jpg`;
+  const r = await k.env?.DB?.prepare("SELECT nome_arquivo, mime FROM plt_mk_midias WHERE id=?").bind(Number(midiaId)).first().catch(() => null);
+  const ext = /^video\//.test(r?.mime || "") ? (r.mime === "video/quicktime" ? "mov" : "mp4") : "jpg";
+  return r?.nome_arquivo ? `${base}/m/${midiaId}-${sig}/${String(r.nome_arquivo).replace(/[^a-z0-9-]/gi, "")}.${ext}` : `${base}/m/${midiaId}-${sig}.${ext}`;
 }
-export async function servirMidiaPublica(env, k, caminho) {
-  const m = caminho.match(/^\/m\/(\d{1,12})-([A-Za-z0-9_-]{32})(?:\.jpg|\/[a-z0-9-]{1,90}\.jpg)$/i);
+export async function servirMidiaPublica(env, k, caminho, request) {
+  const m = caminho.match(/^\/m\/(\d{1,12})-([A-Za-z0-9_-]{32})(?:\.(?:jpg|mp4|mov)|\/[a-z0-9-]{1,90}\.(?:jpg|mp4|mov))$/i);
   if (!m) return new Response("Não encontrado.", { status: 404 });
   const certo = (await k.hmac(await k.segredo(env), "midia-publica:" + m[1])).slice(0, 32);
   if (certo !== m[2]) return new Response("Não encontrado.", { status: 404 });
-  const r = await env.DB.prepare("SELECT mime, dados FROM plt_mk_midias WHERE id=?").bind(Number(m[1])).first();
+  const r = await env.DB.prepare("SELECT mime, dados, arquivo, nome_arquivo FROM plt_mk_midias WHERE id=?").bind(Number(m[1])).first();
   if (!r) return new Response("Não encontrado.", { status: 404 });
+  if (r.arquivo) { const { servirArquivo } = await import("./marketing.js"); const resp = await servirArquivo(env, request || new Request("https://x/"), r); resp.headers.set("cache-control", "public, max-age=86400"); return resp; }
   const bin = Uint8Array.from(atob(r.dados), c => c.charCodeAt(0));
   return new Response(bin, { headers: { "content-type": r.mime || "image/jpeg", "cache-control": "public, max-age=86400" } });
 }
@@ -257,12 +259,24 @@ export async function retornoMeta(request, env, k) {
 const legendaDe = p => [p.legenda, p.hashtags].map(x => String(x || "").trim()).filter(Boolean).join("\n\n").slice(0, 2200);
 const canaisDe = p => { try { const c = JSON.parse(p.canais || "[]"); return Array.isArray(c) ? c : []; } catch { return []; } };
 
-async function publicarInstagram(env, conta, token, p, imagem) {
+// Espera o Instagram/Facebook terminar de processar o vídeo (até ~3 minutos).
+async function esperarContainer(env, id, token, espera = 5000, vezes = 36) {
+  for (let i = 0; i < vezes; i++) {
+    const st = await graph(env, "GET", id, { fields: "status_code,status", access_token: token });
+    if (st.status_code === "FINISHED") return;
+    if (st.status_code === "ERROR" || st.status_code === "EXPIRED") throw new Error("O Instagram não aceitou o vídeo" + (st.status ? ` (${String(st.status).slice(0, 160)})` : "") + ". Vídeos de Reels: MP4/MOV, de 3 segundos a 15 minutos, vertical 9:16 de preferência.");
+    await new Promise(r => setTimeout(r, espera));
+  }
+  throw new Error("O Instagram ainda está processando o vídeo. A DENIA tenta publicar de novo sozinha.");
+}
+async function publicarInstagram(env, conta, token, p, imagem, video) {
   if (!conta.ig_id) throw new Error("A página desta marca não tem um Instagram profissional ligado. No Instagram, ligue a conta à página do Facebook e conecte de novo.");
-  if (!imagem) throw new Error("O Instagram exige uma imagem. Crie a arte do post antes de publicar.");
-  const params = { image_url: imagem, access_token: token };
-  if (p.formato === "story") params.media_type = "STORIES"; else params.caption = legendaDe(p);
+  if (!imagem && !video) throw new Error("O Instagram exige uma imagem ou um vídeo. Crie a arte do post antes de publicar.");
+  const params = video ? { video_url: video.url, access_token: token } : { image_url: imagem, access_token: token };
+  if (video) { params.media_type = p.formato === "story" ? "STORIES" : "REELS"; if (params.media_type === "REELS") { params.caption = legendaDe(p); params.share_to_feed = "true"; if (video.capa) params.cover_url = video.capa; } }
+  else if (p.formato === "story") params.media_type = "STORIES"; else params.caption = legendaDe(p);
   const cont = await graph(env, "POST", `${conta.ig_id}/media`, params);
+  if (video) await esperarContainer(env, cont.id, token, env.__esperaVideoMs ?? 5000);
   let pub = null;
   for (let i = 0; i < 5; i++) {
     try { pub = await graph(env, "POST", `${conta.ig_id}/media_publish`, { creation_id: cont.id, access_token: token }); break; }
@@ -272,7 +286,11 @@ async function publicarInstagram(env, conta, token, p, imagem) {
   try { link = (await graph(env, "GET", pub.id, { fields: "permalink", access_token: token })).permalink || null; } catch { /* sem link */ }
   return { id: pub.id, link };
 }
-async function publicarFacebook(env, conta, token, p, imagem) {
+async function publicarFacebook(env, conta, token, p, imagem, video) {
+  if (video) {
+    const v = await graph(env, "POST", `${conta.pagina_id}/videos`, { file_url: video.url, description: legendaDe(p), ...(p.titulo ? { title: String(p.titulo).slice(0, 250) } : {}), access_token: token });
+    return { id: v.id, link: v.id ? `https://www.facebook.com/${conta.pagina_id}/videos/${v.id}` : null };
+  }
   const r = imagem
     ? await graph(env, "POST", `${conta.pagina_id}/photos`, { url: imagem, message: legendaDe(p), access_token: token })
     : await graph(env, "POST", `${conta.pagina_id}/feed`, { message: legendaDe(p), access_token: token });
@@ -294,7 +312,9 @@ export async function publicarPost(env, k, p, base) {
   let feito = {};
   try { feito = JSON.parse(p.publicacao || "{}") || {}; } catch { feito = {}; }
   delete feito.aviso;
-  const imagem = p.midia_id && base ? await urlPublicaMidia(k, base, p.midia_id) : null;
+  const md = p.midia_id ? await env.DB.prepare("SELECT arquivo, capa_id FROM plt_mk_midias WHERE id=?").bind(p.midia_id).first().catch(() => null) : null;
+  const video = md?.arquivo && base ? { url: await urlPublicaMidia({ ...k, env }, base, p.midia_id), capa: md.capa_id ? await urlPublicaMidia({ ...k, env }, base, md.capa_id) : null } : null;
+  const imagem = video ? video.capa : p.midia_id && base ? await urlPublicaMidia({ ...k, env }, base, p.midia_id) : null;
   const marcados = canaisDe(p);
   const alvo = marcados.filter(c => ((c === "instagram" || c === "facebook") && conta) || (c === "google" && contaG)).filter(c => !(c === "facebook" && p.formato === "story"));
   if (!alvo.length) {
@@ -305,9 +325,9 @@ export async function publicarPost(env, k, p, base) {
   for (const canal of alvo) {
     if (feito[canal]?.id) continue;
     try {
-      const r = canal === "instagram" ? await publicarInstagram(env, conta, token, p, imagem)
-        : canal === "facebook" ? await publicarFacebook(env, conta, token, p, imagem)
-          : await publicarGoogle(env, k, contaG, p, imagem);
+      const r = canal === "instagram" ? await publicarInstagram(env, conta, token, p, imagem, video)
+        : canal === "facebook" ? await publicarFacebook(env, conta, token, p, imagem, video)
+          : await publicarGoogle(env, k, contaG, p, imagem, video);
       feito[canal] = { id: r.id, link: r.link, em: k.agora(env) };
     } catch (e) {
       feito[canal] = { erro: String(e.message || e).slice(0, 300), em: k.agora(env) };

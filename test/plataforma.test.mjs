@@ -9,6 +9,15 @@ const ADMIN = "dono@denia.test", SENHA_ADMIN = "senha-do-admin-123";
 const TOKEN_ENGINE = "token-de-servico-da-plataforma-123";
 let n = 0;
 
+// Cofre de arquivos em memória (no servidor de verdade é a pasta de dados): put/get com faixa/delete.
+function cofreMemoria() {
+  const m = new Map();
+  return { m,
+    async put(k, corpo, { limite = Infinity } = {}) { const b = corpo instanceof Uint8Array ? corpo : new Uint8Array(await new Response(corpo).arrayBuffer()); if (b.length > limite) throw Object.assign(new Error("grande"), { grande: true }); m.set(k, b); return { tamanho: b.length }; },
+    async get(k, { inicio, fim } = {}) { const b = m.get(k); if (!b) return null; const i = inicio ?? 0, f = Math.min(fim ?? b.length - 1, b.length - 1); return { tamanho: b.length, inicio: i, fim: f, body: new Response(b.slice(i, f + 1)).body }; },
+    async delete(k) { m.delete(k); } };
+}
+
 async function criarPlataforma(extra = {}) {
   const mod = await import(new URL("../src/worker.js?t=" + (++n), import.meta.url).href);
   const engine = await criarAmbiente({ env: { DENIA_PLATFORM_SERVICE_TOKEN: TOKEN_ENGINE } });
@@ -65,11 +74,11 @@ async function criarPlataforma(extra = {}) {
     ...extra
   };
   p = { env, engine, chamadasEngine, emails, openaiChamadas, cookies: {} };
-  p.req = async (caminho, { metodo = "GET", corpo, quem, cabecalhos = {} } = {}) => {
+  p.req = async (caminho, { metodo = "GET", corpo, quem, cabecalhos = {}, bruto } = {}) => {
     const headers = { "x-denia": "1", origin: "https://plataforma.test", ...cabecalhos };
     if (quem && p.cookies[quem]) headers.cookie = p.cookies[quem];
     if (corpo !== undefined) headers["content-type"] = "application/json";
-    const r = await mod.default.fetch(new Request("https://plataforma.test" + caminho, { method: metodo, headers, body: corpo !== undefined ? JSON.stringify(corpo) : undefined }), env);
+    const r = await mod.default.fetch(new Request("https://plataforma.test" + caminho, { method: metodo, headers, body: bruto !== undefined ? bruto : corpo !== undefined ? JSON.stringify(corpo) : undefined }), env);
     const ck = r.headers.get("set-cookie");
     if (ck && quem) p.cookies[quem] = ck.split(";")[0];
     let dados = null;
@@ -870,6 +879,57 @@ test("Instagram e Facebook — conectar a marca pela Meta, publicar no horário 
   assert.equal(na_hora.dados.publicado, true);
   assert.match(na_hora.dados.resumo, /^Post aprovado e publicado\. Facebook: https:\/\/www\.facebook\.com\/PAG1_100/);
   assert.equal(p.env.DB.q("SELECT status FROM plt_mk_posts WHERE id=?", jaPassou)[0].status, "PUBLICADO");
+
+  // 7) Vídeo: envio cru para o disco, a IA escreve o Reels olhando os quadros e a publicação sai como REELS e vídeo da página.
+  p.env.ARQUIVOS = cofreMemoria(); p.env.OPENAI_API_KEY = "sk-teste"; p.env.__esperaVideoMs = 1;
+  const bytes = new Uint8Array(5000).map((_, i) => i % 251);
+  const sobe = await p.req(`/api/orgs/1/mk/videos/enviar?marca=${marca}&nome=IMG_4432.MOV&duracao=12.5`, { metodo: "POST", quem: "admin", cabecalhos: { "content-type": "video/quicktime" }, bruto: bytes });
+  assert.equal(sobe.status, 200, JSON.stringify(sobe.dados)); assert.equal(sobe.dados.tamanho, 5000);
+  assert.equal((await p.req(`/api/orgs/1/mk/videos/enviar?marca=${marca}`, { metodo: "POST", quem: "admin", cabecalhos: { "content-type": "application/pdf" }, bruto: bytes })).status, 400, "só vídeo");
+  const parte = await p.req(`/api/orgs/1/mk/midias/${sobe.dados.id}`, { quem: "admin", cabecalhos: { range: "bytes=100-199" } });
+  assert.equal(parte.status, 206); assert.equal(parte.r.headers.get("content-range"), "bytes 100-199/5000");
+  let pedidoIa = null;
+  p.openai = (url, corpo) => { pedidoIa = corpo; return { output: [{ content: [{ type: "output_text", text: JSON.stringify({ titulo: "Antes e depois", legenda: "Olha esse sorriso!", hashtags: "#niteroi", chamada: "Agende", nome_arquivo: "clareamento-dental-niteroi", descricao: "Paciente sorrindo depois do clareamento em Niterói", capa: 2 }) }] }] }; };
+  const quadro = "data:image/jpeg;base64," + Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 16, 74, 70, 73, 70, 0, 1, 1, 0, 0, 1, 0, 1, 0, 0, 0xff, 0xd9]).toString("base64");
+  const pv = await p.req("/api/orgs/1/mk/ia/post-video", { metodo: "POST", quem: "admin", corpo: { marca_id: marca, midia_id: sobe.dados.id, quadros: [quadro, quadro], pedido: "mostra o antes e depois do clareamento", canais: ["instagram", "facebook"] } });
+  assert.equal(pv.status, 200, JSON.stringify(pv.dados));
+  assert.equal(pv.dados.nome_arquivo, "clareamento-dental-niteroi"); assert.equal(pv.dados.post.formato, "reels");
+  assert.equal(pedidoIa.input[0].content.filter(c => c.type === "input_image").length, 2, "a IA vê os quadros do vídeo");
+  const lib = (await p.req(`/api/orgs/1/mk/midias?marca=${marca}`, { quem: "admin" })).dados.midias;
+  const v = lib.find(x => x.id === sobe.dados.id);
+  assert.equal(v.video, true); assert.equal(v.capa, true); assert.equal(v.origem, "video"); assert.ok(!lib.some(x => x.origem === "capa"), "a capa não repete na biblioteca");
+  assert.equal((await p.req(`/api/orgs/1/mk/midias/${sobe.dados.id}?capa=1`, { quem: "admin" })).r.headers.get("content-type"), "image/jpeg");
+  // Conversa com a IA para ajustar a legenda
+  p.openai = () => ({ output: [{ content: [{ type: "output_text", text: JSON.stringify({ titulo: "Antes e depois", legenda: "Curtinho!", hashtags: "#niteroi", chamada: "Agende", resposta: "Deixei mais curto." }) }] }] });
+  const aj = await p.req("/api/orgs/1/mk/ia/ajustar", { metodo: "POST", quem: "admin", corpo: { marca_id: marca, pedido: "deixa mais curto", atual: { legenda: "Olha esse sorriso!" } } });
+  assert.equal(aj.dados.sugestao.legenda, "Curtinho!"); assert.equal(aj.dados.resposta, "Deixei mais curto.");
+  // Publicação do vídeo
+  const chamadas = [];
+  let consultas = 0;
+  p.meta = (url, metodo, corpo) => {
+    chamadas.push({ url, corpo });
+    if (url.includes("/IG1/media_publish")) return { id: "IGREEL1" };
+    if (url.includes("/IG1/media")) return { id: "CONTV" };
+    if (url.includes("/CONTV")) return { status_code: ++consultas < 2 ? "IN_PROGRESS" : "FINISHED" };
+    if (url.includes("/IGREEL1")) return { permalink: "https://www.instagram.com/reel/xyz/" };
+    if (url.includes("/PAG1/videos")) return { id: "VID1" };
+    return { error: { message: "inesperado " + url } };
+  };
+  await p.req(`/api/orgs/1/mk/posts/${pv.dados.id}/acao`, { metodo: "POST", quem: "admin", corpo: { acao: "aprovar" } });
+  const pubV = await p.req(`/api/orgs/1/mk/posts/${pv.dados.id}/publicar`, { metodo: "POST", quem: "admin", corpo: {} });
+  assert.equal(pubV.status, 200, JSON.stringify(pubV.dados));
+  const reel = chamadas.find(c => c.url.includes("/IG1/media") && !c.url.includes("publish")).corpo;
+  assert.equal(reel.media_type, "REELS"); assert.match(reel.video_url, /\/m\/\d+-[\w-]{32}\/clareamento-dental-niteroi\.mov$/); assert.match(reel.cover_url, /clareamento-dental-niteroi-capa\.jpg$/);
+  assert.ok(consultas >= 2, "espera o Instagram processar o vídeo");
+  assert.ok(chamadas.find(c => c.url.includes("/PAG1/videos")).corpo.file_url.endsWith(".mov"));
+  const publico = await p.req(new URL(reel.video_url).pathname, { cabecalhos: { range: "bytes=0-9" } });
+  assert.equal(publico.status, 206, "a Meta consegue baixar o vídeo pelo link assinado");
+  // Excluir o post apaga o arquivo do disco
+  const outroV = (await p.req(`/api/orgs/1/mk/videos/enviar?marca=${marca}&nome=x.mp4`, { metodo: "POST", quem: "admin", cabecalhos: { "content-type": "video/mp4" }, bruto: bytes })).dados.id;
+  const pv2 = (await p.req("/api/orgs/1/mk/ia/post-video", { metodo: "POST", quem: "admin", corpo: { marca_id: marca, midia_id: outroV, quadros: [], canais: ["instagram"] } })).dados;
+  const antes = p.env.ARQUIVOS.m.size;
+  await p.req(`/api/orgs/1/mk/posts/${pv2.id}/acao`, { metodo: "POST", quem: "admin", corpo: { acao: "excluir" } });
+  assert.equal(p.env.ARQUIVOS.m.size, antes - 1);
 });
 
 test("Aprovar sem a marca conectada avisa que falta conectar", async () => {
