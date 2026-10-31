@@ -5026,13 +5026,17 @@ Botão só com texto = resposta.` })),
     if (p.midia_video) return h("span", { class: "midia-video-capa" }, h("img", { class: classe || "post-img", src: src + "?capa=1", alt: "", loading: "lazy" }), h("i", { class: "selo-play", "aria-label": "Vídeo" }, "▶"));
     return h("img", { class: classe || "post-img", src, alt: "", loading: "lazy" });
   }
+  function estadoNaRede(p, c) {
+    let pub = {}; try { pub = typeof p.publicacao === "string" ? JSON.parse(p.publicacao || "{}") : (p.publicacao || {}); } catch { }
+    return pub[c] && pub[c].id ? "ok" : pub[c] && pub[c].erro ? "erro" : "";
+  }
   function cartaoPost(p, lista, recarregar) {
     const marca = lista.find(m => m.id === p.marca_id);
     return h("button", { class: "post-cartao", type: "button", onclick: () => editorPost(p, lista, recarregar) },
       miniatura(p),
       h("span", { class: "post-meta", text: `${p.hora || "--:--"} · ${NOME_FORMATO[p.formato] || p.formato}${marca && lista.length > 1 ? " · " + marca.nome : ""}` }),
       h("strong", { text: p.titulo || "(sem título)" }),
-      h("span", { class: "post-canais" }, p.canais.map(c => h("i", { class: "canal-" + c, text: NOME_CANAL[c] }))),
+      h("span", { class: "post-canais" }, p.canais.map(c => { const r = estadoNaRede(p, c); return h("i", { class: "canal-" + c + (r ? " canal-" + r : ""), title: r === "ok" ? "Publicado" : r === "erro" ? "Não publicado" : "", text: (r === "ok" ? "✓ " : r === "erro" ? "✗ " : "") + NOME_CANAL[c] }); })),
       seloStatus(p.status));
   }
 
@@ -5050,10 +5054,13 @@ Botão só com texto = resposta.` })),
     const imagem = h("div", { class: "post-arte" }, miniatura(p, "post-arte-img") || h("span", { text: "Sem arte ainda" }));
     let pub = {};
     try { pub = typeof p.publicacao === "string" ? JSON.parse(p.publicacao || "{}") : (p.publicacao || {}); } catch { pub = {}; }
+    // Resultado de cada rede, separado: só aparece "publicado" com a confirmação daquela rede.
     const publicacao = h("div", { class: "publicacao" }, pub.aviso ? h("p", { class: "nota nota-alerta", text: pub.aviso }) : null,
-      ["instagram", "facebook"].filter(c => pub[c]).map(c => pub[c].id
-        ? h("p", { class: "nota" }, `${NOME_CANAL[c]}: publicado `, pub[c].link ? h("a", { href: pub[c].link, target: "_blank", rel: "noopener noreferrer", text: "ver post" }) : null)
-        : h("p", { class: "nota nota-alerta", text: `${NOME_CANAL[c]}: ${pub[c].erro}` })));
+      pub.manual ? h("p", { class: "nota", text: `Marcado como publicado à mão${pub.manual.por ? " por " + pub.manual.por : ""} (publicado por fora da DENIA).` }) : null,
+      (p.status === "APROVADO" || p.status === "PUBLICADO" ? (p.canais || []) : (p.canais || []).filter(c => pub[c])).map(c => pub[c] && pub[c].id
+        ? h("p", { class: "nota nota-ok" }, `✓ ${NOME_CANAL[c]}: publicado${pub[c].estado === "PROCESSING" ? " (o Google ainda está processando)" : ""} `, pub[c].link ? h("a", { href: pub[c].link, target: "_blank", rel: "noopener noreferrer", text: "ver post" }) : null)
+        : pub[c] && pub[c].erro ? h("p", { class: "nota nota-alerta", text: `✗ ${NOME_CANAL[c]}: não publicado — ${pub[c].erro}` })
+          : h("p", { class: "nota", text: `… ${NOME_CANAL[c]}: ainda não publicado` })));
     const revisao = h("div", {}, p.revisao ? h("p", { class: "nota" + (p.revisao.nota >= 8 ? "" : " nota-alerta"), text: `Revisão da IA: nota ${p.revisao.nota}/10 — ${p.revisao.comentario}` }) : null, p.comentario ? h("p", { class: "nota nota-alerta", text: "Comentário: " + p.comentario }) : null);
     const OPCOES_BOTAO = [["AUTO", "Automático (alterna Ligar agora e Site)"], ["CALL", "📞 Ligar agora"], ["LEARN_MORE", "🌐 Saiba mais (site)"], ["BOOK", "📅 Reservar"], ["ORDER", "🛒 Pedir on-line"], ["SHOP", "🛍️ Comprar"], ["SIGN_UP", "✍️ Cadastre-se"], ["NENHUM", "Sem botão"]];
     const botaoG = h("select", { class: "entrada" }, OPCOES_BOTAO.map(([v, t]) => h("option", { value: v, text: t, selected: (p.botao || "AUTO") === v })));
@@ -5101,7 +5108,7 @@ Botão só com texto = resposta.` })),
           aviso(r.resumo, "ok"); fechar(); recarregar && recarregar();
         } catch (e) { aviso(e.message, "erro"); } finally { b.textContent = "Publicar agora"; }
       }, "btn-primario") : null,
-      pode("AGENTE") && p.status === "APROVADO" ? botao("Marcar como publicado", async () => { try { await acao("publicado"); aviso("Marcado como publicado.", "ok"); } catch (e) { aviso(e.message, "erro"); } }) : null,
+      pode("AGENTE") && p.status === "APROVADO" ? botao("Marcar como publicado (fiz por fora)", async () => { if (!(await modal({ titulo: "Marcar como publicado?", conteudo: [h("p", { text: "Use só se você publicou este post por fora da DENIA (direto no Instagram, Facebook ou Google). A DENIA não vai publicar nem confirmar nada nas redes." })], confirmar: "Sim, publiquei por fora" }))) return; try { await acao("publicado"); aviso("Marcado como publicado.", "ok"); } catch (e) { aviso(e.message, "erro"); } }) : null,
       botao("Copiar legenda", () => copiar([legenda.value, hashtags.value].filter(Boolean).join("\n\n")), "btn-secundario"),
       p.midia_id ? h("a", { class: "btn btn-secundario", href: `/api/orgs/${estado.org.id}/mk/midias/${p.midia_id}`, download: `denia-post-${p.id}.jpg` }, "Baixar arte") : null,
       pode("ADMIN") && p.id ? botao("Excluir", async () => { if (!(await modal({ titulo: "Excluir este post?", conteudo: "A arte também é apagada.", confirmar: "Excluir", perigo: true }))) return; try { await mk(`posts/${p.id}/acao`, { metodo: "POST", corpo: { acao: "excluir" } }); fechar(); recarregar && recarregar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-perigo") : null);

@@ -31,7 +31,7 @@ import { DDL_ZAP, webhookZap, rotasZap, webhookTelegram, segredoTelegram, tokenT
 import { montarRelatorio, planilhaRelatorio, textoRelatorio, base64, ultimos7Dias, lerConfigRelatorio, horaDeEnviar, diaBR, dataBR, DIAS_SEMANA, inicioDoDia as inicioDoDiaBR } from "./relatorio.js";
 import { lerPlanos, acessoDa, recursoDaRota, planoMinimo, rotasPlano, webhookAsaas, lembretesDePlano, TESTE_DIAS, STATUS as STATUS_PLANO, PLANOS_PADRAO, RECURSOS } from "./planos.js";
 
-const VERSAO = "3.28.0";
+const VERSAO = "3.28.1";
 // Versão dos Termos de uso e da Política de privacidade aceitas no cadastro.
 const VERSAO_TERMOS = "2026-10-16";
 // WhatsApp da Central de Atendimento (botão flutuante do site).
@@ -931,7 +931,7 @@ async function limparBanco(env) {
   const t = agora(env);
   // Só artes de posts antigos: imagens do chatbot e logos das marcas nunca são apagadas.
   // (Separado: sem o Marketing em uso, as tabelas de posts/marcas podem não existir.)
-  await env.DB.prepare("DELETE FROM plt_mk_midias WHERE criado_ms < ? AND COALESCE(prompt,'') NOT IN ('chatbot','logo') AND id NOT IN (SELECT logo_midia_id FROM plt_mk_marcas WHERE logo_midia_id IS NOT NULL) AND id NOT IN (SELECT midia_id FROM plt_mk_posts WHERE midia_id IS NOT NULL AND (status NOT IN ('PUBLICADO','REJEITADO') OR atualizado_ms > ?))").bind(t - 30 * 86400000, t - 90 * 86400000).run().catch(() => { });
+  await env.DB.prepare("DELETE FROM plt_mk_midias WHERE criado_ms < ? AND COALESCE(prompt,'') NOT IN ('chatbot','logo') AND id NOT IN (SELECT logo_midia_id FROM plt_mk_marcas WHERE logo_midia_id IS NOT NULL) AND COALESCE(origem,'ia') = 'ia' AND arquivo IS NULL AND id NOT IN (SELECT midia_id FROM plt_mk_posts WHERE midia_id IS NOT NULL AND (status NOT IN ('PUBLICADO','REJEITADO') OR atualizado_ms > ?)) AND id NOT IN (SELECT midia_google_id FROM plt_mk_posts WHERE midia_google_id IS NOT NULL)").bind(t - 30 * 86400000, t - 90 * 86400000).run().catch(() => { });
   await env.DB.batch([
     env.DB.prepare("DELETE FROM plt_tentativas WHERE ate < ?").bind(t - 86400000),
     env.DB.prepare("DELETE FROM plt_redefinicoes WHERE expira_ms < ?").bind(t - 7 * 86400000),
