@@ -6078,14 +6078,30 @@ Botão só com texto = resposta.` })),
   }
 
   // ----- Google: visão geral de todos os perfis (como uma agência acompanha a carteira)
+  // Atalhos das ferramentas de especialista do Google (para achar tudo de cara, no computador e no celular).
+  function ferramentasGoogle() {
+    const itens = [
+      ["pre", "Pré-análise + proposta em PDF", "Analise qualquer empresa pelo nome e gere a proposta comercial."],
+      ["mapa", "Mapa de posição", "Grade no mapa: em que posição o perfil aparece em cada ponto do bairro."],
+      ["checagem", "Checagem do perfil", "Nota de 0 a 100 e a lista do que corrigir, com o motivo."],
+      ["relatorio", "Relatório em PDF", "Baixe ou mande sozinho por e-mail, com a sua logo."],
+      ["pedir", "Cartões com QR code", "Cartões e display de balcão para pedir avaliações."],
+      ["editar", "Editar perfil", "Descrição, horários, feriados, serviços e fotos sem sair da DENIA."],
+      ["palavras", "Palavras-chave e posição", "Posição medida toda semana nas buscas que trazem clientes."],
+      ["triagem", "Avaliações ruins", "Aviso no Telegram e resposta sugerida para notas baixas."]
+    ];
+    return h("section", { class: "cartao vidro ferramentas-google" }, h("h3", { style: "margin-top:0", text: "Ferramentas de especialista" }),
+      h("div", { class: "ferramentas-grade" }, itens.map(([aba, t, d]) => h("a", { class: "ferramenta", href: "#/google/" + aba }, h("strong", { text: t }), h("span", { text: d })))));
+  }
+
   async function abaGoogleVisao(area, lista) {
     const d = await mk("google/visao");
     const perfis = d.perfis || [];
-    if (!perfis.length) { trocar(area, h("section", { class: "cartao vidro" }, vazio("Nenhum perfil do Google conectado", "Conecte os perfis em Contas conectadas para acompanhar todos aqui."), pode("ADMIN") ? h("div", { class: "acoes", style: "justify-content:center" }, botao("Conectar conta do Google", () => conectarNovoPerfil("google"), "btn-primario")) : null)); return; }
+    if (!perfis.length) { trocar(area, ferramentasGoogle(), h("section", { class: "cartao vidro" }, vazio("Nenhum perfil do Google conectado", "Conecte os perfis em Contas conectadas para acompanhar todos aqui."), pode("ADMIN") ? h("div", { class: "acoes", style: "justify-content:center" }, botao("Conectar conta do Google", () => conectarNovoPerfil("google"), "btn-primario")) : null)); return; }
     const ir = (marcaId, aba) => { estado.marcaGoogle = String(marcaId); location.hash = "#/google/" + aba; };
     const nota = v => v ? String(Math.round(v * 10) / 10).replace(".", ",") + " ★" : "—";
     const tot = perfis.reduce((t, p) => ({ sem: t.sem + Number(p.sem_resposta || 0), ruins: t.ruins + Number(p.ruins_30d || 0), posts: t.posts + Number(p.posts_30d || 0), aval: t.aval + Number(p.total_google || 0) }), { sem: 0, ruins: 0, posts: 0, aval: 0 });
-    trocar(area,
+    trocar(area, ferramentasGoogle(),
       h("section", { class: "grade grade-4" }, metrica("Perfis acompanhados", numero(perfis.length), "conectados ao Google"), metrica("Avaliações no total", numero(tot.aval), "somando todos os perfis"),
         metrica("Sem resposta", numero(tot.sem), tot.sem ? "responda para subir no Maps" : "tudo respondido"), metrica("Posts nos últimos 30 dias", numero(tot.posts), "o Google valoriza 1 por semana")),
       h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Perfis" }), h("p", { class: "dica", text: "O que pede atenção em cada perfil. Clique para ir direto ao que resolver." }),
