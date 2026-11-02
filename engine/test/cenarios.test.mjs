@@ -1794,3 +1794,56 @@ test("Madrugada: diz que verifica a partir das 8h (hoje), não amanhã", async (
   assert.match(a.ultimoPara(CLI), /a partir das 8h/);
   assert.doesNotMatch(a.ultimoPara(CLI), /amanh/);
 });
+
+// ---------------------------------------------------------------------------
+// CONVERSAS DE PROVA — erros reais que não podem voltar a acontecer.
+// Prova 1 (caso real): cliente antigo diz que o problema voltou; a IA achou que era pedido novo e falou em visita e valor.
+async function clienteComServicoConcluido(a) {
+  await iniciarConsultaChaveiro(a);
+  a.llmPrestador = () => prest({ tipo: "ACEITA", valor_centavos: 15000, valor_e_final: "SIM", disponibilidade: "dia 15 às 10h" });
+  await a.cliente(CHAVEIRO, "Faço dia 15 às 10h, 150 já é o valor final");
+  const caso = a.DB.q("SELECT caso_id FROM d30_casos ORDER BY caso_id DESC LIMIT 1")[0].caso_id;
+  a.DB.db.prepare("UPDATE d30_casos SET etapa='CONCLUIDO' WHERE caso_id=?").run(caso);
+  a.avancar(20 * 86400000);
+  return caso;
+}
+
+test("Prova 1 — 'o problema voltou': nunca vira orçamento; liga ao serviço antigo e chama a equipe (mesmo se a IA se confundir)", async () => {
+  const a = await criarAmbiente();
+  const caso = await clienteComServicoConcluido(a);
+  const consultasAntes = a.para(CHAVEIRO).length;
+  // A IA erra como no caso real: entende como pedido novo e fala em visita e valor.
+  a.llmCliente = () => decisao({ resposta: "Claro! A visita técnica custa R$ 80,00, posso agendar?", intencao: "NOVO_PEDIDO", novo_pedido: true, quer_orcamento_ou_atendimento: true, pronto_para_profissional: true, fatos: { servico: "chaveiro", problema: "fechadura travando" } });
+  await a.cliente(CLI, "Oi, a fechadura que vocês trocaram voltou a travar, o mesmo problema de antes");
+  const resp = a.ultimoPara(CLI);
+  assert.doesNotMatch(resp, /R\$|valor|visita|agend/i, "nada de valor nem visita num retorno");
+  assert.match(resp, /sinto muito/i);
+  assert.equal(a.para(CHAVEIRO).length, consultasAntes, "não abre consulta de orçamento ao profissional");
+  assert.ok(a.telegram.some(t => /RETORNO \/ GARANTIA/.test(t) && t.includes(`caso #${caso}`)), "equipe avisada com o serviço antigo");
+  assert.equal(a.DB.q("SELECT COUNT(*) n FROM d30_casos")[0].n, 1, "não cria caso novo");
+  const fatos = JSON.parse(a.DB.q("SELECT fatos_json FROM d30_casos WHERE caso_id=?", caso)[0].fatos_json);
+  assert.equal(fatos.retorno_aberto, true);
+  // Próxima mensagem do cliente: a IA vê o retorno em aberto no contexto.
+  a.llmCliente = (e) => { assert.match(e, /RETORNO EM ABERTO/); return decisao({ resposta: "Obrigado pela foto! Já passei para a equipe.", intencao: "RETORNO_SERVICO", caso_anterior: caso }); };
+  await a.cliente(CLI, "Ela não tranca de jeito nenhum");
+  assert.match(a.ultimoPara(CLI), /Obrigado pela foto/);
+  assert.equal(a.para(CHAVEIRO).length, consultasAntes);
+});
+
+test("Prova 2 — quando a própria IA reconhece o retorno, a resposta dela vale (sem valor)", async () => {
+  const a = await criarAmbiente();
+  const caso = await clienteComServicoConcluido(a);
+  a.llmCliente = (e) => { assert.match(e, /OUTROS CASOS[\s\S]*CONCLUIDO/); return decisao({ resposta: "Poxa, que chato! A fechadura que trocamos está travando de novo? Me conta o que acontece que já aciono a equipe.", intencao: "RETORNO_SERVICO", caso_anterior: caso }); };
+  await a.cliente(CLI, "A fechadura está dando problema");
+  assert.match(a.ultimoPara(CLI), /Me conta o que acontece/);
+  assert.ok(a.telegram.some(t => /RETORNO/.test(t)), JSON.stringify(a.telegram.slice(-3)));
+});
+
+test("Prova 3 — serviço novo de cliente antigo continua sendo pedido novo (a trava não atrapalha)", async () => {
+  const a = await criarAmbiente();
+  await clienteComServicoConcluido(a);
+  a.llmCliente = () => decisao({ resposta: "Perfeito, vou consultar o profissional.", intencao: "NOVO_PEDIDO", novo_pedido: true, quer_orcamento_ou_atendimento: true, pronto_para_profissional: true, fatos: { servico: "chaveiro", problema: "cópia de chave", bairro: "Botafogo" } });
+  await a.cliente(CLI, "Agora preciso fazer 3 cópias da chave do portão");
+  assert.ok(!a.telegram.some(t => /RETORNO/.test(t)), "não confunde com retorno");
+  assert.equal(a.DB.q("SELECT COUNT(*) n FROM d30_casos")[0].n, 2, "abre um pedido novo");
+});

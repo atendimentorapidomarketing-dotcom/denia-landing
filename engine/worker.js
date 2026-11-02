@@ -36,7 +36,7 @@
 //       relatório diário. Nunca inicia conversa nova por conta própria.
 // ============================================================================
 
-const VERSAO = "34.9.3";
+const VERSAO = "34.10.0";
 const SCHEMA_VERSAO = "33.4.0"; // mude sempre que acrescentar tabela ou índice (senão o banco de produção não recebe)
 const EMPRESA_ID = 1;
 const PHONE_ID_PADRAO = "473474732510163";
@@ -1121,7 +1121,10 @@ async function carregarCasos(c, pessoa) {
     }
   }
   const ativo = casos.find(k => !ETAPAS_ENCERRADAS.has(k.etapa)) || null;
-  return { ativo, recentes: casos.filter(k => k !== ativo).slice(0, 4) };
+  const recentes = casos.filter(k => k !== ativo).slice(0, 4);
+  // Quem fez cada serviço concluído (para a IA e a equipe saberem a quem recorrer num retorno).
+  for (const k of recentes) if (k.etapa === "CONCLUIDO") k.prestador = (await c.db.prepare("SELECT prestador_nome FROM d30_consultas WHERE caso_id=? ORDER BY id DESC LIMIT 1").bind(k.casoId).first().catch(() => null))?.prestador_nome || "";
+  return { ativo, recentes };
 }
 function limparFatos(f) {
   const o = {};
@@ -1638,9 +1641,9 @@ async function registrarSaidaTaxa(c, to) {
 // O Telegram da Central é só para o URGENTE (alguém precisa agir agora). O resto (o que o profissional
 // ou o cliente escreveu, falhas de entrega, janela de 24 h, erros técnicos) fica registrado e aparece
 // na página Problemas da plataforma. TELEGRAM_AVISOS=todos volta a mandar tudo.
-const AVISOS_URGENTES = ["bloqueio:", "sem-confirmacao:", "limite:", "ia:", "cancel:", "humano:", "apoio:", "comprovante:", "semcat:", "semprest:", "balcao:",
+const AVISOS_URGENTES = ["retorno:", "bloqueio:", "sem-confirmacao:", "limite:", "ia:", "cancel:", "humano:", "apoio:", "comprovante:", "semcat:", "semprest:", "balcao:",
   "falha-consulta:", "falha-aceite:", "acomp-sem:", "sem-resposta:", "falha-cli:", "valor-incerto:", "pos:", "desist:", "atraso:", "atrasadas:", "guia-humano:", "guia-ia-humano:", "agendado:", "reuniao"];
-const AVISOS_SEMPRE = ["humano:", "cancel:", "agendado:", "reuniao", "desist:", "bloqueio:", "sem-confirmacao:", "limite:", "guia-humano:"];
+const AVISOS_SEMPRE = ["humano:", "retorno:", "cancel:", "agendado:", "reuniao", "desist:", "bloqueio:", "sem-confirmacao:", "limite:", "guia-humano:"];
 function avisoUrgente(c, chave) { return String(c.env.TELEGRAM_AVISOS || "").toLowerCase() === "todos" || AVISOS_URGENTES.some(p => String(chave || "").startsWith(p)); }
 async function alertarEquipe(c, texto, chave, casoId = null) {
   if (chave && !(await reservarChave(c, "alerta:" + chave))) return;
@@ -2194,6 +2197,14 @@ SEU PAPEL: você interpreta as mensagens e redige a resposta. Você NÃO executa
 - Cancelamentos e reclamações sérias: não decida; seja cordial e marque precisa_humano.
 - PEÇA AJUDA À EQUIPE O MÍNIMO POSSÍVEL, como uma atendente experiente que resolve sozinha: primeiro tente com o TREINAMENTO, os FATOS e o HISTÓRICO; se falta uma informação do cliente, pergunte a ele; se é dúvida técnica do serviço e já há profissional consultado, use PERGUNTA_PARA_PROFISSIONAL. precisa_humano=true SÓ quando: o cliente pede para falar com uma pessoa, reclamação séria, cancelamento, pedido que só a equipe decide (desconto fora da tabela, reembolso, garantia, exceção às regras) ou situação de risco. Dúvida comum NÃO é motivo para chamar a equipe.
 
+RETORNO DE SERVIÇO (garantia ou reclamação de um serviço que a Central JÁ FEZ): quando o cliente diz que o problema voltou, que o conserto não resolveu, que quebrou/parou de novo, que continua com o mesmo defeito, ou reclama de um serviço já feito (veja OUTROS CASOS e a MEMÓRIA), use intencao=RETORNO_SERVICO e caso_anterior=o número do caso antigo. Nesse caso:
+- NUNCA fale em valor, orçamento, taxa de visita, preço ou disponibilidade, e não marque nada: quem decide garantia é a equipe.
+- Reconheça o serviço anterior pelo nome ("o conserto da geladeira"), lamente o transtorno sem culpar ninguém e sem prometer garantia, pergunte o que está acontecendo agora e peça foto ou vídeo se ajudar.
+- Diga que vai acionar a equipe e o profissional que fez o serviço para resolver.
+- novo_pedido=false e quer_orcamento_ou_atendimento=false. É continuação de um atendimento antigo, não um pedido novo.
+- Na dúvida entre retorno e um serviço novo parecido, PERGUNTE ("é sobre o conserto que fizemos ou é outro problema?") em vez de supor.
+- Se o caso antigo está marcado "RETORNO EM ABERTO", as mensagens seguintes do cliente sobre o mesmo assunto continuam sendo RETORNO_SERVICO.
+
 CLIENTE ANTIGO: veja o PERFIL DO CLIENTE e a FICHA NO SISTEMA. Se ele já foi atendido antes, trate-o como cliente conhecido: nunca como novo, não peça dados que já constam e lembre do que já foi feito quando for útil. Dados da FICHA são oficiais; nunca os contradiga e nunca os invente.
 
 MEMÓRIA: o HISTÓRICO pode conter mensagens de outros casos do mesmo cliente (marcadas com #número); use as do caso ativo e só fale de outro caso se o cliente se referir a ele. Leia o ESTADO DO CASO, os FATOS e o HISTÓRICO antes de responder. Nunca pergunte algo que já está nos fatos ou no histórico. A informação mais recente vale mais. Uma resposta curta normalmente responde à última pergunta feita. Mensagens do ATENDENTE HUMANO fazem parte da conversa: continue de onde ele parou, sem repetir o que já foi combinado. Se o caso está AGENDADO ou concluído, não recomece a coleta; só é pedido novo quando o cliente pede claramente outro serviço.
@@ -2218,9 +2229,9 @@ CALENDÁRIO: para QUALQUER data (reunião ou serviço), confira no CALENDÁRIO o
 COMO O SISTEMA AGE: quando o serviço está claro e o cliente quer orçamento, visita ou atendimento, o sistema consulta sozinho o profissional da categoria e avisa o cliente. Para isso basta preencher os fatos, quer_orcamento_ou_atendimento=true e pronto_para_profissional=true. Não é preciso bairro nem endereço para consultar.
 
 Responda SOMENTE com um objeto JSON neste formato:
-{"resposta":"","intencao":"CONVERSA","novo_pedido":false,"quer_orcamento_ou_atendimento":false,"pronto_para_profissional":false,"fatos":{"servico":"","categoria":"","problema":"","marca":"","modelo":"","bairro":"","cidade":"","endereco":"","preferencia_horario":"","nome":""},"categoria_confianca":"BAIXA","resposta_para_profissional":"","descricao_anexos":"","comprovante_pagamento":false,"precisa_humano":false,"motivo_humano":"","resumo_caso":"","reuniao":{"acao":"","quando":"","assunto":""}}
+{"resposta":"","intencao":"CONVERSA","novo_pedido":false,"quer_orcamento_ou_atendimento":false,"pronto_para_profissional":false,"fatos":{"servico":"","categoria":"","problema":"","marca":"","modelo":"","bairro":"","cidade":"","endereco":"","preferencia_horario":"","nome":""},"categoria_confianca":"BAIXA","resposta_para_profissional":"","descricao_anexos":"","comprovante_pagamento":false,"precisa_humano":false,"motivo_humano":"","resumo_caso":"","caso_anterior":0,"reuniao":{"acao":"","quando":"","assunto":""}}
 
-intencao: CONVERSA | NOVO_PEDIDO | ACEITA_PROPOSTA | RECUSA_PROPOSTA | PEDE_OUTRO_HORARIO | PEDE_ALTERACAO | PERGUNTA_PARA_PROFISSIONAL | PEDE_CANCELAMENTO | PERGUNTA_STATUS | AGRADECIMENTO | FALAR_COM_HUMANO.
+intencao: CONVERSA | NOVO_PEDIDO | ACEITA_PROPOSTA | RECUSA_PROPOSTA | PEDE_OUTRO_HORARIO | PEDE_ALTERACAO | PERGUNTA_PARA_PROFISSIONAL | PEDE_CANCELAMENTO | PERGUNTA_STATUS | AGRADECIMENTO | FALAR_COM_HUMANO | RETORNO_SERVICO (com caso_anterior).
 - ACEITA_PROPOSTA/RECUSA_PROPOSTA/PEDE_OUTRO_HORARIO: só quando o cliente responde à proposta enviada (etapa AGUARDANDO_CLIENTE).
 - PEDE_ALTERACAO: pedido de mudança em atendimento já combinado (ex.: chegar mais tarde, mudar o dia).
 - PERGUNTA_PARA_PROFISSIONAL: o caso já tem PROFISSIONAL CONSULTADO e o cliente faz uma pergunta que só o profissional sabe responder (material incluso, garantia, tempo de serviço, como é feito, se faz algo a mais, valor de um item extra, detalhes técnicos) e a resposta NÃO está nos fatos, no histórico nem no treinamento. Junte TODAS as perguntas das mensagens novas em resposta_para_profissional, em uma frase objetiva. Na "resposta", diga só que vai verificar e já retorna (sem citar o profissional: a responsabilidade é sua). A ponte cliente ↔ profissional continua enquanto o cliente tiver dúvidas.
@@ -2269,7 +2280,7 @@ ${consulta?.pergunta_pendente ? `PERGUNTA DO PROFISSIONAL PENDENTE (já enviada 
 VALORES AUTORIZADOS: ${[...autorizados].map(moeda).join(", ") || "nenhum"}
 
 OUTROS CASOS RECENTES DESTE CLIENTE:
-${recentes.map(k => `#${k.casoId} (${k.etapa}): ${k.fatos?.servico || "-"} ${k.resumo ? "— " + k.resumo : ""}`).join("\n") || "(nenhum)"}
+${recentes.map(k => `#${k.casoId} (${k.etapa}${k.fatos?.retorno_aberto ? ", RETORNO EM ABERTO" : ""}) ${k.atualizadoMs ? "em " + dataHoraSP(k.atualizadoMs).slice(0, 10) : ""}: ${k.fatos?.servico || "-"}${k.fatos?.problema ? " (" + k.fatos.problema + ")" : ""}${k.prestador ? " · feito por " + k.prestador : ""} ${k.resumo ? "— " + k.resumo : ""}`).join("\n") || "(nenhum)"}
 
 HISTÓRICO (mais antigo primeiro):
 ${hist}
@@ -2310,7 +2321,7 @@ Campos:
 // ============================================================================
 
 function normalizarDecisaoCliente(o) {
-  const intencoes = ["CONVERSA", "NOVO_PEDIDO", "ACEITA_PROPOSTA", "RECUSA_PROPOSTA", "PEDE_OUTRO_HORARIO", "PEDE_ALTERACAO", "PERGUNTA_PARA_PROFISSIONAL", "PEDE_CANCELAMENTO", "PERGUNTA_STATUS", "AGRADECIMENTO", "FALAR_COM_HUMANO"];
+  const intencoes = ["CONVERSA", "NOVO_PEDIDO", "ACEITA_PROPOSTA", "RECUSA_PROPOSTA", "PEDE_OUTRO_HORARIO", "PEDE_ALTERACAO", "PERGUNTA_PARA_PROFISSIONAL", "PEDE_CANCELAMENTO", "PERGUNTA_STATUS", "AGRADECIMENTO", "FALAR_COM_HUMANO", "RETORNO_SERVICO"];
   const f = o?.fatos && typeof o.fatos === "object" ? o.fatos : {};
   const fatos = {};
   for (const k of ["servico", "categoria", "problema", "marca", "modelo", "bairro", "cidade", "endereco", "preferencia_horario", "nome"]) { const v = txt(f[k], 400); if (v) fatos[k] = v; }
@@ -2321,7 +2332,7 @@ function normalizarDecisaoCliente(o) {
     novo_pedido: o?.novo_pedido === true, quer: o?.quer_orcamento_ou_atendimento === true, pronto: o?.pronto_para_profissional === true,
     resposta_para_profissional: txt(o?.resposta_para_profissional, 600), descricao_anexos: txt(o?.descricao_anexos, 1500),
     comprovante: o?.comprovante_pagamento === true, precisa_humano: o?.precisa_humano === true, motivo_humano: txt(o?.motivo_humano, 300),
-    resumo: txt(o?.resumo_caso, 600),
+    resumo: txt(o?.resumo_caso, 600), caso_anterior: Number(o?.caso_anterior) || 0,
     reuniao: o?.reuniao && typeof o.reuniao === "object" && ["marcar", "remarcar", "cancelar"].includes(String(o.reuniao.acao || "").toLowerCase())
       ? { acao: String(o.reuniao.acao).toLowerCase(), quando: txt(o.reuniao.quando, 40), assunto: txt(o.reuniao.assunto, 200) } : null
   };
@@ -2343,6 +2354,45 @@ async function autorizadosParaCaso(c, consulta) {
   const s = new Set(valoresMonetarios(treino.dados?.precos || ""));
   if (consulta?.valor_cliente) s.add(Number(consulta.valor_cliente));
   return s;
+}
+
+// ----------------------------------------------------------------------------
+// RETORNO DE SERVIÇO (garantia/reclamação): "o problema voltou" num serviço já concluído.
+// A IA marca RETORNO_SERVICO; e, mesmo que ela se confunda, a trava abaixo impede orçamento/visita
+// quando a mensagem tem sinal claro de retorno e o cliente tem um serviço concluído.
+const SINAL_RETORNO = /\b(voltou|voltaram|de novo|denovo|novamente|outra vez|mesmo (problema|defeito|vazamento|barulho)|nao resolveu|nao resolveram|nao adiantou|continua (com|dando|vazando|pingando|parado|sem)|parou (de novo|outra vez|de funcionar de novo)|quebrou (de novo|outra vez)|ja (tinha|tinham|foi|foram) (consertad|arrumad|feit|trocad)|garantia|o servico (de|que) voces fizeram|o conserto (de|que))/;
+async function detectarRetorno(c, { d, msgs, caso, recentes }) {
+  const texto = norm(msgs.map(m => m.conteudo).join(" "));
+  const candidatos = [...(caso && ETAPAS_ENCERRADAS.has(caso.etapa) ? [caso] : []), ...(recentes || [])].filter(k => k && k.etapa === "CONCLUIDO");
+  if (!candidatos.length) return null;
+  const porNumero = d.caso_anterior ? candidatos.find(k => Number(k.casoId) === d.caso_anterior) : null;
+  const aberto = candidatos.find(k => k.fatos?.retorno_aberto);
+  if (d.intencao === "RETORNO_SERVICO") return { anterior: porNumero || aberto || candidatos[0], forcado: false };
+  // Trava: sinal claro de retorno + a IA ia abrir pedido/orçamento → trata como retorno.
+  const iaQueriaOrcamento = d.quer || d.pronto || d.novo_pedido || d.intencao === "NOVO_PEDIDO";
+  if (SINAL_RETORNO.test(texto) && (iaQueriaOrcamento || aberto)) return { anterior: aberto || candidatos[0], forcado: true };
+  return null;
+}
+const PEDE_VALOR = /(r\$\s*\d|\bvalor\b|\borcamento\b|\btaxa\b|\bpreco\b|\bvisita\b|\bagend|\bdisponibilidade\b|\bcusta\b|\bcobr)/;
+async function tratarRetorno(c, { tel, pessoa, d, msgs, anterior, forcado, chaveLote }) {
+  const nomeCli = pessoa.nome || tel;
+  const servico = anterior.fatos?.servico || anterior.fatos?.problema || "o serviço";
+  const cons = await c.db.prepare("SELECT prestador_nome, prestador_tel FROM d30_consultas WHERE caso_id=? ORDER BY id DESC LIMIT 1").bind(anterior.casoId).first().catch(() => null);
+  for (const m of msgs) await c.db.prepare("UPDATE mensagens SET caso_id=? WHERE whatsapp_message_id=?").bind(anterior.casoId, m.wamid).run();
+  const primeira = !anterior.fatos?.retorno_aberto;
+  anterior.fatos = { ...anterior.fatos, retorno_aberto: true, retorno_em: anterior.fatos?.retorno_em || c.agora() };
+  if (d.descricao_anexos) anterior.fatos.retorno_detalhe = txt(d.descricao_anexos, 400);
+  await salvarCaso(c, anterior);
+  await evento(c, anterior.casoId, "RETORNO", `${forcado ? "(trava do sistema) " : ""}${txt(msgs.map(m => m.conteudo).join(" / "), 300)}`);
+  // Resposta: a da IA, desde que não fale de valor/visita; senão uma resposta segura.
+  const daIa = String(d.resposta || "").trim();
+  const segura = `Poxa, sinto muito que voltou a dar problema ${/^o |^a /i.test(servico) ? "n" + servico.toLowerCase() : "no " + servico.toLowerCase()}. Pode me contar o que está acontecendo agora e, se puder, mandar uma foto ou vídeo? Já vou acionar a equipe e o profissional que fez o serviço.`;
+  const texto = !forcado && daIa && !PEDE_VALOR.test(norm(daIa)) ? daIa : segura;
+  await enviarAoCliente(c, { tel, pessoaId: pessoa.id, casoId: anterior.casoId, texto, chave: chaveLote });
+  if (primeira || msgs.some(m => m.mediaId)) {
+    const quando = anterior.atualizadoMs ? dataHoraSP(anterior.atualizadoMs).slice(0, 10) : "";
+    await alertarEquipe(c, `🔁 RETORNO / GARANTIA: ${nomeCli} diz que o problema voltou no serviço "${servico}" (caso #${anterior.casoId}${quando ? ", concluído em " + quando : ""}${cons?.prestador_nome ? ", feito por " + cons.prestador_nome : ""}).\nCliente: "${txt(msgs.map(m => m.conteudo).join(" / "), 300)}"\nNada de valor ou visita foi passado. Decidam a garantia e acionem o profissional.`, "retorno:" + chaveLote, anterior.casoId);
+  }
 }
 
 async function processarCliente(c, tel, id, msgs, { apenasRegistrar, chaveLote, atrasoMs = 0 }) {
@@ -2408,6 +2458,10 @@ async function processarCliente(c, tel, id, msgs, { apenasRegistrar, chaveLote, 
   // Chegou mensagem nova enquanto a IA pensava? Nada é feito agora: tudo será respondido junto.
   if (!c.sim && await chegouMensagemNova(c, tel, msgs.map(m => ({ recebido_ms: m.recebidoMs })))) throw new Adiar();
   if (falhas.length) await alertarEquipe(c, `Mídia de ${pessoa.nome || tel} não pôde ser analisada (${falhas.join("; ")}). Verifique a conversa.`, "midia:" + chaveLote, caso?.casoId);
+
+  // 2b) RETORNO DE SERVIÇO: problema que voltou num serviço já feito. Nunca vira pedido novo nem orçamento.
+  const retorno = await detectarRetorno(c, { d, msgs, caso, recentes });
+  if (retorno) { await tratarRetorno(c, { tel, pessoa, d, msgs, anterior: retorno.anterior, forcado: retorno.forcado, chaveLote }); return; }
 
   // 3) Caso: criar quando surge um pedido; mesclar fatos (o mais recente vale).
   const temFatos = Object.keys(d.fatos).some(k => k !== "nome");

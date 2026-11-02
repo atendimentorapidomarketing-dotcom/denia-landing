@@ -909,7 +909,7 @@ test("Instagram e Facebook — conectar a marca pela Meta, publicar no horário 
   let pedidoIa = null;
   p.openai = (url, corpo) => { pedidoIa = corpo; return { output: [{ content: [{ type: "output_text", text: JSON.stringify({ titulo: "Antes e depois", legenda: "Seu tapete voltou a ter cor de novo? 😍\n\nLavagem de tapete na Zona Sul com secagem controlada, sem cheiro e sem manchas. Buscamos e entregamos na sua casa, com cuidado em cada fio.\n\nTapete persa, sisal ou felpudo: a gente trata do jeito certo.\n\n📱 WhatsApp: 11 98765-4321", hashtags: "#niteroi", chamada: "Agende", nome_arquivo: "clareamento-dental-niteroi", descricao: "Paciente sorrindo depois do clareamento em Niterói", capa: 2 }) }] }] }; };
   const quadro = "data:image/jpeg;base64," + Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 16, 74, 70, 73, 70, 0, 1, 1, 0, 0, 1, 0, 1, 0, 0, 0xff, 0xd9]).toString("base64");
-  const pv = await p.req("/api/orgs/1/mk/ia/post-video", { metodo: "POST", quem: "admin", corpo: { marca_id: marca, midia_id: sobe.dados.id, quadros: [quadro, quadro], pedido: "mostra o antes e depois do clareamento", canais: ["instagram", "facebook"] } });
+  const pv = await p.req("/api/orgs/1/mk/ia/post-video", { metodo: "POST", quem: "admin", corpo: { marca_id: marca, midia_id: sobe.dados.id, quadros: [quadro, quadro], pedido: "mostra o antes e depois do clareamento", canais: ["instagram", "facebook"], data: "2099-01-01", hora: "18:00" } });
   assert.equal(pv.status, 200, JSON.stringify(pv.dados));
   assert.equal(pv.dados.nome_arquivo, "clareamento-dental-niteroi"); assert.equal(pv.dados.post.formato, "reels");
   assert.equal(pedidoIa.input[0].content.filter(c => c.type === "input_image").length, 2, "a IA vê os quadros do vídeo");
