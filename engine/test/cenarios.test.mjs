@@ -1847,3 +1847,34 @@ test("Prova 3 — serviço novo de cliente antigo continua sendo pedido novo (a 
   assert.ok(!a.telegram.some(t => /RETORNO/.test(t)), "não confunde com retorno");
   assert.equal(a.DB.q("SELECT COUNT(*) n FROM d30_casos")[0].n, 2, "abre um pedido novo");
 });
+
+test("Prova 4 — pós-venda: 3 dias depois pergunta ao cliente; 'ficou ótimo' pede avaliação no Google; 'voltou a pingar' vira garantia", async () => {
+  const a = await criarAmbiente({ inicio: "2026-10-07T11:00:00-03:00", env: { WHATSAPP_TEMPLATE_POS_VENDA: "pos_venda", LINK_AVALIACAO_GOOGLE: "https://g.page/r/central/review" } });
+  const caso = await clienteComServicoConcluido(a);
+  a.DB.db.prepare("UPDATE d30_casos SET atualizado_ms=? WHERE caso_id=?").run(a.agora - 3.2 * 86400000, caso);
+  const antes = a.para(CLI).length;
+  await a.cron();
+  const env1 = a.para(CLI).slice(antes);
+  assert.equal(env1.length, 1, "uma pergunta de pós-venda");
+  assert.equal(env1[0].type, "template", "fora da janela de 24 h vai por modelo aprovado");
+  assert.equal(env1[0].texto, "pos_venda");
+  await a.cron();
+  assert.equal(a.para(CLI).length, antes + 1, "não pergunta duas vezes");
+  // Cliente satisfeito
+  a.llmCliente = () => { throw new Error("não deveria chamar a IA"); };
+  await a.cliente(CLI, "Ficou ótimo, obrigada!");
+  assert.match(a.ultimoPara(CLI), /avaliação[\s\S]*https:\/\/g\.page\/r\/central\/review/);
+  const f = JSON.parse(a.DB.q("SELECT fatos_json FROM d30_casos WHERE caso_id=?", caso)[0].fatos_json);
+  assert.equal(f.pos_venda_resposta, "SATISFEITO");
+});
+
+test("Prova 5 — pós-venda com problema vira garantia (sem valor) e avisa a equipe", async () => {
+  const a = await criarAmbiente({ inicio: "2026-10-07T11:00:00-03:00", env: { WHATSAPP_TEMPLATE_POS_VENDA: "pos_venda" } });
+  const caso = await clienteComServicoConcluido(a);
+  a.DB.db.prepare("UPDATE d30_casos SET atualizado_ms=? WHERE caso_id=?").run(a.agora - 3.2 * 86400000, caso);
+  await a.cron();
+  a.llmCliente = () => decisao({ resposta: "A visita custa R$ 80,00", intencao: "NOVO_PEDIDO", quer_orcamento_ou_atendimento: true, pronto_para_profissional: true });
+  await a.cliente(CLI, "Ainda está travando a fechadura");
+  assert.doesNotMatch(a.ultimoPara(CLI), /R\$|visita/);
+  assert.ok(a.telegram.some(t => /RETORNO \/ GARANTIA/.test(t)));
+});
