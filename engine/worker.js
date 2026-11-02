@@ -36,7 +36,7 @@
 //       relatório diário. Nunca inicia conversa nova por conta própria.
 // ============================================================================
 
-const VERSAO = "34.10.0";
+const VERSAO = "34.11.0";
 const SCHEMA_VERSAO = "33.4.0"; // mude sempre que acrescentar tabela ou índice (senão o banco de produção não recebe)
 const EMPRESA_ID = 1;
 const PHONE_ID_PADRAO = "473474732510163";
@@ -2280,7 +2280,7 @@ ${consulta?.pergunta_pendente ? `PERGUNTA DO PROFISSIONAL PENDENTE (já enviada 
 VALORES AUTORIZADOS: ${[...autorizados].map(moeda).join(", ") || "nenhum"}
 
 OUTROS CASOS RECENTES DESTE CLIENTE:
-${recentes.map(k => `#${k.casoId} (${k.etapa}${k.fatos?.retorno_aberto ? ", RETORNO EM ABERTO" : ""}) ${k.atualizadoMs ? "em " + dataHoraSP(k.atualizadoMs).slice(0, 10) : ""}: ${k.fatos?.servico || "-"}${k.fatos?.problema ? " (" + k.fatos.problema + ")" : ""}${k.prestador ? " · feito por " + k.prestador : ""} ${k.resumo ? "— " + k.resumo : ""}`).join("\n") || "(nenhum)"}
+${recentes.map(k => `#${k.casoId} (${k.etapa}${k.fatos?.retorno_aberto ? ", RETORNO EM ABERTO" : ""}${k.fatos?.pos_venda_aberto ? ", PÓS-VENDA PERGUNTADO: a DENIA perguntou se ficou tudo certo" : ""}) ${k.atualizadoMs ? "em " + dataHoraSP(k.atualizadoMs).slice(0, 10) : ""}: ${k.fatos?.servico || "-"}${k.fatos?.problema ? " (" + k.fatos.problema + ")" : ""}${k.prestador ? " · feito por " + k.prestador : ""} ${k.resumo ? "— " + k.resumo : ""}`).join("\n") || "(nenhum)"}
 
 HISTÓRICO (mais antigo primeiro):
 ${hist}
@@ -2395,6 +2395,71 @@ async function tratarRetorno(c, { tel, pessoa, d, msgs, anterior, forcado, chave
   }
 }
 
+// ----------------------------------------------------------------------------
+// PÓS-VENDA: alguns dias depois de concluído, a DENIA pergunta ao CLIENTE se ficou tudo certo.
+// Problema → vira RETORNO (garantia) com a equipe avisada; tudo certo → agradece e pede a avaliação no Google.
+// Fora da janela de 24 h do WhatsApp só sai com modelo aprovado (WHATSAPP_TEMPLATE_POS_VENDA: {{1}} nome, {{2}} serviço).
+const POS_POSITIVO = /\b(sim|tudo (certo|otimo|bem|perfeito|ok|joia|em ordem)|ficou (otimo|bom|perfeito|show|lindo|top|excelente)|(esta|ta) (otimo|perfeito|funcionando)|funcionando|resolveu|resolvido|show|top|maravilh|excelente|perfeito|amei|gostei|nota 10|deu certo)\b/;
+const POS_NEGATIVO = /\b(nao (ficou|funciona|resolveu|esta|ta|deu)|ainda (nao|esta|ta|com)|continua|problema|defeito|ruim|pessim|horrivel|reclam|errado|quebr|vazando|pingando|nao gostei|insatisfeit)\b/;
+async function posVendaClientes(c) {
+  if (/^(desligado|0|nao|não)$/i.test(String(c.env.POS_VENDA || "").trim())) return;
+  const agora = c.agora(), h = horaSP(agora);
+  if (h < 9 || h >= 19) return; // horário de gente
+  const dias = Math.max(1, Math.min(30, Number(c.env.POS_VENDA_DIAS) || 3));
+  const l = (await c.db.prepare("SELECT * FROM d30_casos WHERE etapa='CONCLUIDO' AND atualizado_ms BETWEEN ? AND ? AND COALESCE(json_extract(fatos_json,'$.pos_venda_ms'),0)=0 AND COALESCE(json_extract(fatos_json,'$.retorno_aberto'),0)=0 ORDER BY atualizado_ms LIMIT 5")
+    .bind(agora - (dias + 4) * 86400000, agora - dias * 86400000).all().catch(() => null))?.results || [];
+  const modelo = String(c.env.WHATSAPP_TEMPLATE_POS_VENDA || "").trim();
+  for (const linha of l) {
+    if (sobram(c) < 15) return;
+    const caso = linhaParaCaso(linha);
+    const marcar = async (como) => { caso.fatos = { ...caso.fatos, pos_venda_ms: agora, pos_venda: como, pos_venda_aberto: como === "PERGUNTADO" }; await c.db.prepare("UPDATE d30_casos SET fatos_json=? WHERE caso_id=?").bind(JSON.stringify(caso.fatos), caso.casoId).run(); };
+    const tel = digitos(caso.telefone);
+    if (!tel || await estaPausado(c, tel)) { await marcar("PULADO"); continue; }
+    // Outro atendimento em andamento com ele: não interrompe.
+    const aberto = await c.db.prepare("SELECT 1 FROM d30_casos WHERE telefone=? AND etapa NOT IN ('CONCLUIDO','CANCELADO') AND caso_id<>? LIMIT 1").bind(caso.telefone, caso.casoId).first().catch(() => null);
+    if (aberto) { await marcar("PULADO"); continue; }
+    const pessoa = await buscarPessoa(c, tel).catch(() => null);
+    const nome = primeiroNome(pessoa?.nome || "") || "";
+    const servico = String(caso.fatos?.servico || caso.fatos?.problema || "o serviço").toLowerCase();
+    const ultimaEntrada = pessoa?.id ? await c.db.prepare("SELECT criado_em FROM mensagens WHERE pessoa_id=? AND direcao='ENTRADA' ORDER BY id DESC LIMIT 1").bind(pessoa.id).first().catch(() => null) : null;
+    const desdeUltima = ultimaEntrada ? agora - (Date.parse(String(ultimaEntrada.criado_em).replace(" ", "T") + "Z") || 0) : -1;
+    const dentroJanela = desdeUltima >= 0 && desdeUltima < 23 * 3600000;
+    let r;
+    if (dentroJanela) r = await enviarAoCliente(c, { tel, pessoaId: pessoa?.id, casoId: caso.casoId, texto: `Oi${nome ? ", " + nome : ""}! Passando para saber se ficou tudo certo com ${/^(o|a|os|as) /.test(servico) ? servico : "o serviço de " + servico}. Se algo não estiver bem, é só me contar por aqui. 😊`, chave: "posvenda:" + caso.casoId });
+    else if (modelo) {
+      r = await c.saida.template(tel, modelo, [nome || "tudo bem", servico], { papel: "cliente" });
+      if (r.ok) await registrarMensagem(c, { pessoaId: pessoa?.id, casoId: caso.casoId, wamid: r.id, direcao: "SAIDA", origem: "IA", conteudo: `[Pós-venda] Pergunta se ficou tudo certo com ${servico}.` });
+    } else { await marcar("SEM_MODELO"); await evento(c, caso.casoId, "POS_VENDA_SEM_MODELO", "Fora da janela de 24 h e sem WHATSAPP_TEMPLATE_POS_VENDA"); continue; }
+    await marcar(r?.ok ? "PERGUNTADO" : "FALHA");
+    await evento(c, caso.casoId, r?.ok ? "POS_VENDA_PERGUNTADO" : "POS_VENDA_FALHA", r?.erro || "");
+  }
+}
+// Resposta do cliente ao pós-venda (antes de qualquer outra coisa): problema → retorno; tudo certo → avaliação no Google.
+async function tratarPosVenda(c, { tel, pessoa, msgs, recentes, caso, chaveLote }) {
+  if (caso && !ETAPAS_ENCERRADAS.has(caso.etapa)) return false;
+  const agora = c.agora();
+  const k = (recentes || []).find(x => x.fatos?.pos_venda_aberto && agora - Number(x.fatos.pos_venda_ms || 0) < 7 * 86400000);
+  if (!k) return false;
+  const texto = norm(msgs.map(m => m.conteudo).join(" "));
+  const fechar = async (como) => { k.fatos = { ...k.fatos, pos_venda_aberto: false, pos_venda_resposta: como, pos_venda_resposta_ms: agora }; await c.db.prepare("UPDATE d30_casos SET fatos_json=? WHERE caso_id=?").bind(JSON.stringify(k.fatos), k.casoId).run(); };
+  if (POS_NEGATIVO.test(texto) || SINAL_RETORNO.test(texto)) {
+    await fechar("PROBLEMA");
+    await tratarRetorno(c, { tel, pessoa, d: { resposta: "", descricao_anexos: "" }, msgs, anterior: k, forcado: true, chaveLote });
+    return true;
+  }
+  if (POS_POSITIVO.test(texto) && texto.length < 220) {
+    await fechar("SATISFEITO");
+    for (const m of msgs) await c.db.prepare("UPDATE mensagens SET caso_id=? WHERE whatsapp_message_id=?").bind(k.casoId, m.wamid).run();
+    const link = String(c.env.LINK_AVALIACAO_GOOGLE || "").trim();
+    const nome = primeiroNome(pessoa?.nome || "");
+    const t = link ? `Que bom${nome ? ", " + nome : ""}! 😊 Se puder, deixa uma avaliação pra gente no Google, ajuda muito outras pessoas a nos encontrarem: ${link}` : `Que bom${nome ? ", " + nome : ""}! 😊 Obrigado pela confiança. Quando precisar, é só chamar.`;
+    await enviarAoCliente(c, { tel, pessoaId: pessoa.id, casoId: k.casoId, texto: t, chave: chaveLote });
+    await evento(c, k.casoId, "POS_VENDA_SATISFEITO", link ? "Avaliação no Google pedida" : "");
+    return true;
+  }
+  return false; // resposta que não dá para entender sozinha: segue para a IA (ela vê o pós-venda no contexto)
+}
+
 async function processarCliente(c, tel, id, msgs, { apenasRegistrar, chaveLote, atrasoMs = 0 }) {
   const nome = msgs.map(m => m.nome).filter(Boolean).pop() || "";
   // Sem nome guardado (ex.: a equipe falou primeiro): guarda o nome do perfil do WhatsApp.
@@ -2412,6 +2477,7 @@ async function processarCliente(c, tel, id, msgs, { apenasRegistrar, chaveLote, 
     return;
   }
   if (await estaPausado(c, tel)) return; // atendente humano na conversa
+  if (await tratarPosVenda(c, { tel, pessoa, msgs, recentes, caso, chaveLote })) return;
 
   // 30 últimas mensagens bastam: o que é mais antigo já está resumido na MEMÓRIA COMPLETA do cliente.
   const hist = await historico(c, pessoa.id, 30);
@@ -3603,6 +3669,7 @@ async function cron(c) {
   if (sobram(c) > 20) await processarAgendados(c);
   if (sobram(c) > 20) await cobrarProfissionais(c).catch(e => console.error("profissionais sem resposta", e?.message));
   if (sobram(c) > 20) await acompanharServicos(c).catch(e => console.error("acompanhamento de serviços", e?.message));
+  if (sobram(c) > 20) await posVendaClientes(c).catch(e => console.error("pós-venda", e?.message));
   if (sobram(c) > 20) await vigiarSemResposta(c).catch(e => console.error("vigia de clientes sem resposta", e?.message));
   if (sobram(c) > 12) await lembrarReunioes(c).catch(e => console.error("reuniões", e?.message));
   // A cada hora: confere se o Telegram da equipe está ligado à DENIA e liga (se não estiver ligado a outro sistema).
