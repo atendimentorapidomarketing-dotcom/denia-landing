@@ -4912,6 +4912,9 @@ Botão só com texto = resposta.` })),
     const carregar = async () => {
       let d;
       try { d = await eng("service-photos"); } catch (e) { trocar(grade, h("p", { class: "sub", text: e.message })); return; }
+      const mapaAv = await mk("google/avaliacao-mapa").catch(() => null);
+      const marcaDe = f => String((mapaAv?.mapa?.categorias || {})[f.categoria] || marca.value);
+      const nomeMarca = id => (lista.find(m => String(m.id) === String(id)) || {}).nome || "";
       const fotos = d.fotos || [];
       if (!fotos.length) { trocar(grade, h("p", { class: "sub", text: "Quando um profissional mandar a foto do serviço terminado pelo WhatsApp, ela aparece aqui. No pós-venda, a DENIA pergunta ao cliente se pode mostrar a foto." })); return; }
       trocar(grade, ...fotos.map(f => {
@@ -4924,7 +4927,7 @@ Botão só com texto = resposta.` })),
             const r = await eng(`service-photos/${f.id}/file`);
             const foto = await proporcaoInstagram(await reduzirFoto(new Blob([Uint8Array.from(atob(r.base64), ch => ch.charCodeAt(0))], { type: r.mime }), 1600));
             const pedido = `Foto real de um serviço que acabamos de fazer: ${f.servico || "serviço"}${f.problema && f.problema !== f.servico ? " (" + f.problema + ")" : ""}${f.bairro ? ", no bairro " + f.bairro : ""}${f.cidade ? ", " + f.cidade : ""}. ${f.avaliacao === "SATISFEITO" ? "O cliente disse que ficou ótimo." : ""} Post de trabalho realizado, mostrando o resultado, sem nome nem endereço do cliente.`;
-            const p = await mk("ia/post-foto", { metodo: "POST", corpo: { marca_id: marca.value, foto, foto_google: await proporcaoGoogle(foto), pedido, canais: ["google", "instagram", "facebook"], texto_na_foto: "nao", tipo_google: "NOVIDADE", data: isoLocal(somarDias(new Date(), 1)), hora: "18:00" } });
+            const p = await mk("ia/post-foto", { metodo: "POST", corpo: { marca_id: marcaDe(f), foto, foto_google: await proporcaoGoogle(foto), pedido, canais: ["google", "instagram", "facebook"], texto_na_foto: "nao", tipo_google: "NOVIDADE", data: isoLocal(somarDias(new Date(), 1)), hora: "18:00" } });
             await eng(`service-photos/${f.id}/used`, { metodo: "POST", corpo: {} }).catch(() => { });
             aviso("Post criado. Confira e aprove.", "ok"); atualizarAprovacoes();
             editorPost(p.post, lista, () => navegar());
@@ -4934,6 +4937,7 @@ Botão só com texto = resposta.` })),
         const [nc, cc] = NOME_CONS[f.consentimento] || NOME_CONS.NAO_PERGUNTADO;
         return h("div", { class: "cartao foto-servico" }, img,
           h("strong", { text: f.servico || "Serviço" }), h("span", { class: "sub", text: [f.bairro, f.prestador ? "por " + f.prestador : "", new Date(f.criado_ms).toLocaleDateString(LOCALE)].filter(Boolean).join(" · ") }),
+          h("span", { class: "sub", text: "Vai para: " + (nomeMarca(marcaDe(f)) || "—") }),
           h("div", { class: "midia-usos" }, h("span", { class: "selo selo-" + cc, text: nc }), f.avaliacao === "SATISFEITO" ? h("span", { class: "selo selo-ok", text: "Cliente satisfeito" }) : null, f.usada ? h("span", { class: "selo", text: "Já virou post" }) : null),
           h("div", { class: "acoes" }, ver, criar));
       }));
@@ -4941,7 +4945,7 @@ Botão só com texto = resposta.` })),
     setTimeout(carregar);
     return h("section", { class: "cartao vidro formulario" }, h("h3", { style: "margin:0", text: "Do serviço ao marketing" }),
       h("p", { style: "margin:0;color:var(--texto-2);font-size:14px", text: "Fotos que os profissionais mandaram do serviço terminado. A DENIA pergunta ao cliente se pode usar a foto; com o sim, um toque vira post no Google, Instagram e Facebook, com legenda e palavras-chave do bairro, e vai para a sua aprovação." }),
-      campo("Publicar como", marca), grade);
+      campo("Perfil padrão (quando o tipo de serviço não tem perfil próprio)", marca), grade);
   }
 
   // Escreve uma frase curta na foto (faixa escura embaixo, letra branca forte), no próprio navegador.
@@ -5827,7 +5831,7 @@ Botão só com texto = resposta.` })),
       else if (atual === "mapa") await abaMapaPosicao(area, lista.find(m => String(m.id) === String(marcaId)));
       else if (atual === "buscas") await abaBuscasGoogle(area, lista.find(m => String(m.id) === String(marcaId)));
       else if (atual === "editar") await abaEditarPerfilGoogle(area, lista.find(m => String(m.id) === String(marcaId)));
-      else if (atual === "pedir") await abaPedirAvaliacoes(area, lista.find(m => String(m.id) === String(marcaId)));
+      else if (atual === "pedir") { await abaPedirAvaliacoes(area, lista.find(m => String(m.id) === String(marcaId))); if (pode("ADMIN")) area.appendChild(cartaoPerfilAvaliacoes()); }
       else if (atual === "checagem") await abaChecagemPerfil(area, marcaId);
       else if (atual === "avaliacoes") await abaAvaliacoes(area, marcaId);
       else if (atual === "relatorio") await abaRelatorio(area, marcaId);
@@ -6632,6 +6636,43 @@ Botão só com texto = resposta.` })),
     trocar(area, h("section", { class: "cartao vidro" }, h("h3", { style: "margin:0", text: p.titulo }), h("p", { class: "sub", style: "margin:4px 0 0", text: `${p.categoria || "Sem categoria"}${p.cidade ? " · " + p.cidade : ""} · as mudanças vão direto para o Google e ficam registradas na Auditoria.` }),
       p.maps ? h("div", { class: "acoes", style: "margin-top:10px" }, h("a", { class: "btn btn-secundario btn-pequeno", href: p.maps, target: "_blank", rel: "noopener" }, "Ver no Google Maps")) : null), cDesc, cCont, cHor, cFer, cServ, cFotos,
       adm ? null : h("p", { class: "nota", text: "Somente administradores mudam o perfil no Google." }));
+  }
+
+  // Qual perfil do Google recebe a avaliação de cada serviço (a empresa pode ter vários perfis) e o pós-venda.
+  function cartaoPerfilAvaliacoes() {
+    const corpo = h("div", { class: "formulario" }, carregando());
+    (async () => {
+      const [d, cats, cfgR] = await Promise.all([mk("google/avaliacao-mapa", { fresco: true }), temRecurso("ia_completa") ? eng("categories").catch(() => null) : null, temRecurso("chatbot") ? zap("config").catch(() => null) : null]);
+      const perfis = d.perfis || [];
+      if (!perfis.length) { trocar(corpo, h("p", { class: "sub", text: "Conecte pelo menos um perfil do Google para a DENIA pedir avaliações sozinha depois de cada serviço." })); return; }
+      const opcoes = (sel, vazio) => [h("option", { value: "", text: vazio }), ...perfis.map(p => h("option", { value: p.marca_id, text: `${p.nome}${p.perfil && p.perfil !== p.nome ? " (" + p.perfil + ")" : ""}${p.link ? "" : " · sem link"}`, selected: String(sel || "") === String(p.marca_id) }))];
+      const padrao = h("select", { class: "entrada" }, opcoes(d.mapa.padrao || (perfis.length === 1 ? perfis[0].marca_id : ""), "Escolha o perfil principal"));
+      const porCat = (cats?.categorias || []).map(c => ({ c, sel: h("select", { class: "entrada" }, opcoes(d.mapa.categorias[c.id], "Usar o perfil principal")) }));
+      const cfg = cfgR?.config || null;
+      const pvAtivo = h("input", { type: "checkbox", checked: cfg ? cfg.pos_venda_ativo !== false : false });
+      const pvDias = h("input", { class: "entrada", type: "number", min: "1", max: "30", value: cfg?.pos_venda_dias || 3 });
+      const pvModelo = h("input", { class: "entrada", maxlength: "80", value: cfg?.pos_venda_modelo || "", placeholder: "ex.: pos_venda (modelo aprovado na Meta)" });
+      trocar(corpo,
+        campo("Perfil principal para avaliações", padrao),
+        porCat.length && perfis.length > 1 ? h("details", { open: Object.keys(d.mapa.categorias || {}).length > 0 }, h("summary", { text: "Perfil de cada tipo de serviço (atendimento da IA no WhatsApp)" }),
+          h("div", { class: "formulario" }, porCat.map(({ c, sel }) => campo(c.rotulo, sel)))) : null,
+        cfg ? h("div", { class: "formulario" }, h("strong", { text: "Pós-venda no chatbot" }),
+          h("label", { class: "check-linha" }, pvAtivo, "Perguntar ao cliente se ficou tudo certo depois de um agendamento concluído"),
+          h("div", { class: "linha-form" }, campo("Quantos dias depois", pvDias), campo("Modelo da Meta (para quem não escreveu nas últimas 24 h)", pvModelo)),
+          h("small", { class: "sub", text: "Se ficou bom, a DENIA manda o link de avaliação do perfil acima. Se teve problema, avisa a equipe e pausa o robô na conversa. Sem modelo, só pergunta a quem escreveu nas últimas 24 h (regra do WhatsApp)." })) : null,
+        h("div", { class: "acoes" }, botao("Salvar", async (_e, b) => {
+          b.disabled = true;
+          try {
+            const r = await mk("google/avaliacao-mapa", { metodo: "POST", corpo: { padrao: Number(padrao.value) || 0, categorias: Object.fromEntries(porCat.filter(x => x.sel.value).map(x => [x.c.id, Number(x.sel.value)])) } });
+            if (cats) await eng("review-links", { metodo: "POST", corpo: r.links });
+            if (cfg) await zap("config", { metodo: "POST", corpo: { pos_venda_ativo: pvAtivo.checked, pos_venda_dias: Number(pvDias.value) || 3, pos_venda_modelo: pvModelo.value.trim() } });
+            aviso("Salvo. Cada serviço pede avaliação no perfil certo.", "ok");
+          } catch (e) { aviso(e.message, "erro"); }
+          b.disabled = false;
+        }, "btn-primario")));
+    })().catch(e => trocar(corpo, h("p", { class: "nota nota-alerta", text: e.message })));
+    return h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Avaliação automática depois do serviço" }),
+      h("p", { class: "dica", text: "Depois de cada serviço, a DENIA pergunta ao cliente se ficou tudo certo e, se ficou, pede a avaliação no Google. Escolha em qual perfil: o principal ou um perfil para cada tipo de serviço." }), corpo);
   }
 
   // QR code (biblioteca qrcode-generator, MIT) e páginas para imprimir os cartões de avaliação.
