@@ -31,7 +31,7 @@ import { DDL_ZAP, webhookZap, rotasZap, webhookTelegram, segredoTelegram, tokenT
 import { montarRelatorio, planilhaRelatorio, textoRelatorio, base64, ultimos7Dias, lerConfigRelatorio, horaDeEnviar, diaBR, dataBR, DIAS_SEMANA, inicioDoDia as inicioDoDiaBR } from "./relatorio.js";
 import { lerPlanos, acessoDa, recursoDaRota, planoMinimo, rotasPlano, webhookAsaas, lembretesDePlano, TESTE_DIAS, STATUS as STATUS_PLANO, PLANOS_PADRAO, RECURSOS } from "./planos.js";
 
-const VERSAO = "3.29.0";
+const VERSAO = "3.30.0";
 // Versão dos Termos de uso e da Política de privacidade aceitas no cadastro.
 const VERSAO_TERMOS = "2026-10-16";
 // WhatsApp da Central de Atendimento (botão flutuante do site).
@@ -61,6 +61,9 @@ const ROTAS_ENGINE = [
   ["POST", /^conversations\/\d{1,12}\/note$/, "AGENTE", "CONVERSA"],
   ["POST", /^clients\/match$/, "AGENTE"],
   ["GET", /^cases$/, "VISUALIZADOR"],
+  ["GET", /^service-photos$/, "VISUALIZADOR"],
+  ["GET", /^service-photos\/\d{1,12}\/file$/, "AGENTE"],
+  ["POST", /^service-photos\/\d{1,12}\/used$/, "AGENTE"],
   ["POST", /^cases\/\d{1,12}\/status$/, "AGENTE", "ATENDIMENTO"],
   ["POST", /^cases\/\d{1,12}\/review$/, "AGENTE", "ATENDIMENTO"],
   ["GET", /^professionals$/, "VISUALIZADOR"],

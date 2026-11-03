@@ -1083,3 +1083,9 @@ video.post-arte-img { width:100%; max-height:520px; border-radius:12px; backgrou
 .post-canais i.canal-erro { outline:1px solid rgba(248,113,113,.7); color:#fca5a5 }
 .nota.nota-ok { border-color:rgba(52,211,153,.35) }
 .destino { margin-top:8px }
+
+.fotos-servicos { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:12px }
+.foto-servico { display:grid; gap:6px; padding:12px }
+.foto-servico-img { aspect-ratio:4/3; border-radius:10px; overflow:hidden; background:rgba(255,255,255,.04); display:grid; place-items:center }
+.foto-servico-img img { width:100%; height:100%; object-fit:cover }
+@media (max-width:640px) { .fotos-servicos { grid-template-columns:1fr } }

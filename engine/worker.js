@@ -36,7 +36,7 @@
 //       relatório diário. Nunca inicia conversa nova por conta própria.
 // ============================================================================
 
-const VERSAO = "34.11.0";
+const VERSAO = "34.12.0";
 const SCHEMA_VERSAO = "33.4.0"; // mude sempre que acrescentar tabela ou índice (senão o banco de produção não recebe)
 const EMPRESA_ID = 1;
 const PHONE_ID_PADRAO = "473474732510163";
@@ -2438,6 +2438,19 @@ async function posVendaClientes(c) {
 async function tratarPosVenda(c, { tel, pessoa, msgs, recentes, caso, chaveLote }) {
   if (caso && !ETAPAS_ENCERRADAS.has(caso.etapa)) return false;
   const agora = c.agora();
+  const kf = (recentes || []).find(x => x.fatos?.foto_consentimento === "PERGUNTADO" && agora - Number(x.fatos.foto_pergunta_ms || 0) < 7 * 86400000);
+  if (kf) {
+    const tx = norm(msgs.map(m => m.conteudo).join(" "));
+    const sim = /^(sim|pode|claro|pode sim|pode mostrar|autorizo|ok|tudo bem|com certeza|fique a vontade|pode usar)\b/.test(tx), nao = /^(nao|prefiro que nao|melhor nao|nao pode|nao autorizo)\b/.test(tx);
+    if (sim || nao) {
+      kf.fatos = { ...kf.fatos, foto_consentimento: sim ? "AUTORIZADO" : "NEGADO", foto_consentimento_ms: agora, foto_consentimento_texto: txt(msgs.map(m => m.conteudo).join(" "), 200) };
+      await c.db.prepare("UPDATE d30_casos SET fatos_json=? WHERE caso_id=?").bind(JSON.stringify(kf.fatos), kf.casoId).run();
+      for (const m of msgs) await c.db.prepare("UPDATE mensagens SET caso_id=? WHERE whatsapp_message_id=?").bind(kf.casoId, m.wamid).run();
+      await evento(c, kf.casoId, sim ? "FOTO_AUTORIZADA" : "FOTO_NEGADA", kf.fatos.foto_consentimento_texto);
+      await enviarAoCliente(c, { tel, pessoaId: pessoa.id, casoId: kf.casoId, texto: sim ? "Muito obrigado! 😊" : "Sem problema, a foto fica só com a gente. Obrigado! 😊", chave: chaveLote });
+      return true;
+    }
+  }
   const k = (recentes || []).find(x => x.fatos?.pos_venda_aberto && agora - Number(x.fatos.pos_venda_ms || 0) < 7 * 86400000);
   if (!k) return false;
   const texto = norm(msgs.map(m => m.conteudo).join(" "));
@@ -2452,7 +2465,13 @@ async function tratarPosVenda(c, { tel, pessoa, msgs, recentes, caso, chaveLote 
     for (const m of msgs) await c.db.prepare("UPDATE mensagens SET caso_id=? WHERE whatsapp_message_id=?").bind(k.casoId, m.wamid).run();
     const link = String(c.env.LINK_AVALIACAO_GOOGLE || "").trim();
     const nome = primeiroNome(pessoa?.nome || "");
-    const t = link ? `Que bom${nome ? ", " + nome : ""}! 😊 Se puder, deixa uma avaliação pra gente no Google, ajuda muito outras pessoas a nos encontrarem: ${link}` : `Que bom${nome ? ", " + nome : ""}! 😊 Obrigado pela confiança. Quando precisar, é só chamar.`;
+    let t = link ? `Que bom${nome ? ", " + nome : ""}! 😊 Se puder, deixa uma avaliação pra gente no Google, ajuda muito outras pessoas a nos encontrarem: ${link}` : `Que bom${nome ? ", " + nome : ""}! 😊 Obrigado pela confiança. Quando precisar, é só chamar.`;
+    const temFoto = await c.db.prepare("SELECT 1 FROM d30_midias WHERE caso_id=? AND enviado_para='FOTO_SERVICO' LIMIT 1").bind(k.casoId).first().catch(() => null);
+    if (temFoto && !k.fatos?.foto_consentimento) {
+      t += "\n\nE uma pergunta: podemos mostrar a foto do serviço nas nossas redes? Sem nada pessoal, sem nome e sem endereço. É só responder sim ou não. 🙏";
+      k.fatos = { ...k.fatos, foto_consentimento: "PERGUNTADO", foto_pergunta_ms: agora };
+      await c.db.prepare("UPDATE d30_casos SET fatos_json=? WHERE caso_id=?").bind(JSON.stringify(k.fatos), k.casoId).run();
+    }
     await enviarAoCliente(c, { tel, pessoaId: pessoa.id, casoId: k.casoId, texto: t, chave: chaveLote });
     await evento(c, k.casoId, "POS_VENDA_SATISFEITO", link ? "Avaliação no Google pedida" : "");
     return true;
@@ -3197,6 +3216,9 @@ async function tratarRespostaPrestador(c, { caso, consulta, d, textoTodo, chaveL
   }
 
   if (tipo === "COMPROVANTE") {
+    // Fotos do serviço feito: ficam guardadas para virar post (só com autorização do cliente e aprovação da empresa).
+    for (const m of msgs) if (m.mediaId && m.tipo === "image") await c.db.prepare("INSERT INTO d30_midias(caso_id,telefone,media_id,tipo,mime,legenda,comprovante,enviado_para,criado_ms) VALUES(?,?,?,?,?,?,?,?,?)")
+      .bind(caso.casoId, digitos(consulta.prestador_tel || ""), m.mediaId, "image", m.mime || "image/jpeg", txt(d?.resumo || m.caption || "", 300), 0, "FOTO_SERVICO", c.agora()).run().catch(() => { });
     await responder("Recebido, obrigado! ✅", "comprov-ok");
     await alertarEquipe(c, `Comprovante de ${consulta.prestador_nome} sobre o atendimento de ${cliente?.nome || "o cliente"} (caso #${caso.casoId}): ${txt(d?.resumo || textoTodo, 300) || "ver na conversa"}. Conferir.`, "comprovante:prest:" + chaveLote, caso.casoId);
     return;
@@ -4380,6 +4402,30 @@ async function platformApi(request, env, caminho, metodo) {
     if (!["COLETANDO", "EQUIPE", "AGENDADO", "EM_ANDAMENTO", "CONCLUIDO", "CANCELADO"].includes(etapa)) return json({ sucesso: false, erro: "Etapa inválida." }, 400);
     await mudarEtapa(c, caso, etapa);
     return json({ sucesso: true, caso });
+  }
+  // Fotos dos serviços feitos (mandadas pelos profissionais), com a autorização do cliente, para virarem post.
+  if (caminho === "/platform/service-photos" && metodo === "GET") {
+    const r = (await c.db.prepare("SELECT m.id, m.caso_id, m.legenda, m.criado_ms, k.fatos_json, k.telefone FROM d30_midias m JOIN d30_casos k ON k.caso_id=m.caso_id WHERE m.enviado_para='FOTO_SERVICO' AND m.criado_ms > ? ORDER BY m.id DESC LIMIT 60").bind(c.agora() - 29 * 86400000).all().catch(() => null))?.results || [];
+    const fotos = [];
+    for (const x of r) {
+      let f = {}; try { f = JSON.parse(x.fatos_json || "{}"); } catch { }
+      const cons = await c.db.prepare("SELECT prestador_nome FROM d30_consultas WHERE caso_id=? ORDER BY id DESC LIMIT 1").bind(x.caso_id).first().catch(() => null);
+      fotos.push({ id: x.id, caso: x.caso_id, servico: f.servico || f.problema || "", problema: f.problema || "", bairro: f.bairro || "", cidade: f.cidade || "", legenda: x.legenda || "", prestador: cons?.prestador_nome || "", criado_ms: x.criado_ms,
+        consentimento: f.foto_consentimento || "NAO_PERGUNTADO", avaliacao: f.pos_venda_resposta || "", usada: Boolean(f.foto_usada) });
+    }
+    return json({ sucesso: true, fotos });
+  }
+  const mf = caminho.match(/^\/platform\/service-photos\/(\d{1,12})\/(file|used)$/);
+  if (mf) {
+    const x = await c.db.prepare("SELECT * FROM d30_midias WHERE id=? AND enviado_para='FOTO_SERVICO'").bind(Number(mf[1])).first().catch(() => null);
+    if (!x) return json({ sucesso: false, erro: "Foto não encontrada." }, 404);
+    if (mf[2] === "used" && metodo === "POST") {
+      const k = await carregarCasoPorId(c, x.caso_id);
+      if (k) { k.fatos = { ...k.fatos, foto_usada: c.agora() }; await c.db.prepare("UPDATE d30_casos SET fatos_json=? WHERE caso_id=?").bind(JSON.stringify(k.fatos), k.casoId).run(); }
+      return json({ sucesso: true });
+    }
+    try { const m = await metaBaixarMidia(c.env, x.media_id); return json({ sucesso: true, mime: m.mime, base64: base64(m.buffer) }); }
+    catch (e) { return json({ sucesso: false, erro: "O WhatsApp não liberou mais esta foto (fotos ficam disponíveis por cerca de 30 dias)." }, 410); }
   }
   if (caminho === "/platform/cases" && metodo === "GET") {
     const r = await c.db.prepare("SELECT * FROM d30_casos ORDER BY atualizado_ms DESC LIMIT 1000").all();

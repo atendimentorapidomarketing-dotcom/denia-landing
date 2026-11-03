@@ -4903,6 +4903,47 @@ Botão só com texto = resposta.` })),
     });
   }
 
+  // Do serviço ao marketing: fotos que os profissionais mandaram do serviço feito, com a autorização do cliente,
+  // viram post do Google/Instagram/Facebook com um toque (e passam pela aprovação da empresa).
+  function cartaoFotosServicos(lista) {
+    const grade = h("div", { class: "fotos-servicos" }, carregando());
+    const marca = seletorMarca(lista, estado.marcaCriador || (lista[0] && lista[0].id));
+    const NOME_CONS = { AUTORIZADO: ["Cliente autorizou", "ok"], NEGADO: ["Cliente não autorizou", "erro"], PERGUNTADO: ["Aguardando o cliente", "alerta"], NAO_PERGUNTADO: ["Sem autorização ainda", ""] };
+    const carregar = async () => {
+      let d;
+      try { d = await eng("service-photos"); } catch (e) { trocar(grade, h("p", { class: "sub", text: e.message })); return; }
+      const fotos = d.fotos || [];
+      if (!fotos.length) { trocar(grade, h("p", { class: "sub", text: "Quando um profissional mandar a foto do serviço terminado pelo WhatsApp, ela aparece aqui. No pós-venda, a DENIA pergunta ao cliente se pode mostrar a foto." })); return; }
+      trocar(grade, ...fotos.map(f => {
+        const img = h("div", { class: "foto-servico-img" }, h("span", { class: "sub", text: "Foto" }));
+        const ver = botao("Ver foto", async (_e, b) => { b.disabled = true; try { const r = await eng(`service-photos/${f.id}/file`); img.replaceChildren(h("img", { src: `data:${r.mime};base64,${r.base64}`, alt: f.servico })); b.remove(); } catch (e) { aviso(e.message, "erro"); b.disabled = false; } }, "btn-secundario btn-pequeno");
+        const criar = botao(f.usada ? "Criar outro post" : "Criar post com esta foto", async (_e, b) => {
+          if (f.consentimento !== "AUTORIZADO" && !(await modal({ titulo: "O cliente ainda não autorizou", conteudo: [h("p", { text: f.consentimento === "NEGADO" ? "O cliente disse que NÃO quer a foto nas redes. Respeite a escolha dele." : "A DENIA ainda não tem o sim do cliente. Só continue se a foto não mostrar nada pessoal (rosto, casa reconhecível, endereço, placa) ou se ele autorizou por outro meio." })], confirmar: "Continuar mesmo assim", perigo: true }))) return;
+          b.disabled = true; b.textContent = "Escrevendo o post…";
+          try {
+            const r = await eng(`service-photos/${f.id}/file`);
+            const foto = await proporcaoInstagram(await reduzirFoto(new Blob([Uint8Array.from(atob(r.base64), ch => ch.charCodeAt(0))], { type: r.mime }), 1600));
+            const pedido = `Foto real de um serviço que acabamos de fazer: ${f.servico || "serviço"}${f.problema && f.problema !== f.servico ? " (" + f.problema + ")" : ""}${f.bairro ? ", no bairro " + f.bairro : ""}${f.cidade ? ", " + f.cidade : ""}. ${f.avaliacao === "SATISFEITO" ? "O cliente disse que ficou ótimo." : ""} Post de trabalho realizado, mostrando o resultado, sem nome nem endereço do cliente.`;
+            const p = await mk("ia/post-foto", { metodo: "POST", corpo: { marca_id: marca.value, foto, foto_google: await proporcaoGoogle(foto), pedido, canais: ["google", "instagram", "facebook"], texto_na_foto: "nao", tipo_google: "NOVIDADE", data: isoLocal(somarDias(new Date(), 1)), hora: "18:00" } });
+            await eng(`service-photos/${f.id}/used`, { metodo: "POST", corpo: {} }).catch(() => { });
+            aviso("Post criado. Confira e aprove.", "ok"); atualizarAprovacoes();
+            editorPost(p.post, lista, () => navegar());
+          } catch (e) { aviso(e.message, "erro"); }
+          finally { b.disabled = false; b.textContent = "Criar post com esta foto"; }
+        }, f.consentimento === "AUTORIZADO" ? "btn-primario btn-pequeno" : "btn-secundario btn-pequeno");
+        const [nc, cc] = NOME_CONS[f.consentimento] || NOME_CONS.NAO_PERGUNTADO;
+        return h("div", { class: "cartao foto-servico" }, img,
+          h("strong", { text: f.servico || "Serviço" }), h("span", { class: "sub", text: [f.bairro, f.prestador ? "por " + f.prestador : "", new Date(f.criado_ms).toLocaleDateString(LOCALE)].filter(Boolean).join(" · ") }),
+          h("div", { class: "midia-usos" }, h("span", { class: "selo selo-" + cc, text: nc }), f.avaliacao === "SATISFEITO" ? h("span", { class: "selo selo-ok", text: "Cliente satisfeito" }) : null, f.usada ? h("span", { class: "selo", text: "Já virou post" }) : null),
+          h("div", { class: "acoes" }, ver, criar));
+      }));
+    };
+    setTimeout(carregar);
+    return h("section", { class: "cartao vidro formulario" }, h("h3", { style: "margin:0", text: "Do serviço ao marketing" }),
+      h("p", { style: "margin:0;color:var(--texto-2);font-size:14px", text: "Fotos que os profissionais mandaram do serviço terminado. A DENIA pergunta ao cliente se pode usar a foto; com o sim, um toque vira post no Google, Instagram e Facebook, com legenda e palavras-chave do bairro, e vai para a sua aprovação." }),
+      campo("Publicar como", marca), grade);
+  }
+
   // Escreve uma frase curta na foto (faixa escura embaixo, letra branca forte), no próprio navegador.
   function escreverNaFoto(dataUrl, texto) {
     return new Promise((ok, erro) => {
@@ -4978,6 +5019,7 @@ Botão só com texto = resposta.` })),
         h("p", { style: "margin:0;color:var(--texto-2);font-size:14px", text: "Peça por voz: \"DENIA, quantos posts estão esperando aprovação?\" ou \"Me dá ideias de posts para esta semana\"." }),
         h("div", { class: "acoes" }, h("a", { class: "btn btn-primario", href: "#/denia" }, "🎙 Conversar por voz"))));
     el.appendChild(criadorIA(lista, cfg, null, null) || h("span"));
+    if (temRecurso("ia_completa") && pode("AGENTE")) el.appendChild(cartaoFotosServicos(lista));
     el.appendChild(h("section", { class: "grade grade-3" },
       passoInicial("01", "Contas conectadas", "Cadastre cada perfil com o tom de voz, o público e as contas de Instagram, Facebook e Google.", "#/marcas"),
       passoInicial("02", "Calendário", "Veja a semana de cada marca, crie posts e gere as artes com IA.", "#/calendario"),
