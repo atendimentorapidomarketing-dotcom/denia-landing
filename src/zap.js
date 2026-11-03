@@ -35,7 +35,7 @@ export const DDL_ZAP = [
 ];
 
 export const ZAP_PADRAO = {
-  pos_venda_ativo: true, pos_venda_dias: 3, pos_venda_modelo: "",
+  pos_venda_ativo: true, pos_venda_dias: 3, pos_venda_modelo: "", fuso: "America/Sao_Paulo",
   boas_vindas: "Olá! 👋 Seja bem-vindo(a)! Como posso te ajudar? Escolha uma opção:",
   nao_entendi: "Não entendi bem, mas te mostro as opções:",
   humano: "Certo! Vou chamar alguém da equipe para falar com você. Só um instante. 😊",
@@ -84,6 +84,22 @@ function modoPermitido(modo, rec) {
   if (modo === "IA") return rec.includes("ia_completa") ? "IA" : rec.includes("chatbot_ia") ? "MISTO" : "BOTOES";
   if (modo === "MISTO") return rec.includes("chatbot_ia") ? "MISTO" : "BOTOES";
   return "BOTOES";
+}
+// Fuso horário de cada empresa (multinacional): nada de horário de Brasília fixo.
+export function fusoValido(tz) { try { new Intl.DateTimeFormat("en-US", { timeZone: String(tz) }).format(0); return Boolean(tz); } catch { return false; } }
+function deslocamentoMs(tz, ms) {
+  const p = Object.fromEntries(new Intl.DateTimeFormat("en-US", { timeZone: tz, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" }).formatToParts(new Date(ms)).map(x => [x.type, x.value]));
+  return Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour % 24, +p.minute, +p.second) - Math.floor(ms / 1000) * 1000;
+}
+const fusoDeCfg = cfg => fusoValido(cfg?.fuso) ? cfg.fuso : "America/Sao_Paulo";
+// "Relógio de parede" da empresa como Date em UTC (para .toISOString() / getUTCHours()).
+export const relogioLocal = (cfg, ms) => new Date(ms + deslocamentoMs(fusoDeCfg(cfg), ms));
+// "AAAA-MM-DD HH:MM" no fuso da empresa → instante.
+export function instanteLocal(cfg, data, hora) {
+  const tz = fusoDeCfg(cfg), chute = Date.parse(`${data}T${hora}:00Z`);
+  if (!Number.isFinite(chute)) return null;
+  const t = chute - deslocamentoMs(tz, chute);
+  return t - (deslocamentoMs(tz, t) - deslocamentoMs(tz, chute));
 }
 function lerConfig(conta) { let c = {}; try { c = JSON.parse(conta?.config || "{}") || {}; } catch { c = {}; } return { ...ZAP_PADRAO, ...c }; }
 
@@ -415,6 +431,7 @@ async function responder(z, texto, acao) {
 const INSTRUCOES_CONVERSA = `Você atende os clientes de UMA empresa pelo WhatsApp, como uma pessoa experiente da equipe: calorosa, segura, objetiva.
 REGRAS
 - Responda no MESMO idioma em que o cliente escreveu.
+- RETORNO / GARANTIA: se o cliente reclama de um serviço que a empresa JÁ FEZ (veja ATENDIMENTOS JÁ CONCLUÍDOS e a conversa: "voltou", "de novo", "não resolveu", "mesmo problema"), NUNCA fale de preço, orçamento ou novo agendamento: lamente sem culpar ninguém, peça detalhes ou foto e ponha "humano": true para a equipe decidir a garantia. Na dúvida entre serviço novo e retorno, pergunte.
 - Mensagens curtas, como no WhatsApp (1 a 3 frases; no máximo uma pergunta por vez). Nada de textão, listas longas ou tom de robô.
 - Leia a CONVERSA e a MEMÓRIA antes de responder: não pergunte o que o cliente já disse, não repita saudação no meio da conversa, chame pelo nome quando souber.
 - Use SOMENTE as informações da EMPRESA abaixo. Nunca invente preço, prazo, endereço, telefone, horário, estoque ou promessa. Se não souber, diga que vai confirmar com a equipe e ponha "humano": true.
@@ -423,7 +440,7 @@ REGRAS
 - Ponha "menu": true só se a pessoa pedir as opções ou estiver perdida.
 - Reclamação séria, pedido de falar com alguém, negociação fora das regras ou assunto sensível: "humano": true e uma resposta curta e acolhedora.
 - Se perguntarem com sinceridade se você é uma IA, diga que é a assistente virtual da empresa e que a equipe pode assumir quando quiser.
-- AGENDAMENTOS: quando nesta conversa ficar COMBINADO com o cliente um dia e horário (reunião online, visita, consulta, aula, serviço…) e as REGRAS DA EMPRESA permitirem marcar, preencha "agendamento" com {"acao":"marcar","quando":"AAAA-MM-DD HH:MM","o_que":"ex.: reunião online","detalhes":"assunto, e-mail ou contato do cliente, endereço, o que a equipe precisa saber"}. Se o cliente mudar o horário de algo já marcado, use "acao":"remarcar" com o novo horário; se desmarcar, "acao":"cancelar". Use o horário de Brasília e a data de AGORA para entender "amanhã", "terça" etc. Não preencha enquanto o horário ainda estiver sendo negociado nem repita um agendamento que já está em AGENDAMENTOS DESTE CLIENTE. Ao marcar, diga ao cliente que ficou registrado e que a equipe foi avisada; nunca invente link de reunião, endereço ou confirmação que não estejam no treinamento.
+- AGENDAMENTOS: quando nesta conversa ficar COMBINADO com o cliente um dia e horário (reunião online, visita, consulta, aula, serviço…) e as REGRAS DA EMPRESA permitirem marcar, preencha "agendamento" com {"acao":"marcar","quando":"AAAA-MM-DD HH:MM","o_que":"ex.: reunião online","detalhes":"assunto, e-mail ou contato do cliente, endereço, o que a equipe precisa saber"}. Se o cliente mudar o horário de algo já marcado, use "acao":"remarcar" com o novo horário; se desmarcar, "acao":"cancelar". Use o horário local da empresa (AGORA) e a data de AGORA para entender "amanhã", "terça" etc. Não preencha enquanto o horário ainda estiver sendo negociado nem repita um agendamento que já está em AGENDAMENTOS DESTE CLIENTE. Ao marcar, diga ao cliente que ficou registrado e que a equipe foi avisada; nunca invente link de reunião, endereço ou confirmação que não estejam no treinamento.
 - Em "lembrar", anote só FATOS NOVOS e úteis sobre o cliente para as próximas conversas (nome, preferências, endereço que ele informou, o que comprou/pediu), em frases curtas. Senão, vazio.
 Responda SEMPRE em JSON: {"resposta":"","abrir":0,"menu":false,"humano":false,"lembrar":"","agendamento":null}`;
 
@@ -432,7 +449,7 @@ function blocosTreino(cfg) {
   return b.filter(x => String(x[1] || "").trim()).map(([t, v]) => `${t}:\n${cortar(v, 4000)}`).join("\n\n") || "(a empresa ainda não preencheu o treinamento)";
 }
 async function reservarIA(z) {
-  const hoje = new Date(z.agora - 3 * 3600000).toISOString().slice(0, 10);
+  const hoje = relogioLocal(z.cfg, z.agora).toISOString().slice(0, 10);
   const chaveDia = `zap_ia_${z.org}_${hoje}`, chaveMes = `zap_ia_mes_${z.org}_${hoje.slice(0, 7)}`;
   const [d1, m1] = await z.env.DB.batch([z.env.DB.prepare("SELECT valor FROM plt_meta WHERE chave=?").bind(chaveDia), z.env.DB.prepare("SELECT valor FROM plt_meta WHERE chave=?").bind(chaveMes)]);
   const usadas = Number(d1?.results?.[0]?.valor || 0), doMes = Number(m1?.results?.[0]?.valor || 0);
@@ -450,12 +467,13 @@ async function atenderComIA(z, texto, m) {
     z.env.DB.prepare("SELECT nome, local FROM plt_zap_catalogo WHERE org_id=? AND ativo=1 LIMIT 200").bind(z.org)
   ]);
   const agenda = z.sim ? (z.agendaTeste || []) : await linhasDe(z.env, "SELECT quando_ms, quando_txt, o_que, status FROM plt_zap_agenda WHERE org_id=? AND telefone=? AND status='MARCADO' AND (quando_ms IS NULL OR quando_ms>?) ORDER BY id DESC LIMIT 5", z.org, z.tel, z.agora - 86400000);
+  const feitos = z.sim ? [] : await linhasDe(z.env, "SELECT quando_ms, quando_txt, o_que FROM plt_zap_agenda WHERE org_id=? AND telefone=? AND status='CONCLUIDO' AND atualizado_ms > ? ORDER BY atualizado_ms DESC LIMIT 5", z.org, z.tel, z.agora - 365 * 86400000).catch(() => []);
   const conversa = (hist?.results || []).slice().reverse().map(x => `${x.direcao === "E" ? "CLIENTE" : x.origem === "EQUIPE" ? "EQUIPE" : "VOCÊ"}: ${cortar(x.texto, 400)}`).join("\n");
   const memoria = String(ctt?.results?.[0]?.memoria || "");
   const opcoes = m.todos.filter(i => m.visivel(i)).map(i => `${i.id}|${caminhoDe(m, i)}`).join("\n");
   const contatos = (cat?.results || []).length ? `\n\n${z.cfg.rotulo_catalogo.toUpperCase()} CADASTRADOS: ${cortar(cat.results.map(c => c.nome + (c.local ? ` (${c.local})` : "")).join(", "), 2500)}` : "";
-  const quando = new Date(z.agora - 3 * 3600000);
-  const entrada = `EMPRESA: ${z.nomeEmpresa}${z.cfg.nome_atendente ? `\nSEU NOME NO ATENDIMENTO: ${z.cfg.nome_atendente}` : ""}\nAGORA: ${quando.toISOString().slice(0, 16).replace("T", " ")} (horário de Brasília)\n\n${blocosTreino(z.cfg)}\n\nOPÇÕES DO MENU (id|caminho):\n${opcoes || "(sem menu)"}${contatos}\n\nCLIENTE: ${z.nome || "sem nome"}\nAGENDAMENTOS DESTE CLIENTE: ${agenda.length ? agenda.map(a => `${a.quando_ms ? quandoBR(a.quando_ms) : a.quando_txt || "?"} — ${a.o_que || "agendamento"}`).join("; ") : "(nenhum)"}\nMEMÓRIA DO CLIENTE:\n${memoria || "(primeiro contato ou nada anotado)"}\n\nCONVERSA RECENTE:\n${conversa || "(nenhuma)"}\n\nMENSAGEM NOVA DO CLIENTE: "${cortar(texto, 1500)}"`;
+  const quando = relogioLocal(z.cfg, z.agora);
+  const entrada = `EMPRESA: ${z.nomeEmpresa}${z.cfg.nome_atendente ? `\nSEU NOME NO ATENDIMENTO: ${z.cfg.nome_atendente}` : ""}\nAGORA: ${quando.toISOString().slice(0, 16).replace("T", " ")} (horário local da empresa, fuso ${fusoDeCfg(z.cfg)})\n\n${blocosTreino(z.cfg)}\n\nOPÇÕES DO MENU (id|caminho):\n${opcoes || "(sem menu)"}${contatos}\n\nCLIENTE: ${z.nome || "sem nome"}\nATENDIMENTOS JÁ CONCLUÍDOS COM ESTE CLIENTE: ${feitos.length ? feitos.map(a => `${a.quando_ms ? quandoBR(a.quando_ms, fusoDeCfg(z.cfg)) : a.quando_txt || "?"} — ${a.o_que || "atendimento"}`).join("; ") : "(nenhum)"}\nAGENDAMENTOS DESTE CLIENTE: ${agenda.length ? agenda.map(a => `${a.quando_ms ? quandoBR(a.quando_ms, fusoDeCfg(z.cfg)) : a.quando_txt || "?"} — ${a.o_que || "agendamento"}`).join("; ") : "(nenhum)"}\nMEMÓRIA DO CLIENTE:\n${memoria || "(primeiro contato ou nada anotado)"}\n\nCONVERSA RECENTE:\n${conversa || "(nenhuma)"}\n\nMENSAGEM NOVA DO CLIENTE: "${cortar(texto, 1500)}"`;
   let o;
   try { o = await openaiResposta(envIA, { modelo: z.cfg.modelo_conversa || "gpt-5-mini", instrucoes: INSTRUCOES_CONVERSA, entrada, maxTokens: 700, esforco: "low", recurso: "chatbot/ia-completa" }); }
   catch (e) { console.warn("IA completa", e?.message); return false; }
@@ -484,10 +502,10 @@ async function atenderComIA(z, texto, m) {
 // avisada na hora (Telegram ou e-mail), recebe um lembrete antes e vê tudo em Chatbot → Agenda.
 // ---------------------------------------------------------------------------
 
-function horarioDe(q) {
+function horarioDe(q, cfg) {
   const m = String(q || "").match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}):(\d{2})/);
   if (!m) return null;
-  const ms = Date.parse(`${m[1]}T${m[2]}:${m[3]}:00-03:00`);
+  const ms = instanteLocal(cfg, m[1], `${m[2]}:${m[3]}`);
   return Number.isFinite(ms) ? ms : null;
 }
 async function avisarAgenda(z, texto, assunto) {
@@ -495,23 +513,23 @@ async function avisarAgenda(z, texto, assunto) {
   return Boolean(z.k.alertarEmail && await z.k.alertarEmail(z.org, assunto, texto).catch(() => false));
 }
 function textoAgenda(z, titulo, a) {
-  return [titulo, "", `👤 Cliente: ${z.nome || a.nome || "sem nome"} (${z.tel})`, `🗓️ Quando: ${a.quando_ms ? quandoBR(a.quando_ms) : a.quando_txt || "não informado"}`,
+  return [titulo, "", `👤 Cliente: ${z.nome || a.nome || "sem nome"} (${z.tel})`, `🗓️ Quando: ${a.quando_ms ? quandoBR(a.quando_ms, fusoDeCfg(z.cfg)) : a.quando_txt || "não informado"}`,
     a.o_que ? `📝 O que: ${a.o_que}` : "", a.detalhes ? `ℹ️ Detalhes: ${a.detalhes}` : "",
     "", `Marcado pela IA no WhatsApp de ${z.nomeEmpresa || "a empresa"}. Veja em Chatbot → Agenda.${z.k.base ? "\n" + z.k.base + "/app#/chatbot/agenda" : ""}`].filter((l, i, t) => l || (i > 0 && t[i - 1])).join("\n").trim();
 }
 async function registrarAgendamento(z, ag) {
   const acao = ["remarcar", "cancelar"].includes(String(ag.acao || "").toLowerCase()) ? String(ag.acao).toLowerCase() : "marcar";
-  const quando_ms = horarioDe(ag.quando);
+  const quando_ms = horarioDe(ag.quando, z.cfg);
   const a = { quando_ms, quando_txt: cortar(ag.quando, 40) || null, o_que: cortar(ag.o_que, 120) || null, detalhes: cortar(ag.detalhes, 600) || null, nome: z.nome || null };
   if (acao === "marcar" && !quando_ms && !a.quando_txt) return;
-  if (z.sim) { z.registro.push({ texto: `📅 (Teste) A equipe seria avisada: ${acao === "marcar" ? "novo agendamento" : acao === "remarcar" ? "reagendado" : "cancelado"} — ${quando_ms ? quandoBR(quando_ms) : a.quando_txt || ""}${a.o_que ? " · " + a.o_que : ""}` }); return; }
+  if (z.sim) { z.registro.push({ texto: `📅 (Teste) A equipe seria avisada: ${acao === "marcar" ? "novo agendamento" : acao === "remarcar" ? "reagendado" : "cancelado"} — ${quando_ms ? quandoBR(quando_ms, fusoDeCfg(z.cfg)) : a.quando_txt || ""}${a.o_que ? " · " + a.o_que : ""}` }); return; }
   const db = z.env.DB;
   const atual = await db.prepare("SELECT * FROM plt_zap_agenda WHERE org_id=? AND telefone=? AND status='MARCADO' AND (quando_ms IS NULL OR quando_ms>?) ORDER BY id DESC LIMIT 1").bind(z.org, z.tel, z.agora - 86400000).first();
   let id, titulo, assunto;
   if (acao === "marcar") {
     if (atual && quando_ms && atual.quando_ms === quando_ms) return; // já registrado
     id = (await db.prepare("INSERT INTO plt_zap_agenda(org_id,telefone,nome,quando_ms,quando_txt,o_que,detalhes,status,criado_ms,atualizado_ms) VALUES(?,?,?,?,?,?,?,'MARCADO',?,?) RETURNING id").bind(z.org, z.tel, a.nome, quando_ms, a.quando_txt, a.o_que, a.detalhes, z.agora, z.agora).first())?.id;
-    titulo = "📅 NOVO AGENDAMENTO"; assunto = `DENIA — novo agendamento: ${a.nome || z.tel}, ${quando_ms ? quandoBR(quando_ms) : a.quando_txt}`;
+    titulo = "📅 NOVO AGENDAMENTO"; assunto = `DENIA — novo agendamento: ${a.nome || z.tel}, ${quando_ms ? quandoBR(quando_ms, fusoDeCfg(z.cfg)) : a.quando_txt}`;
   } else {
     if (!atual) return;
     id = atual.id;
@@ -522,7 +540,7 @@ async function registrarAgendamento(z, ag) {
     } else {
       if (!quando_ms && !a.quando_txt) return;
       await db.prepare("UPDATE plt_zap_agenda SET quando_ms=?, quando_txt=?, o_que=COALESCE(?,o_que), detalhes=COALESCE(?,detalhes), visto_ms=NULL, lembrado_ms=NULL, atualizado_ms=? WHERE id=?").bind(quando_ms, a.quando_txt, a.o_que, a.detalhes, z.agora, id).run();
-      titulo = `🔁 AGENDAMENTO REMARCADO (antes: ${atual.quando_ms ? quandoBR(atual.quando_ms) : atual.quando_txt || "?"})`; assunto = `DENIA — agendamento remarcado: ${a.nome || z.tel}`;
+      titulo = `🔁 AGENDAMENTO REMARCADO (antes: ${atual.quando_ms ? quandoBR(atual.quando_ms, fusoDeCfg(z.cfg)) : atual.quando_txt || "?"})`; assunto = `DENIA — agendamento remarcado: ${a.nome || z.tel}`;
     }
   }
   if (!id) return;
@@ -543,7 +561,7 @@ export async function lembrarAgenda(env, k) {
     if (!conta) continue;
     const z = { env, k, org: a.org_id, conta, tel: a.telefone, nome: a.nome, agora, nomeEmpresa: a.org_nome, enviadas: 0 };
     const min = Math.max(1, Math.round((a.quando_ms - agora) / 60000));
-    await avisarAgenda(z, textoAgenda(z, `⏰ LEMBRETE: daqui a ${min} min`, a), `DENIA — lembrete: ${a.o_que || "agendamento"} com ${a.nome || a.telefone} às ${quandoBR(a.quando_ms).split(" às ")[1] || ""}`).catch(() => { });
+    await avisarAgenda(z, textoAgenda(z, `⏰ LEMBRETE: daqui a ${min} min`, a), `DENIA — lembrete: ${a.o_que || "agendamento"} com ${a.nome || a.telefone} às ${quandoBR(a.quando_ms, fusoDeCfg(z.cfg)).split(" às ")[1] || ""}`).catch(() => { });
   }
 }
 
@@ -554,7 +572,7 @@ const INSTRUCOES_IA = `Você é a atendente virtual de uma empresa no WhatsApp. 
 - Nunca invente preço, telefone, endereço, horário ou loja que não esteja abaixo. Não diga que é humana se perguntarem.`;
 async function comIA(z, texto, m, cat, candidatos) {
   if (z.sim && z.k.semIA) return false;
-  const hoje = new Date(z.agora - 3 * 3600000).toISOString().slice(0, 10);
+  const hoje = relogioLocal(z.cfg, z.agora).toISOString().slice(0, 10);
   const chaveDia = `zap_ia_${z.org}_${hoje}`;
   const usadas = Number((await z.env.DB.prepare("SELECT valor FROM plt_meta WHERE chave=?").bind(chaveDia).first().catch(() => null))?.valor || 0);
   if (usadas >= Number(z.cfg.limite_ia_dia || 300)) return false;
@@ -670,13 +688,14 @@ const POS_BOM = /\b(sim|tudo (certo|otimo|bem|perfeito|ok|joia)|ficou (otimo|bom
 const POS_RUIM = /\b(nao (ficou|funciona|resolveu|esta|ta|deu|gostei)|ainda (nao|esta|ta|com)|continua|problema|defeito|ruim|pessim|horrivel|reclam|errado|quebr|voltou|de novo)\b/;
 const semAcentoZ = t => String(t || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
 export async function posVendaChatbot(env, k) {
-  const agora = k.agora(env), h = new Date(agora - 3 * 3600000).getUTCHours();
-  if (h < 9 || h >= 19) return 0;
+  const agora = k.agora(env);
   const contas = await linhasDe(env, "SELECT z.*, o.nome org_nome FROM plt_zap_contas z JOIN plt_organizacoes o ON o.id=z.org_id WHERE z.ativo=1 AND z.token_cifrado IS NOT NULL").catch(() => []);
   let n = 0;
   for (const conta of contas) {
     const cfg = lerConfig(conta);
     if (!cfg.pos_venda_ativo) continue;
+    const hLocal = relogioLocal(cfg, agora).getUTCHours();
+    if (hLocal < 9 || hLocal >= 19) continue; // horário comercial no fuso da empresa
     const dias = Math.max(1, Math.min(30, Number(cfg.pos_venda_dias) || 3));
     const ags = await linhasDe(env, "SELECT a.*, c.ultima_entrada_ms, c.pausado_ate, c.optout FROM plt_zap_agenda a LEFT JOIN plt_zap_contatos c ON c.org_id=a.org_id AND c.telefone=a.telefone WHERE a.org_id=? AND a.status='CONCLUIDO' AND a.pos_venda_ms IS NULL AND a.atualizado_ms BETWEEN ? AND ? LIMIT 5",
       conta.org_id, agora - (dias + 4) * 86400000, agora - dias * 86400000).catch(() => []);
@@ -696,6 +715,20 @@ export async function posVendaChatbot(env, k) {
     }
   }
   return n;
+}
+// Retorno/garantia em QUALQUER modo (botões, misto ou IA): problema que voltou num atendimento já concluído
+// nunca vira orçamento — a equipe é chamada e o robô pausa nessa conversa.
+const SINAL_RETORNO_Z = /\b(voltou|voltaram|de novo|denovo|novamente|outra vez|mesmo (problema|defeito)|nao resolveu|nao adiantou|continua (com|dando)|parou (de novo|outra vez)|quebrou (de novo|outra vez)|garantia)\b/;
+async function retornoChatbot(z, texto) {
+  const t = semAcentoZ(texto);
+  if (!SINAL_RETORNO_Z.test(t)) return false;
+  const a = await z.env.DB.prepare("SELECT * FROM plt_zap_agenda WHERE org_id=? AND telefone=? AND status='CONCLUIDO' AND atualizado_ms > ? ORDER BY atualizado_ms DESC LIMIT 1").bind(z.org, z.tel, z.agora - 180 * 86400000).first().catch(() => null);
+  if (!a) return false;
+  await alertarEquipe(z, `🔁 RETORNO / GARANTIA: ${z.nome || a.nome || z.tel} diz que voltou o problema em "${a.o_que || "atendimento"}" (concluído em ${quandoBR(a.atualizado_ms, fusoDeCfg(z.cfg))}). Mensagem: "${cortar(texto, 300)}". Nada de valor foi passado. Decidam a garantia.`);
+  await z.env.DB.prepare("UPDATE plt_zap_contatos SET pausado_ate=? WHERE org_id=? AND telefone=?").bind(z.agora + 2 * 3600000, z.org, z.tel).run().catch(() => { });
+  const nome = String(z.nome || a.nome || "").split(" ")[0];
+  await enviarTexto(z, `Poxa${nome ? ", " + nome : ""}, sinto muito que voltou a dar problema. Pode me contar o que está acontecendo e, se puder, mandar uma foto? Já avisei a equipe para resolver com você.`, "ROBO");
+  return true;
 }
 // Resposta do cliente ao pós-venda (antes do menu e da IA).
 async function respostaPosVenda(z, texto) {
@@ -772,6 +805,7 @@ async function receberMensagem(env, k, conta, msg, nome) {
     if (Number((await env.DB.prepare("SELECT pausado_ate FROM plt_zap_contatos WHERE org_id=? AND telefone=?").bind(z.org, tel).first())?.pausado_ate || 0) > k.agora(env)) return; // a equipe assumiu enquanto esperava
   }
   if (!e.acao && await respostaPosVenda(z, texto)) return;
+  if (!e.acao && await retornoChatbot(z, texto)) return;
   await responder(z, texto, e.acao);
 }
 
@@ -1210,6 +1244,7 @@ export async function rotasZap(request, env, k, orgId, papel, resto) {
     }
     if (!["gpt-5-nano", "gpt-5-mini", "gpt-4o-mini", "gpt-4.1-mini"].includes(cfg.modelo_ia)) cfg.modelo_ia = "gpt-5-nano";
     if (cfg.exibicao_inicio !== "NUMERADO") cfg.exibicao_inicio = "AUTO";
+    if (!fusoValido(cfg.fuso)) cfg.fuso = "America/Sao_Paulo";
     if (cfg.texto_livre !== "INICIO") cfg.texto_livre = "BUSCAR";
     for (const [ch, pad] of [["rotulo_menu", "🏠 Menu inicial"], ["rotulo_voltar", "⬅️ Voltar"], ["rotulo_fim", "✅ Finalizar"]]) cfg[ch] = cortar(cfg[ch], 20) || pad;
     cfg.rodape_pergunta = cortar(cfg.rodape_pergunta, 300) || ZAP_PADRAO.rodape_pergunta;

@@ -3709,3 +3709,29 @@ test("Avaliação no perfil certo — cada empresa escolhe o perfil (vários per
   assert.match(enviadosPara(p, tel).at(-1).texto, /avaliação[\s\S]*https:\/\/g\.page\/r\/limpeza\/review/, "usa o perfil da própria empresa");
   delete p.env.__agora;
 });
+
+test("Multinacional — fuso de cada empresa e garantia no chatbot de qualquer modo (até só botões)", async () => {
+  const { instanteLocal, relogioLocal, fusoValido } = await import("../src/zap.js");
+  assert.equal(new Date(instanteLocal({ fuso: "America/Sao_Paulo" }, "2026-11-10", "14:00")).toISOString(), "2026-11-10T17:00:00.000Z");
+  assert.equal(new Date(instanteLocal({ fuso: "Europe/Lisbon" }, "2026-11-10", "14:00")).toISOString(), "2026-11-10T14:00:00.000Z");
+  assert.equal(new Date(instanteLocal({ fuso: "Europe/Lisbon" }, "2026-07-10", "14:00")).toISOString(), "2026-07-10T13:00:00.000Z", "horário de verão");
+  assert.equal(new Date(instanteLocal({ fuso: "Asia/Tokyo" }, "2026-11-10", "09:00")).toISOString(), "2026-11-10T00:00:00.000Z");
+  assert.equal(relogioLocal({ fuso: "Asia/Tokyo" }, Date.parse("2026-11-10T00:00:00Z")).getUTCHours(), 9);
+  assert.equal(fusoValido("Lua/Base"), false);
+  const { p, inf } = await duasEmpresasComChatbot();
+  const cfg = await p.req(`/api/orgs/${inf}/zap/config`, { metodo: "POST", quem: "admin", corpo: { fuso: "Lua/Base" } });
+  assert.equal(cfg.dados.config.fuso, "America/Sao_Paulo", "fuso inválido volta ao padrão");
+  await p.req(`/api/orgs/${inf}/zap/config`, { metodo: "POST", quem: "admin", corpo: { fuso: "Europe/Lisbon" } });
+  // Garantia num chatbot só de botões: atendimento concluído e o cliente diz que voltou o problema.
+  const tel = "5521966665555";
+  p.env.DB.prepare("INSERT INTO plt_zap_agenda(org_id,telefone,nome,o_que,status,criado_ms,atualizado_ms) VALUES(?,?,?,?, 'CONCLUIDO', ?, ?)").bind(inf, tel, "Paulo", "a instalação do chuveiro", Date.now() - 20 * 86400000, Date.now() - 15 * 86400000).run();
+  await webhookZap(p, "111111111111", { from: tel, type: "text", text: { body: "O chuveiro parou de novo, mesmo problema" } }, "Paulo");
+  const r = enviadosPara(p, tel).at(-1);
+  assert.match(r.texto, /sinto muito que voltou/i);
+  assert.doesNotMatch(r.texto, /R\$|valor|orçamento/i);
+  const pausa = p.env.DB.q("SELECT pausado_ate FROM plt_zap_contatos WHERE org_id=? AND telefone=?", inf, tel)[0].pausado_ate;
+  assert.ok(pausa > Date.now(), "robô pausa para a equipe assumir");
+  // Mensagem comum de outro cliente não é confundida
+  await webhookZap(p, "111111111111", { from: "5521955554444", type: "text", text: { body: "Oi, quero saber o horário" } }, "Ana");
+  assert.doesNotMatch(enviadosPara(p, "5521955554444").at(-1)?.texto || "", /voltou a dar problema/);
+});
