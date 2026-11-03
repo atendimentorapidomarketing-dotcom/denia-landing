@@ -1878,3 +1878,30 @@ test("Prova 5 — pós-venda com problema vira garantia (sem valor) e avisa a eq
   assert.doesNotMatch(a.ultimoPara(CLI), /R\$|visita/);
   assert.ok(a.telegram.some(t => /RETORNO \/ GARANTIA/.test(t)));
 });
+
+test("Prova 6 — do serviço ao marketing: foto do técnico + cliente satisfeito + autorização → foto pronta para virar post", async () => {
+  const a = await criarAmbiente({ inicio: "2026-10-07T11:00:00-03:00", env: { WHATSAPP_TEMPLATE_POS_VENDA: "pos_venda", LINK_AVALIACAO_GOOGLE: "https://g.page/r/central/review", DENIA_PLATFORM_SERVICE_TOKEN: SERVICO } });
+  await iniciarConsultaChaveiro(a);
+  a.llmPrestador = () => prest({ tipo: "ACEITA", valor_centavos: 15000, valor_e_final: "SIM", disponibilidade: "dia 15 às 10h" });
+  await a.cliente(CHAVEIRO, "Faço dia 15 às 10h, 150 já é o valor final");
+  const caso = a.DB.q("SELECT caso_id FROM d30_casos ORDER BY caso_id DESC LIMIT 1")[0].caso_id;
+  // O técnico manda a foto do serviço feito.
+  a.llmPrestador = () => prest({ tipo: "COMPROVANTE", resumo: "Foto da fechadura nova instalada" });
+  await a.cliente(CHAVEIRO, "pronto, ficou assim", { type: "image", raw: { image: { id: "media-servico-1", mime_type: "image/jpeg", caption: "pronto" } } });
+  assert.equal(a.DB.q("SELECT COUNT(*) n FROM d30_midias WHERE enviado_para='FOTO_SERVICO'")[0].n, 1, "foto do serviço guardada");
+  a.DB.db.prepare("UPDATE d30_casos SET etapa='CONCLUIDO', atualizado_ms=? WHERE caso_id=?").run(a.agora - 3.2 * 86400000, caso);
+  await a.cron();
+  a.llmCliente = () => { throw new Error("não deveria chamar a IA"); };
+  await a.cliente(CLI, "Ficou perfeito!");
+  assert.match(a.ultimoPara(CLI), /podemos mostrar a foto do serviço/i, "pede autorização para usar a foto");
+  let lista = (await (await api(a, "/platform/service-photos")).json()).fotos;
+  assert.equal(lista[0].consentimento, "PERGUNTADO");
+  await a.cliente(CLI, "Pode sim");
+  assert.match(a.ultimoPara(CLI), /obrigado/i);
+  lista = (await (await api(a, "/platform/service-photos")).json()).fotos;
+  assert.equal(lista[0].consentimento, "AUTORIZADO"); assert.equal(lista[0].avaliacao, "SATISFEITO"); assert.equal(lista[0].servico, "chaveiro");
+  const arq = await (await api(a, `/platform/service-photos/${lista[0].id}/file`)).json();
+  assert.ok(arq.base64, "a plataforma consegue pegar a foto para o post");
+  await api(a, `/platform/service-photos/${lista[0].id}/used`, { method: "POST", body: "{}" });
+  assert.equal((await (await api(a, "/platform/service-photos")).json()).fotos[0].usada, true);
+});
