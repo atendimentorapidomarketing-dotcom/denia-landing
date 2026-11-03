@@ -35,6 +35,7 @@ export const DDL_ZAP = [
 ];
 
 export const ZAP_PADRAO = {
+  pos_venda_ativo: true, pos_venda_dias: 3, pos_venda_modelo: "",
   boas_vindas: "Olá! 👋 Seja bem-vindo(a)! Como posso te ajudar? Escolha uma opção:",
   nao_entendi: "Não entendi bem, mas te mostro as opções:",
   humano: "Certo! Vou chamar alguém da equipe para falar com você. Só um instante. 😊",
@@ -659,6 +660,67 @@ function lerEntrada(msg) {
   return { acao, texto: texto.slice(0, 2000), rotulo: texto || `[${t || "mensagem"}]` };
 }
 const JANELA_AGRUPAR_MS = 8000; // dentro dos 30 s que a Cloudflare dá depois de responder ao webhook
+// ---------------------------------------------------------------------------
+// Pós-venda (qualquer empresa): alguns dias depois de um agendamento concluído, pergunta se ficou tudo certo.
+// Tudo certo → pede avaliação no perfil do Google da própria empresa (o perfil escolhido em Google → Pedir avaliações);
+// problema → chama a equipe e pausa o robô nessa conversa. Fora da janela de 24 h, só com o modelo aprovado
+// da empresa (pos_venda_modelo: {{1}} nome, {{2}} o que foi feito); sem modelo, não manda nada.
+// ---------------------------------------------------------------------------
+const POS_BOM = /\b(sim|tudo (certo|otimo|bem|perfeito|ok|joia)|ficou (otimo|bom|perfeito|show|lindo|top|excelente)|funcionando|resolveu|resolvido|show|top|maravilh|excelente|perfeito|amei|gostei|deu certo)\b/;
+const POS_RUIM = /\b(nao (ficou|funciona|resolveu|esta|ta|deu|gostei)|ainda (nao|esta|ta|com)|continua|problema|defeito|ruim|pessim|horrivel|reclam|errado|quebr|voltou|de novo)\b/;
+const semAcentoZ = t => String(t || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+export async function posVendaChatbot(env, k) {
+  const agora = k.agora(env), h = new Date(agora - 3 * 3600000).getUTCHours();
+  if (h < 9 || h >= 19) return 0;
+  const contas = await linhasDe(env, "SELECT z.*, o.nome org_nome FROM plt_zap_contas z JOIN plt_organizacoes o ON o.id=z.org_id WHERE z.ativo=1 AND z.token_cifrado IS NOT NULL").catch(() => []);
+  let n = 0;
+  for (const conta of contas) {
+    const cfg = lerConfig(conta);
+    if (!cfg.pos_venda_ativo) continue;
+    const dias = Math.max(1, Math.min(30, Number(cfg.pos_venda_dias) || 3));
+    const ags = await linhasDe(env, "SELECT a.*, c.ultima_entrada_ms, c.pausado_ate, c.optout FROM plt_zap_agenda a LEFT JOIN plt_zap_contatos c ON c.org_id=a.org_id AND c.telefone=a.telefone WHERE a.org_id=? AND a.status='CONCLUIDO' AND a.pos_venda_ms IS NULL AND a.atualizado_ms BETWEEN ? AND ? LIMIT 5",
+      conta.org_id, agora - (dias + 4) * 86400000, agora - dias * 86400000).catch(() => []);
+    for (const a of ags) {
+      const marcar = st => env.DB.prepare("UPDATE plt_zap_agenda SET pos_venda_ms=?, pos_venda_status=? WHERE id=?").bind(agora, st, a.id).run();
+      if (Number(a.pausado_ate || 0) > agora) { await marcar("PULADO"); continue; }
+      const z = { env, k, org: conta.org_id, conta, cfg, tel: a.telefone, nome: a.nome || "", agora, nomeEmpresa: conta.org_nome, enviadas: 0 };
+      const nome = String(a.nome || "").split(" ")[0];
+      const oque = String(a.o_que || "o atendimento").toLowerCase();
+      const dentro = Number(a.ultima_entrada_ms || 0) > agora - 23 * 3600000;
+      let r = null;
+      if (dentro) r = await enviarTexto(z, `Oi${nome ? ", " + nome : ""}! Passando para saber se ficou tudo certo com ${oque}. Se algo não estiver bem, é só me contar por aqui. 😊`, "ROBO");
+      else if (cfg.pos_venda_modelo) r = await enviar(z, { type: "template", template: { name: cfg.pos_venda_modelo, language: { code: "pt_BR" }, components: [{ type: "body", parameters: [{ type: "text", text: nome || "tudo bem" }, { type: "text", text: oque }] }] } }, `[Pós-venda] ${oque}`, "ROBO");
+      else { await marcar("SEM_MODELO"); continue; }
+      await marcar(r && r.ok !== false ? "PERGUNTADO" : "FALHA");
+      n++;
+    }
+  }
+  return n;
+}
+// Resposta do cliente ao pós-venda (antes do menu e da IA).
+async function respostaPosVenda(z, texto) {
+  const a = await z.env.DB.prepare("SELECT * FROM plt_zap_agenda WHERE org_id=? AND telefone=? AND pos_venda_status='PERGUNTADO' AND pos_venda_ms > ? ORDER BY pos_venda_ms DESC LIMIT 1").bind(z.org, z.tel, z.agora - 7 * 86400000).first().catch(() => null);
+  if (!a) return false;
+  const t = semAcentoZ(texto);
+  const fechar = st => z.env.DB.prepare("UPDATE plt_zap_agenda SET pos_venda_status=? WHERE id=?").bind(st, a.id).run();
+  const nome = String(z.nome || a.nome || "").split(" ")[0];
+  if (POS_RUIM.test(t)) {
+    await fechar("PROBLEMA");
+    await alertarEquipe(z, `🔁 Pós-venda: ${z.nome || a.nome || z.tel} disse que NÃO ficou bom (${a.o_que || "atendimento"}). Mensagem: "${cortar(texto, 300)}". Fale com o cliente.`);
+    await z.env.DB.prepare("UPDATE plt_zap_contatos SET pausado_ate=? WHERE org_id=? AND telefone=?").bind(z.agora + 2 * 3600000, z.org, z.tel).run().catch(() => { });
+    await enviarTexto(z, `Poxa${nome ? ", " + nome : ""}, sinto muito. Já avisei a equipe e alguém vai falar com você por aqui para resolver.`, "ROBO");
+    return true;
+  }
+  if (POS_BOM.test(t) && t.length < 220) {
+    await fechar("SATISFEITO");
+    const { linkAvaliacaoDe } = await import("./google.js");
+    const l = await linkAvaliacaoDe(z.env, z.k, z.org).catch(() => null);
+    await enviarTexto(z, l?.link ? `Que bom${nome ? ", " + nome : ""}! 😊 Se puder, deixa uma avaliação pra gente no Google, ajuda muito: ${l.link}` : `Que bom${nome ? ", " + nome : ""}! 😊 Obrigado pela confiança.`, "ROBO");
+    return true;
+  }
+  return false;
+}
+
 async function receberMensagem(env, k, conta, msg, nome) {
   const tel = digitos(msg.from);
   const wamid = String(msg.id || "");
@@ -709,6 +771,7 @@ async function receberMensagem(env, k, conta, msg, nome) {
     }
     if (Number((await env.DB.prepare("SELECT pausado_ate FROM plt_zap_contatos WHERE org_id=? AND telefone=?").bind(z.org, tel).first())?.pausado_ate || 0) > k.agora(env)) return; // a equipe assumiu enquanto esperava
   }
+  if (!e.acao && await respostaPosVenda(z, texto)) return;
   await responder(z, texto, e.acao);
 }
 

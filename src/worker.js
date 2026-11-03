@@ -27,11 +27,11 @@ import { comOrgUso, comRecurso, descarregarUso } from "./uso.js";
 import { DDL_TEMPORADA, ALTERS_TEMPORADA, rotasTemporada, icalPublico, webhookChannex, sincronizarTemporada, desligarInadimplentes, lembrarEstoque, limpezaPublica, avaliacoesDoCron } from "./temporada.js";
 import { openaiBruto } from "./marketing.js";
 import { DDL_PROBLEMAS, rotasProblemas, registrarProblema, resolverProblema, limparProblemas } from "./problemas.js";
-import { DDL_ZAP, webhookZap, rotasZap, webhookTelegram, segredoTelegram, tokenTelegramPlataforma, processarCampanhas, lembrarAgenda, brutoRelatorioZap, avisarTelegramDaEmpresa } from "./zap.js";
+import { DDL_ZAP, webhookZap, rotasZap, webhookTelegram, segredoTelegram, tokenTelegramPlataforma, processarCampanhas, posVendaChatbot, lembrarAgenda, brutoRelatorioZap, avisarTelegramDaEmpresa } from "./zap.js";
 import { montarRelatorio, planilhaRelatorio, textoRelatorio, base64, ultimos7Dias, lerConfigRelatorio, horaDeEnviar, diaBR, dataBR, DIAS_SEMANA, inicioDoDia as inicioDoDiaBR } from "./relatorio.js";
 import { lerPlanos, acessoDa, recursoDaRota, planoMinimo, rotasPlano, webhookAsaas, lembretesDePlano, TESTE_DIAS, STATUS as STATUS_PLANO, PLANOS_PADRAO, RECURSOS } from "./planos.js";
 
-const VERSAO = "3.30.0";
+const VERSAO = "3.31.0";
 // Versão dos Termos de uso e da Política de privacidade aceitas no cadastro.
 const VERSAO_TERMOS = "2026-10-16";
 // WhatsApp da Central de Atendimento (botão flutuante do site).
@@ -61,6 +61,9 @@ const ROTAS_ENGINE = [
   ["POST", /^conversations\/\d{1,12}\/note$/, "AGENTE", "CONVERSA"],
   ["POST", /^clients\/match$/, "AGENTE"],
   ["GET", /^cases$/, "VISUALIZADOR"],
+  ["GET", /^categories$/, "VISUALIZADOR"],
+  ["GET", /^review-links$/, "VISUALIZADOR"],
+  ["POST", /^review-links$/, "ADMIN"],
   ["GET", /^service-photos$/, "VISUALIZADOR"],
   ["GET", /^service-photos\/\d{1,12}\/file$/, "AGENTE"],
   ["POST", /^service-photos\/\d{1,12}\/used$/, "AGENTE"],
@@ -224,6 +227,7 @@ async function garantirSchema(env) {
     await env.DB.prepare("ALTER TABLE plt_zap_contatos ADD COLUMN ultimo_menu INTEGER").run().catch(() => { });
     for (const a of ALTERS_TEMPORADA) await env.DB.prepare(a).run().catch(() => { });
     for (const col of ["optout INTEGER NOT NULL DEFAULT 0", "etiquetas TEXT"]) await env.DB.prepare("ALTER TABLE plt_zap_contatos ADD COLUMN " + col).run().catch(() => { });
+    for (const col of ["pos_venda_ms INTEGER", "pos_venda_status TEXT"]) await env.DB.prepare("ALTER TABLE plt_zap_agenda ADD COLUMN " + col).run().catch(() => { });
     for (const col of ["teste_ate INTEGER", "pago_ate INTEGER", "ciclo TEXT", "cobranca_cliente TEXT", "assinatura_id TEXT", "assinatura_plano TEXT"])
       await env.DB.prepare("ALTER TABLE plt_organizacoes ADD COLUMN " + col).run().catch(() => { });
     // A primeira empresa da plataforma.
@@ -1488,6 +1492,7 @@ export default {
       await limparBanco(env).catch(e => console.error("limpeza", e?.message));
       await sincronizarTemporada(env, await kitZap(env)).catch(e => console.error("temporada", e?.message));
       await processarCampanhas(env, await kitZap(env)).catch(e => console.error("campanhas", e?.message));
+      await posVendaChatbot(env, await kitZap(env)).catch(e => console.error("pós-venda do chatbot", e?.message));
       await lembrarAgenda(env, await kitZap(env)).catch(e => console.error("agenda", e?.message));
       await relatoriosAgendados(env).catch(e => console.error("relatórios agendados", e?.message));
       await lembrarEstoque(env, await kitZap(env)).catch(e => console.error("estoque", e?.message));

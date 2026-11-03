@@ -3673,3 +3673,39 @@ test("Post por rede — texto próprio de Instagram, Facebook e Google, foto 4:3
   const s2 = (await p.req("/api/orgs/1/mk/ia/post-foto", { metodo: "POST", quem: "admin", corpo: { marca_id: m, foto: jpeg, canais: ["google"], tipo_google: "NOVIDADE" } })).dados;
   assert.equal(s2.status, "AGUARDANDO"); assert.equal(s2.textos.google.tipo, "NOVIDADE", "o tipo escolhido pela pessoa vale");
 });
+
+test("Avaliação no perfil certo — cada empresa escolhe o perfil (vários perfis); o chatbot de qualquer empresa faz o pós-venda", async () => {
+  const { p, inf } = await duasEmpresasComChatbot();
+  // Dois perfis do Google na mesma empresa (ex.: Limpeza e Conserto de celular)
+  const m1 = (await p.req(`/api/orgs/${inf}/mk/marcas`, { metodo: "POST", quem: "admin", corpo: { nome: "Limpeza Zona Sul" } })).dados.id;
+  const m2 = (await p.req(`/api/orgs/${inf}/mk/marcas`, { metodo: "POST", quem: "admin", corpo: { nome: "Conserto Celular" } })).dados.id;
+  await p.req(`/api/orgs/${inf}/mk/google/visao`, { quem: "admin" }); // cria as tabelas do Google
+  for (const [m, link] of [[m1, "https://g.page/r/limpeza/review"], [m2, "https://g.page/r/celular/review"]])
+    p.env.DB.prepare("INSERT INTO plt_mk_google(org_id,marca_id,conta_nome,local_nome,local_titulo,token_cifrado,criado_ms,atualizado_ms,review_uri) VALUES(?,?,?,?,?,?,?,?,?)").bind(inf, m, "accounts/1", "locations/" + m, m === m1 ? "Limpeza Zona Sul" : "Conserto Celular", "x", 1, 1, link).run();
+  const mapa = await p.req(`/api/orgs/${inf}/mk/google/avaliacao-mapa`, { quem: "admin" });
+  assert.equal(mapa.dados.perfis.length, 2);
+  const salvo = await p.req(`/api/orgs/${inf}/mk/google/avaliacao-mapa`, { metodo: "POST", quem: "admin", corpo: { padrao: m1, categorias: { ELETRODOMESTICO: m2 } } });
+  assert.equal(salvo.dados.links.padrao, "https://g.page/r/limpeza/review");
+  assert.equal(salvo.dados.links.categorias.ELETRODOMESTICO, "https://g.page/r/celular/review", "cada tipo de serviço no seu perfil");
+  const { linkAvaliacaoDe } = await import("../src/google.js");
+  const kit = { agora: () => Date.now() };
+  assert.equal((await linkAvaliacaoDe(p.env, kit, inf, "ELETRODOMESTICO")).link, "https://g.page/r/celular/review");
+  assert.equal((await linkAvaliacaoDe(p.env, kit, inf, "REFORMA")).link, "https://g.page/r/limpeza/review", "sem perfil próprio usa o principal");
+  assert.equal(await linkAvaliacaoDe(p.env, kit, 1), null, "outra empresa não vê os perfis desta");
+  // Pós-venda no chatbot: agendamento concluído há 3,5 dias, cliente escreveu ontem (janela de 24 h aberta)
+  const base = new Date(); base.setUTCHours(17, 0, 0, 0); if (base.getTime() > Date.now()) base.setUTCDate(base.getUTCDate() - 1); // 14h em Brasília
+  const agora = base.getTime();
+  const tel = "5521977776666";
+  await p.req("/api/orgs/1/zap/conta", { quem: "admin" });
+  p.env.DB.prepare("INSERT INTO plt_zap_agenda(org_id,telefone,nome,o_que,status,criado_ms,atualizado_ms) VALUES(?,?,?,?, 'CONCLUIDO', ?, ?)").bind(inf, tel, "Rita Souza", "a lavagem do sofá", agora - 5 * 86400000, agora - 3.5 * 86400000).run();
+  p.env.DB.prepare("INSERT INTO plt_zap_contatos(org_id,telefone,nome,ultima_entrada_ms,ultimo_ms) VALUES(?,?,?,?,?)").bind(inf, tel, "Rita Souza", agora - 3 * 3600000, agora - 3 * 3600000).run();
+  p.env.__agora = () => agora;
+  const mod = await import("../src/worker.js");
+  await mod.default.scheduled({}, p.env, { waitUntil: pr => pr });
+  await new Promise(r => setTimeout(r, 50));
+  const pergunta = enviadosPara(p, tel).at(-1);
+  assert.match(pergunta?.texto || "", /ficou tudo certo com a lavagem do sofá/);
+  await webhookZap(p, "111111111111", { from: tel, id: "wamid.pv1", timestamp: String(Math.floor(agora / 1000)), type: "text", text: { body: "Ficou ótimo!" } }, "Rita");
+  assert.match(enviadosPara(p, tel).at(-1).texto, /avaliação[\s\S]*https:\/\/g\.page\/r\/limpeza\/review/, "usa o perfil da própria empresa");
+  delete p.env.__agora;
+});

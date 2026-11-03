@@ -32,7 +32,7 @@ const DDL = [
   `CREATE TABLE IF NOT EXISTS plt_mk_concorrencia (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, marca_id INTEGER NOT NULL, busca TEXT NOT NULL, dia TEXT NOT NULL, posicao INTEGER, total INTEGER, dados TEXT, criado_ms INTEGER NOT NULL, UNIQUE(org_id, marca_id, busca, dia))`,
   `CREATE TABLE IF NOT EXISTS plt_mk_google (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, marca_id INTEGER NOT NULL, conta_nome TEXT NOT NULL, local_nome TEXT NOT NULL, local_titulo TEXT, token_cifrado TEXT NOT NULL, criado_por TEXT, criado_ms INTEGER NOT NULL, atualizado_ms INTEGER NOT NULL, sincronizado_ms INTEGER, UNIQUE(org_id, marca_id))`
 ];
-const ALTERS = ["ALTER TABLE plt_mk_google ADD COLUMN desempenho_ms INTEGER", "ALTER TABLE plt_mk_google ADD COLUMN erro TEXT", "ALTER TABLE plt_mk_google ADD COLUMN maps_uri TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN removida_ms INTEGER",
+const ALTERS = ["ALTER TABLE plt_mk_google ADD COLUMN review_uri TEXT", "ALTER TABLE plt_mk_google ADD COLUMN desempenho_ms INTEGER", "ALTER TABLE plt_mk_google ADD COLUMN erro TEXT", "ALTER TABLE plt_mk_google ADD COLUMN maps_uri TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN removida_ms INTEGER",
   "ALTER TABLE plt_mk_avaliacoes ADD COLUMN visto_ms INTEGER", "ALTER TABLE plt_mk_google ADD COLUMN sync_token TEXT", "ALTER TABLE plt_mk_google ADD COLUMN sync_inicio_ms INTEGER",
   "ALTER TABLE plt_mk_google ADD COLUMN total_google INTEGER", "ALTER TABLE plt_mk_google ADD COLUMN media_google REAL", "ALTER TABLE plt_mk_google ADD COLUMN completo_ms INTEGER",
   "ALTER TABLE plt_mk_google ADD COLUMN escopos TEXT", "ALTER TABLE plt_mk_google ADD COLUMN sc_site TEXT", "ALTER TABLE plt_mk_google ADD COLUMN ads_cliente TEXT", "ALTER TABLE plt_mk_google ADD COLUMN ads_gerente TEXT", "ALTER TABLE plt_mk_google ADD COLUMN ads_nome TEXT", "ALTER TABLE plt_mk_google ADD COLUMN ads_moeda TEXT"];
@@ -308,6 +308,31 @@ export async function conferirPostGoogle(env, k, conta, nome) {
 export async function apagarPostGoogle(env, k, conta, nome) {
   const token = await tokenDa(env, k, conta);
   await chamar("DELETE", `${API_V4}/${nome}`, token);
+}
+// ----- Pedido de avaliação no perfil CERTO de cada empresa (uma empresa pode ter vários perfis no Google).
+// O link é o "Pedir avaliações" do próprio perfil (newReviewUri). A empresa escolhe o perfil padrão e,
+// se tiver vários, qual perfil recebe a avaliação de cada tipo de serviço.
+export async function linkAvaliacaoDoPerfil(env, k, conta) {
+  if (conta.review_uri) return conta.review_uri;
+  const token = await tokenDa(env, k, conta);
+  const d = await chamar("GET", `${API_INFO}/${conta.local_nome}?readMask=metadata`, token);
+  const uri = d?.metadata?.newReviewUri || null;
+  if (uri) await env.DB.prepare("UPDATE plt_mk_google SET review_uri=? WHERE id=?").bind(uri, conta.id).run().catch(() => { });
+  return uri;
+}
+export async function mapaAvaliacoes(env, orgId) {
+  const r = await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave=?").bind("aval_mapa:" + orgId).first().catch(() => null);
+  try { const m = JSON.parse(r?.valor || "{}"); return { padrao: Number(m.padrao) || 0, categorias: m.categorias && typeof m.categorias === "object" ? m.categorias : {} }; } catch { return { padrao: 0, categorias: {} }; }
+}
+// Link de avaliação para um serviço da empresa (pela categoria; senão o perfil padrão; senão o único perfil conectado).
+export async function linkAvaliacaoDe(env, k, orgId, categoria = "") {
+  const mapa = await mapaAvaliacoes(env, orgId);
+  const perfis = (await env.DB.prepare("SELECT g.* FROM plt_mk_google g JOIN plt_mk_marcas m ON m.id=g.marca_id WHERE g.org_id=? AND m.ativa=1 ORDER BY g.id").bind(orgId).all().catch(() => null))?.results || [];
+  if (!perfis.length) return null;
+  const alvo = Number(mapa.categorias[categoria] || 0) || mapa.padrao || (perfis.length === 1 ? perfis[0].marca_id : 0);
+  const conta = perfis.find(p => p.marca_id === alvo) || (perfis.length === 1 ? perfis[0] : null);
+  if (!conta) return null;
+  return { link: await linkAvaliacaoDoPerfil(env, k, conta).catch(() => null), marca_id: conta.marca_id, perfil: conta.local_titulo || "" };
 }
 // ----- Publicação de post no perfil (texto + foto + botão)
 // Um botão por post (regra do Google). "Ligar agora" usa o telefone do perfil; os de link usam o endereço escolhido ou o site da marca.
@@ -1341,6 +1366,29 @@ async function rotasGoogleExtra(request, env, k, orgId, papel, resto, url) {
       posicao: c.posicao == null ? null : Number(c.posicao), busca: t(c.busca, 120), valor: t(c.valor, 200), servicos: (c.servicos || []).slice(0, 15).map(x => t(x, 200)).filter(Boolean), validade: Math.min(90, Math.max(1, Number(c.validade) || 15)), contato: t(c.contato, 300) }));
   }
   // Visão geral de todos os perfis do Google da empresa (como numa agência): nota, avaliações sem resposta, posts e posições.
+  // Qual perfil do Google recebe a avaliação de cada serviço (para o pós-venda do WhatsApp e do chatbot).
+  if (resto === "google/avaliacao-mapa" && metodo === "GET") {
+    const perfis = (await env.DB.prepare("SELECT g.*, m.nome FROM plt_mk_google g JOIN plt_mk_marcas m ON m.id=g.marca_id WHERE g.org_id=? AND m.ativa=1 ORDER BY m.nome").bind(orgId).all().catch(() => null))?.results || [];
+    const lista = [];
+    for (const g of perfis) lista.push({ marca_id: g.marca_id, nome: g.nome, perfil: g.local_titulo || "", link: await linkAvaliacaoDoPerfil(env, k, g).catch(() => null) });
+    return json({ perfis: lista, mapa: await mapaAvaliacoes(env, orgId) });
+  }
+  if (resto === "google/avaliacao-mapa" && metodo === "POST") {
+    if (!pode(papel, "ADMIN")) return json({ erro: "Somente administradores mudam esta configuração." }, 403);
+    const c = await corpoDe().catch(e => e);
+    if (c instanceof Error) return json({ erro: c.message }, 400);
+    const validos = new Set(((await env.DB.prepare("SELECT marca_id FROM plt_mk_google WHERE org_id=?").bind(orgId).all())?.results || []).map(x => x.marca_id));
+    const categorias = {};
+    for (const [cat, mid] of Object.entries(c.categorias || {})) if (/^[A-Z0-9_]{2,40}$/.test(cat) && validos.has(Number(mid))) categorias[cat] = Number(mid);
+    const mapa = { padrao: validos.has(Number(c.padrao)) ? Number(c.padrao) : 0, categorias };
+    await env.DB.prepare("INSERT OR REPLACE INTO plt_meta(chave,valor) VALUES(?,?)").bind("aval_mapa:" + orgId, JSON.stringify(mapa)).run();
+    // Links já resolvidos, para a IA do WhatsApp guardar (ela não fala com o Google).
+    const perfis = (await env.DB.prepare("SELECT * FROM plt_mk_google WHERE org_id=?").bind(orgId).all())?.results || [];
+    const linkDe = async mid => { const g = perfis.find(p => p.marca_id === mid); return g ? await linkAvaliacaoDoPerfil(env, k, g).catch(() => null) : null; };
+    const links = { padrao: mapa.padrao ? await linkDe(mapa.padrao) : (perfis.length === 1 ? await linkDe(perfis[0].marca_id) : null), categorias: {} };
+    for (const [cat, mid] of Object.entries(categorias)) links.categorias[cat] = await linkDe(mid);
+    return json({ ok: true, mapa, links });
+  }
   if (resto === "google/visao" && metodo === "GET") {
     const contas = (await env.DB.prepare(`SELECT g.marca_id, g.local_titulo, g.media_google, g.total_google, g.sincronizado_ms, g.erro, m.nome,
       (SELECT COUNT(*) FROM plt_mk_avaliacoes a WHERE a.org_id=g.org_id AND a.marca_id=g.marca_id AND a.status='PENDENTE' AND a.google_id IS NOT NULL AND a.removida_ms IS NULL) sem_resposta,

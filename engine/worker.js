@@ -36,7 +36,7 @@
 //       relatório diário. Nunca inicia conversa nova por conta própria.
 // ============================================================================
 
-const VERSAO = "34.12.0";
+const VERSAO = "34.13.0";
 const SCHEMA_VERSAO = "33.4.0"; // mude sempre que acrescentar tabela ou índice (senão o banco de produção não recebe)
 const EMPRESA_ID = 1;
 const PHONE_ID_PADRAO = "473474732510163";
@@ -2434,6 +2434,11 @@ async function posVendaClientes(c) {
     await evento(c, caso.casoId, r?.ok ? "POS_VENDA_PERGUNTADO" : "POS_VENDA_FALHA", r?.erro || "");
   }
 }
+// Link de avaliação do perfil do Google certo para este serviço (escolhido na plataforma, por tipo de serviço).
+async function linkAvaliacao(c, caso) {
+  let m = {}; try { m = JSON.parse((await c.db.prepare("SELECT valor FROM d30_meta WHERE chave='links_avaliacao'").first().catch(() => null))?.valor || "{}") || {}; } catch { }
+  return String(m.categorias?.[caso?.fatos?.categoria] || m.padrao || c.env.LINK_AVALIACAO_GOOGLE || "").trim();
+}
 // Resposta do cliente ao pós-venda (antes de qualquer outra coisa): problema → retorno; tudo certo → avaliação no Google.
 async function tratarPosVenda(c, { tel, pessoa, msgs, recentes, caso, chaveLote }) {
   if (caso && !ETAPAS_ENCERRADAS.has(caso.etapa)) return false;
@@ -2463,7 +2468,7 @@ async function tratarPosVenda(c, { tel, pessoa, msgs, recentes, caso, chaveLote 
   if (POS_POSITIVO.test(texto) && texto.length < 220) {
     await fechar("SATISFEITO");
     for (const m of msgs) await c.db.prepare("UPDATE mensagens SET caso_id=? WHERE whatsapp_message_id=?").bind(k.casoId, m.wamid).run();
-    const link = String(c.env.LINK_AVALIACAO_GOOGLE || "").trim();
+    const link = await linkAvaliacao(c, k);
     const nome = primeiroNome(pessoa?.nome || "");
     let t = link ? `Que bom${nome ? ", " + nome : ""}! 😊 Se puder, deixa uma avaliação pra gente no Google, ajuda muito outras pessoas a nos encontrarem: ${link}` : `Que bom${nome ? ", " + nome : ""}! 😊 Obrigado pela confiança. Quando precisar, é só chamar.`;
     const temFoto = await c.db.prepare("SELECT 1 FROM d30_midias WHERE caso_id=? AND enviado_para='FOTO_SERVICO' LIMIT 1").bind(k.casoId).first().catch(() => null);
@@ -4403,6 +4408,16 @@ async function platformApi(request, env, caminho, metodo) {
     await mudarEtapa(c, caso, etapa);
     return json({ sucesso: true, caso });
   }
+  // Categorias de serviço e links de avaliação por categoria (cada tipo de serviço pode ter o seu perfil no Google).
+  if (caminho === "/platform/categories" && metodo === "GET") return json({ sucesso: true, categorias: Object.entries(CATEGORIAS).map(([id, x]) => ({ id, rotulo: String(x.rotulo || id).split(" (")[0] })) });
+  if (caminho === "/platform/review-links" && metodo === "GET") { let m = {}; try { m = JSON.parse((await c.db.prepare("SELECT valor FROM d30_meta WHERE chave='links_avaliacao'").first().catch(() => null))?.valor || "{}"); } catch { } return json({ sucesso: true, ...m }); }
+  if (caminho === "/platform/review-links" && metodo === "POST") {
+    const ok = u => /^https:\/\/[^\s]{6,400}$/.test(String(u || "")) ? String(u) : "";
+    const cat = {}; for (const [k2, v] of Object.entries(corpo?.categorias || {})) if (CATEGORIAS[k2] && ok(v)) cat[k2] = ok(v);
+    const m = { padrao: ok(corpo?.padrao), categorias: cat };
+    await c.db.prepare("INSERT OR REPLACE INTO d30_meta(chave,valor) VALUES('links_avaliacao',?)").bind(JSON.stringify(m)).run();
+    return json({ sucesso: true, ...m });
+  }
   // Fotos dos serviços feitos (mandadas pelos profissionais), com a autorização do cliente, para virarem post.
   if (caminho === "/platform/service-photos" && metodo === "GET") {
     const r = (await c.db.prepare("SELECT m.id, m.caso_id, m.legenda, m.criado_ms, k.fatos_json, k.telefone FROM d30_midias m JOIN d30_casos k ON k.caso_id=m.caso_id WHERE m.enviado_para='FOTO_SERVICO' AND m.criado_ms > ? ORDER BY m.id DESC LIMIT 60").bind(c.agora() - 29 * 86400000).all().catch(() => null))?.results || [];
@@ -4410,7 +4425,7 @@ async function platformApi(request, env, caminho, metodo) {
     for (const x of r) {
       let f = {}; try { f = JSON.parse(x.fatos_json || "{}"); } catch { }
       const cons = await c.db.prepare("SELECT prestador_nome FROM d30_consultas WHERE caso_id=? ORDER BY id DESC LIMIT 1").bind(x.caso_id).first().catch(() => null);
-      fotos.push({ id: x.id, caso: x.caso_id, servico: f.servico || f.problema || "", problema: f.problema || "", bairro: f.bairro || "", cidade: f.cidade || "", legenda: x.legenda || "", prestador: cons?.prestador_nome || "", criado_ms: x.criado_ms,
+      fotos.push({ id: x.id, caso: x.caso_id, categoria: f.categoria || "", servico: f.servico || f.problema || "", problema: f.problema || "", bairro: f.bairro || "", cidade: f.cidade || "", legenda: x.legenda || "", prestador: cons?.prestador_nome || "", criado_ms: x.criado_ms,
         consentimento: f.foto_consentimento || "NAO_PERGUNTADO", avaliacao: f.pos_venda_resposta || "", usada: Boolean(f.foto_usada) });
     }
     return json({ sucesso: true, fotos });
