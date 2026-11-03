@@ -1107,10 +1107,21 @@
     ["licoes_diarias", "Lições do estudo diário", "O que a DENIA aprendeu sozinha relendo as conversas de cada dia. Você pode corrigir ou apagar o que não estiver certo."]
   ];
 
+  // Números que a IA/robô nunca responde (bloqueio permanente, pedido da empresa).
+  function cartaoBloqueados({ ler, salvar }) {
+    const caixa = h("textarea", { class: "entrada", style: "min-height:80px", placeholder: "Um número por linha, com DDI e DDD. Ex.: +55 21 98888-7777" });
+    const sec = h("section", { class: "cartao vidro formulario" }, h("h3", { style: "margin:0", text: "Números bloqueados" }),
+      h("p", { class: "dica", text: "A IA não responde, não manda pós-venda, não consulta e não manda campanha para estes números, em nenhuma circunstância. As mensagens deles continuam registradas para a equipe ver." }),
+      caixa, h("div", { class: "acoes" }, botao("Salvar bloqueios", async (_e, b) => { b.disabled = true; try { const n = await salvar(caixa.value); aviso(`Bloqueio salvo${typeof n === "number" ? ` (${n} número(s))` : ""}.`, "ok"); } catch (e) { aviso(e.message, "erro"); } b.disabled = false; }, "btn-primario")));
+    ler().then(v => { caixa.value = v; }).catch(e => aviso(e.message, "erro"));
+    return sec;
+  }
+
   async function paginaTreinamento(el, _p, vivo) {
     el.appendChild(cabeca("Treinar a IA", "Tudo o que a IA sabe sobre a empresa. Cada salvamento cria uma nova versão; a IA passa a usar em até 1 minuto."));
     const area = h("div", { class: "grade" }, carregando());
     el.appendChild(area);
+    if (pode("ADMIN")) el.appendChild(cartaoBloqueados({ ler: async () => (await eng("blocked", { fresco: true })).numeros || "", salvar: async v => (await eng("blocked", { metodo: "POST", corpo: { numeros: v } })).total }));
     let t;
     try { t = await eng("training"); }
     catch (e) { if (vivo()) falha(area, e); return; }
@@ -3204,6 +3215,7 @@ Botão só com texto = resposta.` })),
     const limite = h("input", { class: "entrada", type: "number", min: "0", max: "5000", value: String(cfg.limite_ia_dia ?? 300) });
     const avisar = h("input", { type: "checkbox", checked: cfg.avisar_buscas !== false });
     const fusos = (() => { try { return Intl.supportedValuesOf("timeZone"); } catch { return ["America/Sao_Paulo", "America/Manaus", "America/New_York", "America/Mexico_City", "America/Bogota", "America/Argentina/Buenos_Aires", "Europe/Lisbon", "Europe/London", "Europe/Madrid", "Asia/Tokyo", "Asia/Kolkata"]; } })();
+    const bloqueadosZ = h("textarea", { class: "entrada", style: "min-height:70px", placeholder: "Um número por linha, com DDI e DDD. Ex.: +55 21 98888-7777" }); bloqueadosZ.value = cfg.bloqueados || "";
     const fuso = h("select", { class: "entrada" }, fusos.map(f => h("option", { value: f, text: f.replace(/_/g, " "), selected: (cfg.fuso || "America/Sao_Paulo") === f })));
     const exibIni = h("select", { class: "entrada" }, [["AUTO", "Automático (botões ou lista)"], ["NUMERADO", "Texto numerado, sem limite de opções"]].map(([v, n]) => h("option", { value: v, selected: (cfg.exibicao_inicio || "AUTO") === v, text: n })));
     trocar(area,
@@ -3212,6 +3224,7 @@ Botão só com texto = resposta.` })),
         h("label", { class: "guia-cat" }, ativo, "Robô ligado (desligado: as mensagens só ficam registradas para a equipe)"),
         h("label", { class: "guia-cat" }, avisar, "Avisar no Telegram cada busca (nome, número e o que procurou)"),
         campo("Como mostrar o menu inicial", exibIni),
+        campo("Números bloqueados (o robô nunca responde)", bloqueadosZ, "Nem resposta, nem pós-venda, nem campanha. As mensagens continuam registradas para a equipe."),
         campo("Fuso horário da empresa", fuso, "A IA usa este horário para entender \"amanhã\", marcar agendamentos, lembrar e fazer o pós-venda no horário comercial do país da empresa.")),
       h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Mensagens" }),
         campos.map(([k, rot, dica, l]) => { ent[k] = l > 1 ? h("textarea", { class: "entrada", maxlength: "1000", style: `min-height:${l * 34}px` }) : h("input", { class: "entrada", maxlength: "300" }); ent[k].value = cfg[k] || ""; return campo(rot, ent[k], dica); })),
@@ -3223,7 +3236,7 @@ Botão só com texto = resposta.` })),
         campo("O que a IA pode responder sobre a empresa", sobre, "A IA só responde com o que estiver aqui ou no menu. Nunca inventa preço, telefone ou horário."),
         h("div", { class: "grade grade-2" }, campo("Modelo", modelo), campo("Limite de respostas da IA por dia", limite, "Proteção de custo: passou disso, o robô volta a mostrar o menu."))),
       pode("AGENTE") ? h("div", { class: "acoes" }, botao("Salvar", async () => {
-        try { await zap("config", { metodo: "POST", corpo: { ...Object.fromEntries(Object.entries(ent).map(([k, e]) => [k, e.value])), sobre: sobre.value, modelo_ia: modelo.value, limite_ia_dia: Number(limite.value), avisar_buscas: avisar.checked, exibicao_inicio: exibIni.value, fuso: fuso.value, modo: modo.value, ativo: ativo.checked, modelo_conversa: modeloConversa.value, ...Object.fromEntries(Object.entries(treino).map(([k, e]) => [k, e.value])) } }); aviso("Salvo.", "ok"); }
+        try { await zap("config", { metodo: "POST", corpo: { ...Object.fromEntries(Object.entries(ent).map(([k, e]) => [k, e.value])), sobre: sobre.value, modelo_ia: modelo.value, limite_ia_dia: Number(limite.value), avisar_buscas: avisar.checked, exibicao_inicio: exibIni.value, fuso: fuso.value, bloqueados: bloqueadosZ.value, modo: modo.value, ativo: ativo.checked, modelo_conversa: modeloConversa.value, ...Object.fromEntries(Object.entries(treino).map(([k, e]) => [k, e.value])) } }); aviso("Salvo.", "ok"); }
         catch (e) { aviso(e.message, "erro"); }
       }, "btn-primario"), h("a", { class: "btn btn-secundario", href: "#/chatbot/testar" }, "Testar como cliente")) : null);
   }

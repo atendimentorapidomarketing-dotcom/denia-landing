@@ -35,7 +35,7 @@ export const DDL_ZAP = [
 ];
 
 export const ZAP_PADRAO = {
-  pos_venda_ativo: true, pos_venda_dias: 3, pos_venda_modelo: "", fuso: "America/Sao_Paulo",
+  pos_venda_ativo: true, pos_venda_dias: 3, pos_venda_modelo: "", fuso: "America/Sao_Paulo", bloqueados: "",
   boas_vindas: "Olá! 👋 Seja bem-vindo(a)! Como posso te ajudar? Escolha uma opção:",
   nao_entendi: "Não entendi bem, mas te mostro as opções:",
   humano: "Certo! Vou chamar alguém da equipe para falar com você. Só um instante. 😊",
@@ -86,6 +86,11 @@ function modoPermitido(modo, rec) {
   return "BOTOES";
 }
 // Fuso horário de cada empresa (multinacional): nada de horário de Brasília fixo.
+// Números que o robô desta empresa nunca responde (lista na configuração do chatbot).
+export function bloqueadoNoChatbot(cfg, tel) {
+  const t = digitos(tel), fim = t.slice(-10);
+  return String(cfg?.bloqueados || "").split(/[\n,;]+/).map(digitos).filter(x => x.length >= 8).some(n => n === t || n.slice(-10) === fim);
+}
 export function fusoValido(tz) { try { new Intl.DateTimeFormat("en-US", { timeZone: String(tz) }).format(0); return Boolean(tz); } catch { return false; } }
 function deslocamentoMs(tz, ms) {
   const p = Object.fromEntries(new Intl.DateTimeFormat("en-US", { timeZone: tz, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" }).formatToParts(new Date(ms)).map(x => [x.type, x.value]));
@@ -701,7 +706,7 @@ export async function posVendaChatbot(env, k) {
       conta.org_id, agora - (dias + 4) * 86400000, agora - dias * 86400000).catch(() => []);
     for (const a of ags) {
       const marcar = st => env.DB.prepare("UPDATE plt_zap_agenda SET pos_venda_ms=?, pos_venda_status=? WHERE id=?").bind(agora, st, a.id).run();
-      if (Number(a.pausado_ate || 0) > agora) { await marcar("PULADO"); continue; }
+      if (Number(a.pausado_ate || 0) > agora || bloqueadoNoChatbot(cfg, a.telefone)) { await marcar("PULADO"); continue; }
       const z = { env, k, org: conta.org_id, conta, cfg, tel: a.telefone, nome: a.nome || "", agora, nomeEmpresa: conta.org_nome, enviadas: 0 };
       const nome = String(a.nome || "").split(" ")[0];
       const oque = String(a.o_que || "o atendimento").toLowerCase();
@@ -781,6 +786,7 @@ async function receberMensagem(env, k, conta, msg, nome) {
     return;
   }
   if (/^\s*voltar\s*[.!]?\s*$/i.test(e.texto) && Number(c.optout || 0)) await env.DB.prepare("UPDATE plt_zap_contatos SET optout=0 WHERE org_id=? AND telefone=?").bind(z.org, tel).run().catch(() => { });
+  if (bloqueadoNoChatbot(z.cfg, tel)) return; // número bloqueado pela empresa: só fica registrado
   if (Number(c.pausado_ate || 0) > agora) return; // a equipe está atendendo
   if (Number(recentes?.results?.[0]?.n || 0) >= 25) return; // trava contra robô conversando com robô
   if (!rec.includes("chatbot")) return;
@@ -2007,7 +2013,7 @@ async function rotasZapExtra(request, env, k, orgId, papel, r, { json, ler, prec
 // Cron: envia as campanhas em fila, devagar (até 120 por empresa a cada 5 minutos), registrando cada envio.
 export async function processarCampanhas(env, k) {
   const agora = k.agora(env);
-  const camps = await linhasDe(env, "SELECT c.*, z.phone_number_id, z.token_cifrado FROM plt_zap_campanhas c JOIN plt_zap_contas z ON z.org_id=c.org_id WHERE c.status IN ('AGENDADA','ENVIANDO') AND c.agendada_ms<=? ORDER BY c.id LIMIT 5", agora);
+  const camps = await linhasDe(env, "SELECT c.*, z.phone_number_id, z.token_cifrado, z.config zap_config FROM plt_zap_campanhas c JOIN plt_zap_contas z ON z.org_id=c.org_id WHERE c.status IN ('AGENDADA','ENVIANDO') AND c.agendada_ms<=? ORDER BY c.id LIMIT 5", agora);
   for (const c of camps) {
     if (!c.token_cifrado || !c.phone_number_id) { await env.DB.prepare("UPDATE plt_zap_campanhas SET status='PAUSADA' WHERE id=?").bind(c.id).run(); continue; }
     const token = await k.decifrar(env, c.token_cifrado);
@@ -2016,7 +2022,9 @@ export async function processarCampanhas(env, k) {
     if (!fila.length) { await env.DB.prepare("UPDATE plt_zap_campanhas SET status='CONCLUIDA', fim_ms=? WHERE id=?").bind(agora, c.id).run(); continue; }
     await env.DB.prepare("UPDATE plt_zap_campanhas SET status='ENVIANDO' WHERE id=?").bind(c.id).run();
     let ok = 0, falha = 0, seguidas = 0;
+    const cfgCamp = lerConfig({ config: c.zap_config });
     for (const p of fila) {
+      if (bloqueadoNoChatbot(cfgCamp, p.telefone)) { await env.DB.prepare("UPDATE plt_zap_envios SET status='FALHOU', erro='Número bloqueado pela empresa' WHERE campanha_id=? AND telefone=?").bind(c.id, p.telefone).run(); continue; }
       const params = vars.map(v => ({ type: "text", text: v === "{nome}" ? (String(p.nome || "").split(" ")[0] || "cliente") : String(v || "-") }));
       const corpo = { messaging_product: "whatsapp", to: p.telefone, type: "template", template: { name: c.modelo, language: { code: c.idioma }, ...(params.length ? { components: [{ type: "body", parameters: params }] } : {}) } };
       let wamid = null, erro = null;
