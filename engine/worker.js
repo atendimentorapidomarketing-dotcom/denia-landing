@@ -36,7 +36,7 @@
 //       relatório diário. Nunca inicia conversa nova por conta própria.
 // ============================================================================
 
-const VERSAO = "34.13.0";
+const VERSAO = "34.14.0";
 const SCHEMA_VERSAO = "33.4.0"; // mude sempre que acrescentar tabela ou índice (senão o banco de produção não recebe)
 const EMPRESA_ID = 1;
 const PHONE_ID_PADRAO = "473474732510163";
@@ -1219,6 +1219,7 @@ async function liberarPausa(c, tel) {
   for (const v of variantesTel(tel)) await c.db.prepare("DELETE FROM d30_pausas WHERE telefone=?").bind(v).run();
 }
 async function estaPausado(c, tel) {
+  if (await numeroBloqueado(c, tel)) return true;
   const chave = digitos(tel);
   c.cachePausas = c.cachePausas || new Map();
   const g = c.cachePausas.get(chave);
@@ -1548,12 +1549,24 @@ async function liberarDestino(c, tel) {
 }
 
 // Toda saída passa por aqui. No painel de teste (simulação) nada sai de verdade.
+// Números que a DENIA NUNCA responde (bloqueio permanente, por pedido da empresa): nem resposta, nem pós-venda,
+// nem consulta, nem campanha. Lista no painel (Treinamento → Números bloqueados) e/ou em DENIA_NAO_RESPONDER.
+async function numerosBloqueados(c) {
+  if (c.cacheBloqueados && c.cacheBloqueados.ate > Date.now()) return c.cacheBloqueados.set;
+  const salvo = (await c.db.prepare("SELECT valor FROM d30_meta WHERE chave='bloqueados'").first().catch(() => null))?.valor || "";
+  const set = new Set();
+  for (const n of `${salvo}\n${c.env.DENIA_NAO_RESPONDER || ""}`.split(/[\n,;]+/).map(digitos).filter(x => x.length >= 8)) for (const v of variantesTel(n)) set.add(v);
+  c.cacheBloqueados = { set, ate: Date.now() + 15000 };
+  return set;
+}
+async function numeroBloqueado(c, tel) { const b = await numerosBloqueados(c); return variantesTel(tel).some(v => b.has(v)); }
 function criarSaida(c) {
   const env = c.env;
   const simular = (canal, para, conteudo, extra = {}) => { c.registro.push({ canal, para, texto: conteudo, ...extra }); return { ok: true, id: "sim." + crypto.randomUUID() }; };
   const controlado = async (to, corpo) => {
     // Perto do limite de chamadas desta execução: vai para a fila e sai na próxima execução.
     if (sobram(c) < 6) return await adiarEnvio(c, to, corpo, "limite de chamadas desta execução");
+    if (await numeroBloqueado(c, to)) return { ok: false, bloqueado: true, erro: "Número bloqueado: a DENIA não envia nada a este contato." };
     const bloqueio = await verificarLimites(c, to);
     if (bloqueio) { console.warn("Envio bloqueado:", bloqueio); return { ok: false, bloqueado: true, erro: bloqueio }; }
     gastar(c);
@@ -3390,6 +3403,8 @@ async function agruparEProcessar(c, tel, wamid) {
 }
 
 async function processarPendentes(c, tel) {
+  // Número bloqueado: a mensagem fica registrada na fila, mas a IA nem lê (sem custo e sem resposta).
+  if (await numeroBloqueado(c, tel)) { await c.db.prepare("UPDATE d30_fila SET status='CONCLUIDO', atualizado_ms=? WHERE telefone=? AND status IN ('PENDENTE','PROCESSANDO')").bind(c.agora(), tel).run().catch(() => { }); return; }
   for (let volta = 0; volta < 3; volta++) {
     // Sem chamadas suficientes nesta execução: deixa na fila; o cron (a cada minuto) responde com a execução zerada.
     if (sobram(c) < 18) return;
@@ -4407,6 +4422,13 @@ async function platformApi(request, env, caminho, metodo) {
     if (!["COLETANDO", "EQUIPE", "AGENDADO", "EM_ANDAMENTO", "CONCLUIDO", "CANCELADO"].includes(etapa)) return json({ sucesso: false, erro: "Etapa inválida." }, 400);
     await mudarEtapa(c, caso, etapa);
     return json({ sucesso: true, caso });
+  }
+  if (caminho === "/platform/blocked" && metodo === "GET") return json({ sucesso: true, numeros: (await c.db.prepare("SELECT valor FROM d30_meta WHERE chave='bloqueados'").first().catch(() => null))?.valor || "", do_servidor: String(c.env.DENIA_NAO_RESPONDER || "").trim() ? "configurado" : "" });
+  if (caminho === "/platform/blocked" && metodo === "POST") {
+    const lista = [...new Set(String(corpo?.numeros || "").split(/[\n,;]+/).map(digitos).filter(x => x.length >= 8 && x.length <= 15))].slice(0, 500);
+    await c.db.prepare("INSERT OR REPLACE INTO d30_meta(chave,valor) VALUES('bloqueados',?)").bind(lista.join("\n")).run();
+    c.cacheBloqueados = null;
+    return json({ sucesso: true, numeros: lista.join("\n"), total: lista.length });
   }
   // Categorias de serviço e links de avaliação por categoria (cada tipo de serviço pode ter o seu perfil no Google).
   if (caminho === "/platform/categories" && metodo === "GET") return json({ sucesso: true, categorias: Object.entries(CATEGORIAS).map(([id, x]) => ({ id, rotulo: String(x.rotulo || id).split(" (")[0] })) });

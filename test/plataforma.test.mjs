@@ -3735,3 +3735,18 @@ test("Multinacional — fuso de cada empresa e garantia no chatbot de qualquer m
   await webhookZap(p, "111111111111", { from: "5521955554444", type: "text", text: { body: "Oi, quero saber o horário" } }, "Ana");
   assert.doesNotMatch(enviadosPara(p, "5521955554444").at(-1)?.texto || "", /voltou a dar problema/);
 });
+
+test("Bloqueio no chatbot — a empresa bloqueia um número e o robô nunca responde (nem campanha)", async () => {
+  const { p, inf } = await duasEmpresasComChatbot();
+  const tel = "5521944443333";
+  const cfg = await p.req(`/api/orgs/${inf}/zap/config`, { metodo: "POST", quem: "admin", corpo: { bloqueados: "+55 21 94444-3333" } });
+  assert.equal(cfg.status, 200);
+  await webhookZap(p, "111111111111", { from: tel, type: "text", text: { body: "oi" } }, "Bloqueado");
+  assert.equal(enviadosPara(p, tel).length, 0, "nenhuma resposta");
+  assert.equal(p.env.DB.q("SELECT COUNT(*) n FROM plt_zap_msgs WHERE org_id=? AND telefone=?", inf, tel)[0].n, 1, "a mensagem fica registrada para a equipe");
+  // A outra empresa não é afetada pelo bloqueio desta.
+  await webhookZap(p, "222222222222", { from: tel, type: "text", text: { body: "oi" } }, "Bloqueado");
+  assert.ok(enviadosPara(p, tel).length >= 1, "o bloqueio é só da empresa que bloqueou");
+  const { bloqueadoNoChatbot } = await import("../src/zap.js");
+  assert.equal(bloqueadoNoChatbot({ bloqueados: "+55 (21) 94444-3333" }, "21944443333"), true, "aceita com e sem DDI");
+});

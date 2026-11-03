@@ -1905,3 +1905,24 @@ test("Prova 6 — do serviço ao marketing: foto do técnico + cliente satisfeit
   await api(a, `/platform/service-photos/${lista[0].id}/used`, { method: "POST", body: "{}" });
   assert.equal((await (await api(a, "/platform/service-photos")).json()).fotos[0].usada, true);
 });
+
+test("Prova 7 — número bloqueado: a IA nunca responde, nem lê, nem manda nada (inclusive como profissional)", async () => {
+  const a = await criarAmbiente({ env: { DENIA_PLATFORM_SERVICE_TOKEN: SERVICO } });
+  const r = await (await api(a, "/platform/blocked", { method: "POST", body: JSON.stringify({ numeros: "+55 21 91111-2222\n+55 21 96454-5279" }) })).json();
+  assert.equal(r.total, 2);
+  let leu = false;
+  a.llmCliente = () => { leu = true; return decisao({ resposta: "Oi!" }); };
+  await a.cliente(CLI, "Oi, tudo bem?");
+  await a.cron();
+  assert.equal(a.para(CLI).length, 0, "nenhuma resposta ao número bloqueado");
+  assert.equal(leu, false, "nem gasta IA lendo");
+  // Outro cliente pede chaveiro: o chaveiro (bloqueado) não recebe a consulta.
+  await iniciarConsultaChaveiro(a, CLI2);
+  assert.equal(a.para(CHAVEIRO).length, 0, "nada sai para o número bloqueado, nem como profissional");
+  assert.ok(a.para(CLI2).length >= 1, "os outros continuam atendidos");
+  // Desbloquear volta ao normal.
+  await api(a, "/platform/blocked", { method: "POST", body: JSON.stringify({ numeros: "" }) });
+  a.avancar(60000);
+  await a.cliente(CLI, "Alô?");
+  assert.ok(a.para(CLI).length >= 1);
+});
