@@ -17,7 +17,12 @@ const cortar = (s, n) => { s = String(s ?? ""); return s.length > n ? s.slice(0,
 // "qua., 22/10 às 15:00" no horário de Brasília.
 const FMT_DIA = new Intl.DateTimeFormat("pt-BR", { timeZone: "America/Sao_Paulo", weekday: "short", day: "2-digit", month: "2-digit" });
 const FMT_HORA = new Intl.DateTimeFormat("pt-BR", { timeZone: "America/Sao_Paulo", hour: "2-digit", minute: "2-digit" });
-export function quandoBR(ms) { const d = new Date(Number(ms)); return isNaN(d) ? "" : `${FMT_DIA.format(d)} às ${FMT_HORA.format(d)}`; }
+export function quandoBR(ms, fuso) {
+  const d = new Date(Number(ms)); if (isNaN(d)) return "";
+  if (!fuso || fuso === "America/Sao_Paulo") return `${FMT_DIA.format(d)} às ${FMT_HORA.format(d)}`;
+  try { return `${new Intl.DateTimeFormat("pt-BR", { timeZone: fuso, weekday: "short", day: "2-digit", month: "2-digit" }).format(d)} às ${new Intl.DateTimeFormat("pt-BR", { timeZone: fuso, hour: "2-digit", minute: "2-digit" }).format(d)}`; }
+  catch { return `${FMT_DIA.format(d)} às ${FMT_HORA.format(d)}`; }
+}
 
 // Registra (ou soma mais uma vez) um problema que não fica guardado em outro lugar.
 // Se ele tinha sido resolvido, volta a aparecer.

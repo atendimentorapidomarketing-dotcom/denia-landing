@@ -3203,13 +3203,16 @@ Botão só com texto = resposta.` })),
     const modelo = h("select", { class: "entrada" }, [["gpt-5-nano", "gpt-5-nano — o mais barato (recomendado)"], ["gpt-5-mini", "gpt-5-mini — econômico, mais esperto"], ["gpt-4o-mini", "gpt-4o-mini — econômico"]].map(([v, n]) => h("option", { value: v, selected: cfg.modelo_ia === v, text: n })));
     const limite = h("input", { class: "entrada", type: "number", min: "0", max: "5000", value: String(cfg.limite_ia_dia ?? 300) });
     const avisar = h("input", { type: "checkbox", checked: cfg.avisar_buscas !== false });
+    const fusos = (() => { try { return Intl.supportedValuesOf("timeZone"); } catch { return ["America/Sao_Paulo", "America/Manaus", "America/New_York", "America/Mexico_City", "America/Bogota", "America/Argentina/Buenos_Aires", "Europe/Lisbon", "Europe/London", "Europe/Madrid", "Asia/Tokyo", "Asia/Kolkata"]; } })();
+    const fuso = h("select", { class: "entrada" }, fusos.map(f => h("option", { value: f, text: f.replace(/_/g, " "), selected: (cfg.fuso || "America/Sao_Paulo") === f })));
     const exibIni = h("select", { class: "entrada" }, [["AUTO", "Automático (botões ou lista)"], ["NUMERADO", "Texto numerado, sem limite de opções"]].map(([v, n]) => h("option", { value: v, selected: (cfg.exibicao_inicio || "AUTO") === v, text: n })));
     trocar(area,
       h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Modo de atendimento" }),
         campo("Como o robô atende", modo, "Nos dois modos os botões nunca gastam IA. No modo com IA, ela só entra quando a pessoa escreve algo que a busca por palavra não achou."),
         h("label", { class: "guia-cat" }, ativo, "Robô ligado (desligado: as mensagens só ficam registradas para a equipe)"),
         h("label", { class: "guia-cat" }, avisar, "Avisar no Telegram cada busca (nome, número e o que procurou)"),
-        campo("Como mostrar o menu inicial", exibIni)),
+        campo("Como mostrar o menu inicial", exibIni),
+        campo("Fuso horário da empresa", fuso, "A IA usa este horário para entender \"amanhã\", marcar agendamentos, lembrar e fazer o pós-venda no horário comercial do país da empresa.")),
       h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Mensagens" }),
         campos.map(([k, rot, dica, l]) => { ent[k] = l > 1 ? h("textarea", { class: "entrada", maxlength: "1000", style: `min-height:${l * 34}px` }) : h("input", { class: "entrada", maxlength: "300" }); ent[k].value = cfg[k] || ""; return campo(rot, ent[k], dica); })),
       h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Treinamento da IA completa" }),
@@ -3220,7 +3223,7 @@ Botão só com texto = resposta.` })),
         campo("O que a IA pode responder sobre a empresa", sobre, "A IA só responde com o que estiver aqui ou no menu. Nunca inventa preço, telefone ou horário."),
         h("div", { class: "grade grade-2" }, campo("Modelo", modelo), campo("Limite de respostas da IA por dia", limite, "Proteção de custo: passou disso, o robô volta a mostrar o menu."))),
       pode("AGENTE") ? h("div", { class: "acoes" }, botao("Salvar", async () => {
-        try { await zap("config", { metodo: "POST", corpo: { ...Object.fromEntries(Object.entries(ent).map(([k, e]) => [k, e.value])), sobre: sobre.value, modelo_ia: modelo.value, limite_ia_dia: Number(limite.value), avisar_buscas: avisar.checked, exibicao_inicio: exibIni.value, modo: modo.value, ativo: ativo.checked, modelo_conversa: modeloConversa.value, ...Object.fromEntries(Object.entries(treino).map(([k, e]) => [k, e.value])) } }); aviso("Salvo.", "ok"); }
+        try { await zap("config", { metodo: "POST", corpo: { ...Object.fromEntries(Object.entries(ent).map(([k, e]) => [k, e.value])), sobre: sobre.value, modelo_ia: modelo.value, limite_ia_dia: Number(limite.value), avisar_buscas: avisar.checked, exibicao_inicio: exibIni.value, fuso: fuso.value, modo: modo.value, ativo: ativo.checked, modelo_conversa: modeloConversa.value, ...Object.fromEntries(Object.entries(treino).map(([k, e]) => [k, e.value])) } }); aviso("Salvo.", "ok"); }
         catch (e) { aviso(e.message, "erro"); }
       }, "btn-primario"), h("a", { class: "btn btn-secundario", href: "#/chatbot/testar" }, "Testar como cliente")) : null);
   }
