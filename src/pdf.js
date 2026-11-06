@@ -1,7 +1,7 @@
 // DENIA Platform — PDF sem dependências (relatórios e propostas).
 // Páginas A4 com texto (Helvetica, acentos do português pela codificação WinAnsi), faixas coloridas, tabelas
 // simples, barras e uma logo em JPEG. Uso: gerarPdf({ titulo, subtitulo, logo: {bytes, largura, altura}, blocos }).
-// Blocos: { tipo: "titulo" | "texto" | "metricas" | "tabela" | "lista" | "espaco" | "quebra", ... }.
+// Blocos: { tipo: "titulo" | "texto" | "metricas" | "tabela" | "lista" | "barras" | "espaco" | "quebra", ... }.
 
 const A4 = { l: 595.28, a: 841.89 }, MARGEM = 46;
 const cor = hex => { const n = parseInt(String(hex || "#000").replace("#", ""), 16); return [(n >> 16 & 255) / 255, (n >> 8 & 255) / 255, (n & 255) / 255].map(v => v.toFixed(3)).join(" "); };
@@ -57,6 +57,25 @@ export function gerarPdf({ titulo = "", subtitulo = "", rodape = "", corPrincipa
   for (const b of blocos) {
     if (b.tipo === "quebra") { novaPagina(); continue; }
     if (b.tipo === "espaco") { y -= b.altura || 10; continue; }
+    if (b.tipo === "barras") {
+      // Barras agrupadas: { rotulos: [...], series: [{ nome, cor, valores }], formato: v => "R$ 1,00" }. Uma escala só, a partir do zero.
+      const rot = b.rotulos || [], ss = (b.series || []).filter(x => x && x.valores), fmt = b.formato || (v => String(v));
+      const alt = b.altura || 150, max = Math.max(1, ...ss.flatMap(x => x.valores.map(v => Math.max(0, Number(v) || 0))));
+      caber(alt + 46);
+      let xl = MARGEM;
+      for (const sr of ss) { ret(xl, y - 9, 8, 8, sr.cor || corPrincipal); texto(xl + 12, y - 8, sr.nome, 8, false, "#374151"); xl += 22 + medir(sr.nome, 8); }
+      y -= 22;
+      const base = y - alt, grupo = larguraUtil / Math.max(1, rot.length), lb = Math.min(22, (grupo - 10) / Math.max(1, ss.length));
+      for (let g = 0; g <= 4; g++) { const yy = base + alt * g / 4; ret(MARGEM, yy, larguraUtil, g ? 0.4 : 0.8, g ? "#e5e7eb" : "#9ca3af"); }
+      texto(MARGEM, y + 2, fmt(max), 7, false, "#6b7280");
+      rot.forEach((r, i) => {
+        const x0 = MARGEM + i * grupo + (grupo - lb * ss.length) / 2;
+        ss.forEach((sr, j) => { const v = Math.max(0, Number(sr.valores[i]) || 0), a = alt * v / max; if (a > 0) ret(x0 + j * lb + 1, base, lb - 2, a, sr.cor || corPrincipal); });
+        texto(MARGEM + i * grupo + grupo / 2 - medir(r, 7.5) / 2, base - 12, r, 7.5, false, "#374151");
+      });
+      y = base - 24;
+      continue;
+    }
     if (b.tipo === "titulo") { caber(40); y -= 8; texto(MARGEM, y - 14, b.texto, 13, true, "#111827"); ret(MARGEM, y - 22, 40, 2.5, corPrincipal); y -= 34; continue; }
     if (b.tipo === "texto") {
       const tam = b.tamanho || 10;
