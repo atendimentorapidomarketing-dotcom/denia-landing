@@ -150,7 +150,8 @@ export async function iniciar(op = {}) {
   // Cada iniciar() carrega cópias novas dos Workers (nos testes, cada um com seu banco).
   const sufixo = op.env ? "?instancia=" + (++instancias) : "";
   const plataforma = (await import(pathToFileURL(path.join(RAIZ, "src/worker.js")).href + sufixo)).default;
-  const engine = (await import(pathToFileURL(path.join(RAIZ, "engine/worker.js")).href + sufixo)).default;
+  const moduloEngine = await import(pathToFileURL(path.join(RAIZ, "engine/worker.js")).href + sufixo);
+  const engine = moduloEngine.default;
 
   const pendentes = new Set();
   const contexto = () => ({
@@ -292,6 +293,30 @@ export async function iniciar(op = {}) {
     // (o WhatsApp, o painel) acorda as tarefas atrasadas: nenhuma mensagem fica presa na fila.
     if (!desligadas && !op.semRelogio && Date.now() - situacao.tiques.engine > 90000 && !rodando.engine) tique("pedido").catch(e => anotarErro("tique", e));
     const ehIA = (hostIA && url.hostname.toLowerCase() === hostIA) || url.pathname === prefixoIA || url.pathname.startsWith(prefixoIA + "/");
+    // O app da Meta tem UM endereço de webhook para todos os números. Venha pelo endereço da IA (/ia/webhook) ou
+    // pelo do chatbot (/webhook/whatsapp), cada número vai para quem cuida dele: o número da IA da Central para a IA,
+    // os números dos chatbots das empresas para a plataforma. Nenhuma mensagem se perde por causa do endereço.
+    const caminhoIA = ehIA && !(hostIA && url.hostname.toLowerCase() === hostIA) ? (url.pathname.slice(prefixoIA.length) || "/") : url.pathname;
+    if (request.method === "POST" && ((ehIA && caminhoIA === "/webhook") || (!ehIA && url.pathname === "/webhook/whatsapp"))) {
+      const bruto = await request.text();
+      const numeroIA = moduloEngine.numeroDaIa ? moduloEngine.numeroDaIa(variaveisEngine) : "";
+      let outros = null;
+      try {
+        const d = JSON.parse(bruto);
+        const doOutroLado = ch => { const pid = String(ch?.value?.metadata?.phone_number_id || ""); return pid && (ehIA ? pid !== numeroIA : pid === numeroIA); };
+        if ((d?.entry || []).some(e => (e?.changes || []).some(doOutroLado))) outros = true;
+      } catch { /* corpo inválido: só o destino original trata */ }
+      const montar = (destino) => new Request(destino, { method: "POST", headers: request.headers, body: bruto });
+      if (outros) {
+        // Repassa o MESMO corpo (a assinatura da Meta continua válida); cada lado ignora os números que não são dele.
+        const outroUrl = new URL(url); outroUrl.pathname = ehIA ? "/webhook/whatsapp" : "/webhook";
+        const ctxOutro = contexto();
+        const p = ehIA ? plataforma.fetch(montar(outroUrl), envPlataforma, ctxOutro) : (async () => { const r = montar(outroUrl); r.headers.set("x-denia-prefixo", prefixoIA); return engine.fetch(r, envEngine, ctxOutro); })();
+        ctxOutro.waitUntil(Promise.resolve(p).catch(e => anotarErro("webhook repassado", e)));
+      }
+      if (ehIA) { const r = montar(new URL(caminhoIA, url)); r.headers.set("x-denia-prefixo", prefixoIA); return engine.fetch(r, envEngine, contexto()); }
+      return plataforma.fetch(montar(url), envPlataforma, contexto());
+    }
     if (ehIA) {
       if (!hostIA || url.hostname.toLowerCase() !== hostIA) {
         url.pathname = url.pathname.slice(prefixoIA.length) || "/"; request = new Request(url, request);
