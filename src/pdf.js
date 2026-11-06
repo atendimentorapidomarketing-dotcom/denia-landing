@@ -14,6 +14,7 @@ function winAnsi(t) {
     else if (ch === "“" || ch === "”") s += '"';
     else if (ch === "‘" || ch === "’") s += "'";
     else if (ch === "•") s += "\x95";
+    else if (ch === "…") s += "\x85";
     else if (ch === "★") s += "*";
     else if (c < 32) s += " ";
     else if (c < 256) s += ch;
@@ -111,15 +112,35 @@ export function gerarPdf({ titulo = "", subtitulo = "", rodape = "", corPrincipa
       const cols = b.colunas || [], pesos = b.larguras || cols.map(() => 1), soma = pesos.reduce((s, v) => s + v, 0);
       const ls = pesos.map(p => larguraUtil * p / soma), alt = 20;
       const cab = () => { caber(alt * 2); ret(MARGEM, y - alt, larguraUtil, alt, "#e5e7eb"); let x = MARGEM; cols.forEach((c, i) => { texto(x + 6, y - 13.5, c, 8, true, "#374151"); x += ls[i]; }); y -= alt; };
+      // reservaFim: espaço (em pontos) que precisa caber depois da tabela na mesma página — ex.: a assinatura
+      // logo abaixo da última tabela. As 2 últimas linhas só são desenhadas se couberem junto com essa reserva.
+      const linhas = b.linhas || [], reserva = Number(b.reservaFim) || 0, dir = b.alinharDireita || [];
       cab();
-      (b.linhas || []).forEach((lin, k) => {
-        if (y - alt < 50) { novaPagina(); cab(); }
-        if (k % 2) ret(MARGEM, y - alt, larguraUtil, alt, "#f9fafb");
+      linhas.forEach((lin0, k) => {
+        const lin = Array.isArray(lin0) ? lin0 : lin0.celulas || [], neg = !Array.isArray(lin0) && Boolean(lin0.negrito), fundo = !Array.isArray(lin0) && lin0.fundo;
+        const faltam = linhas.length - k, precisa = reserva && faltam <= 2 ? faltam * alt + reserva : alt;
+        if (y - precisa < 50) { novaPagina(); cab(); }
+        if (fundo) ret(MARGEM, y - alt, larguraUtil, alt, fundo); else if (k % 2) ret(MARGEM, y - alt, larguraUtil, alt, "#f9fafb");
         let x = MARGEM;
-        lin.forEach((v, i) => { let t = String(v ?? ""); while (t.length > 3 && medir(t, 9) > ls[i] - 10) t = t.slice(0, -2); texto(x + 6, y - 13.5, t === String(v ?? "") ? t : t + "…", 9, false, "#1f2937"); x += ls[i]; });
+        lin.forEach((v, i) => {
+          let t = String(v ?? ""); while (t.length > 3 && medir(t, 9) > ls[i] - 10) t = t.slice(0, -2);
+          const final = t === String(v ?? "") ? t : t + "…";
+          const xi = dir.includes(i) ? x + ls[i] - 6 - medir(final, 9) * (neg ? 1.06 : 1) : x + 6;
+          texto(xi, y - 13.5, final, 9, neg, "#1f2937"); x += ls[i];
+        });
         y -= alt;
       });
       y -= 12; continue;
+    }
+    if (b.tipo === "assinatura") {
+      // Local e data + linhas de assinatura lado a lado (até 3).
+      const nomes = (b.nomes && b.nomes.length ? b.nomes : ["Responsável"]).slice(0, 3);
+      caber(110);
+      if (b.local) { texto(MARGEM, y - 12, b.local, 10, false, "#374151"); y -= 24; }
+      y -= 46;
+      const gap = 24, l = (larguraUtil - gap * (nomes.length - 1)) / nomes.length;
+      nomes.forEach((n, i) => { const x = MARGEM + i * (l + gap); ret(x, y, l, 0.8, "#374151"); texto(x, y - 13, n, 9, false, "#374151"); });
+      y -= 30; continue;
     }
   }
   paginas.push(ops);

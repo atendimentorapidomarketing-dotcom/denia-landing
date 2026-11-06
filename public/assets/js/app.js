@@ -257,6 +257,7 @@
     problemas: { titulo: "Problemas", render: paginaProblemas },
     relatorios: { titulo: "Relatórios", render: paginaRelatorios },
     financeiro: { titulo: "Financeiro", render: paginaFinanceiro },
+    admin: { titulo: "Administração", render: paginaAdmin },
     conversas: { titulo: "Conversas", render: paginaConversas },
     atendimentos: { titulo: "Pedidos de serviço", render: paginaAtendimentos },
     profissionais: { titulo: "Profissionais parceiros", render: paginaProfissionais },
@@ -3370,11 +3371,11 @@ Botão só com texto = resposta.` })),
 
   // ----- Plano e pagamento: teste grátis, planos (mensal/anual), assinatura (Pix, boleto, cartão) e histórico.
   const RECURSO_DA_ROTA = {
-    rotina: null, ajuda: null, financeiro: null, conversas: "ia_completa", atendimentos: "ia_completa", profissionais: "ia_completa", treinamento: "ia_completa", aprendizados: "ia_completa", clientes: "ia_completa", whatsapp: "ia_completa", guia: "ia_completa",
+    rotina: null, ajuda: null, financeiro: null, admin: null, conversas: "ia_completa", atendimentos: "ia_completa", profissionais: "ia_completa", treinamento: "ia_completa", aprendizados: "ia_completa", clientes: "ia_completa", whatsapp: "ia_completa", guia: "ia_completa",
     chatbot: "chatbot", temporada: "temporada", estudio: "marketing", midias: "marketing", calendario: "marketing", aprovacoes: "marketing", marcas: "marketing", instagram: "marketing", facebook: "marketing", google: "marketing", social: "marketing", denia: "voz"
   };
   window.DENIA_RECURSOS = window.DENIA_RECURSOS || { chatbot: "Chatbot do WhatsApp com botões e listas", chatbot_ia: "IA no chatbot", ia_completa: "IA completa de atendimento (atende como uma pessoa, com memória)", marketing: "Instagram, Facebook e Google: posts, artes, comentários e avaliações", voz: "DENIA por voz, ao vivo", multiempresa: "Várias empresas, marcas e unidades", temporada: "Locação por temporada" };
-  const ROTAS_LIVRES = ["plano", "conta", "equipe", "auditoria", "empresas", "contatos", "painel", "integracoes", "consumo", "problemas", "relatorios", "rotina", "ajuda", "financeiro"];
+  const ROTAS_LIVRES = ["plano", "conta", "equipe", "auditoria", "empresas", "contatos", "painel", "integracoes", "consumo", "problemas", "relatorios", "rotina", "ajuda", "financeiro", "admin"];
   const acessoAtual = () => (estado.org && estado.org.acesso) || { liberado: true, recursos: [], status: "?" };
   const temRecurso = r => !r || estado.eu.usuario.super_admin || (acessoAtual().liberado && (acessoAtual().recursos || []).includes(r));
   const NOME_STATUS_PLANO = { TESTE: "Teste grátis", ATIVO: "Ativo", ATRASADO: "Pagamento pendente", CANCELADO: "Cancelado (usa até o fim do período)", CORTESIA: "Cortesia — acesso total", BLOQUEADO: "Bloqueado", TESTE_ACABOU: "Teste encerrado" };
@@ -3582,9 +3583,9 @@ Botão só com texto = resposta.` })),
   const svgIc = d => { const s = document.createElementNS(SVG_NS, "svg"); s.setAttribute("viewBox", "0 0 24 24"); s.setAttribute("aria-hidden", "true"); s.innerHTML = d; return s; };
   // Cada canal tem o seu menu: ao entrar no WhatsApp, Instagram, Facebook, Google, Temporada, Marketing ou IA,
   // o menu lateral (e a barra de baixo, no celular) mostra só o que é daquele canal, com volta ao menu principal.
-  const ROTA_MODO = { whatsapp: "whatsapp", conversas: "whatsapp", atendimentos: "whatsapp", profissionais: "whatsapp", chatbot: "whatsapp", guia: "whatsapp", instagram: "instagram", facebook: "facebook", social: "instagram", google: "google", temporada: "temporada", estudio: "marketing", calendario: "marketing", aprovacoes: "marketing", marcas: "marketing", treinamento: "ia", aprendizados: "ia", clientes: "ia" };
-  const NOME_MODO = { whatsapp: "WhatsApp", instagram: "Instagram", facebook: "Facebook", google: "Google", temporada: "Locação por temporada", marketing: "Marketing e conteúdo", ia: "Inteligência da DENIA" };
-  const ABA_PADRAO = { whatsapp: "visao", instagram: "visao", facebook: "visao", google: "desempenho", chatbot: "visao", temporada: "visao" };
+  const ROTA_MODO = { whatsapp: "whatsapp", conversas: "whatsapp", atendimentos: "whatsapp", profissionais: "whatsapp", chatbot: "whatsapp", guia: "whatsapp", instagram: "instagram", facebook: "facebook", social: "instagram", google: "google", temporada: "temporada", estudio: "marketing", calendario: "marketing", aprovacoes: "marketing", marcas: "marketing", treinamento: "ia", aprendizados: "ia", clientes: "ia", admin: "admin", financeiro: "admin" };
+  const NOME_MODO = { whatsapp: "WhatsApp", instagram: "Instagram", facebook: "Facebook", google: "Google", temporada: "Locação por temporada", marketing: "Marketing e conteúdo", ia: "Inteligência da DENIA", admin: "Administração" };
+  const ABA_PADRAO = { whatsapp: "visao", instagram: "visao", facebook: "visao", google: "desempenho", chatbot: "visao", temporada: "visao", admin: "hoje" };
   function aplicarMenu(nome, param) {
     const nav = $("lateral-nav");
     let modo = ROTA_MODO[nome] || null;
@@ -3609,7 +3610,7 @@ Botão só com texto = resposta.` })),
     const botaoItem = (ic, rotulo, fn, ativo) => h("button", { type: "button", class: "barra-app-item" + (ativo ? " ativo" : ""), onclick: fn }, svgIc(ic), h("span", { text: rotulo }));
     if (modo) {
       const primeiros = visiveis.slice(0, 4), resto = visiveis.slice(4);
-      const curto = { "Desempenho do atendimento": "Desempenho", "Pedidos de serviço": "Pedidos", "Profissionais parceiros": "Profissionais", "Entregas das mensagens": "Entregas", "Palavras-chave e posição": "Palavras", "Pré-análise de empresas": "Pré-análise", "Mapa de posição": "Mapa", "Avaliações ruins (triagem)": "Ruins", "Posts no perfil": "Posts", "Calendário e criação com IA": "Calendário", "Visão geral (todos os perfis)": "Visão", "Custos da Meta": "Custos", "Número, qualidade e custos": "Número", "Visão geral e evolução": "Visão", "Mensagens dos hóspedes": "Mensagens", "Calendário e preços": "Calendário", "Desempenho e cliques": "Desempenho", "Estúdio de criação": "Estúdio", "Calendário de posts": "Calendário", "Visão do chatbot": "Visão", "Métricas de atendimento": "Métricas", "Avaliações 1★ (triagem)": "1 estrela", "Imóveis (todos)": "Imóveis", "Conexões e idiomas": "Conexões", "Palavras-chave e buscas": "Palavras", "Relatório semanal": "Relatório", "Posicionamento no Google": "Posição", "Google orgânico (SEO)": "SEO", "Concorrentes no Maps": "Concorrentes", "Clientes e etiquetas": "Clientes", "Modelos de mensagem": "Modelos", "Saúde do número": "Saúde", "Respostas rápidas": "Rápidas", "Perfil comercial": "Perfil", "Melhores horários": "Horários", "Recomendações": "Avaliações", "Melhorias e manutenção": "Melhorias", "Inventário e checklist": "Inventário", "Avaliações dos hóspedes": "Avaliações" };
+      const curto = { "Desempenho do atendimento": "Desempenho", "Pedidos de serviço": "Pedidos", "Profissionais parceiros": "Profissionais", "Entregas das mensagens": "Entregas", "Palavras-chave e posição": "Palavras", "Pré-análise de empresas": "Pré-análise", "Mapa de posição": "Mapa", "Avaliações ruins (triagem)": "Ruins", "Posts no perfil": "Posts", "Calendário e criação com IA": "Calendário", "Visão geral (todos os perfis)": "Visão", "Custos da Meta": "Custos", "Número, qualidade e custos": "Número", "Visão geral e evolução": "Visão", "Mensagens dos hóspedes": "Mensagens", "Calendário e preços": "Calendário", "Desempenho e cliques": "Desempenho", "Estúdio de criação": "Estúdio", "Calendário de posts": "Calendário", "Visão do chatbot": "Visão", "Métricas de atendimento": "Métricas", "Avaliações 1★ (triagem)": "1 estrela", "Imóveis (todos)": "Imóveis", "Conexões e idiomas": "Conexões", "Palavras-chave e buscas": "Palavras", "Relatório semanal": "Relatório", "Posicionamento no Google": "Posição", "Google orgânico (SEO)": "SEO", "Concorrentes no Maps": "Concorrentes", "Clientes e etiquetas": "Clientes", "Modelos de mensagem": "Modelos", "Saúde do número": "Saúde", "Respostas rápidas": "Rápidas", "Perfil comercial": "Perfil", "Melhores horários": "Horários", "Recomendações": "Avaliações", "Melhorias e manutenção": "Melhorias", "Inventário e checklist": "Inventário", "Avaliações dos hóspedes": "Avaliações", "Agenda e compromissos": "Agenda", "Banco e caixa": "Banco", "Aluguéis e locatários": "Aluguéis", "Manutenção e obrigações": "Manutenção", "Documentos e validades": "Documentos", "Relatório do mês": "Relatório", "Ajustes e importação": "Ajustes", "O dia": "Hoje", "Locação por temporada": "Temporada" };
       b.replaceChildren(...primeiros.map(a => { const t = a.textContent.replace("›", "").trim(); return item(a, curto[t] || t.split(" ")[0]); }), botaoItem(IC.mais, "Mais", () => maisDoModo(modo, resto), resto.some(a => a.classList.contains("ativo"))));
     } else {
       const entra = m => nav.querySelector(`[data-entra="${m}"]`);
@@ -7156,6 +7157,336 @@ Botão só com texto = resposta.` })),
         h("div", { class: "fin-duas" }, campo("Enviar para", emails, "Até 5 e-mails, separados por vírgula."), campo("Moeda", moedaSel)),
         h("div", { class: "acoes" }, botao("Salvar", async () => { try { await fin("config", { metodo: "PUT", corpo: { email_mensal: ligado.checked, emails: emails.value, moeda: moedaSel.value } }); aviso("Salvo.", "ok"); if (moedaSel.value !== moeda) recarregar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario")));
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Administração (central executiva): o dia, agenda, banco e caixa, aluguéis, manutenção, documentos,
+  // relatório do mês no layout aprovado e ajustes (calendário no celular, resumo diário, importar da Central).
+  // ---------------------------------------------------------------------------
+  const adm = (caminho, op) => org("adm/" + caminho, op);
+  const admEstado = { mes: null, moeda: "BRL" };
+  const dinA = c => dinheiroFin(c, admEstado.moeda);
+  const hojeUi = () => isoLocal(new Date());
+  const ABAS_ADMIN = { hoje: "O dia", agenda: "Agenda e compromissos", contas: "Banco e caixa", alugueis: "Aluguéis e locatários", manutencao: "Manutenção e obrigações", documentos: "Documentos e validades", relatorio: "Relatório do mês", ajustes: "Ajustes e importação" };
+  const ABAS_EQUIPE = ["hoje", "agenda", "manutencao"];
+  const entradaTxt = (valor, ph, extra = {}) => h("input", { class: "entrada", type: "text", value: valor ?? "", placeholder: ph || "", ...extra });
+  const entradaData = valor => h("input", { class: "entrada", type: "date", value: valor || "" });
+  const entradaValor = cent => h("input", { class: "entrada", type: "text", inputmode: "decimal", placeholder: "0,00", value: cent ? (cent / 100).toFixed(2).replace(".", ",") : "" });
+  const listaVazia = t => h("p", { class: "sub", text: t });
+  const item = (titulo, meta, ...acoes) => h("li", { class: "prb-item", style: "border-color:var(--borda)" }, h("div", {}, h("strong", { text: titulo }), meta ? h("p", { class: "prb-meta", text: meta }) : null, acoes.filter(Boolean).length ? h("div", { class: "acoes" }, acoes) : null));
+  async function formulario(titulo, campos, confirmar, enviar) {
+    for (;;) {
+      if (!(await modal({ titulo, conteudo: h("div", { class: "fin-form" }, campos), confirmar }))) return false;
+      try { await enviar(); return true; } catch (e) { aviso(e.message, "erro"); }
+    }
+  }
+
+  async function paginaAdmin(el, aba, vivo) {
+    if (!pode("AGENTE")) { el.append(cabeca("Administração", ""), h("div", { class: "cartao vidro" }, vazio("Acesso restrito", "Seu perfil é somente leitura."))); return; }
+    aba = ABAS_ADMIN[aba] ? aba : "hoje";
+    if (!pode("ADMIN") && !ABAS_EQUIPE.includes(aba)) aba = "hoje";
+    const corpo = h("div", {}, carregando());
+    el.append(corpo);
+    const fn = { hoje: admHoje, agenda: admAgenda, contas: admContas, alugueis: admAlugueis, manutencao: admManutencao, documentos: admDocumentos, relatorio: admRelatorio, ajustes: admAjustes }[aba];
+    try { await fn(corpo, vivo); } catch (e) { if (vivo()) falha(corpo, e); }
+  }
+  const recarregarAdm = () => navegar();
+
+  // ----- O dia
+  async function admHoje(el, vivo) {
+    const d = await adm("dia");
+    if (!vivo()) return;
+    admEstado.moeda = d.moeda || "BRL";
+    const t = d.totais, blocos = [];
+    blocos.push(cabeca("O dia", `Tudo que precisa de atenção hoje, ${dataCurtaFin(d.hoje)}: compromissos, contas, manutenção, documentos e temporada.`,
+      botao("+ Compromisso", () => novoCompromisso(null, d.hoje), "btn-primario"),
+      d.admin ? botao("+ Conta ou recebimento", () => irPara("#/financeiro"), "btn-secundario") : null));
+    const cards = [metrica("Compromissos hoje", String(t.agenda_hoje), t.agenda_atrasada ? `${t.agenda_atrasada} ficaram para trás` : "Nada atrasado")];
+    if (d.admin) cards.push(metrica("A pagar vencido", dinA(t.pagar_vencido), `Próximos 7 dias: ${dinA(t.pagar_semana)}`), metrica("A receber vencido", dinA(t.receber_vencido), `Próximos 7 dias: ${dinA(t.receber_semana)}`));
+    cards.push(metrica("Manutenção vencida", String(t.rotinas_vencidas), d.rotinas_sem_data ? `${d.rotinas_sem_data} obrigações sem data da última vez` : "Obrigações em dia"));
+    blocos.push(h("section", { class: "grade grade-4" }, cards));
+    if (d.saldos && d.saldos.length) blocos.push(h("section", { class: "grade grade-4", style: "margin-top:12px" }, d.saldos.map(s => metrica(s.tipo === "CAIXA" ? `Dinheiro em caixa — ${s.nome}` : `Saldo no banco — ${s.nome}`, dinA(s.saldo_cent), `Calculado a partir de ${dataCurtaFin(s.base_em)}`))));
+    else if (d.admin) blocos.push(h("p", { class: "sub", style: "margin:10px 0" }, "Cadastre o banco e o caixa em ", h("a", { href: "#/admin/contas", text: "Banco e caixa" }), " para ver os saldos aqui."));
+    const marcarFeito = async a => { try { const r = await adm(`agenda/${a.id}/feito`, { metodo: "POST", corpo: {} }); aviso(r.proximo ? `Feito. Próxima vez: ${dataCurtaFin(r.proximo.data)}.` : "Feito.", "ok"); recarregarAdm(); } catch (e) { aviso(e.message, "erro"); } };
+    const agenda = h("section", { class: "cartao vidro" }, h("h3", { style: "margin:0 0 8px", text: "Agenda (atrasados, hoje e próximos 7 dias)" }),
+      d.agenda.length ? h("ul", { class: "prb-lista" }, d.agenda.slice(0, 10).map(a => item(`${a.hora ? a.hora + " · " : ""}${a.titulo}`, `${a.atrasado ? "ATRASADO · " : ""}${dataCurtaFin(a.data)}${a.local ? " · " + a.local : ""}${a.quem ? " · com " + a.quem : ""}${a.prioridade === "ALTA" ? " · prioridade alta" : ""}`,
+        botao("Feito", () => marcarFeito(a), "btn-primario btn-pequeno")))) : listaVazia("Nenhum compromisso para os próximos dias."),
+      h("div", { class: "acoes" }, h("a", { class: "btn btn-secundario btn-pequeno", href: "#/admin/agenda" }, "Abrir a agenda")));
+    const cont = d.admin ? h("section", { class: "cartao vidro" }, h("h3", { style: "margin:0 0 8px", text: "Contas vencidas e da semana" }),
+      d.contas.length > 8 ? h("p", { class: "sub", text: `Mostrando 8 de ${d.contas.length}. As outras estão no financeiro.` }) : null,
+      d.contas.length ? h("ul", { class: "prb-lista" }, d.contas.slice(0, 8).map(c => item(`${c.tipo === "ENTRADA" ? "Receber" : "Pagar"}: ${c.descricao} — ${dinA(c.valor_cent)}`, `${c.vencida ? "VENCIDA · " : ""}vence ${dataCurtaFin(c.data)}${c.contato ? " · " + c.contato : ""}`,
+        botao(c.tipo === "ENTRADA" ? "Recebi" : "Paguei", () => darBaixa(c), "btn-primario btn-pequeno")))) : listaVazia("Nenhuma conta vencida ou para os próximos 7 dias."),
+      h("div", { class: "acoes" }, h("a", { class: "btn btn-secundario btn-pequeno", href: "#/financeiro" }, "Abrir o financeiro"))) : null;
+    const man = h("section", { class: "cartao vidro" }, h("h3", { style: "margin:0 0 8px", text: "Manutenção e obrigações" }),
+      d.rotinas.length ? h("ul", { class: "prb-lista" }, d.rotinas.map(r => item(r.titulo, r.situacao === "VENCIDA" ? `Vencida desde ${dataCurtaFin(r.proxima)}${r.fornecedor ? " · " + r.fornecedor : ""}` : `Vence ${dataCurtaFin(r.proxima)} (em ${r.dias} dia${r.dias === 1 ? "" : "s"})`,
+        botao("Registrar feito", () => rotinaFeita(r), "btn-primario btn-pequeno")))) : listaVazia(d.rotinas_sem_data ? "Nada vencendo entre as obrigações com data. Informe quando foi a última vez das outras." : "Nada vencendo."),
+      h("div", { class: "acoes" }, h("a", { class: "btn btn-secundario btn-pequeno", href: "#/admin/manutencao" }, "Ver todas")));
+    const extras = [];
+    if (d.documentos.length) extras.push(h("section", { class: "cartao vidro" }, h("h3", { style: "margin:0 0 8px", text: "Documentos vencendo" }),
+      h("ul", { class: "prb-lista" }, d.documentos.map(x => item(x.titulo, x.dias < 0 ? `Venceu em ${dataCurtaFin(x.vence_em)}` : `Vence em ${dataCurtaFin(x.vence_em)} (${x.dias} dias)`)))));
+    if (d.temporada.length) extras.push(h("section", { class: "cartao vidro" }, h("h3", { style: "margin:0 0 8px", text: "Temporada: entradas e saídas de hóspedes" }),
+      h("ul", { class: "prb-lista" }, d.temporada.map(r0 => item(`${r0.hospede || "Hóspede"} — ${r0.imovel}`, `${r0.inicio >= d.hoje ? "Entrada " + dataCurtaFin(r0.inicio) : "Saída " + dataCurtaFin(r0.fim)} · ${r0.canal}`))),
+      h("div", { class: "acoes" }, h("a", { class: "btn btn-secundario btn-pequeno", href: "#/temporada/visao" }, "Abrir a temporada"))));
+    blocos.push(h("div", { class: "grade grade-2", style: "margin-top:12px" }, agenda, cont || man, cont ? man : null, ...extras));
+    trocar(el, ...blocos);
+  }
+  async function darBaixa(c) {
+    let contas = [];
+    try { contas = (await fin("opcoes")).contas || []; } catch { /* sem contas */ }
+    const data = entradaData(hojeUi()), forma = h("select", { class: "entrada" }, ["", "Pix", "Dinheiro", "Transferência", "Boleto", "Cartão de débito", "Cartão de crédito", "Outro"].map(f => h("option", { value: f, text: f || "—" })));
+    const valor = entradaValor(c.valor_cent), conta = h("select", { class: "entrada" }, h("option", { value: "", text: "Automático (dinheiro → caixa; o resto → banco)" }), contas.map(x => h("option", { value: x.id, text: x.nome })));
+    await formulario(c.tipo === "ENTRADA" ? "Registrar recebimento" : "Registrar pagamento", [h("p", { class: "sub", text: `${c.descricao} — ${dinA(c.valor_cent)}` }),
+      h("div", { class: "fin-duas" }, campo("Data", data), campo("Forma", forma)), h("div", { class: "fin-duas" }, campo("Valor efetivo", valor, "Mude se veio com multa, juros ou desconto."), contas.length ? campo("Conta", conta) : h("span"))], "Salvar",
+      async () => { await fin(`lancamentos/${c.id}/pagar`, { metodo: "POST", corpo: { data: data.value, forma: forma.value || undefined, valor_pago: valor.value, conta_id: conta.value || undefined } }); aviso("Registrado.", "ok"); recarregarAdm(); });
+  }
+
+  // ----- Agenda
+  async function novoCompromisso(a, dataPadrao) {
+    const titulo = entradaTxt(a && a.titulo, "Ex.: Vistoria do AVCB, reunião com o contador"), data = entradaData(a ? a.data : dataPadrao || hojeUi()), hora = h("input", { class: "entrada", type: "time", value: (a && a.hora) || "" });
+    const quem = entradaTxt(a && a.quem, "Com quem (opcional)"), local = entradaTxt(a && a.local, "Onde (opcional)"), obs = h("textarea", { class: "entrada", rows: "2", placeholder: "Observações" }, (a && a.obs) || "");
+    const aviso0 = h("select", { class: "entrada" }, [[0, "Na hora"], [15, "15 minutos antes"], [60, "1 hora antes"], [180, "3 horas antes"], [1440, "1 dia antes"], [2880, "2 dias antes"], [10080, "1 semana antes"]].map(([v, n]) => h("option", { value: v, text: n })));
+    aviso0.value = String(a ? a.aviso_min : 60);
+    const repetir = h("select", { class: "entrada" }, [["", "Não repete"], ["semanal", "Toda semana"], ["mensal", "Todo mês"], ["anual", "Todo ano"]].map(([v, n]) => h("option", { value: v, text: n })));
+    repetir.value = (a && a.repetir) || "";
+    const alta = h("input", { type: "checkbox", checked: Boolean(a && a.prioridade === "ALTA") });
+    await formulario(a ? "Editar compromisso" : "Novo compromisso", [campo("Compromisso", titulo), h("div", { class: "fin-duas" }, campo("Data", data), campo("Hora", hora, "Vazio = o dia todo")),
+      h("div", { class: "fin-duas" }, campo("Avisar", aviso0), campo("Repetir", repetir)), h("div", { class: "fin-duas" }, campo("Com quem", quem), campo("Local", local)), campo("Observações", obs), h("label", { class: "fin-check" }, alta, " Prioridade alta")], "Salvar",
+      async () => { await adm(a ? `agenda/${a.id}` : "agenda", { metodo: a ? "PUT" : "POST", corpo: { titulo: titulo.value, data: data.value, hora: hora.value || null, quem: quem.value, local: local.value, obs: obs.value, aviso_min: Number(aviso0.value), repetir: repetir.value, prioridade: alta.checked ? "ALTA" : "NORMAL" } }); aviso("Compromisso salvo.", "ok"); recarregarAdm(); });
+  }
+  async function admAgenda(el, vivo) {
+    const r = await adm("agenda");
+    if (!vivo()) return;
+    const porDia = new Map();
+    for (const a of r.itens) { if (!porDia.has(a.data)) porDia.set(a.data, []); porDia.get(a.data).push(a); }
+    const feito = async (a, desfazer) => { try { const x = await adm(`agenda/${a.id}/feito`, { metodo: "POST", corpo: desfazer ? { desfazer: true } : {} }); aviso(x.proximo ? `Feito. Próxima vez: ${dataCurtaFin(x.proximo.data)}.` : desfazer ? "Voltou para pendente." : "Feito.", "ok"); recarregarAdm(); } catch (e) { aviso(e.message, "erro"); } };
+    const apagar = async a => { if (!(await modal({ titulo: "Apagar compromisso?", conteudo: a.titulo, confirmar: "Apagar", perigo: true }))) return; try { await adm(`agenda/${a.id}`, { metodo: "DELETE" }); aviso("Apagado.", "ok"); recarregarAdm(); } catch (e) { aviso(e.message, "erro"); } };
+    const fmtDia = new Intl.DateTimeFormat(LOCALE, { weekday: "long", day: "2-digit", month: "long", timeZone: "UTC" });
+    const dias = [...porDia.keys()].sort();
+    trocar(el, cabeca("Agenda e compromissos", "Compromissos da empresa com aviso por e-mail e no celular (assine o calendário em Ajustes). O que repete é recriado sozinho quando você marca como feito.",
+      botao("+ Compromisso", () => novoCompromisso(null, r.hoje), "btn-primario"), pode("ADMIN") ? h("a", { class: "btn btn-secundario", href: "#/admin/ajustes" }, "Ver no celular") : null),
+      dias.length ? h("div", {}, dias.map(dia => h("section", { class: "cartao vidro", style: "margin-top:12px" },
+        h("h3", { style: "margin:0 0 8px;text-transform:capitalize", text: `${dia === r.hoje ? "Hoje — " : dia < r.hoje ? "Atrasado — " : ""}${fmtDia.format(new Date(dia + "T12:00:00Z"))}` }),
+        h("ul", { class: "prb-lista" }, porDia.get(dia).map(a => item(`${a.feito ? "✓ " : ""}${a.hora || "Dia todo"} · ${a.titulo}`, [a.local, a.quem && "com " + a.quem, a.repetir && { semanal: "toda semana", mensal: "todo mês", anual: "todo ano" }[a.repetir], a.prioridade === "ALTA" && "prioridade alta", a.obs].filter(Boolean).join(" · "),
+          a.feito ? botao("Desfazer", () => feito(a, true), "btn-secundario btn-pequeno") : botao("Feito", () => feito(a), "btn-primario btn-pequeno"),
+          botao("Editar", () => novoCompromisso(a), "btn-secundario btn-pequeno"), botao("Apagar", () => apagar(a), "btn-secundario btn-pequeno"))))))) :
+        h("section", { class: "cartao vidro" }, vazio("Agenda vazia", "Anote vistorias, reuniões, prazos e visitas de prestadores. A DENIA avisa por e-mail no horário escolhido.")));
+  }
+
+  // ----- Manutenção e obrigações
+  async function rotinaFeita(r) {
+    const data = entradaData(hojeUi()), prestador = entradaTxt(r.fornecedor, "Empresa ou pessoa que fez"), tel = entradaTxt(r.telefone, "Telefone (opcional)"), valor = entradaValor(null), obs = h("textarea", { class: "entrada", rows: "2", placeholder: "O que foi feito, nº do certificado, observações" });
+    const lancar = h("input", { type: "checkbox", checked: pode("ADMIN") }), garantia = entradaData("");
+    await formulario(`Registrar: ${r.titulo}`, [h("p", { class: "sub", text: `Fica no histórico e a próxima data é calculada sozinha (a cada ${r.dias} dias).` }), h("div", { class: "fin-duas" }, campo("Quando foi feito", data), campo("Valor (opcional)", valor)),
+      h("div", { class: "fin-duas" }, campo("Quem fez", prestador), campo("Telefone", tel)), campo("Observações", obs), campo("Garantia até (opcional)", garantia), pode("ADMIN") ? h("label", { class: "fin-check" }, lancar, " Lançar o valor como despesa paga no financeiro") : null], "Salvar",
+      async () => { const x = await adm(`rotinas/${r.id}/feito`, { metodo: "POST", corpo: { data: data.value, prestador: prestador.value, telefone: tel.value, valor: valor.value, obs: obs.value, garantia_ate: garantia.value, lancar: lancar.checked } }); aviso(`Registrado. Próxima: ${dataCurtaFin(x.proxima)}.`, "ok"); recarregarAdm(); });
+  }
+  async function editarRotina(r) {
+    const titulo = entradaTxt(r && r.titulo, "Ex.: Recarga dos extintores"), area = entradaTxt(r && r.area, "Ex.: Segurança e bombeiros"), dias = h("input", { class: "entrada", type: "number", min: "1", max: "3650", value: r ? r.dias : 30 });
+    const avisoD = h("input", { class: "entrada", type: "number", min: "0", max: "365", value: r ? r.aviso_dias : 7 }), ultima = entradaData(r && r.ultima), proxima = entradaData(r && r.proxima);
+    const forn = entradaTxt(r && r.fornecedor, "Fornecedor"), tel = entradaTxt(r && r.telefone, "Telefone"), obs = h("textarea", { class: "entrada", rows: "2" }, (r && r.obs) || "");
+    await formulario(r ? "Editar obrigação" : "Nova obrigação", [campo("O que fazer", titulo), campo("Área", area), h("div", { class: "fin-duas" }, campo("Repetir a cada (dias)", dias), campo("Avisar quantos dias antes", avisoD)),
+      h("div", { class: "fin-duas" }, campo("Última vez", ultima), campo("Próxima (se já marcada)", proxima, "Vazio = última vez + frequência")), h("div", { class: "fin-duas" }, campo("Fornecedor", forn), campo("Telefone", tel)), campo("Observações", obs)], "Salvar",
+      async () => { await adm(r ? `rotinas/${r.id}` : "rotinas", { metodo: r ? "PUT" : "POST", corpo: { titulo: titulo.value, area: area.value, dias: Number(dias.value), aviso_dias: Number(avisoD.value), ultima: ultima.value, proxima: proxima.value, fornecedor: forn.value, telefone: tel.value, obs: obs.value } }); aviso("Salvo.", "ok"); recarregarAdm(); });
+  }
+  async function admManutencao(el, vivo) {
+    const [r, s] = await Promise.all([adm("rotinas"), adm("servicos")]);
+    if (!vivo()) return;
+    const NOME_SIT = { VENCIDA: ["Vencida", "erro"], PROXIMA: ["Vence em breve", "aviso"], EM_DIA: ["Em dia", "ok"], SEM_DATA: ["Sem data", "info"] };
+    const ordem = { VENCIDA: 0, PROXIMA: 1, SEM_DATA: 2, EM_DIA: 3 };
+    const rotinas = [...r.rotinas].sort((a, b) => ordem[a.situacao] - ordem[b.situacao] || String(a.proxima || "").localeCompare(String(b.proxima || "")));
+    const escolherModelos = async () => {
+      const marcas = r.modelos.filter(m => !m.ja).map(m => ({ m, c: h("input", { type: "checkbox", checked: m.sugerido }) }));
+      if (!marcas.length) return aviso("Todos os modelos já estão na lista.", "ok");
+      if (!(await modal({ titulo: "Obrigações prontas", conteudo: [h("p", { class: "sub", text: "Marque as que valem para a empresa. As sugeridas combinam com o perfil escolhido em Ajustes." }), h("div", { class: "fin-form" }, marcas.map(({ m, c }) => h("label", { class: "fin-check" }, c, ` ${m.titulo} (a cada ${m.dias} dias)`)))], confirmar: "Adicionar" }))) return;
+      try { const x = await adm("rotinas/modelos", { metodo: "POST", corpo: { titulos: marcas.filter(x0 => x0.c.checked).map(x0 => x0.m.titulo) } }); aviso(`${x.adicionadas} obrigações adicionadas. Informe quando foi a última vez de cada uma.`, "ok"); recarregarAdm(); } catch (e) { aviso(e.message, "erro"); }
+    };
+    const tabela = rotinas.length ? h("div", { class: "tabela-rolagem" }, h("table", { class: "tabela fin-tabela" },
+      h("thead", {}, h("tr", {}, ["Obrigação", "Frequência", "Última vez", "Próxima", "Situação", ""].map(c => h("th", { text: c })))),
+      h("tbody", {}, rotinas.map(x => h("tr", {},
+        h("td", {}, h("strong", { text: x.titulo }), x.fornecedor || x.area ? h("div", { class: "prb-meta", text: [x.area, x.fornecedor, x.telefone].filter(Boolean).join(" · ") }) : null),
+        h("td", { text: x.dias % 365 === 0 ? `${x.dias / 365} ano(s)` : x.dias % 30 === 0 ? `${x.dias / 30} mês(es)` : `${x.dias} dias` }),
+        h("td", { text: dataCurtaFin(x.ultima) }), h("td", { text: dataCurtaFin(x.proxima) }), h("td", {}, selo(...NOME_SIT[x.situacao])),
+        h("td", {}, h("div", { class: "acoes", style: "flex-wrap:nowrap" }, botao("Feito", () => rotinaFeita(x), "btn-primario btn-pequeno"), botao("Editar", () => editarRotina(x), "btn-secundario btn-pequeno"),
+          pode("ADMIN") ? botao("Remover", async () => { if (!(await modal({ titulo: "Remover obrigação?", conteudo: `${x.titulo}. O histórico de serviços continua guardado.`, confirmar: "Remover", perigo: true }))) return; try { await adm(`rotinas/${x.id}`, { metodo: "DELETE" }); recarregarAdm(); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno") : null))))))) :
+      vazio("Nenhuma obrigação ainda", "Comece pelas prontas: extintores, AVCB, dedetização, caixa d'água, PMOC do ar-condicionado e outras.");
+    const servico = async () => {
+      const titulo = entradaTxt("", "Ex.: Troca do disjuntor do 2º andar"), data = entradaData(hojeUi()), local = entradaTxt("", "Onde"), problema = h("textarea", { class: "entrada", rows: "2", placeholder: "Problema" }), solucao = h("textarea", { class: "entrada", rows: "2", placeholder: "O que foi feito" });
+      const prest = entradaTxt("", "Quem fez"), valor = entradaValor(null), garantia = entradaData("");
+      await formulario("Registrar serviço", [campo("Serviço", titulo), h("div", { class: "fin-duas" }, campo("Data", data), campo("Local", local)), campo("Problema", problema), campo("Solução", solucao), h("div", { class: "fin-duas" }, campo("Quem fez", prest), campo("Valor", valor)), campo("Garantia até", garantia)], "Salvar",
+        async () => { await adm("servicos", { metodo: "POST", corpo: { titulo: titulo.value, data: data.value, local: local.value, problema: problema.value, solucao: solucao.value, prestador: prest.value, valor: valor.value, garantia_ate: garantia.value } }); aviso("Serviço registrado.", "ok"); recarregarAdm(); });
+    };
+    trocar(el, cabeca("Manutenção e obrigações", "Obrigações do prédio com frequência e aviso, e o histórico de cada serviço feito (quem fez, quanto custou, garantia).",
+      botao("Obrigações prontas", escolherModelos, "btn-primario"), botao("+ Obrigação", () => editarRotina(null), "btn-secundario"), botao("+ Serviço avulso", servico, "btn-secundario")),
+      h("section", { class: "cartao vidro" }, tabela),
+      h("section", { class: "cartao vidro", style: "margin-top:12px" }, h("h3", { style: "margin:0 0 8px", text: "Histórico de serviços" }),
+        s.servicos.length ? h("div", { class: "tabela-rolagem lista-rolavel" }, h("table", { class: "tabela fin-tabela" },
+          h("thead", {}, h("tr", {}, ["Data", "Serviço", "Quem fez", "Valor", "Garantia"].map(c => h("th", { text: c })))),
+          h("tbody", {}, s.servicos.map(x => h("tr", {}, h("td", { text: dataCurtaFin(x.data) }), h("td", {}, h("strong", { text: x.titulo }), x.solucao || x.local ? h("div", { class: "prb-meta", text: [x.local, x.solucao].filter(Boolean).join(" · ") }) : null),
+            h("td", { text: x.prestador || "—" }), h("td", { text: x.valor_cent != null ? dinA(x.valor_cent) : "—" }), h("td", { text: x.garantia_ate ? dataCurtaFin(x.garantia_ate) : "—" })))))) : listaVazia("Nenhum serviço registrado ainda.")));
+    encurtarListas(el);
+  }
+
+  // ----- Documentos
+  async function editarDocumento(d) {
+    const titulo = entradaTxt(d && d.titulo, "Ex.: AVCB, Alvará, Seguro do prédio, Contrato da limpeza"), tipo = entradaTxt(d && d.tipo, "Tipo (opcional)"), numero = entradaTxt(d && d.numero, "Número (opcional)");
+    const vence = entradaData(d && d.vence_em), avisoD = h("input", { class: "entrada", type: "number", min: "0", max: "365", value: d ? d.aviso_dias : 30 }), link = entradaTxt(d && d.link, "https://… (link do Drive, opcional)"), obs = h("textarea", { class: "entrada", rows: "2" }, (d && d.obs) || "");
+    await formulario(d ? "Editar documento" : "Novo documento", [campo("Documento", titulo), h("div", { class: "fin-duas" }, campo("Tipo", tipo), campo("Número", numero)), h("div", { class: "fin-duas" }, campo("Validade", vence), campo("Avisar quantos dias antes", avisoD)), campo("Link do arquivo", link), campo("Observações", obs)], "Salvar",
+      async () => { await adm(d ? `documentos/${d.id}` : "documentos", { metodo: d ? "PUT" : "POST", corpo: { titulo: titulo.value, tipo: tipo.value, numero: numero.value, vence_em: vence.value, aviso_dias: Number(avisoD.value), link: link.value, obs: obs.value } }); aviso("Documento salvo.", "ok"); recarregarAdm(); });
+  }
+  async function admDocumentos(el, vivo) {
+    const r = await adm("documentos");
+    if (!vivo()) return;
+    trocar(el, cabeca("Documentos e validades", "AVCB, alvará, seguros, licenças e contratos com a data de validade. A DENIA avisa antes de vencer.", botao("+ Documento", () => editarDocumento(null), "btn-primario")),
+      h("section", { class: "cartao vidro" }, r.documentos.length ? h("ul", { class: "prb-lista" }, r.documentos.map(d => item(d.titulo,
+        [d.tipo, d.numero && "nº " + d.numero, d.vence_em ? (d.dias < 0 ? `VENCIDO em ${dataCurtaFin(d.vence_em)}` : `vence em ${dataCurtaFin(d.vence_em)} (${d.dias} dias)`) : "sem validade", d.obs].filter(Boolean).join(" · "),
+        d.link ? h("a", { class: "btn btn-secundario btn-pequeno", href: d.link, target: "_blank", rel: "noopener" }, "Abrir arquivo") : null,
+        botao("Editar", () => editarDocumento(d), "btn-secundario btn-pequeno"),
+        botao("Apagar", async () => { if (!(await modal({ titulo: "Apagar documento?", conteudo: d.titulo, confirmar: "Apagar", perigo: true }))) return; try { await adm(`documentos/${d.id}`, { metodo: "DELETE" }); recarregarAdm(); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno")))) :
+        vazio("Nenhum documento", "Cadastre os documentos com validade para não perder prazos.")));
+  }
+
+  // ----- Banco e caixa
+  async function admContas(el, vivo) {
+    const r = await adm("contas");
+    if (!vivo()) return;
+    const editarConta = async c => {
+      const nome = entradaTxt(c && c.nome, "Ex.: C6 Bank, Caixa da administração"), tipo = h("select", { class: "entrada" }, h("option", { value: "BANCO", text: "Conta no banco" }), h("option", { value: "CAIXA", text: "Dinheiro em espécie (caixa)" }));
+      tipo.value = c ? c.tipo : "BANCO";
+      const saldo = entradaValor(c ? c.base_cent : null), em = entradaData(c ? c.base_em : hojeUi()), padrao = h("input", { type: "checkbox", checked: Boolean(c && c.padrao) });
+      await formulario(c ? "Editar conta" : "Nova conta", [campo("Nome", nome), campo("Tipo", tipo), h("div", { class: "fin-duas" }, campo("Saldo", saldo, "Como no extrato, no fim do dia escolhido."), campo("Dia desse saldo", em)), h("label", { class: "fin-check" }, padrao, " Conta principal (recebe o que não for em dinheiro)")], "Salvar",
+        async () => { await adm(c ? `contas/${c.id}` : "contas", { metodo: c ? "PUT" : "POST", corpo: { nome: nome.value, tipo: tipo.value, saldo: saldo.value || "0", saldo_em: em.value, padrao: padrao.checked } }); aviso("Conta salva.", "ok"); recarregarAdm(); });
+    };
+    const mover = async (deposito) => {
+      if (!r.contas.length) return aviso("Cadastre primeiro o banco e o caixa.", "erro");
+      const op = list => list.map(c => h("option", { value: c.id, text: c.nome }));
+      const de = h("select", { class: "entrada" }, op(r.contas)), para = h("select", { class: "entrada" }, op(r.contas)), paraNome = entradaTxt("", "Ex.: Alessandro"), valor = entradaValor(null), data = entradaData(r.hoje), obs = entradaTxt("", "Observação (opcional)");
+      const cx = r.contas.find(c => c.tipo === "CAIXA"), bc = r.contas.find(c => c.tipo === "BANCO");
+      if (cx) de.value = String(cx.id); if (bc) para.value = String(bc.id);
+      await formulario(deposito ? "Depósito / transferência entre contas" : "Dinheiro entregue a uma pessoa", [h("p", { class: "sub", text: "Não conta como entrada nem saída: só muda o dinheiro de lugar." }), campo("Sai de", de),
+        deposito ? campo("Vai para", para) : campo("Entregue a", paraNome), h("div", { class: "fin-duas" }, campo("Valor", valor), campo("Data", data)), campo("Observação", obs)], "Salvar",
+        async () => { await adm("contas/transferir", { metodo: "POST", corpo: { de_id: Number(de.value), para_id: deposito ? Number(para.value) : null, para_nome: deposito ? "" : paraNome.value, valor: valor.value, data: data.value, obs: obs.value } }); aviso("Registrado.", "ok"); recarregarAdm(); });
+    };
+    trocar(el, cabeca("Banco e caixa", "O saldo do banco e o dinheiro em espécie ficam separados. Recebimentos em dinheiro vão para o caixa; o depósito no banco é só uma transferência.",
+      botao("+ Conta", () => editarConta(null), "btn-primario"), botao("Depósito no banco", () => mover(true), "btn-secundario"), botao("Entreguei dinheiro a alguém", () => mover(false), "btn-secundario")),
+      r.contas.length ? h("section", { class: "grade grade-4" }, r.contas.map(c => h("div", { class: "metrica vidro" }, h("span", { text: `${c.tipo === "CAIXA" ? "Caixa" : "Banco"} — ${c.nome}${c.padrao ? " (principal)" : ""}` }), h("strong", { text: dinA(c.saldo_cent) }),
+        h("small", { text: `Hoje · base ${dinA(c.base_cent)} em ${dataCurtaFin(c.base_em)}` }), h("div", { class: "acoes" }, botao("Atualizar saldo", () => editarConta(c), "btn-secundario btn-pequeno"))))) :
+        h("section", { class: "cartao vidro" }, vazio("Cadastre o banco e o caixa", "Informe o saldo de um dia conhecido (o do extrato). A DENIA soma e subtrai os recebimentos e pagamentos daí em diante.")),
+      h("div", { class: "grade grade-2", style: "margin-top:12px" },
+        h("section", { class: "cartao vidro" }, h("h3", { style: "margin:0 0 8px", text: "Depósitos e entregas de dinheiro" }),
+          r.transferencias.length ? h("ul", { class: "prb-lista" }, r.transferencias.map(t => item(`${dataCurtaFin(t.data)} · ${dinA(t.valor_cent)}`, `${t.de_nome || "?"} → ${t.para_conta || t.para_nome || "?"}${t.obs ? " · " + t.obs : ""}`,
+            botao("Apagar", async () => { if (!(await modal({ titulo: "Apagar este movimento?", conteudo: `${dinA(t.valor_cent)} em ${dataCurtaFin(t.data)}`, confirmar: "Apagar", perigo: true }))) return; try { await adm(`contas/transferencias/${t.id}`, { metodo: "DELETE" }); recarregarAdm(); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno")))) : listaVazia("Nenhum movimento entre contas.")),
+        h("section", { class: "cartao vidro" }, h("h3", { style: "margin:0 0 8px", text: "Recebido em dinheiro (60 dias)" }),
+          r.especie.length ? h("ul", { class: "prb-lista" }, r.especie.map(l => item(`${dataCurtaFin(l.pago_em)} · ${dinA(l.valor_pago_cent ?? l.valor_cent)}`, `${l.descricao}${l.contato ? " · " + l.contato : ""}`))) : listaVazia("Nenhum recebimento em dinheiro."))));
+  }
+
+  // ----- Aluguéis e locatários
+  async function editarLocatario(l) {
+    const nome = entradaTxt(l && l.nome, "Nome da loja ou do inquilino"), unidade = entradaTxt(l && l.unidade, "Ex.: Stand 12, Sala 3, Apto 201"), resp = entradaTxt(l && l.responsavel, "Responsável"), doc = entradaTxt(l && l.documento, "CPF ou CNPJ");
+    const tel = entradaTxt(l && l.telefone, "WhatsApp"), email = entradaTxt(l && l.email, "E-mail (recibos)"), aluguel = entradaValor(l && l.aluguel_cent), cond = entradaValor(l && l.condominio_cent), outras = entradaValor(l && l.outras_cent);
+    const dia = h("input", { class: "entrada", type: "number", min: "1", max: "31", value: l ? l.dia_venc : 5 }), ini = entradaData(l && l.inicio), fim = entradaData(l && l.fim);
+    const indice = entradaTxt(l ? l.indice : "IGP-M", "IGP-M, IPCA…"), mesR = h("input", { class: "entrada", type: "number", min: "1", max: "12", value: (l && l.reajuste_mes) || "" });
+    const multa = h("input", { class: "entrada", type: "number", min: "0", max: "100", step: "0.01", value: l ? l.multa_pct : 2 }), juros = h("input", { class: "entrada", type: "number", min: "0", max: "100", step: "0.01", value: l ? l.juros_pct : 1 });
+    const garantia = entradaTxt(l && l.garantia, "Caução, fiador, seguro-fiança…"), obs = h("textarea", { class: "entrada", rows: "2" }, (l && l.obs) || "");
+    await formulario(l ? "Editar locatário" : "Novo locatário", [h("div", { class: "fin-duas" }, campo("Nome", nome), campo("Unidade", unidade)), h("div", { class: "fin-duas" }, campo("Responsável", resp), campo("Documento", doc)),
+      h("div", { class: "fin-duas" }, campo("Telefone", tel), campo("E-mail", email)), h("div", { class: "fin-duas" }, campo("Aluguel", aluguel), campo("Condomínio", cond)), h("div", { class: "fin-duas" }, campo("Outras cobranças", outras), campo("Dia do vencimento", dia)),
+      h("div", { class: "fin-duas" }, campo("Início do contrato", ini), campo("Fim do contrato", fim)), h("div", { class: "fin-duas" }, campo("Índice de reajuste", indice), campo("Mês do reajuste (1–12)", mesR)),
+      h("div", { class: "fin-duas" }, campo("Multa por atraso (%)", multa), campo("Juros ao mês (%)", juros)), campo("Garantia", garantia), campo("Observações", obs)], "Salvar",
+      async () => { await adm(l ? `locatarios/${l.id}` : "locatarios", { metodo: l ? "PUT" : "POST", corpo: { nome: nome.value, unidade: unidade.value, responsavel: resp.value, documento: doc.value, telefone: tel.value, email: email.value, aluguel: aluguel.value || "0", condominio: cond.value || "0", outras: outras.value || "0", dia_venc: Number(dia.value), inicio: ini.value, fim: fim.value, indice: indice.value, reajuste_mes: Number(mesR.value) || null, multa_pct: multa.value, juros_pct: juros.value, garantia: garantia.value, obs: obs.value } }); aviso("Locatário salvo. A cobrança do mês já está em A receber.", "ok"); recarregarAdm(); });
+  }
+  async function admAlugueis(el, vivo) {
+    const r = await adm("locatarios");
+    if (!vivo()) return;
+    const ativos = r.locatarios.filter(l => l.ativo), inativos = r.locatarios.filter(l => !l.ativo);
+    const total = ativos.reduce((s, l) => s + l.aluguel_cent + l.condominio_cent + l.outras_cent, 0), aberto = ativos.reduce((s, l) => s + l.em_aberto_cent, 0), vencido = ativos.reduce((s, l) => s + l.vencido_cent, 0);
+    const linha = l => {
+      return h("tr", {},
+        h("td", {}, h("strong", { text: l.nome }), h("div", { class: "prb-meta", text: [l.unidade, l.responsavel, l.telefone].filter(Boolean).join(" · ") })),
+        h("td", { text: dinA(l.aluguel_cent + l.condominio_cent + l.outras_cent) }), h("td", { text: `dia ${l.dia_venc}` }),
+        h("td", {}, l.em_aberto.length ? h("div", {}, l.em_aberto.map(a => h("div", { class: "prb-meta" }, `${dataCurtaFin(a.data)}: ${dinA(a.valor_cent)}${a.dias > 0 ? ` · ${a.dias} dias de atraso${a.total > a.valor_cent ? ` · com multa e juros ${dinA(a.total)}` : ""}` : ""} `,
+          botao("Recebi", () => darBaixa({ ...a, tipo: "ENTRADA" }), "btn-primario btn-pequeno")))) : selo("Em dia", "ok")),
+        h("td", { text: [l.fim ? `contrato até ${dataCurtaFin(l.fim)}${l.contrato_vence_dias !== null && l.contrato_vence_dias <= 60 ? " (vencendo)" : ""}` : "", l.reajuste_proximo ? `reajuste ${l.indice || ""} em ${l.reajuste_proximo.split("-").reverse().join("/")}` : ""].filter(Boolean).join(" · ") || "—" }),
+        h("td", {}, h("div", { class: "acoes", style: "flex-wrap:nowrap" }, botao("Editar", () => editarLocatario(l), "btn-secundario btn-pequeno"),
+          l.ativo ? botao("Encerrar", async () => { if (!(await modal({ titulo: "Encerrar contrato?", conteudo: `${l.nome}: a DENIA para de gerar a cobrança mensal. O histórico continua.`, confirmar: "Encerrar", perigo: true }))) return; try { await adm(`locatarios/${l.id}`, { metodo: "DELETE" }); recarregarAdm(); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno") : null)));
+    };
+    const tabela = ls => h("div", { class: "tabela-rolagem" }, h("table", { class: "tabela fin-tabela" }, h("thead", {}, h("tr", {}, ["Locatário", "Valor mensal", "Vencimento", "Em aberto", "Contrato", ""].map(c => h("th", { text: c })))), h("tbody", {}, ls.map(linha))));
+    trocar(el, cabeca("Aluguéis e locatários", "Cada locatário gera a cobrança do mês sozinho em A receber. Atraso, multa e juros são calculados; nada é cobrado sem você.",
+      botao("+ Locatário", () => editarLocatario(null), "btn-primario"), h("a", { class: "btn btn-secundario", href: "#/financeiro" }, "Ver no financeiro")),
+      h("section", { class: "grade grade-4" }, metrica("Locatários ativos", String(ativos.length), inativos.length ? `${inativos.length} encerrados` : ""), metrica("Aluguel do mês (total)", dinA(total), "Aluguel + condomínio + outras"),
+        metrica("Em aberto", dinA(aberto), "Cobranças ainda não recebidas"), metrica("Vencido", dinA(vencido), "Já passou do vencimento")),
+      h("section", { class: "cartao vidro", style: "margin-top:12px" }, ativos.length ? tabela(ativos) : vazio("Nenhum locatário", "Cadastre lojas, salas ou inquilinos com o valor e o dia do vencimento.")),
+      inativos.length ? h("details", { class: "cartao vidro", style: "margin-top:12px" }, h("summary", { text: `Contratos encerrados (${inativos.length})` }), tabela(inativos)) : null);
+  }
+
+  // ----- Relatório do mês (layout aprovado)
+  async function admRelatorio(el, vivo) {
+    const mes = admEstado.mes = admEstado.mes || somarMesUi(mesAtualLocal(), new Date().getDate() <= 10 ? -1 : 0);
+    const r = await adm(`relatorio?mes=${mes}`);
+    if (!vivo()) return;
+    admEstado.moeda = r.moeda || "BRL";
+    const trocarMes = n => { admEstado.mes = somarMesUi(mes, n); navegar(); };
+    const tabelaGrupos = (grupos, total, rotulo) => h("div", { class: "tabela-rolagem" }, h("table", { class: "tabela fin-tabela" }, h("thead", {}, h("tr", {}, ["Descrição", "Data", "Forma", "Valor"].map(c => h("th", { text: c })))),
+      h("tbody", {}, grupos.flatMap(g => [h("tr", { class: "fin-grupo" }, h("td", { colspan: "3" }, h("strong", { text: g.categoria })), h("td", {}, h("strong", { text: dinA(g.total) }))),
+        ...g.itens.map(l => h("tr", {}, h("td", { text: l.descricao }), h("td", { text: dataCurtaFin(l.pago_em) }), h("td", { text: l.forma || "—" }), h("td", { text: dinA(l.valor_pago_cent ?? l.valor_cent) })))]),
+        h("tr", { class: "fin-grupo" }, h("td", { colspan: "3" }, h("strong", { text: rotulo })), h("td", {}, h("strong", { text: dinA(total) }))))));
+    const abertoT = (ls, total, rot) => ls.length ? [h("tr", { class: "fin-grupo" }, h("td", { colspan: "3" }, h("strong", { text: rot })), h("td", {}, h("strong", { text: dinA(total) }))), ...ls.map(l => h("tr", {}, h("td", { text: l.descricao }), h("td", { text: dataCurtaFin(l.data) }), h("td", { text: l.contato || "—" }), h("td", { text: dinA(l.valor_cent) })))] : [];
+    const metr = [metrica("Entrou", dinA(r.entrou), "Recebido no mês"), metrica("Saiu", dinA(r.saiu), "Pago no mês"), metrica("Resultado", dinA(r.resultado), r.resultado >= 0 ? "Sobrou no mês" : "Faltou no mês"),
+      metrica("Saldo no banco", r.saldos.some(s => s.tipo === "BANCO") ? dinA(r.banco_cent) : "—", `Em ${dataCurtaFin(r.fim)}`)];
+    if (r.caixa_cent) metr.push(metrica("Dinheiro em caixa", dinA(r.caixa_cent), `Em ${dataCurtaFin(r.fim)}`));
+    trocar(el, cabeca("Relatório do mês", "No modelo aprovado: Entrou, Saiu, Resultado e Saldo no banco; entradas e saídas com total; em aberto; atrasos sem juros; assinatura; e a explicação na página seguinte.",
+      botao("Baixar PDF para assinar", async () => { try { await baixarDaApi(`adm/relatorio.pdf?mes=${mes}`, `relatorio-${mes}.pdf`); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario")),
+      h("div", { class: "fin-mes" }, botao("‹", () => trocarMes(-1), "btn-secundario btn-pequeno", { "aria-label": "Mês anterior" }), h("strong", { text: nomeMesUi(mes) }), botao("›", () => trocarMes(1), "btn-secundario btn-pequeno", { "aria-label": "Próximo mês", disabled: mes >= mesAtualLocal() })),
+      h("section", { class: "grade grade-4" }, metr),
+      h("section", { class: "cartao vidro", style: "margin-top:12px" }, h("h3", { style: "margin:0 0 8px", text: "Entradas" }), r.entradas.length ? tabelaGrupos(r.entradas, r.entrou, "Total de entradas") : listaVazia("Nenhuma entrada recebida no mês.")),
+      h("section", { class: "cartao vidro", style: "margin-top:12px" }, h("h3", { style: "margin:0 0 8px", text: "Saídas" }), r.saidas.length ? tabelaGrupos(r.saidas, r.saiu, "Total de saídas") : listaVazia("Nenhuma saída paga no mês.")),
+      h("section", { class: "cartao vidro", style: "margin-top:12px" }, h("h3", { style: "margin:0 0 8px", text: `Em aberto em ${dataCurtaFin(r.fim)}: ${dinA(r.receber.total)}` }),
+        r.receber.total ? h("div", { class: "tabela-rolagem" }, h("table", { class: "tabela fin-tabela" }, h("thead", {}, h("tr", {}, ["Descrição", "Vencimento", "Quem", "Valor"].map(c => h("th", { text: c })))),
+          h("tbody", {}, ...abertoT(r.receber.mes, r.receber.total_mes, `Do mês (${nomeMesUi(mes)})`), ...abertoT(r.receber.antes, r.receber.total_antes, "De meses anteriores")))) : listaVazia("Nada em aberto no fim do mês.")),
+      h("section", { class: "cartao vidro", style: "margin-top:12px" }, h("h3", { style: "margin:0 0 8px", text: `Pagos com atraso, sem multa e juros: ${r.atrasados.length} · deixou de ser cobrado ${dinA(r.atrasados_deixou)}` }),
+        r.atrasados.length ? h("ul", { class: "prb-lista" }, r.atrasados.map(l => item(`${l.contato || l.descricao} — ${dinA(l.valor_pago_cent ?? l.valor_cent)}`, `venceu ${dataCurtaFin(l.data)} · pago ${dataCurtaFin(l.pago_em)} · ${l.dias} dias · multa + juros do contrato ${dinA(l.deixou_cent)}`))) : listaVazia("Nenhum atraso no mês.")),
+      h("section", { class: "cartao vidro", style: "margin-top:12px" }, h("h3", { style: "margin:0 0 8px", text: "Pontos a conferir" }),
+        r.conferir.length ? h("ul", { class: "prb-lista" }, r.conferir.map(t => item(t, ""))) : listaVazia("Nada a conferir.")));
+  }
+
+  // ----- Ajustes: perfil, resumo diário, calendário no celular, temporada no financeiro e importação
+  async function admAjustes(el, vivo) {
+    const r = await adm("config");
+    if (!vivo()) return;
+    const c = r.config || {};
+    const perfil = h("select", { class: "entrada" }, h("option", { value: "", text: "Escolha…" }), Object.entries(r.perfis).map(([k, v]) => h("option", { value: k, text: v.nome })));
+    perfil.value = c.perfil || "";
+    const resumo = h("input", { type: "checkbox", checked: c.resumo_diario !== 0 }), hora = h("input", { class: "entrada", type: "number", min: "5", max: "22", value: c.hora_resumo || 8 });
+    const emails = entradaTxt(c.emails, "Vazio = dono e administradores"), tp = h("input", { type: "checkbox", checked: Boolean(c.tp_no_fin) });
+    const assin = entradaTxt(String(c.assinaturas || "").split("|").join(", "), "Ex.: Administradora, Proprietário"), cidade = entradaTxt(c.cidade, "Ex.: Rio de Janeiro");
+    const salvar = async () => { try { await adm("config", { metodo: "PUT", corpo: { perfil: perfil.value, resumo_diario: resumo.checked, hora_resumo: Number(hora.value), emails: emails.value, tp_no_fin: tp.checked, assinaturas: assin.value.split(",").map(s => s.trim()).filter(Boolean), cidade: cidade.value } }); aviso("Ajustes salvos.", "ok"); } catch (e) { aviso(e.message, "erro"); } };
+    const link = h("div", {});
+    const mostrarLink = caminho => trocar(link, h("p", { class: "sub", text: "Assine este endereço no celular (iPhone: Ajustes → Calendário → Contas → Adicionar conta → Outra → Adicionar calendário assinado; Google Agenda: Outras agendas → Do URL). Os alarmes chegam também no relógio." }),
+      h("div", { class: "compor" }, h("input", { class: "entrada", type: "text", readonly: true, value: location.origin + caminho }), botao("Copiar", () => copiar(location.origin + caminho), "btn-secundario")),
+      h("div", { class: "acoes" }, h("a", { class: "btn btn-secundario btn-pequeno", href: location.origin.replace(/^https?:/, "webcal:") + caminho }, "Abrir no calendário do celular")));
+    if (c.ical_token) mostrarLink(`/adm/ical/${c.ical_token}.ics`);
+    const arquivo = h("input", { type: "file", accept: ".json,application/json", class: "oculto", onchange: async () => {
+      const f = arquivo.files[0]; arquivo.value = ""; if (!f) return;
+      if (f.size > 2_800_000) return aviso("Arquivo grande demais (máximo 2,8 MB).", "erro");
+      let dados; try { dados = JSON.parse(await f.text()); } catch { return aviso("Este arquivo não é um .json válido.", "erro"); }
+      try { const x = await adm("importar", { metodo: "POST", corpo: { dados: dados.dados || dados } });
+        await modal({ titulo: "Importação concluída", soInformar: true, conteudo: [`Locatários: ${x.locatarios} · Cobranças: ${x.cobrancas} · Contas a pagar: ${x.contas} · Recebimentos: ${x.recebimentos} · Movimentos: ${x.movimentos}`, `Obrigações: ${x.rotinas} · Serviços: ${x.servicos} · Agenda: ${x.agenda} · Documentos: ${x.documentos} · Depósitos/entregas de dinheiro: ${x.transferencias}`, x.ignorados ? `${x.ignorados} registro(s) ignorado(s) (isentos ou sem data/valor).` : "Nada ficou de fora.", "Pode importar o mesmo arquivo de novo: nada é duplicado."] }); }
+      catch (e) { aviso(e.message, "erro"); }
+    } });
+    trocar(el, cabeca("Ajustes e importação", "Como a administração funciona nesta empresa."),
+      h("div", { class: "grade grade-2" },
+        h("section", { class: "cartao vidro" }, h("h3", { style: "margin:0 0 6px", text: "Perfil e relatório" }),
+          campo("Tipo de administração", perfil, "Define as categorias e as obrigações sugeridas."), campo("Quem assina o relatório do mês", assin, "Até 3 nomes, separados por vírgula."), campo("Cidade (para a data da assinatura)", cidade),
+          h("label", { class: "fin-check" }, tp, " Lançar as reservas da temporada como a receber no financeiro"),
+          h("div", { class: "acoes" }, botao("Salvar", salvar, "btn-primario"))),
+        h("section", { class: "cartao vidro" }, h("h3", { style: "margin:0 0 6px", text: "Resumo do dia por e-mail" }),
+          h("p", { class: "sub", text: "Todo dia, no horário escolhido: compromissos, contas vencendo, manutenção, documentos e temporada. Dia sem nada não manda e-mail." }),
+          h("label", { class: "fin-check" }, resumo, " Mandar o resumo do dia"), h("div", { class: "fin-duas" }, campo("Hora (Brasília)", hora), campo("Para", emails)),
+          h("div", { class: "acoes" }, botao("Salvar", salvar, "btn-primario"))),
+        h("section", { class: "cartao vidro" }, h("h3", { style: "margin:0 0 6px", text: "Agenda no celular e no relógio" }),
+          h("p", { class: "sub", text: "Compromissos, contas a pagar e receber, manutenção e documentos aparecem no calendário do iPhone ou do Google, com alarmes." }), link,
+          h("div", { class: "acoes" }, botao(c.ical_token ? "Gerar novo endereço (o antigo para de funcionar)" : "Gerar endereço do calendário", async () => { try { const x = await adm("ical", { metodo: "POST" }); mostrarLink(x.caminho); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario"))),
+        h("section", { class: "cartao vidro" }, h("h3", { style: "margin:0 0 6px", text: "Trazer da Central Administrativa" }),
+          h("p", { class: "sub", text: "Importe o arquivo .json da Central: lojistas, cobranças, contas, recebimentos, movimentos, obrigações, serviços, agenda, documentos e o saldo do banco. Cada empresa da Central vira uma empresa na DENIA." }),
+          arquivo, h("div", { class: "acoes" }, botao("Importar arquivo .json", () => arquivo.click(), "btn-primario")))));
   }
 
   function graficoLinha(pontos, comparacao, nomeAtual, nomeComp) {
