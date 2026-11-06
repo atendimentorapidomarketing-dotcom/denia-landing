@@ -1235,6 +1235,7 @@ async function estaPausado(c, tel) {
 // ============================================================================
 
 function phoneId(env) { return String(env.WHATSAPP_PHONE_NUMBER_ID || PHONE_ID_PADRAO).trim(); }
+export { phoneId as numeroDaIa };
 async function metaPost(env, corpo) {
   if (!env.WHATSAPP_TOKEN) return { ok: false, erro: "WHATSAPP_TOKEN não configurado." };
   try {

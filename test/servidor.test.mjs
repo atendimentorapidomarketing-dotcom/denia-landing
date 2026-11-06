@@ -195,3 +195,31 @@ test("Servidor Node — www vai para o endereço oficial, e o retorno do Google 
     assert.equal((await pedir("/entrar", "denia.test")).status, 200, "o endereço oficial abre normal");
   } finally { await s.parar(); rmSync(pasta, { recursive: true, force: true }); }
 });
+
+test("Servidor Node — webhook do WhatsApp: cada número vai para quem cuida dele, venha pelo endereço da IA ou do chatbot", async () => {
+  const pasta = mkdtempSync(path.join(os.tmpdir(), "denia-srv-"));
+  const s = await iniciar({ env: base({ DENIA_DADOS: pasta, WHATSAPP_PHONE_NUMBER_ID: "111000111" }), porta: 0, ip: "127.0.0.1", semRelogio: true, silencioso: true });
+  try {
+    const req = cliente(s.porta);
+    await req("/entrar"); // cria as tabelas
+    await req("/webhook/whatsapp", { metodo: "POST", corpo: { entry: [] } });
+    const db = new DatabaseSync(path.join(pasta, "denia.db"));
+    db.prepare("INSERT INTO plt_zap_contas(org_id,phone_number_id,config,modo,ativo,atualizado_ms) VALUES(1,'222000222','{}','BOTOES',1,?)").run(Date.now());
+    const msg = (pnid, de, texto) => ({ object: "whatsapp_business_account", entry: [{ changes: [{ field: "messages", value: { metadata: { phone_number_id: pnid }, contacts: [{ wa_id: de, profile: { name: "Ana" } }], messages: [{ id: "wamid." + Math.random().toString(36).slice(2), from: de, timestamp: String(Math.floor(Date.now() / 1000)), type: "text", text: { body: texto } }] } }] }] });
+    // Mensagem do chatbot (Shopping) chegando pelo endereço da IA da Central
+    const r1 = await req("/ia/webhook", { metodo: "POST", corpo: msg("222000222", "5521911110000", "oi shopping") });
+    assert.equal(r1.status, 200);
+    let n = 0;
+    for (let i = 0; i < 40 && !n; i++) { await new Promise(r => setTimeout(r, 50)); n = db.prepare("SELECT COUNT(*) n FROM plt_zap_msgs WHERE org_id=1 AND direcao='E'").get().n; }
+    assert.equal(n, 1, "a mensagem do chatbot chega à plataforma mesmo vindo pelo endereço da IA");
+    // Mensagem da IA da Central chegando pelo endereço do chatbot
+    const r2 = await req("/webhook/whatsapp", { metodo: "POST", corpo: msg("111000111", "5521922220000", "oi central") });
+    assert.equal(r2.status, 200);
+    const dbIa = new DatabaseSync(path.join(pasta, "denia.db"));
+    let f = 0;
+    for (let i = 0; i < 40 && !f; i++) { await new Promise(r => setTimeout(r, 50)); try { f = dbIa.prepare("SELECT COUNT(*) n FROM d30_fila WHERE telefone LIKE '%922220000'").get().n; } catch { f = 0; } }
+    assert.equal(f, 1, "a mensagem da IA chega à IA mesmo vindo pelo endereço do chatbot");
+    assert.equal(db.prepare("SELECT COUNT(*) n FROM plt_zap_msgs WHERE telefone LIKE '%922220000'").get().n, 0, "o chatbot não pega a mensagem da IA");
+    db.close(); dbIa.close();
+  } finally { await s.parar(); rmSync(pasta, { recursive: true, force: true }); }
+});
