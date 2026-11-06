@@ -3937,13 +3937,16 @@ test("Administração — banco e caixa, aluguéis com atraso, relatório no lay
     movimentos: { m1: { tipo: "saida", desc: "Lâmpadas", valor: 50.5, data: "2099-09-21", forma: "Pix", categoria: "Manutenção" } },
     rotinas: { r1: { titulo: "Limpeza da caixa d'água", dias: 180, aviso: 15, ultima: "2099-06-01" } },
     servicos: { s1: { titulo: "Limpeza da caixa d'água", data: "2099-06-01", prestador: "Hidro", valor: 400, rotinaId: "r1" } },
-    agenda: { a1: { titulo: "Reunião com contador", data: "2099-10-25", hora: "10:00" } }
+    agenda: { a1: { titulo: "Reunião com contador", data: "2099-10-25", hora: "10:00" } },
+    centros: { filha: { nome: "Filha", tipo: "Pessoa" } }
   };
+  dados.contas.k2 = { desc: "Escola", valor: 900, venc: "2099-10-10", status: "aberta", categoria: "Escola", centroId: "filha" };
   const imp = await ok(A + "/importar", { metodo: "POST", corpo: { dados } });
-  assert.deepEqual([imp.locatarios, imp.cobrancas, imp.contas, imp.movimentos, imp.rotinas, imp.servicos, imp.agenda, imp.transferencias, imp.ignorados], [1, 1, 1, 1, 1, 1, 1, 1, 1]);
+  assert.deepEqual([imp.locatarios, imp.cobrancas, imp.contas, imp.movimentos, imp.rotinas, imp.servicos, imp.agenda, imp.transferencias, imp.ignorados, imp.centros], [1, 1, 2, 1, 1, 1, 1, 1, 1, 1]);
   const imp2 = await ok(A + "/importar", { metodo: "POST", corpo: { dados } });
   assert.deepEqual([imp2.cobrancas, imp2.contas, imp2.movimentos, imp2.servicos, imp2.agenda, imp2.transferencias], [0, 0, 0, 0, 0, 0], "não duplica");
   assert.equal(p.env.DB.q("SELECT COUNT(*) n FROM adm_locatarios WHERE nome='Barbearia'")[0].n, 1);
+  assert.equal(p.env.DB.q("SELECT centro FROM fin_lanc WHERE descricao='Escola'")[0].centro, "Filha", "conta ligada ao centro de custo");
   const set = await ok(A + "/relatorio?mes=2099-09");
   assert.equal(set.entrou, 150000); assert.equal(set.saiu, 20000 + 5050);
   assert.equal(set.transferencias.length, 1, "o dinheiro depositado aparece como movimento entre contas, não como saída");
