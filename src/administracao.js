@@ -485,6 +485,15 @@ export async function importarCentral(env, orgId, dados, quem, agoraMs) {
   if (!contas.some(c => c.tipo === "CAIXA")) await env.DB.prepare("INSERT INTO adm_contas(org_id,nome,tipo,saldo_cent,saldo_em,padrao,criado_ms) VALUES(?,'Dinheiro em espécie (caixa)','CAIXA',?,?,0,?)").bind(orgId, cents(bancoCfg?.caixaSaldo), dt(bancoCfg?.caixaEm) || "2000-01-01", agoraMs).run();
   contas = await contasDa(env, orgId);
   const banco = contas.find(c => c.tipo === "BANCO"), caixa = contas.find(c => c.tipo === "CAIXA");
+  // Centros de custo (imóveis, pessoas, bens): cada conta fica ligada ao seu.
+  const mapaCentro = new Map(); n.centros = 0;
+  for (const c of lista(dados.centros)) {
+    const nome = re(c.nome, 120); if (!nome) continue;
+    let x = await env.DB.prepare("SELECT id FROM adm_cadastros WHERE org_id=? AND tipo='CENTRO' AND lower(nome)=lower(?)").bind(orgId, nome).first();
+    if (!x) { await env.DB.prepare("INSERT INTO adm_cadastros(org_id,tipo,nome,subtipo,endereco,obs,ativo,criado_ms) VALUES(?,'CENTRO',?,?,?,?,1,?)").bind(orgId, nome, re(c.tipo, 60) || null, re(c.endereco, 200) || null, re(c.obs, 500) || null, agoraMs).run(); n.centros++; }
+    mapaCentro.set(c.id, nome);
+  }
+  const centroDe = x => mapaCentro.get(x?.centroId) || null;
   // Locatários (lojistas).
   const mapaLoc = new Map();
   for (const l of lista(dados.lojistas)) {
@@ -539,14 +548,22 @@ export async function importarCentral(env, orgId, dados, quem, agoraMs) {
   }
   for (const c of lista(dados.receber)) {
     const v = cents(c.valor), venc = dt(c.venc); if (!v || !venc) { n.ignorados++; continue; }
-    await recebido({ tipo: "ENTRADA", descricao: c.desc, valor_cent: v, categoria: c.categoria || "Outras receitas", data: venc, contato: c.pagador, obs: c.obs, chave: `central:rec:${c.id}` }, c, () => n.recebimentos++);
+    await recebido({ tipo: "ENTRADA", descricao: c.desc, valor_cent: v, categoria: c.categoria || "Outras receitas", data: venc, contato: c.pagador, obs: c.obs, centro: centroDe(c), chave: `central:rec:${c.id}` }, c, () => n.recebimentos++);
   }
   for (const c of lista(dados.contas)) {
-    const v = cents(c.valor), venc = dt(c.venc); if (!v || !venc) { n.ignorados++; continue; }
+    const v = cents(c.valor), venc = dt(c.venc);
+    // Conta de valor variável ainda sem valor (fatura do cartão, por exemplo): vira lembrete na agenda no vencimento.
+    if (!v && venc && re(c.desc) && c.status !== "paga") {
+      const r = await env.DB.prepare("INSERT OR IGNORE INTO adm_agenda(org_id,titulo,data,prioridade,aviso_min,obs,externo,criado_ms) VALUES(?,?,?,'ALTA',1440,?,?,?)")
+        .bind(orgId, `Conta a pagar (confirmar o valor): ${re(c.desc, 120)}`, venc, "Lance o valor no Financeiro quando chegar a fatura.", `central:conta0:${c.id}`, agoraMs).run();
+      if (r.meta?.changes) n.agenda++;
+      continue;
+    }
+    if (!v || !venc) { n.ignorados++; continue; }
     const pago = c.status === "paga";
     // "Paga fora da conta" na Central não entra nos números (ex.: paga por outra pessoa): fica de fora aqui também.
     if (pago && c.foraDaConta) { n.fora_da_conta++; continue; }
-    if (await lancar({ tipo: "SAIDA", descricao: c.desc, valor_cent: v, categoria: c.categoria, data: venc, pago, pago_em: dt(c.pagoEm), forma: c.forma, contato: c.fornecedor, obs: c.obs, chave: `central:conta:${c.id}`, valor_pago_cent: pago && Number(c.valorPago) > 0 ? cents(c.valorPago) : undefined })) n.contas++;
+    if (await lancar({ tipo: "SAIDA", descricao: c.desc, valor_cent: v, categoria: c.categoria, data: venc, pago, pago_em: dt(c.pagoEm), forma: c.forma, contato: c.fornecedor, obs: c.obs, centro: centroDe(c), chave: `central:conta:${c.id}`, valor_pago_cent: pago && Number(c.valorPago) > 0 ? cents(c.valorPago) : undefined })) n.contas++;
   }
   for (const m of lista(dados.movimentos)) {
     const v = cents(m.valor), d = dt(m.data); if (!v || !d || m.vinculo || m.ignorado) { n.ignorados++; continue; }
