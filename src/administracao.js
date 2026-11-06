@@ -7,6 +7,7 @@
 import { garantirFinanceiro, dinheiro, centavos, dataValida, mesValido, nomeMes, CATEGORIAS_PERFIL } from "./financeiro.js";
 export { CATEGORIAS_PERFIL };
 import { gerarPdf } from "./pdf.js";
+import { gerarXlsx } from "./planilha.js";
 
 export const DDL_ADMIN = [
   `CREATE TABLE IF NOT EXISTS adm_config (org_id INTEGER PRIMARY KEY, perfil TEXT, ical_token TEXT, resumo_diario INTEGER NOT NULL DEFAULT 1,
@@ -36,14 +37,22 @@ export const DDL_ADMIN = [
   // Dinheiro que muda de lugar sem ser receita nem despesa: depósito do caixa no banco, ou dinheiro entregue a uma pessoa.
   `CREATE TABLE IF NOT EXISTS adm_transf (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, de_id INTEGER, para_id INTEGER, para_nome TEXT,
     valor_cent INTEGER NOT NULL, data TEXT NOT NULL, obs TEXT, externo TEXT, criado_por TEXT, criado_ms INTEGER)`,
-  "CREATE UNIQUE INDEX IF NOT EXISTS adm_transf_ext ON adm_transf(org_id, externo)"
+  "CREATE UNIQUE INDEX IF NOT EXISTS adm_transf_ext ON adm_transf(org_id, externo)",
+  // Cadastros: fornecedores e prestadores, e centros de custo (imóvel, pessoa, veículo, unidade…).
+  `CREATE TABLE IF NOT EXISTS adm_cadastros (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, tipo TEXT NOT NULL, nome TEXT NOT NULL, subtipo TEXT, telefone TEXT, email TEXT,
+    pix TEXT, documento TEXT, endereco TEXT, obs TEXT, ativo INTEGER NOT NULL DEFAULT 1, criado_ms INTEGER)`,
+  "CREATE INDEX IF NOT EXISTS adm_cadastros_org ON adm_cadastros(org_id, tipo)",
+  // Mês isento de aluguel (a cobrança daquele mês não é gerada).
+  "CREATE TABLE IF NOT EXISTS adm_isencoes (org_id INTEGER NOT NULL, locatario_id INTEGER NOT NULL, mes TEXT NOT NULL, motivo TEXT, por TEXT, ms INTEGER, PRIMARY KEY (org_id, locatario_id, mes))"
 ];
+const ALTERS_ADMIN = ["ALTER TABLE adm_locatarios ADD COLUMN periodicidade TEXT", "ALTER TABLE adm_locatarios ADD COLUMN dia_semana INTEGER", "ALTER TABLE adm_config ADD COLUMN recibo_emissor TEXT"];
 
 const prontos = new WeakSet();
 export async function garantirAdmin(env) {
   if (prontos.has(env.DB)) return;
   await garantirFinanceiro(env); // cria fin_lanc com as colunas de conta, locatário e valor pago
   for (const s of DDL_ADMIN) await env.DB.prepare(s).run();
+  for (const s of ALTERS_ADMIN) await env.DB.prepare(s).run().catch(() => { });
   prontos.add(env.DB);
 }
 
@@ -154,11 +163,19 @@ export async function saldosNa(env, orgId, data) {
   const minimo = contas.reduce((m, c) => c.saldo_em < m ? c.saldo_em : m, data), maximo = contas.reduce((m, c) => c.saldo_em > m ? c.saldo_em : m, data);
   const lanc = (await env.DB.prepare("SELECT id, tipo, valor_cent, valor_pago_cent, forma, conta_id, pago_em FROM fin_lanc WHERE org_id=? AND pago=1 AND pago_em > ? AND pago_em <= ?").bind(orgId, minimo, maximo).all()).results || [];
   const tr = (await env.DB.prepare("SELECT * FROM adm_transf WHERE org_id=? AND data > ? AND data <= ?").bind(orgId, minimo, maximo).all()).results || [];
+  // Pagamento dividido (parte Pix, parte dinheiro): cada parte vai para a sua conta.
+  const partes = (await env.DB.prepare("SELECT p.* FROM fin_partes p JOIN fin_lanc l ON l.id=p.lanc_id WHERE p.org_id=? AND l.pago=1 AND l.pago_em > ? AND l.pago_em <= ?").bind(orgId, minimo, maximo).all()).results || [];
+  const porLanc = new Map(); for (const x of partes) { if (!porLanc.has(x.lanc_id)) porLanc.set(x.lanc_id, []); porLanc.get(x.lanc_id).push(x); }
   return contas.map(c => {
     // Movimento entre (a, b]: positivo = entrou na conta.
     const mov = (a, b) => {
       let s = 0;
-      for (const l of lanc) if (l.pago_em > a && l.pago_em <= b && contaDoLancamento(l, contas) === c.id) s += (l.tipo === "ENTRADA" ? 1 : -1) * valorDe(l);
+      for (const l of lanc) {
+        if (!(l.pago_em > a && l.pago_em <= b)) continue;
+        const sinal = l.tipo === "ENTRADA" ? 1 : -1, ps = porLanc.get(l.id);
+        if (ps && ps.length) { for (const x of ps) if (contaDoLancamento({ conta_id: x.conta_id, forma: x.forma }, contas) === c.id) s += sinal * x.valor_cent; }
+        else if (contaDoLancamento(l, contas) === c.id) s += sinal * valorDe(l);
+      }
       for (const t of tr) if (t.data > a && t.data <= b) { if (t.para_id === c.id) s += t.valor_cent; if (t.de_id === c.id) s -= t.valor_cent; }
       return s;
     };
@@ -174,15 +191,22 @@ export async function gerarCobrancas(env, orgId, mes, agoraMs) {
   await garantirAdmin(env);
   const fimMes = `${mes}-${String(ultimoDia(mes)).padStart(2, "0")}`;
   const ls = (await env.DB.prepare("SELECT * FROM adm_locatarios WHERE org_id=? AND ativo=1 AND (inicio IS NULL OR inicio <= ?) AND (fim IS NULL OR fim = '' OR fim >= ?)").bind(orgId, fimMes, mes + "-01").all()).results || [];
+  const isentos = new Set(((await env.DB.prepare("SELECT locatario_id FROM adm_isencoes WHERE org_id=? AND mes=?").bind(orgId, mes).all()).results || []).map(x => x.locatario_id));
   let n = 0;
   for (const l of ls) {
     const total = (l.aluguel_cent || 0) + (l.condominio_cent || 0) + (l.outras_cent || 0);
-    if (total <= 0) continue;
-    const data = `${mes}-${String(Math.min(Math.max(1, l.dia_venc || 5), ultimoDia(mes))).padStart(2, "0")}`;
-    const r = await env.DB.prepare(`INSERT OR IGNORE INTO fin_lanc(org_id,tipo,descricao,valor_cent,categoria,data,pago,contato,locatario_id,competencia,origem,chave_externa,criado_por,criado_ms,atualizado_ms)
-      VALUES(?,'ENTRADA',?,?,'Aluguéis recebidos',?,0,?,?,?,'aluguel',?,'DENIA',?,?)`)
-      .bind(orgId, `Aluguel ${nomeMes(mes)}${l.unidade ? " — " + l.unidade : ""} — ${l.nome}`, total, data, l.nome, l.id, mes, `alug:${l.id}:${mes}`, agoraMs, agoraMs).run();
-    if (r.meta?.changes) n++;
+    if (total <= 0 || isentos.has(l.id)) continue;
+    // Aluguel semanal: uma cobrança por semana, no dia da semana combinado.
+    const datas = l.periodicidade === "semanal"
+      ? Array.from({ length: ultimoDia(mes) }, (_, i) => `${mes}-${String(i + 1).padStart(2, "0")}`).filter(d => new Date(d + "T12:00:00Z").getUTCDay() === (l.dia_semana ?? 1) && (!l.inicio || d >= l.inicio) && (!l.fim || d <= l.fim))
+      : [`${mes}-${String(Math.min(Math.max(1, l.dia_venc || 5), ultimoDia(mes))).padStart(2, "0")}`];
+    for (const data of datas) {
+      const semanal = l.periodicidade === "semanal";
+      const r = await env.DB.prepare(`INSERT OR IGNORE INTO fin_lanc(org_id,tipo,descricao,valor_cent,categoria,data,pago,contato,locatario_id,competencia,origem,chave_externa,criado_por,criado_ms,atualizado_ms)
+        VALUES(?,'ENTRADA',?,?,'Aluguéis recebidos',?,0,?,?,?,'aluguel',?,'DENIA',?,?)`)
+        .bind(orgId, `Aluguel ${semanal ? `semanal (venc. ${br(data)})` : nomeMes(mes)}${l.unidade ? " — " + l.unidade : ""} — ${l.nome}`, total, data, l.nome, l.id, mes, semanal ? `alug:${l.id}:${data}` : `alug:${l.id}:${mes}`, agoraMs, agoraMs).run();
+      if (r.meta?.changes) n++;
+    }
   }
   return n;
 }
@@ -252,9 +276,10 @@ export function textoDoDia(d, empresa, moeda = "BRL") {
 // ---------------------------------------------------------------------------
 // Relatório do mês no layout aprovado
 // ---------------------------------------------------------------------------
-export async function relatorioDoMes(env, orgId, mes, agoraMs) {
+export async function relatorioDoMes(env, orgId, mes, agoraMs, periodo = null) {
   await garantirAdmin(env);
-  const ini = mes + "-01", fim = `${mes}-${String(ultimoDia(mes)).padStart(2, "0")}`, hoje = hojeLocal(agoraMs);
+  // Período livre (trimestre, ano, datas escolhidas) ou o mês.
+  const ini = periodo ? periodo.de : mes + "-01", fim = periodo ? periodo.ate : `${mes}-${String(ultimoDia(mes)).padStart(2, "0")}`, hoje = hojeLocal(agoraMs);
   const corte = fim < hoje ? fim : hoje;
   const q = async (sql, ...a) => (await env.DB.prepare(sql).bind(...a).all()).results || [];
   const pagos = await q("SELECT * FROM fin_lanc WHERE org_id=? AND pago=1 AND pago_em BETWEEN ? AND ? ORDER BY pago_em, id", orgId, ini, fim);
@@ -296,7 +321,7 @@ export async function relatorioDoMes(env, orgId, mes, agoraMs) {
   const acima = pagos.filter(l => l.tipo === "SAIDA").sort((a, b) => valorDe(b) - valorDe(a))[0];
   if (acima && saiu && valorDe(acima) >= saiu * 0.3) conferir.push(`A maior saída foi "${acima.descricao}" (${dinheiro(valorDe(acima))}), ${Math.round(100 * valorDe(acima) / saiu)}% de tudo que saiu.`);
   return {
-    mes, nome: nomeMes(mes), inicio: ini, fim, corte, entrou, saiu, resultado: entrou - saiu, entradas, saidas,
+    mes, nome: periodo ? (periodo.nome || `${br(ini)} a ${br(fim)}`) : nomeMes(mes), periodo: Boolean(periodo), inicio: ini, fim, corte, entrou, saiu, resultado: entrou - saiu, entradas, saidas,
     banco_cent: banco.reduce((s, b) => s + b.saldo_cent, 0), caixa_cent: caixa.reduce((s, b) => s + b.saldo_cent, 0), saldos,
     receber: { mes: doMes(receber), antes: antes(receber), total: soma(receber), total_mes: soma(doMes(receber)), total_antes: soma(antes(receber)) },
     pagar: { mes: doMes(pagar), antes: antes(pagar), total: soma(pagar) },
@@ -330,8 +355,8 @@ export function pdfRelatorioMes(r, empresa, { moeda = "BRL", assinaturas = [], c
   const lab = r.receber;
   if (lab.total) {
     const linhas = [];
-    if (lab.mes.length) { linhas.push({ celulas: [`Do mês (${r.nome})`, "", "", f(lab.total_mes)], negrito: true, fundo: "#eef2f7" }); for (const l of lab.mes) linhas.push([`   ${l.descricao}`, br(l.data), l.contato || "", f(l.valor_cent)]); }
-    if (lab.antes.length) { linhas.push({ celulas: ["De meses anteriores", "", "", f(lab.total_antes)], negrito: true, fundo: "#eef2f7" }); for (const l of lab.antes) linhas.push([`   ${l.descricao}`, br(l.data), l.contato || "", f(l.valor_cent)]); }
+    if (lab.mes.length) { linhas.push({ celulas: [r.periodo ? `Do período (${r.nome})` : `Do mês (${r.nome})`, "", "", f(lab.total_mes)], negrito: true, fundo: "#eef2f7" }); for (const l of lab.mes) linhas.push([`   ${l.descricao}`, br(l.data), l.contato || "", f(l.valor_cent)]); }
+    if (lab.antes.length) { linhas.push({ celulas: [r.periodo ? "Antes do período" : "De meses anteriores", "", "", f(lab.total_antes)], negrito: true, fundo: "#eef2f7" }); for (const l of lab.antes) linhas.push([`   ${l.descricao}`, br(l.data), l.contato || "", f(l.valor_cent)]); }
     linhas.push({ celulas: ["Total em aberto", "", "", f(lab.total)], negrito: true, fundo: "#e5e7eb" });
     tabelas.push({ titulo: `Em aberto em ${br(r.fim)} (a receber)`, t: { tipo: "tabela", colunas: ["Descrição", "Vencimento", "Quem", "Valor"], larguras: [3, 1, 1.3, 1.2], alinharDireita: [3], linhas } });
   }
@@ -346,7 +371,7 @@ export function pdfRelatorioMes(r, empresa, { moeda = "BRL", assinaturas = [], c
     if (x.t) blocos.push(i === tabelas.length - 1 ? { ...x.t, reservaFim: SIG } : x.t);
     else blocos.push({ tipo: "texto", texto: x.vazio });
   });
-  blocos.push({ tipo: "assinatura", local: `${cidade ? cidade + ", " : ""}____ de ______________ de ${r.mes.slice(0, 4)}.`, nomes: assinaturas.length ? assinaturas : ["Responsável pela administração", "Proprietário"] });
+  blocos.push({ tipo: "assinatura", local: `${cidade ? cidade + ", " : ""}____ de ______________ de ${r.fim.slice(0, 4)}.`, nomes: assinaturas.length ? assinaturas : ["Responsável pela administração", "Proprietário"] });
   // Próxima página: explicação simples e o que conferir.
   blocos.push({ tipo: "quebra" }, { tipo: "titulo", texto: "Como ler este relatório" });
   const exp = [
@@ -360,7 +385,43 @@ export function pdfRelatorioMes(r, empresa, { moeda = "BRL", assinaturas = [], c
   blocos.push({ tipo: "lista", itens: exp.map(t => ({ texto: t })) });
   blocos.push({ tipo: "titulo", texto: "Pontos a conferir" });
   blocos.push(r.conferir.length ? { tipo: "lista", itens: r.conferir.map(t => ({ texto: t, cor: "#d97706" })) } : { tipo: "texto", texto: "Nada a conferir: todos os lançamentos do mês têm categoria e as contas estão com saldo informado." });
-  return gerarPdf({ titulo: "Relatório do mês", subtitulo: `${empresa ? empresa + " · " : ""}${r.nome}`, rodape: "DENIA · valores conforme lançados na plataforma", corPrincipal: "#1e3a8a", logo, blocos });
+  return gerarPdf({ titulo: r.periodo ? "Relatório do período" : "Relatório do mês", subtitulo: `${empresa ? empresa + " · " : ""}${r.nome}`, rodape: "DENIA · valores conforme lançados na plataforma", corPrincipal: "#1e3a8a", logo, blocos });
+}
+
+// ---------------------------------------------------------------------------
+// Recibo de pagamento (aluguel ou qualquer recebimento), com o valor por extenso.
+// ---------------------------------------------------------------------------
+const UN = ["", "um", "dois", "três", "quatro", "cinco", "seis", "sete", "oito", "nove", "dez", "onze", "doze", "treze", "quatorze", "quinze", "dezesseis", "dezessete", "dezoito", "dezenove"];
+const DZ = ["", "", "vinte", "trinta", "quarenta", "cinquenta", "sessenta", "setenta", "oitenta", "noventa"];
+const CT = ["", "cento", "duzentos", "trezentos", "quatrocentos", "quinhentos", "seiscentos", "setecentos", "oitocentos", "novecentos"];
+function ate999(n) {
+  if (n === 0) return ""; if (n === 100) return "cem";
+  const c = Math.floor(n / 100), r = n % 100, p = [];
+  if (c) p.push(CT[c]);
+  if (r) p.push(r < 20 ? UN[r] : DZ[Math.floor(r / 10)] + (r % 10 ? " e " + UN[r % 10] : ""));
+  return p.join(" e ");
+}
+export function porExtenso(cent) {
+  const reais = Math.floor(Math.abs(cent) / 100), cts = Math.abs(cent) % 100;
+  const grupos = [[1e9, "bilhão", "bilhões"], [1e6, "milhão", "milhões"], [1e3, "mil", "mil"]];
+  let n = reais; const partes = [];
+  for (const [v, s1, sN] of grupos) { const q = Math.floor(n / v); if (q) { partes.push(v === 1e3 && q === 1 ? "mil" : `${ate999(q)} ${q === 1 ? s1 : sN}`); n %= v; } }
+  if (n) partes.push(ate999(n));
+  let txt = partes.length > 1 && (n && (n < 100 || n % 100 === 0)) ? partes.slice(0, -1).join(" ") + " e " + partes[partes.length - 1] : partes.join(" ");
+  if (reais) txt += reais === 1 ? " real" : (reais % 1e6 === 0 ? " de reais" : " reais");
+  if (cts) txt += (reais ? " e " : "") + ate999(cts) + (cts === 1 ? " centavo" : " centavos");
+  return txt || "zero real";
+}
+export function pdfRecibo(l, { empresa = "", emissor = "", cidade = "", moeda = "BRL" } = {}) {
+  const v = valorDe(l);
+  const ref = l.competencia && mesValido(l.competencia) && /alug/i.test(l.categoria || l.descricao) ? `aluguel de ${nomeMes(l.competencia)}` : l.descricao;
+  const texto = `Recebi de ${l.contato || "____________________"} a quantia de ${dinheiro(v, moeda)} (${porExtenso(v)}), referente a ${ref}, paga em ${br(l.pago_em)}${l.forma ? " por " + l.forma.toLowerCase() : ""}.`;
+  return gerarPdf({ titulo: "Recibo", subtitulo: `${emissor || empresa}`, rodape: `Recibo nº ${l.id} · DENIA`, corPrincipal: "#1e3a8a", blocos: [
+    { tipo: "metricas", itens: [{ rotulo: "Valor", valor: dinheiro(v, moeda), nota: `Pago em ${br(l.pago_em)}`, cor: "#16a34a" }] },
+    { tipo: "texto", texto, tamanho: 12 },
+    { tipo: "espaco", altura: 10 },
+    { tipo: "assinatura", local: `${cidade ? cidade + ", " : ""}${br(l.pago_em)}.`, nomes: [emissor || empresa || "Recebedor"] }
+  ] });
 }
 
 // ---------------------------------------------------------------------------
@@ -721,18 +782,31 @@ export async function rotasAdmin(request, env, k, orgId, papel, resto) {
       if ([al, co, ou].some(x => x === null || x < 0)) return "Valores inválidos.";
       return { nome: re(v.nome, 120), unidade: re(v.unidade, 60) || null, responsavel: re(v.responsavel, 120) || null, documento: re(v.documento, 30) || null, email: emailOk(v.email) ? v.email : null, telefone: re(v.telefone, 30) || null,
         aluguel_cent: al || 0, condominio_cent: co || 0, outras_cent: ou || 0, dia_venc: inteiro(v.dia_venc, 1, 31, 5), inicio: dataValida(v.inicio) ? v.inicio : null, fim: dataValida(v.fim) ? v.fim : null,
-        reajuste_mes: inteiro(v.reajuste_mes, 1, 12, null), indice: re(v.indice, 20) || null, multa_pct: pctNum(v.multa_pct), juros_pct: pctNum(v.juros_pct), garantia: re(v.garantia, 120) || null, ativo: v.ativo === false || v.ativo === 0 ? 0 : 1, obs: re(v.obs, 800) || null };
+        reajuste_mes: inteiro(v.reajuste_mes, 1, 12, null), indice: re(v.indice, 20) || null, multa_pct: pctNum(v.multa_pct), juros_pct: pctNum(v.juros_pct), garantia: re(v.garantia, 120) || null, ativo: v.ativo === false || v.ativo === 0 ? 0 : 1, obs: re(v.obs, 800) || null,
+        periodicidade: v.periodicidade === "semanal" ? "semanal" : "mensal", dia_semana: inteiro(v.dia_semana, 0, 6, 1) };
     };
     if (metodo === "GET" && !id1) {
       await gerarCobrancas(env, orgId, hoje.slice(0, 7), ms);
       const ls = (await env.DB.prepare("SELECT * FROM adm_locatarios WHERE org_id=? ORDER BY ativo DESC, unidade, nome").bind(orgId).all()).results || [];
       const abertos = (await env.DB.prepare("SELECT * FROM fin_lanc WHERE org_id=? AND tipo='ENTRADA' AND pago=0 AND locatario_id IS NOT NULL ORDER BY data").bind(orgId).all()).results || [];
-      return json({ hoje, locatarios: ls.map(l => {
+      const isencoes = (await env.DB.prepare("SELECT * FROM adm_isencoes WHERE org_id=? AND mes >= ? ORDER BY mes").bind(orgId, somarMes(hoje.slice(0, 7), -12)).all()).results || [];
+      return json({ hoje, isencoes, locatarios: ls.map(l => {
         const ab = abertos.filter(a => a.locatario_id === l.id).map(a => ({ ...a, ...encargosAtraso(a.valor_cent, a.data, hoje, l.multa_pct, l.juros_pct) }));
         const reajusteProximo = l.reajuste_mes ? (() => { const m = Number(hoje.slice(5, 7)); const ano = Number(hoje.slice(0, 4)) + (l.reajuste_mes < m ? 1 : 0); return `${ano}-${String(l.reajuste_mes).padStart(2, "0")}`; })() : null;
         return { ...l, em_aberto: ab, em_aberto_cent: ab.reduce((s, a) => s + a.valor_cent, 0), vencido_cent: ab.filter(a => a.data < hoje).reduce((s, a) => s + a.valor_cent, 0), reajuste_proximo: reajusteProximo,
           contrato_vence_dias: l.fim ? diasEntre(hoje, l.fim) : null };
       }) });
+    }
+    // Isentar o aluguel de um mês (ou desfazer a isenção). A cobrança em aberto daquele mês sai do a receber.
+    if (metodo === "POST" && id1 && partes[2] === "isentar") {
+      const { c, erro } = await corpo(); if (erro) return erro;
+      const mes = mesValido(c.mes) ? c.mes : null; if (!mes) return json({ erro: "Escolha o mês." }, 400);
+      if (c.desfazer) { await env.DB.prepare("DELETE FROM adm_isencoes WHERE org_id=? AND locatario_id=? AND mes=?").bind(orgId, id1, mes).run(); await gerarCobrancas(env, orgId, mes, ms); return json({ ok: true }); }
+      const pagos = await env.DB.prepare("SELECT COUNT(*) n FROM fin_lanc WHERE org_id=? AND locatario_id=? AND competencia=? AND pago=1").bind(orgId, id1, mes).first();
+      if (pagos?.n) return json({ erro: "Este mês já tem pagamento registrado. Desfaça o recebimento antes de isentar." }, 409);
+      await env.DB.prepare("INSERT OR REPLACE INTO adm_isencoes(org_id,locatario_id,mes,motivo,por,ms) VALUES(?,?,?,?,?,?)").bind(orgId, id1, mes, re(c.motivo, 200) || null, quem, ms).run();
+      const apagados = await env.DB.prepare("DELETE FROM fin_lanc WHERE org_id=? AND locatario_id=? AND competencia=? AND pago=0 AND origem='aluguel'").bind(orgId, id1, mes).run();
+      return json({ ok: true, removidas: apagados.meta?.changes || 0 });
     }
     if (metodo === "POST" && partes[1] === "gerar") {
       const mes = mesValido(url.searchParams.get("mes")) ? url.searchParams.get("mes") : hoje.slice(0, 7);
@@ -743,6 +817,7 @@ export async function rotasAdmin(request, env, k, orgId, papel, resto) {
       const v = validar(c); if (typeof v === "string") return json({ erro: v }, 400);
       const r = await env.DB.prepare(`INSERT INTO adm_locatarios(org_id,nome,unidade,responsavel,documento,email,telefone,aluguel_cent,condominio_cent,outras_cent,dia_venc,inicio,fim,reajuste_mes,indice,multa_pct,juros_pct,garantia,ativo,obs,criado_ms)
         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(orgId, v.nome, v.unidade, v.responsavel, v.documento, v.email, v.telefone, v.aluguel_cent, v.condominio_cent, v.outras_cent, v.dia_venc, v.inicio, v.fim, v.reajuste_mes, v.indice, v.multa_pct, v.juros_pct, v.garantia, v.ativo, v.obs, ms).run();
+      await env.DB.prepare("UPDATE adm_locatarios SET periodicidade=?, dia_semana=? WHERE id=?").bind(v.periodicidade, v.dia_semana, r.meta?.last_row_id).run();
       await gerarCobrancas(env, orgId, hoje.slice(0, 7), ms);
       return json({ ok: true, id: r.meta?.last_row_id }, 201);
     }
@@ -754,6 +829,7 @@ export async function rotasAdmin(request, env, k, orgId, papel, resto) {
         const v = validar(c, atual); if (typeof v === "string") return json({ erro: v }, 400);
         await env.DB.prepare(`UPDATE adm_locatarios SET nome=?,unidade=?,responsavel=?,documento=?,email=?,telefone=?,aluguel_cent=?,condominio_cent=?,outras_cent=?,dia_venc=?,inicio=?,fim=?,reajuste_mes=?,indice=?,multa_pct=?,juros_pct=?,garantia=?,ativo=?,obs=? WHERE id=?`)
           .bind(v.nome, v.unidade, v.responsavel, v.documento, v.email, v.telefone, v.aluguel_cent, v.condominio_cent, v.outras_cent, v.dia_venc, v.inicio, v.fim, v.reajuste_mes, v.indice, v.multa_pct, v.juros_pct, v.garantia, v.ativo, v.obs, id1).run();
+        await env.DB.prepare("UPDATE adm_locatarios SET periodicidade=?, dia_semana=? WHERE id=?").bind(v.periodicidade, v.dia_semana, id1).run();
         return json({ ok: true });
       }
       // Encerrar: deixa de gerar cobranças (o histórico continua).
@@ -825,14 +901,63 @@ export async function rotasAdmin(request, env, k, orgId, papel, resto) {
     if (id1 && metodo === "DELETE") { await env.DB.prepare("UPDATE adm_contas SET ativo=0 WHERE id=? AND org_id=?").bind(id1, orgId).run(); return json({ ok: true }); }
   }
 
-  // ----- Relatório do mês
-  if (area === "relatorio" || area === "relatorio.pdf") {
+  // ----- Cadastros: fornecedores/prestadores e centros de custo
+  if (area === "cadastros") {
+    if (metodo === "GET" && !id1) {
+      const tipo = url.searchParams.get("tipo");
+      const itens = (await env.DB.prepare(`SELECT * FROM adm_cadastros WHERE org_id=?${tipo ? " AND tipo=?" : ""} ORDER BY ativo DESC, nome`).bind(...(tipo ? [orgId, tipo] : [orgId])).all()).results || [];
+      return json({ itens });
+    }
+    if ((metodo === "POST" && !id1) || (metodo === "PUT" && id1)) {
+      const { c, erro } = await corpo(); if (erro) return erro;
+      const tipo = c.tipo === "CENTRO" ? "CENTRO" : "FORNECEDOR";
+      if (!re(c.nome)) return json({ erro: tipo === "CENTRO" ? "Escreva o nome (ex.: Apto 302, Carro, Filha)." : "Escreva o nome do fornecedor." }, 400);
+      const vals = [tipo, re(c.nome, 120), re(c.subtipo, 60) || null, re(c.telefone, 30) || null, emailOk(c.email) ? c.email : null, re(c.pix, 120) || null, re(c.documento, 30) || null, re(c.endereco, 200) || null, re(c.obs, 500) || null, c.ativo === false ? 0 : 1];
+      if (metodo === "POST") { const r = await env.DB.prepare("INSERT INTO adm_cadastros(org_id,tipo,nome,subtipo,telefone,email,pix,documento,endereco,obs,ativo,criado_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)").bind(orgId, ...vals, ms).run(); return json({ ok: true, id: r.meta?.last_row_id }, 201); }
+      const r = await env.DB.prepare("UPDATE adm_cadastros SET tipo=?,nome=?,subtipo=?,telefone=?,email=?,pix=?,documento=?,endereco=?,obs=?,ativo=? WHERE id=? AND org_id=?").bind(...vals, id1, orgId).run();
+      return r.meta?.changes ? json({ ok: true }) : json({ erro: "Cadastro não encontrado." }, 404);
+    }
+    if (id1 && metodo === "DELETE") { await env.DB.prepare("UPDATE adm_cadastros SET ativo=0 WHERE id=? AND org_id=?").bind(id1, orgId).run(); return json({ ok: true }); }
+  }
+
+  // ----- Recibo de um recebimento (PDF) e envio ao e-mail do próprio pagador
+  if (area === "recibo" && id1) {
+    const l = await env.DB.prepare("SELECT * FROM fin_lanc WHERE id=? AND org_id=?").bind(id1, orgId).first();
+    if (!l || l.tipo !== "ENTRADA" || !l.pago) return json({ erro: "O recibo é só para recebimentos já registrados." }, 400);
+    const c = await config(), pdf = pdfRecibo(l, { empresa: await empresa(), emissor: c.recibo_emissor || "", cidade: c.cidade || "", moeda: await moeda() });
+    if (metodo === "GET") return new Response(pdf, { headers: { "content-type": "application/pdf", "content-disposition": `inline; filename="recibo-${l.id}.pdf"`, "cache-control": "no-store" } });
+    if (metodo === "POST" && partes[2] === "enviar") {
+      // Só para o e-mail cadastrado do próprio locatário: nunca para um endereço digitado na hora.
+      const loc = l.locatario_id ? await env.DB.prepare("SELECT nome, email FROM adm_locatarios WHERE id=? AND org_id=?").bind(l.locatario_id, orgId).first() : null;
+      if (!loc?.email) return json({ erro: "Este locatário não tem e-mail cadastrado. Cadastre em Aluguéis e locatários." }, 400);
+      if (!k.enviarEmail || !(k.emailConfigurado && k.emailConfigurado())) return json({ erro: "O envio de e-mails ainda não está configurado na plataforma." }, 400);
+      const b64 = (() => { let t = ""; for (let i = 0; i < pdf.length; i += 0x8000) t += String.fromCharCode(...pdf.subarray(i, i + 0x8000)); return btoa(t); })();
+      const ok = await k.enviarEmail(loc.email, `Recibo — ${l.descricao}`, `Olá, ${loc.nome}!\n\nSegue o recibo de ${dinheiro(valorDe(l), await moeda())}, referente a ${l.descricao}, pago em ${br(l.pago_em)}.\n\n${c.recibo_emissor || await empresa()}`, [{ nome: `recibo-${l.id}.pdf`, base64: b64 }]);
+      return ok ? json({ ok: true, para: loc.email }) : json({ erro: "Não foi possível enviar o e-mail agora." }, 502);
+    }
+  }
+
+  // ----- Relatório do mês (ou de um período: trimestre, ano, datas escolhidas)
+  if (area === "relatorio" || area === "relatorio.pdf" || area === "relatorio.xlsx") {
     const mes = mesValido(url.searchParams.get("mes")) ? url.searchParams.get("mes") : hoje.slice(0, 7);
-    const r = await relatorioDoMes(env, orgId, mes, ms);
+    const de = url.searchParams.get("de"), ate = url.searchParams.get("ate");
+    if ((de || ate) && !(dataValida(de) && dataValida(ate) && de <= ate && diasEntre(de, ate) <= 1100)) return json({ erro: "Período inválido (de até 3 anos)." }, 400);
+    const r = await relatorioDoMes(env, orgId, de ? de.slice(0, 7) : mes, ms, de ? { de, ate } : null);
+    if (area === "relatorio.xlsx") {
+      const v = c0 => Math.round(c0) / 100;
+      const abas = [
+        { nome: "Resumo", linhas: [["Item", "Valor"], ["Período", r.nome], ["Entrou", v(r.entrou)], ["Saiu", v(r.saiu)], ["Resultado", v(r.resultado)], ...r.saldos.map(x => [`${x.tipo === "CAIXA" ? "Caixa" : "Banco"} — ${x.nome} em ${br(r.fim)}`, v(x.saldo_cent)]), ["Em aberto (a receber)", v(r.receber.total)], ["Pagos com atraso", r.atrasados.length], ["Multa + juros não cobrados", v(r.atrasados_deixou)]], larguras: [40, 18] },
+        { nome: "Entradas", linhas: [["Data", "Categoria", "Descrição", "Quem", "Forma", "Valor"], ...r.entradas.flatMap(g => g.itens.map(l => [br(l.pago_em), g.categoria, l.descricao, l.contato || "", l.forma || "", v(valorDe(l))]))], larguras: [12, 24, 50, 26, 14, 14] },
+        { nome: "Saídas", linhas: [["Data", "Categoria", "Descrição", "Quem", "Forma", "Valor"], ...r.saidas.flatMap(g => g.itens.map(l => [br(l.pago_em), g.categoria, l.descricao, l.contato || "", l.forma || "", v(valorDe(l))]))], larguras: [12, 24, 50, 26, 14, 14] },
+        { nome: "Em aberto", linhas: [["Vencimento", "Descrição", "Quem", "Valor", "Situação"], ...[...r.receber.antes, ...r.receber.mes].map(l => [br(l.data), l.descricao, l.contato || "", v(l.valor_cent), l.data < r.inicio ? "Anterior" : "Do período"])], larguras: [12, 50, 26, 14, 12] },
+        { nome: "Atrasos", linhas: [["Pago em", "Quem", "Dias", "Aluguel", "Multa + juros"], ...r.atrasados.map(l => [br(l.pago_em), l.contato || l.descricao, l.dias, v(valorDe(l)), v(l.deixou_cent)])], larguras: [12, 40, 8, 14, 14] }
+      ];
+      return new Response(gerarXlsx(abas), { headers: { "content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "content-disposition": `attachment; filename="relatorio-${de ? de + "_" + ate : mes}.xlsx"`, "cache-control": "no-store" } });
+    }
     if (area === "relatorio") return json({ ...r, moeda: await moeda() });
     const c = await config();
     const pdf = pdfRelatorioMes(r, await empresa(), { moeda: await moeda(), assinaturas: String(c.assinaturas || "").split("|").map(s => s.trim()).filter(Boolean).slice(0, 3), cidade: c.cidade || "" });
-    return new Response(pdf, { headers: { "content-type": "application/pdf", "content-disposition": `inline; filename="relatorio-${mes}.pdf"`, "cache-control": "no-store" } });
+    return new Response(pdf, { headers: { "content-type": "application/pdf", "content-disposition": `inline; filename="relatorio-${de ? de + "_" + ate : mes}.pdf"`, "cache-control": "no-store" } });
   }
 
   // ----- Configuração, calendário no celular e importação
@@ -843,8 +968,8 @@ export async function rotasAdmin(request, env, k, orgId, papel, resto) {
       const emails = String(c.emails || "").split(/[\s,;]+/).filter(emailOk).slice(0, 5).join(", ");
       const assin = (Array.isArray(c.assinaturas) ? c.assinaturas : String(c.assinaturas || "").split("|")).map(s => re(s, 60)).filter(Boolean).slice(0, 3).join("|");
       await config();
-      await env.DB.prepare("UPDATE adm_config SET perfil=?, resumo_diario=?, emails=?, hora_resumo=?, tp_no_fin=?, assinaturas=?, cidade=?, atualizado_ms=? WHERE org_id=?")
-        .bind(PERFIS[c.perfil] ? c.perfil : null, c.resumo_diario ? 1 : 0, emails, inteiro(c.hora_resumo, 5, 22, 8), c.tp_no_fin ? 1 : 0, assin || null, re(c.cidade, 60) || null, ms, orgId).run();
+      await env.DB.prepare("UPDATE adm_config SET perfil=?, resumo_diario=?, emails=?, hora_resumo=?, tp_no_fin=?, assinaturas=?, cidade=?, recibo_emissor=?, atualizado_ms=? WHERE org_id=?")
+        .bind(PERFIS[c.perfil] ? c.perfil : null, c.resumo_diario ? 1 : 0, emails, inteiro(c.hora_resumo, 5, 22, 8), c.tp_no_fin ? 1 : 0, assin || null, re(c.cidade, 60) || null, re(c.recibo_emissor, 160) || null, ms, orgId).run();
       if (c.tp_no_fin) await reservasNoFinanceiro(env, orgId, ms);
       return json({ ok: true, config: await config() });
     }
@@ -902,6 +1027,23 @@ export async function adminDoCron(env, k) {
       const texto = textoDoDia(d, emp, moeda) + (k.base ? `\n\nAbrir o painel: ${k.base}/app#/admin/hoje` : "");
       for (const para of await destinos(c.org_id)) if (await k.enviarEmail(para, `DENIA — seu dia ${br(hoje)}${emp ? " (" + emp + ")" : ""}`, texto)) out.resumos++;
     } catch (e) { console.error("adm resumo", c.org_id, e?.message); }
+  }
+  return out;
+}
+
+// Visão de todas as empresas (para quem administra várias): resultado do mês, saldos, em aberto e o que está vencido.
+export async function consolidadoAdmin(env, orgs, mes, agoraMs) {
+  await garantirAdmin(env);
+  const hoje = hojeLocal(agoraMs), m = mes || hoje.slice(0, 7), out = [];
+  for (const o of orgs) {
+    try {
+      const r = await relatorioDoMes(env, o.id, m, agoraMs);
+      const venc = await env.DB.prepare("SELECT tipo, COUNT(*) n, SUM(valor_cent) v FROM fin_lanc WHERE org_id=? AND pago=0 AND data < ? GROUP BY tipo").bind(o.id, hoje).all();
+      const vv = t => (venc.results || []).find(x => x.tipo === t) || { n: 0, v: 0 };
+      const ag = await env.DB.prepare("SELECT COUNT(*) n FROM adm_agenda WHERE org_id=? AND feito=0 AND data <= ?").bind(o.id, hoje).first();
+      out.push({ id: o.id, nome: o.nome, mes: m, entrou: r.entrou, saiu: r.saiu, resultado: r.resultado, banco_cent: r.banco_cent, caixa_cent: r.caixa_cent, tem_contas: r.saldos.length > 0,
+        a_receber: r.receber.total, vencido_receber: vv("ENTRADA").v || 0, vencido_pagar: vv("SAIDA").v || 0, contas_vencidas: (vv("ENTRADA").n || 0) + (vv("SAIDA").n || 0), agenda_pendente: ag?.n || 0 });
+    } catch (e) { out.push({ id: o.id, nome: o.nome, erro: "Não foi possível ler os números desta empresa." }); }
   }
   return out;
 }

@@ -3949,3 +3949,88 @@ test("Administração — banco e caixa, aluguéis com atraso, relatório no lay
   assert.equal(set.transferencias.length, 1, "o dinheiro depositado aparece como movimento entre contas, não como saída");
   delete p.env.__agora;
 });
+
+test("Financeiro completo — várias formas, categorias, contas que se repetem, meses futuros, fechamento, orçamento, recibo, isenção, cadastros e todas as empresas", async () => {
+  const p = await criarPlataforma({ RESEND_API_KEY: "re_teste", EMAIL_REMETENTE: "DENIA <avisos@denia.test>" });
+  p.env.__agora = () => Date.parse("2099-10-20T15:00:00Z");
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  const A = "/api/orgs/1/adm", F = "/api/orgs/1/fin";
+  const ok = async (caminho, op = {}) => { const r = await p.req(caminho, { quem: "admin", ...op }); assert.ok(r.status < 300, `${caminho}: ${r.status} ${JSON.stringify(r.dados)}`); return r.dados; };
+  const banco = (await ok(A + "/contas", { metodo: "POST", corpo: { nome: "Banco", tipo: "BANCO", saldo: "0", saldo_em: "2099-09-30" } })).id;
+  await ok(A + "/contas", { metodo: "POST", corpo: { nome: "Caixa", tipo: "CAIXA", saldo: "0", saldo_em: "2099-09-30" } });
+  // Recebimento em duas formas: 2.000 em dinheiro + 1.400 no Pix → caixa e banco recebem cada parte.
+  const id = (await ok(F + "/lancamentos", { metodo: "POST", corpo: { tipo: "ENTRADA", descricao: "Aluguel sala 3", valor: "3400", data: "2099-10-05" } })).ids[0];
+  assert.equal((await p.req(`${F}/lancamentos/${id}/pagar`, { metodo: "POST", quem: "admin", corpo: { data: "2099-10-10", partes: [{ forma: "Dinheiro", valor: "2000" }, { forma: "Pix", valor: "-1" }] } })).status, 400);
+  await ok(`${F}/lancamentos/${id}/pagar`, { metodo: "POST", corpo: { data: "2099-10-10", partes: [{ forma: "Dinheiro", valor: "2.000" }, { forma: "Pix", valor: "1.400" }] } });
+  const l = (await ok(F + "/lancamentos?mes=2099-10")).lancamentos.find(x => x.id === id);
+  assert.equal(l.forma, "Dinheiro + Pix"); assert.equal(l.partes.length, 2);
+  const saldos = (await ok(A + "/contas?data=2099-10-31")).contas;
+  assert.deepEqual(saldos.map(x => [x.nome, x.saldo_cent]).sort(), [["Banco", 140000], ["Caixa", 200000]]);
+  // Categorias próprias: criar, renomear (leva os lançamentos) e ocultar.
+  await ok(F + "/categorias", { metodo: "POST", corpo: { tipo: "SAIDA", nome: "Obras" } });
+  assert.ok((await ok(F + "/opcoes")).categorias.SAIDA.includes("Obras"));
+  await ok(F + "/lancamentos", { metodo: "POST", corpo: { tipo: "SAIDA", descricao: "Pintura", valor: "500", data: "2099-10-11", pago: true, categoria: "Obras" } });
+  assert.equal((await ok(F + "/categorias", { metodo: "PUT", corpo: { tipo: "SAIDA", de: "Obras", nome: "Reformas" } })).alterados, 1);
+  const op = await ok(F + "/opcoes");
+  assert.ok(op.categorias.SAIDA.includes("Reformas") && !op.categorias.SAIDA.includes("Obras"));
+  assert.ok((await ok(F + "/sugestoes")).sugestoes.some(x => x.descricao === "Pintura" && x.categoria === "Reformas"), "contas antigas para reaproveitar");
+  // Contas que se repetem: trimestral e semanal; meses futuros mostram o previsto sem criar nada.
+  await ok(F + "/recorrentes", { metodo: "POST", corpo: { tipo: "SAIDA", descricao: "Contador (trimestral)", valor: "900", dia: 10, frequencia: "trimestral", inicio_mes: "2099-10" } });
+  await ok(F + "/recorrentes", { metodo: "POST", corpo: { tipo: "SAIDA", descricao: "Faxina", valor: "150", frequencia: "semanal", dia_semana: 5 } });
+  assert.equal(p.env.DB.q("SELECT COUNT(*) n FROM fin_lanc WHERE descricao='Faxina'")[0].n, 5, "5 sextas-feiras em outubro de 2099");
+  const nov = await ok(F + "/lancamentos?mes=2099-11");
+  assert.equal(nov.previstos.filter(x => x.descricao === "Faxina").length, 4);
+  assert.ok(!nov.previstos.some(x => x.descricao.startsWith("Contador")), "trimestral não cai em novembro");
+  assert.ok((await ok(F + "/lancamentos?mes=2100-01")).previstos.some(x => x.descricao.startsWith("Contador")), "cai em janeiro");
+  assert.equal(p.env.DB.q("SELECT COUNT(*) n FROM fin_lanc WHERE data >= '2099-11-01'")[0].n, 0, "previsto não grava nada");
+  assert.ok((await ok(F + "/resumo?mes=2099-11")).totais.previsto_pagar >= 60000);
+  // Lançamento novo que repete todo ano.
+  await ok(F + "/lancamentos", { metodo: "POST", corpo: { tipo: "SAIDA", descricao: "Seguro do prédio", valor: "2400", data: "2099-10-15", frequencia: "anual" } });
+  assert.ok((await ok(F + "/lancamentos?mes=2100-10")).previstos.some(x => x.descricao === "Seguro do prédio"));
+  assert.equal((await ok(F + "/lancamentos?mes=2099-10")).lancamentos.filter(x => x.descricao === "Seguro do prédio").length, 1, "não duplica o mês de hoje");
+  // Fechamento: mês travado; reabrir exige motivo; tudo no histórico.
+  await ok(F + "/lancamentos", { metodo: "POST", corpo: { tipo: "SAIDA", descricao: "Conta de setembro", valor: "80", data: "2099-09-20", pago: true } });
+  assert.equal((await p.req(F + "/fechamento", { metodo: "POST", quem: "admin", corpo: { mes: "2099-10" } })).status, 400, "mês corrente não fecha");
+  await ok(F + "/fechamento", { metodo: "POST", corpo: { mes: "2099-09", obs: "Conferido com o extrato" } });
+  const set = p.env.DB.q("SELECT id FROM fin_lanc WHERE descricao='Conta de setembro'")[0].id;
+  assert.equal((await p.req(`${F}/lancamentos/${set}`, { metodo: "DELETE", quem: "admin" })).status, 409);
+  assert.equal((await p.req(F + "/lancamentos", { metodo: "POST", quem: "admin", corpo: { tipo: "SAIDA", descricao: "x", valor: "1", data: "2099-09-02" } })).status, 409);
+  assert.equal((await p.req(F + "/fechamento", { metodo: "POST", quem: "admin", corpo: { mes: "2099-09", reabrir: true } })).status, 400, "sem motivo não reabre");
+  await ok(F + "/fechamento", { metodo: "POST", corpo: { mes: "2099-09", reabrir: true, motivo: "Faltou lançar comprovante" } });
+  await ok(`${F}/lancamentos/${set}`, { metodo: "PUT", corpo: { valor: "85" } });
+  const hist = (await ok(F + "/historico")).historico.map(x => x.acao);
+  for (const a of ["fechou o mês", "reabriu o mês", "editou", "recebeu", "renomeou categoria"]) assert.ok(hist.includes(a), "histórico: " + a);
+  // Orçamento por categoria x realizado.
+  await ok(F + "/orcamento", { metodo: "PUT", corpo: { itens: [{ tipo: "SAIDA", categoria: "Reformas", valor: "300" }] } });
+  assert.deepEqual((await ok(F + "/resumo?mes=2099-10")).orcamento.map(o => [o.categoria, o.valor_cent, o.realizado]), [["Reformas", 30000, 50000]]);
+  // Locatário semanal, isenção de um mês e recibo enviado só ao e-mail do locatário.
+  await ok(A + "/locatarios", { metodo: "POST", corpo: { nome: "Lan House", unidade: "Stand 31", aluguel: "1750", periodicidade: "semanal", dia_semana: 1, email: "lan@loja.test" } });
+  assert.equal(p.env.DB.q("SELECT COUNT(*) n FROM fin_lanc WHERE contato='Lan House' AND competencia='2099-10'")[0].n, 4, "4 segundas-feiras");
+  const lb = (await ok(A + "/locatarios", { metodo: "POST", corpo: { nome: "Loja B", aluguel: "1000", dia_venc: 10 } })).id;
+  assert.equal((await ok(`${A}/locatarios/${lb}/isentar`, { metodo: "POST", corpo: { mes: "2099-10", motivo: "Obra na loja" } })).removidas, 1);
+  await ok(A + "/locatarios/gerar?mes=2099-10", { metodo: "POST" });
+  assert.equal(p.env.DB.q("SELECT COUNT(*) n FROM fin_lanc WHERE locatario_id=?", lb)[0].n, 0, "isento não volta");
+  const seg = p.env.DB.q("SELECT id FROM fin_lanc WHERE contato='Lan House' ORDER BY data LIMIT 1")[0].id;
+  await ok(`${F}/lancamentos/${seg}/pagar`, { metodo: "POST", corpo: { data: "2099-10-02", forma: "Pix" } });
+  const rec = await p.req(`${A}/recibo/${seg}`, { quem: "admin" });
+  assert.equal(rec.r.headers.get("content-type"), "application/pdf");
+  assert.match(Buffer.from(await rec.r.arrayBuffer()).toString("latin1"), /mil setecentos e cinquenta reais/);
+  const env1 = await ok(`${A}/recibo/${seg}/enviar`, { metodo: "POST", corpo: { para: "outro@x.test" } });
+  assert.equal(env1.para, "lan@loja.test"); assert.equal(p.emails.at(-1).to[0], "lan@loja.test", "nunca para um e-mail digitado");
+  // Cadastros (fornecedor e centro de custo) aparecem nas opções do financeiro.
+  await ok(A + "/cadastros", { metodo: "POST", corpo: { tipo: "FORNECEDOR", nome: "Rei do Ar", subtipo: "Ar-condicionado", telefone: "21999990000", pix: "chave@pix" } });
+  await ok(A + "/cadastros", { metodo: "POST", corpo: { tipo: "CENTRO", nome: "Apto 302", subtipo: "Apartamento" } });
+  const op2 = await ok(F + "/opcoes");
+  assert.equal(op2.fornecedores[0].nome, "Rei do Ar"); assert.equal(op2.centros[0].nome, "Apto 302");
+  // Relatório de um período (trimestre) em PDF e planilha.
+  const tri = await ok(A + "/relatorio?de=2099-08-01&ate=2099-10-31");
+  assert.equal(tri.periodo, true); assert.equal(tri.inicio, "2099-08-01");
+  assert.equal((await p.req(A + "/relatorio?de=2099-10-31&ate=2099-08-01", { quem: "admin" })).status, 400);
+  const xl = await p.req(A + "/relatorio.xlsx?de=2099-08-01&ate=2099-10-31", { quem: "admin" });
+  assert.match(xl.r.headers.get("content-type"), /spreadsheetml/);
+  assert.match(Buffer.from(await xl.r.arrayBuffer()).toString("latin1"), /^PK/);
+  // Todas as empresas de quem administra várias.
+  const cons = await ok("/api/adm/consolidado?mes=2099-10");
+  assert.ok(cons.empresas.length >= 1); assert.equal(typeof cons.empresas[0].resultado, "number");
+  delete p.env.__agora;
+});
