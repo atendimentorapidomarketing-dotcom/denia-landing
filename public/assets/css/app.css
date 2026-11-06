@@ -1124,6 +1124,13 @@ video.post-arte-img { width:100%; max-height:520px; border-radius:12px; backgrou
 .fin-form { display: grid; gap: 10px; text-align: left; }
 .fin-duas { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .fin-check { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+.fin-partes { display: grid; gap: 6px; }
+.fin-parte { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) minmax(0, 1.3fr) auto; gap: 6px; align-items: center; }
+.fin-parte:not(:has(select + input + select)) { grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) auto; }
+.fin-previsto td { opacity: .75; font-style: italic; }
+.fin-grupo td { background: var(--fundo-2, rgba(127,127,127,.08)); }
+.adm-consolidado td, .adm-consolidado th { white-space: nowrap; }
+@media (max-width: 560px) { .fin-parte, .fin-parte:not(:has(select + input + select)) { grid-template-columns: 1fr 1fr; } }
 @media (max-width: 560px) { .fin-duas { grid-template-columns: 1fr; } .fin-mes strong { min-width: 0; } }
 @media print {
   .lateral, .topo, .fin-mes .btn, .pagina-cabeca .acoes, .fin-filtros, .fin-tabela .acoes, #avisos { display: none !important; }

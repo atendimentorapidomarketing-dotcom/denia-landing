@@ -430,6 +430,7 @@
     av.textContent = estado.org ? iniciais(estado.org.nome) : "—";
     av.style.background = estado.org && estado.org.cor ? `linear-gradient(135deg, ${estado.org.cor}, #8b5cf6)` : "";
     document.querySelectorAll("#lateral-nav a[data-minimo]").forEach(a => a.classList.toggle("oculto", !pode(a.dataset.minimo)));
+    document.querySelectorAll("#lateral-nav a[data-varias]").forEach(a => { if ((estado.eu.organizacoes || []).filter(o => ["OWNER", "ADMIN"].includes(o.papel)).length < 2) a.classList.add("oculto"); });
     document.querySelectorAll("#lateral-nav a[data-super]").forEach(a => a.classList.toggle("oculto", !estado.eu.usuario.super_admin));
     document.querySelectorAll("#lateral-nav a[data-rota]:not([data-minimo]):not([data-super])").forEach(a => a.classList.toggle("oculto", ehRevisor() && !ROTAS_REVISOR.includes(a.dataset.rota)));
     aplicarModo();
@@ -3610,7 +3611,7 @@ Botão só com texto = resposta.` })),
     const botaoItem = (ic, rotulo, fn, ativo) => h("button", { type: "button", class: "barra-app-item" + (ativo ? " ativo" : ""), onclick: fn }, svgIc(ic), h("span", { text: rotulo }));
     if (modo) {
       const primeiros = visiveis.slice(0, 4), resto = visiveis.slice(4);
-      const curto = { "Desempenho do atendimento": "Desempenho", "Pedidos de serviço": "Pedidos", "Profissionais parceiros": "Profissionais", "Entregas das mensagens": "Entregas", "Palavras-chave e posição": "Palavras", "Pré-análise de empresas": "Pré-análise", "Mapa de posição": "Mapa", "Avaliações ruins (triagem)": "Ruins", "Posts no perfil": "Posts", "Calendário e criação com IA": "Calendário", "Visão geral (todos os perfis)": "Visão", "Custos da Meta": "Custos", "Número, qualidade e custos": "Número", "Visão geral e evolução": "Visão", "Mensagens dos hóspedes": "Mensagens", "Calendário e preços": "Calendário", "Desempenho e cliques": "Desempenho", "Estúdio de criação": "Estúdio", "Calendário de posts": "Calendário", "Visão do chatbot": "Visão", "Métricas de atendimento": "Métricas", "Avaliações 1★ (triagem)": "1 estrela", "Imóveis (todos)": "Imóveis", "Conexões e idiomas": "Conexões", "Palavras-chave e buscas": "Palavras", "Relatório semanal": "Relatório", "Posicionamento no Google": "Posição", "Google orgânico (SEO)": "SEO", "Concorrentes no Maps": "Concorrentes", "Clientes e etiquetas": "Clientes", "Modelos de mensagem": "Modelos", "Saúde do número": "Saúde", "Respostas rápidas": "Rápidas", "Perfil comercial": "Perfil", "Melhores horários": "Horários", "Recomendações": "Avaliações", "Melhorias e manutenção": "Melhorias", "Inventário e checklist": "Inventário", "Avaliações dos hóspedes": "Avaliações", "Agenda e compromissos": "Agenda", "Banco e caixa": "Banco", "Aluguéis e locatários": "Aluguéis", "Manutenção e obrigações": "Manutenção", "Documentos e validades": "Documentos", "Relatório do mês": "Relatório", "Ajustes e importação": "Ajustes", "O dia": "Hoje", "Locação por temporada": "Temporada" };
+      const curto = { "Desempenho do atendimento": "Desempenho", "Pedidos de serviço": "Pedidos", "Profissionais parceiros": "Profissionais", "Entregas das mensagens": "Entregas", "Palavras-chave e posição": "Palavras", "Pré-análise de empresas": "Pré-análise", "Mapa de posição": "Mapa", "Avaliações ruins (triagem)": "Ruins", "Posts no perfil": "Posts", "Calendário e criação com IA": "Calendário", "Visão geral (todos os perfis)": "Visão", "Custos da Meta": "Custos", "Número, qualidade e custos": "Número", "Visão geral e evolução": "Visão", "Mensagens dos hóspedes": "Mensagens", "Calendário e preços": "Calendário", "Desempenho e cliques": "Desempenho", "Estúdio de criação": "Estúdio", "Calendário de posts": "Calendário", "Visão do chatbot": "Visão", "Métricas de atendimento": "Métricas", "Avaliações 1★ (triagem)": "1 estrela", "Imóveis (todos)": "Imóveis", "Conexões e idiomas": "Conexões", "Palavras-chave e buscas": "Palavras", "Relatório semanal": "Relatório", "Posicionamento no Google": "Posição", "Google orgânico (SEO)": "SEO", "Concorrentes no Maps": "Concorrentes", "Clientes e etiquetas": "Clientes", "Modelos de mensagem": "Modelos", "Saúde do número": "Saúde", "Respostas rápidas": "Rápidas", "Perfil comercial": "Perfil", "Melhores horários": "Horários", "Recomendações": "Avaliações", "Melhorias e manutenção": "Melhorias", "Inventário e checklist": "Inventário", "Avaliações dos hóspedes": "Avaliações", "Agenda e compromissos": "Agenda", "Banco e caixa": "Banco", "Aluguéis e locatários": "Aluguéis", "Manutenção e obrigações": "Manutenção", "Documentos e validades": "Documentos", "Relatório do mês": "Relatório", "Ajustes e importação": "Ajustes", "O dia": "Hoje", "Todas as empresas": "Empresas", "Locação por temporada": "Temporada" };
       b.replaceChildren(...primeiros.map(a => { const t = a.textContent.replace("›", "").trim(); return item(a, curto[t] || t.split(" ")[0]); }), botaoItem(IC.mais, "Mais", () => maisDoModo(modo, resto), resto.some(a => a.classList.contains("ativo"))));
     } else {
       const entra = m => nav.querySelector(`[data-entra="${m}"]`);
@@ -6993,36 +6994,152 @@ Botão só com texto = resposta.` })),
   const dinheiroFin = (cent, moeda = "BRL") => new Intl.NumberFormat(MOEDA_LOCALE[moeda] || LOCALE, { style: "currency", currency: moeda || "BRL" }).format((Number(cent) || 0) / 100);
   const pctFin = v => v === null || v === undefined ? "sem comparação" : `${v > 0 ? "+" : ""}${String(v).replace(".", ",")}% vs. mês anterior`;
 
-  async function editarLancamento(op, l, tipoNovo, aoSalvar) {
-    const tipo = h("select", { class: "entrada" }, h("option", { value: "ENTRADA", text: "Entrada (dinheiro que entra)" }), h("option", { value: "SAIDA", text: "Saída (dinheiro que sai)" }));
+  // Formas de pagamento: uma só ou várias (parte Pix, parte dinheiro, parte cartão…), cada parte na sua conta.
+  function campoFormas(op, valorCent, formaAtual) {
+    const linhas = h("div", { class: "fin-partes" });
+    const total = h("p", { class: "sub", style: "margin:4px 0 0" });
+    const linha = (forma, valor) => {
+      const f = h("select", { class: "entrada", "aria-label": "Forma" }, h("option", { value: "", text: "Forma…" }), op.formas.map(x => h("option", { value: x, text: x })));
+      f.value = forma || "";
+      const v = h("input", { class: "entrada", type: "text", inputmode: "decimal", placeholder: "0,00", "aria-label": "Valor desta forma", value: valor ? (valor / 100).toFixed(2).replace(".", ",") : "" });
+      const conta = (op.contas || []).length ? h("select", { class: "entrada", "aria-label": "Conta" }, h("option", { value: "", text: "Conta automática" }), op.contas.map(c => h("option", { value: c.id, text: c.nome }))) : null;
+      const x = h("div", { class: "fin-parte" }, f, v, conta, h("button", { type: "button", class: "btn btn-secundario btn-pequeno", "aria-label": "Tirar esta forma", onclick: () => { x.remove(); somar(); } }, "×"));
+      x._ler = () => ({ forma: f.value, valor: v.value, conta_id: conta ? conta.value : "" });
+      v.addEventListener("input", somar);
+      return x;
+    };
+    const centavosUi = t => { const n = Number(String(t || "").replace(/[^\d,.-]/g, "").replace(/\.(?=\d{3}(\D|$))/g, "").replace(",", ".")); return Number.isFinite(n) ? Math.round(n * 100) : 0; };
+    function somar() {
+      const ps = [...linhas.children].map(x => x._ler());
+      if (ps.length < 2) { total.textContent = ""; return; }
+      const s = ps.reduce((a, p0) => a + centavosUi(p0.valor), 0);
+      total.textContent = `Soma das formas: ${dinheiroFin(s)}${valorCent() && s !== valorCent() ? ` (o valor é ${dinheiroFin(valorCent())})` : ""}`;
+    }
+    linhas.append(linha(formaAtual && !/\+/.test(formaAtual) ? formaAtual : "", null));
+    const caixa = h("div", {}, linhas, total, h("button", { type: "button", class: "btn btn-secundario btn-pequeno", style: "margin-top:6px", onclick: () => {
+      if (linhas.children.length === 1 && !linhas.firstChild._ler().valor && valorCent()) linhas.firstChild.querySelector("input").value = (valorCent() / 100).toFixed(2).replace(".", ",");
+      linhas.append(linha("", null)); somar();
+    } }, "+ Outra forma (dividir)"));
+    caixa._ler = () => {
+      const ps = [...linhas.children].map(x => x._ler()).filter(p0 => p0.forma || p0.valor);
+      if (ps.length > 1) return { partes: ps };
+      return { forma: ps[0] ? ps[0].forma : "", conta_id: ps[0] && ps[0].conta_id ? ps[0].conta_id : undefined };
+    };
+    return caixa;
+  }
+  // Escolher categoria da lista ou criar uma nova na hora.
+  function campoCategoria(op, tipoSel, atual) {
+    const sel = h("select", { class: "entrada" });
+    const preencher = () => {
+      const lista = op.categorias[tipoSel.value] || [];
+      trocar(sel, h("option", { value: "", text: "A DENIA sugere pela descrição" }), lista.map(c => h("option", { value: c, text: c })), h("option", { value: "__nova", text: "+ Criar nova categoria…" }));
+      if (atual && !lista.includes(atual)) sel.insertBefore(h("option", { value: atual, text: atual }), sel.options[1]);
+      sel.value = atual || "";
+    };
+    preencher(); tipoSel.addEventListener("change", () => { atual = ""; preencher(); });
+    sel.addEventListener("change", async () => {
+      if (sel.value !== "__nova") return;
+      // Pergunta simples sem fechar o formulário (o que já foi digitado continua lá).
+      const n = (window.prompt(`Nova categoria de ${tipoSel.value === "ENTRADA" ? "entrada" : "saída"}:`) || "").trim();
+      if (!n) { sel.value = ""; return; }
+      try { await fin("categorias", { metodo: "POST", corpo: { tipo: tipoSel.value, nome: n } }); op.categorias[tipoSel.value] = [...(op.categorias[tipoSel.value] || []), n]; atual = n; preencher(); aviso("Categoria criada.", "ok"); }
+      catch (e) { aviso(e.message, "erro"); sel.value = ""; }
+    });
+    return sel;
+  }
+
+  async function editarLancamento(op, l, tipoNovo, aoSalvar, preset) {
+    const tipo = h("select", { class: "entrada" }, h("option", { value: "ENTRADA", text: "Entrada / recebimento" }), h("option", { value: "SAIDA", text: "Saída / conta a pagar" }));
     tipo.value = l ? l.tipo : tipoNovo;
-    const desc = h("input", { class: "entrada", type: "text", maxlength: "160", placeholder: "Ex.: Aluguel da loja, Venda de celular", value: l ? l.descricao : "" });
-    const valor = h("input", { class: "entrada", type: "text", inputmode: "decimal", placeholder: "0,00", value: l ? (l.valor_cent / 100).toFixed(2).replace(".", ",") : "" });
-    const data = h("input", { class: "entrada", type: "date", value: l ? l.data : op.hoje });
-    const lista = "fin-cats-" + Math.random().toString(36).slice(2, 7);
-    const cats = h("datalist", { id: lista });
-    const preencherCats = () => trocar(cats, (op.categorias[tipo.value] || []).map(c => h("option", { value: c })));
-    preencherCats(); tipo.addEventListener("change", preencherCats);
-    const categoria = h("input", { class: "entrada", type: "text", list: lista, maxlength: "60", placeholder: "Escolha ou escreva (a DENIA sugere se ficar vazio)", value: l ? l.categoria || "" : "" });
-    const pago = h("input", { type: "checkbox", checked: l ? Boolean(l.pago) : true });
-    const forma = h("select", { class: "entrada" }, h("option", { value: "", text: "—" }), op.formas.map(f => h("option", { value: f, text: f })));
-    forma.value = l && l.forma ? l.forma : "";
-    const contato = h("input", { class: "entrada", type: "text", maxlength: "120", placeholder: "Cliente ou fornecedor (opcional)", value: l ? l.contato || "" : "" });
+    const pre = preset || {};
+    const sugest = "fin-sug-" + Math.random().toString(36).slice(2, 7);
+    const lista = h("datalist", { id: sugest });
+    const desc = h("input", { class: "entrada", type: "text", list: sugest, maxlength: "160", placeholder: "Ex.: Conta de luz, Aluguel stand 12 (as contas antigas aparecem ao digitar)", value: l ? l.descricao : pre.descricao || "" });
+    const valor = h("input", { class: "entrada", type: "text", inputmode: "decimal", placeholder: "0,00", value: l ? (l.valor_cent / 100).toFixed(2).replace(".", ",") : pre.valor_cent ? (pre.valor_cent / 100).toFixed(2).replace(".", ",") : "" });
+    const data = h("input", { class: "entrada", type: "date", value: l ? l.data : pre.data || op.hoje });
+    const categoria = campoCategoria(op, tipo, l ? l.categoria || "" : pre.categoria || "");
+    const fornList = "fin-forn-" + Math.random().toString(36).slice(2, 7);
+    const contato = h("input", { class: "entrada", type: "text", list: fornList, maxlength: "120", placeholder: "Quem paga ou quem recebe", value: l ? l.contato || "" : pre.contato || "" });
+    const centro = (op.centros || []).length ? h("select", { class: "entrada" }, h("option", { value: "", text: "—" }), op.centros.map(c => h("option", { value: c.nome, text: c.nome + (c.subtipo ? ` (${c.subtipo})` : "") }))) : null;
+    if (centro) centro.value = l ? l.centro || "" : pre.centro || "";
+    const pago = h("input", { type: "checkbox", checked: l ? Boolean(l.pago) : pre.pago !== undefined ? pre.pago : false });
+    const pagoEm = h("input", { class: "entrada", type: "date", value: l && l.pago_em ? l.pago_em : op.hoje });
+    const centavosDe = () => { const n = Number(String(valor.value).replace(/[^\d,.-]/g, "").replace(/\.(?=\d{3}(\D|$))/g, "").replace(",", ".")); return Number.isFinite(n) ? Math.round(n * 100) : 0; };
+    const formas = campoFormas(op, centavosDe, l ? l.forma : pre.forma || armazenamento.ler("denia_fin_forma") || "");
+    const blocoPago = h("div", { class: "fin-form" }, h("div", { class: "fin-duas" }, campo(tipo.value === "ENTRADA" ? "Recebido em" : "Pago em", pagoEm), h("span")), campo("Forma de pagamento", formas));
+    const mostrarPago = () => blocoPago.classList.toggle("oculto", !pago.checked);
+    pago.addEventListener("change", mostrarPago); mostrarPago();
     const parcelas = h("input", { class: "entrada", type: "number", min: "1", max: "60", value: "1" });
-    const repetir = h("input", { type: "checkbox" });
+    const freq = h("select", { class: "entrada" }, h("option", { value: "", text: "Não repete" }), Object.entries(op.frequencias || { mensal: "Todo mês" }).map(([k, v]) => h("option", { value: k, text: v })));
+    const obs = h("textarea", { class: "entrada", rows: "2", placeholder: "Observação (opcional)" }, l ? l.obs || "" : "");
+    // Contas que já existiram: ao escolher, preenche categoria, quem e valor.
+    let sugestoes = [];
+    fin("sugestoes").then(x => { sugestoes = x.sugestoes || []; trocar(lista, sugestoes.map(s0 => h("option", { value: s0.descricao, label: `${s0.tipo === "ENTRADA" ? "Entrada" : "Saída"} · ${s0.categoria || "sem categoria"} · ${dinheiroFin(s0.valor_cent)}` }))); }).catch(() => { });
+    desc.addEventListener("change", () => {
+      const s0 = sugestoes.find(x => x.descricao.toLowerCase() === desc.value.trim().toLowerCase());
+      if (!s0 || l) return;
+      tipo.value = s0.tipo; tipo.dispatchEvent(new Event("change"));
+      if (s0.categoria) { if (![...categoria.options].some(o => o.value === s0.categoria)) categoria.insertBefore(h("option", { value: s0.categoria, text: s0.categoria }), categoria.options[1]); categoria.value = s0.categoria; }
+      if (!contato.value && s0.contato) contato.value = s0.contato;
+      if (!valor.value && s0.valor_cent) valor.value = (s0.valor_cent / 100).toFixed(2).replace(".", ",");
+      if (centro && s0.centro) centro.value = s0.centro;
+    });
     const conteudo = h("div", { class: "fin-form" },
-      campo("Tipo", tipo), campo("Descrição", desc), h("div", { class: "fin-duas" }, campo("Valor", valor), campo(l ? "Data" : "Data (ou vencimento)", data)),
-      campo("Categoria", categoria), cats,
-      h("label", { class: "fin-check" }, pago, " Já foi pago / recebido"),
-      h("div", { class: "fin-duas" }, campo("Forma de pagamento", forma), campo("Cliente ou fornecedor", contato)),
-      l ? null : h("div", { class: "fin-duas" }, campo("Parcelas", parcelas, "Divide o valor em parcelas mensais."), h("label", { class: "fin-check", style: "align-self:end" }, repetir, " Repetir todo mês")));
+      campo("Tipo", tipo), campo("Descrição", desc), lista,
+      h("div", { class: "fin-duas" }, campo("Valor", valor), campo("Vencimento (ou data)", data)),
+      h("div", { class: "fin-duas" }, campo("Categoria", categoria), campo("Cliente ou fornecedor", contato)), h("datalist", { id: fornList }, (op.fornecedores || []).map(f => h("option", { value: f.nome }))),
+      centro ? campo("Centro de custo (imóvel, pessoa…)", centro) : null,
+      l ? null : h("div", { class: "fin-duas" }, campo("Repetir", freq, "Cria sozinho nas próximas datas."), campo("Parcelas", parcelas, "Divide o valor em parcelas mensais.")),
+      h("label", { class: "fin-check" }, pago, " Já foi pago / recebido"), blocoPago, campo("Observação", obs));
     for (;;) {
-      if (!(await modal({ titulo: l ? "Editar lançamento" : tipoNovo === "ENTRADA" ? "Nova entrada" : "Nova saída", conteudo, confirmar: "Salvar" }))) return;
-      const corpo = { tipo: tipo.value, descricao: desc.value, valor: valor.value, data: data.value, categoria: categoria.value, pago: pago.checked, forma: forma.value, contato: contato.value };
-      if (!l) { corpo.parcelas = Number(parcelas.value) || 1; corpo.repetir_todo_mes = repetir.checked; }
+      if (!(await modal({ titulo: l ? "Editar lançamento" : tipoNovo === "ENTRADA" ? "Nova entrada / recebimento" : "Nova conta / saída", conteudo, confirmar: "Salvar" }))) return;
+      const fp = formas._ler();
+      const corpo = { tipo: tipo.value, descricao: desc.value, valor: valor.value, data: data.value, categoria: categoria.value === "__nova" ? "" : categoria.value, pago: pago.checked, pago_em: pagoEm.value, contato: contato.value, obs: obs.value, centro: centro ? centro.value : undefined, ...(pago.checked ? fp : {}) };
+      if (!l) { corpo.parcelas = Number(parcelas.value) || 1; corpo.frequencia = freq.value || undefined; }
       try {
-        await fin(l ? `lancamentos/${l.id}` : "lancamentos", { metodo: l ? "PUT" : "POST", corpo });
+        if (l) {
+          await fin(`lancamentos/${l.id}`, { metodo: "PUT", corpo });
+          if (pago.checked && (fp.partes || (fp.forma && fp.forma !== l.forma))) await fin(`lancamentos/${l.id}/pagar`, { metodo: "POST", corpo: { data: pagoEm.value, ...fp } });
+        } else await fin("lancamentos", { metodo: "POST", corpo });
+        if (fp.forma) armazenamento.gravar("denia_fin_forma", fp.forma);
         aviso(l ? "Lançamento atualizado." : "Lançamento salvo.", "ok"); aoSalvar(); return;
+      } catch (e) { aviso(e.message, "erro"); }
+    }
+  }
+  // Registrar pagamento ou recebimento (data, uma ou várias formas, valor efetivo com multa/juros ou desconto).
+  async function registrarPagamento(op, l, aoSalvar) {
+    const data = h("input", { class: "entrada", type: "date", value: op.hoje });
+    const valorEf = h("input", { class: "entrada", type: "text", inputmode: "decimal", value: (l.valor_cent / 100).toFixed(2).replace(".", ",") });
+    const centavosDe = () => { const n = Number(String(valorEf.value).replace(/[^\d,.-]/g, "").replace(/\.(?=\d{3}(\D|$))/g, "").replace(",", ".")); return Number.isFinite(n) ? Math.round(n * 100) : 0; };
+    const formas = campoFormas(op, centavosDe, l.forma || armazenamento.ler("denia_fin_forma") || "");
+    const ent = l.tipo === "ENTRADA";
+    for (;;) {
+      if (!(await modal({ titulo: ent ? "Registrar recebimento" : "Registrar pagamento", conteudo: h("div", { class: "fin-form" }, h("p", { class: "sub", text: `${l.descricao} — ${dinheiroFin(l.valor_cent)}${l.contato ? " · " + l.contato : ""}` }),
+        h("div", { class: "fin-duas" }, campo(ent ? "Recebido em" : "Pago em", data), campo("Valor efetivo", valorEf, "Mude se teve multa, juros ou desconto.")), campo("Forma (pode dividir em várias)", formas)), confirmar: ent ? "Recebi" : "Paguei" }))) return;
+      const fp = formas._ler();
+      try {
+        await fin(`lancamentos/${l.id}/pagar`, { metodo: "POST", corpo: { data: data.value, valor_pago: valorEf.value, ...fp } });
+        if (fp.forma) armazenamento.gravar("denia_fin_forma", fp.forma);
+        aviso(ent ? "Recebimento registrado." : "Pagamento registrado.", "ok"); aoSalvar(); return;
+      } catch (e) { aviso(e.message, "erro"); }
+    }
+  }
+  // Gasto rápido: descrição, valor e forma; já entra como pago hoje.
+  async function gastoRapido(op, aoSalvar) {
+    const desc = h("input", { class: "entrada", type: "text", maxlength: "160", placeholder: "Ex.: Lâmpadas, Material de limpeza" });
+    const valor = h("input", { class: "entrada", type: "text", inputmode: "decimal", placeholder: "0,00" });
+    const ultima = armazenamento.ler("denia_fin_forma") || "Pix";
+    const forma = h("div", { class: "abas abas-chips", role: "group", "aria-label": "Forma" });
+    let escolhida = ultima;
+    const desenhar = () => trocar(forma, op.formas.slice(0, 6).map(f => h("button", { type: "button", class: "aba" + (f === escolhida ? " ativo" : ""), "aria-pressed": f === escolhida ? "true" : "false", onclick: () => { escolhida = f; desenhar(); } }, f)));
+    desenhar();
+    const tipoSel = h("select", { class: "oculto" }, h("option", { value: "SAIDA" })); tipoSel.value = "SAIDA";
+    const categoria = campoCategoria(op, tipoSel, "");
+    for (;;) {
+      if (!(await modal({ titulo: "Gasto rápido", conteudo: h("div", { class: "fin-form" }, h("p", { class: "sub", text: "Entra como pago hoje. Para contas com vencimento, use + Saída." }), campo("O que foi", desc), campo("Valor", valor), campo("Forma", forma), campo("Categoria", categoria)), confirmar: "Lançar" }))) return;
+      try {
+        await fin("lancamentos", { metodo: "POST", corpo: { tipo: "SAIDA", descricao: desc.value, valor: valor.value, data: op.hoje, pago: true, pago_em: op.hoje, forma: escolhida, categoria: categoria.value === "__nova" ? "" : categoria.value } });
+        armazenamento.gravar("denia_fin_forma", escolhida); aviso("Gasto lançado.", "ok"); aoSalvar(); return;
       } catch (e) { aviso(e.message, "erro"); }
     }
   }
@@ -7038,21 +7155,26 @@ Botão só com texto = resposta.` })),
     const importar = h("input", { type: "file", accept: ".ofx,.csv,.txt,text/csv", class: "oculto", onchange: async () => {
       const f = importar.files[0]; importar.value = ""; if (!f) return;
       if (f.size > 2_500_000) return aviso("Arquivo grande demais (máximo 2,5 MB). Exporte um período menor.", "erro");
-      try { const r = await fin("importar", { metodo: "POST", corpo: { conteudo: await f.text() } }); aviso(`${r.novos} lançamentos importados${r.repetidos ? `; ${r.repetidos} já estavam aqui e foram ignorados` : ""}.`, "ok"); recarregar(); }
+      try { const r = await fin("importar", { metodo: "POST", corpo: { conteudo: await f.text() } }); aviso(`${r.novos} lançamentos importados${r.repetidos ? `; ${r.repetidos} já estavam aqui e foram ignorados` : ""}${r.meses_fechados ? `; ${r.meses_fechados} de meses fechados ficaram de fora` : ""}.`, "ok"); recarregar(); }
       catch (e) { aviso(e.message, "erro"); }
     } });
-    el.append(cabeca("Financeiro", "Entradas, saídas e contas da empresa num lugar só. Só o dono e os administradores veem esta tela.",
-      botao("+ Entrada", () => editarLancamento(op, null, "ENTRADA", recarregar), "btn-primario"),
-      botao("+ Saída", () => editarLancamento(op, null, "SAIDA", recarregar), "btn-secundario"),
-      botao("Importar extrato do banco", () => importar.click(), "btn-secundario")), importar);
+    el.append(cabeca("Financeiro", "Contas a pagar e a receber, pagamentos, recebimentos e o caixa de cada mês — passados e futuros.",
+      botao("+ Recebimento", () => editarLancamento(op, null, "ENTRADA", recarregar), "btn-primario"),
+      botao("+ Conta a pagar", () => editarLancamento(op, null, "SAIDA", recarregar), "btn-secundario"),
+      botao("Gasto rápido", () => gastoRapido(op, recarregar), "btn-secundario"),
+      botao("Importar extrato", () => importar.click(), "btn-secundario")), importar);
     const trocarMes = n => { finEstado.mes = somarMesUi(mes, n); navegar(); };
+    const seletorMes = h("input", { class: "entrada", type: "month", value: mes, "aria-label": "Escolher mês", style: "max-width:170px", onchange: e => { if (/^\d{4}-\d{2}$/.test(e.target.value)) { finEstado.mes = e.target.value; navegar(); } } });
+    const fechado = (op.fechados || []).includes(mes);
     el.append(h("div", { class: "fin-mes" },
       botao("‹", () => trocarMes(-1), "btn-secundario btn-pequeno", { "aria-label": "Mês anterior" }),
       h("strong", { text: nomeMesUi(mes) }),
-      botao("›", () => trocarMes(1), "btn-secundario btn-pequeno", { "aria-label": "Próximo mês", disabled: mes >= somarMesUi(mesAtualLocal(), 12) }),
-      mes !== mesAtualLocal() ? botao("Voltar para este mês", () => { finEstado.mes = mesAtualLocal(); navegar(); }, "btn-secundario btn-pequeno") : null,
+      botao("›", () => trocarMes(1), "btn-secundario btn-pequeno", { "aria-label": "Próximo mês", disabled: mes >= somarMesUi(mesAtualLocal(), 36) }),
+      seletorMes,
+      mes !== mesAtualLocal() ? botao("Este mês", () => { finEstado.mes = mesAtualLocal(); navegar(); }, "btn-secundario btn-pequeno") : null,
+      fechado ? selo("Mês fechado", "info") : mes > mesAtualLocal() ? selo("Mês futuro: mostra o previsto", "aviso") : null,
       h("span", { style: "flex:1" }),
-      botao("Relatório em PDF", async () => { try { await baixarDaApi(`fin/relatorio.pdf?mes=${mes}`, `financeiro-${mes}.pdf`); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno"),
+      botao("Relatório para assinar", () => { admEstado.periodo = { tipo: "mes", mes }; irPara("#/admin/relatorio"); }, "btn-secundario btn-pequeno"),
       botao("Planilha (CSV)", async () => { try { await baixarDaApi(`fin/exportar.csv?mes=${mes}`, `financeiro-${mes}.csv`); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno")));
     const corpo = h("div", {}, carregando());
     el.append(corpo);
@@ -7060,77 +7182,85 @@ Botão só com texto = resposta.` })),
     try { [r, lista] = await Promise.all([fin(`resumo?mes=${mes}`), fin(`lancamentos?mes=${mes}`)]); } catch (e) { if (vivo()) falha(corpo, e); return; }
     if (!vivo()) return;
     const t = r.totais;
-    const marcarPago = async (l, desfazer) => { try { await fin(`lancamentos/${l.id}/pagar`, { metodo: "POST", corpo: desfazer ? { desfazer: true } : {} }); aviso(desfazer ? "Voltou para em aberto." : l.tipo === "ENTRADA" ? "Marcado como recebido." : "Marcado como pago.", "ok"); recarregar(); } catch (e) { aviso(e.message, "erro"); } };
+    const desfazer = async l => { try { await fin(`lancamentos/${l.id}/pagar`, { metodo: "POST", corpo: { desfazer: true } }); aviso("Voltou para em aberto.", "ok"); recarregar(); } catch (e) { aviso(e.message, "erro"); } };
     const vencidas = t.vencidas_pagar + t.vencidas_receber;
     const blocos = [];
-    if (vencidas) blocos.push(h("p", { class: "prb-urgente", style: "display:block;margin:0 0 12px" , text: `Atenção: ${t.vencidas_pagar ? `${din(t.vencidas_pagar)} em contas a pagar vencidas` : ""}${t.vencidas_pagar && t.vencidas_receber ? " e " : ""}${t.vencidas_receber ? `${din(t.vencidas_receber)} a receber já vencidos` : ""}.` }));
+    if (vencidas) blocos.push(h("p", { class: "prb-urgente", style: "display:block;margin:0 0 12px", text: `Atenção: ${t.vencidas_pagar ? `${din(t.vencidas_pagar)} em contas a pagar vencidas` : ""}${t.vencidas_pagar && t.vencidas_receber ? " e " : ""}${t.vencidas_receber ? `${din(t.vencidas_receber)} a receber já vencidos` : ""}.` }));
     blocos.push(h("section", { class: "grade grade-4" },
-      metrica("Entradas recebidas", din(t.entradas), pctFin(r.comparativo.entradas)),
-      metrica("Saídas pagas", din(t.saidas), pctFin(r.comparativo.saidas)),
-      metrica("Resultado do mês", din(t.saldo), t.margem !== null ? `Margem de ${String(t.margem).replace(".", ",")}%` : "Sem entradas no mês"),
-      metrica("Em aberto", din(t.a_receber - t.a_pagar), `A receber ${din(t.a_receber)} · a pagar ${din(t.a_pagar)}`)));
-    if (!r.lancamentos && !r.serie.some(s => s.entradas || s.saidas)) {
-      blocos.push(h("section", { class: "cartao vidro" }, vazio("Comece em 2 minutos", "Lance as entradas e saídas do mês, cadastre as contas fixas (aluguel, internet, salários) ou importe o extrato do banco em OFX ou CSV: a DENIA organiza por categoria, avisa o que vence e manda o resumo do mês por e-mail com gráficos.", ICONES.caixa),
-        h("div", { class: "acoes", style: "justify-content:center" }, botao("Importar extrato do banco", () => importar.click(), "btn-primario"), botao("+ Conta fixa do mês", () => novaRecorrente(), "btn-secundario"))));
-    } else {
-      const saidas = r.categorias.filter(c => c.tipo === "SAIDA"), maxC = Math.max(1, ...saidas.map(c => c.valor_cent));
-      blocos.push(h("div", { class: "grade grade-2", style: "margin-top:12px" },
-        h("section", { class: "cartao vidro" }, h("h3", { style: "margin:0 0 8px", text: "Últimos 6 meses" }), graficoBarrasFin(r.serie, moeda)),
-        h("section", { class: "cartao vidro" }, h("h3", { style: "margin:0 0 8px", text: "Para onde foi o dinheiro" }),
-          saidas.length ? h("ul", { class: "fin-cats" }, saidas.slice(0, 8).map(c => h("li", {},
-            h("div", { class: "fin-cat-topo" }, h("span", { text: c.categoria }), h("strong", { text: `${din(c.valor_cent)} · ${t.saidas ? Math.round(100 * c.valor_cent / t.saidas) : 0}%` })),
-            h("div", { class: "fin-cat-barra" }, h("i", { style: `width:${Math.max(2, 100 * c.valor_cent / maxC)}%` }))))) : h("p", { class: "sub", text: "Nenhuma saída paga neste mês." }))));
-    }
-    // Contas que vencem nos próximos 15 dias (e as vencidas).
-    if (r.proximas.length) blocos.push(h("section", { class: "cartao vidro", style: "margin-top:12px" }, h("h3", { style: "margin:0 0 8px", text: "Contas para os próximos 15 dias" }),
-      h("ul", { class: "prb-lista" }, r.proximas.map(l => h("li", { class: "prb-item", style: "border-color:var(--borda)" },
-        h("div", {}, h("strong", { text: `${l.descricao} — ${din(l.valor_cent)}` }),
-          h("p", { class: "prb-meta", text: `${l.tipo === "ENTRADA" ? "A receber" : "A pagar"} · vence ${dataCurtaFin(l.data)}${l.data < r.hoje ? " · VENCIDA" : ""}${l.contato ? " · " + l.contato : ""}` }),
-          h("div", { class: "acoes" }, botao(l.tipo === "ENTRADA" ? "Recebi" : "Paguei", () => marcarPago(l), "btn-primario btn-pequeno"))))))));
-    // Lançamentos do mês com filtros.
-    const filtros = [["todos", "Todos"], ["ENTRADA", "Entradas"], ["SAIDA", "Saídas"], ["aberto", "Em aberto"], ["vencido", "Vencidos"]];
+      metrica("Recebido", din(t.entradas), pctFin(r.comparativo.entradas)),
+      metrica("Pago", din(t.saidas), pctFin(r.comparativo.saidas)),
+      metrica("Resultado", din(t.saldo), t.margem !== null ? `Margem de ${String(t.margem).replace(".", ",")}%` : "Sem entradas no mês"),
+      metrica(mes > mesAtualLocal() ? "Previsto" : "Em aberto", din(t.a_receber - t.a_pagar), `A receber ${din(t.a_receber)} · a pagar ${din(t.a_pagar)}`)));
+    const saidas = r.categorias.filter(c => c.tipo === "SAIDA"), maxC = Math.max(1, ...saidas.map(c => c.valor_cent));
+    blocos.push(h("div", { class: "grade grade-2", style: "margin-top:12px" },
+      h("section", { class: "cartao vidro" }, h("h3", { style: "margin:0 0 8px", text: "Últimos 6 meses" }), graficoBarrasFin(r.serie, moeda)),
+      h("section", { class: "cartao vidro" }, h("h3", { style: "margin:0 0 8px", text: "Para onde foi o dinheiro" }),
+        saidas.length ? h("ul", { class: "fin-cats" }, saidas.slice(0, 8).map(c => {
+          const orc = (r.orcamento || []).find(o => o.tipo === "SAIDA" && o.categoria === c.categoria);
+          return h("li", {}, h("div", { class: "fin-cat-topo" }, h("span", { text: c.categoria + (orc ? ` (orçamento ${din(orc.valor_cent)})` : "") }), h("strong", { class: orc && c.valor_cent > orc.valor_cent ? "fin-menos" : "", text: `${din(c.valor_cent)} · ${t.saidas ? Math.round(100 * c.valor_cent / t.saidas) : 0}%` })),
+            h("div", { class: "fin-cat-barra" }, h("i", { style: `width:${Math.max(2, 100 * c.valor_cent / maxC)}%` })));
+        })) : h("p", { class: "sub", text: "Nenhuma saída paga neste mês." }))));
+    // Lista com as abas da Central: a receber, recebidos, a pagar, pagos.
+    const filtros = [["todos", "Todos"], ["receber", "A receber"], ["recebidos", "Recebidos"], ["pagar", "A pagar"], ["pagos", "Pagos"], ["vencido", "Vencidos"]];
+    if (!filtros.some(([v]) => v === finEstado.filtro)) finEstado.filtro = "todos";
     const tabela = h("div", {});
-    const busca = h("input", { class: "entrada fin-busca", type: "search", placeholder: "Buscar descrição, categoria ou contato", "aria-label": "Buscar lançamento", value: finEstado.busca });
+    const busca = h("input", { class: "entrada fin-busca", type: "search", placeholder: "Buscar descrição, categoria ou quem", "aria-label": "Buscar lançamento", value: finEstado.busca });
+    const todos = [...lista.lancamentos, ...(lista.previstos || [])];
+    const passa = l => ({ todos: true, receber: l.tipo === "ENTRADA" && !l.pago, recebidos: l.tipo === "ENTRADA" && l.pago, pagar: l.tipo === "SAIDA" && !l.pago, pagos: l.tipo === "SAIDA" && l.pago, vencido: !l.pago && !l.previsto && l.data < r.hoje })[finEstado.filtro];
     const desenhar = () => {
       const q = finEstado.busca.toLowerCase();
-      const ls = lista.lancamentos.filter(l => (finEstado.filtro === "todos" || l.tipo === finEstado.filtro || (finEstado.filtro === "aberto" && !l.pago) || (finEstado.filtro === "vencido" && !l.pago && l.data < r.hoje))
-        && (!q || [l.descricao, l.categoria, l.contato].some(x => String(x || "").toLowerCase().includes(q))));
-      trocar(tabela, ls.length ? h("div", { class: "tabela-rolagem" }, h("table", { class: "tabela fin-tabela" },
-        h("thead", {}, h("tr", {}, ["Data", "Descrição", "Categoria", "Valor", "Situação", ""].map(c => h("th", { text: c })))),
-        h("tbody", {}, ls.map(l => h("tr", {},
+      const ls = todos.filter(l => passa(l) && (!q || [l.descricao, l.categoria, l.contato].some(x => String(x || "").toLowerCase().includes(q)))).sort((a, b) => (a.pago ? a.pago_em || a.data : a.data).localeCompare(b.pago ? b.pago_em || b.data : b.data));
+      const soma = ls.reduce((a, l) => a + (l.tipo === "ENTRADA" ? 1 : -1) * (l.valor_pago_cent ?? l.valor_cent), 0);
+      trocar(tabela, ls.length ? h("div", {}, h("p", { class: "sub", style: "margin:0 0 6px", text: `${ls.length} lançamento(s) · saldo da lista ${din(soma)}` }), h("div", { class: "tabela-rolagem lista-rolavel" }, h("table", { class: "tabela fin-tabela" },
+        h("thead", {}, h("tr", {}, ["Venc.", "Descrição", "Categoria", "Valor", "Situação", ""].map(c => h("th", { text: c })))),
+        h("tbody", {}, ls.map(l => h("tr", { class: l.previsto ? "fin-previsto" : "" },
           h("td", { text: dataCurtaFin(l.data) }),
-          h("td", {}, h("strong", { text: l.descricao }), l.contato ? h("div", { class: "prb-meta", text: l.contato }) : null),
+          h("td", {}, h("strong", { text: l.descricao }), h("div", { class: "prb-meta", text: [l.contato, l.centro, l.de_outro_mes ? `pago em ${dataCurtaFin(l.pago_em)} (vencia em outro mês)` : ""].filter(Boolean).join(" · ") })),
           h("td", { text: l.categoria || "—" }),
-          h("td", { class: l.tipo === "ENTRADA" ? "fin-mais" : "fin-menos", text: (l.tipo === "ENTRADA" ? "+ " : "− ") + din(l.valor_cent) }),
-          h("td", {}, l.pago ? selo(l.tipo === "ENTRADA" ? "Recebido" : "Pago", "ok") : selo(l.data < r.hoje ? "Vencido" : "Em aberto", l.data < r.hoje ? "erro" : "aviso")),
-          h("td", {}, h("div", { class: "acoes", style: "flex-wrap:nowrap" },
-            l.pago ? botao("Desfazer", () => marcarPago(l, true), "btn-secundario btn-pequeno") : botao(l.tipo === "ENTRADA" ? "Recebi" : "Paguei", () => marcarPago(l), "btn-secundario btn-pequeno"),
+          h("td", { class: l.tipo === "ENTRADA" ? "fin-mais" : "fin-menos", text: (l.tipo === "ENTRADA" ? "+ " : "− ") + din(l.valor_pago_cent ?? l.valor_cent) }),
+          h("td", {}, l.previsto ? selo("Previsto", "info") : l.pago ? selo(`${l.tipo === "ENTRADA" ? "Recebido" : "Pago"} ${dataCurtaFin(l.pago_em).slice(0, 5)}${l.forma ? " · " + l.forma : ""}`, "ok") : selo(l.data < r.hoje ? "Vencido" : "Em aberto", l.data < r.hoje ? "erro" : "aviso")),
+          h("td", {}, l.previsto ? h("span", { class: "prb-meta", text: l.origem === "aluguel" ? "aluguel programado" : "conta fixa" }) : h("div", { class: "acoes", style: "flex-wrap:nowrap" },
+            l.pago ? botao("Desfazer", () => desfazer(l), "btn-secundario btn-pequeno") : botao(l.tipo === "ENTRADA" ? "Recebi" : "Paguei", () => registrarPagamento(op, l, recarregar), "btn-primario btn-pequeno"),
+            l.pago && l.tipo === "ENTRADA" ? botao("Recibo", async () => { try { await baixarDaApi(`adm/recibo/${l.id}`, `recibo-${l.id}.pdf`); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno") : null,
             botao("Editar", () => editarLancamento(op, l, l.tipo, recarregar), "btn-secundario btn-pequeno"),
-            botao("Apagar", async () => { if (!(await modal({ titulo: "Apagar lançamento?", conteudo: `${l.descricao} — ${din(l.valor_cent)}`, confirmar: "Apagar", perigo: true }))) return; try { await fin(`lancamentos/${l.id}`, { metodo: "DELETE" }); aviso("Apagado.", "ok"); recarregar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno")))))))) :
-        h("p", { class: "sub", text: lista.lancamentos.length ? "Nada com esse filtro." : "Nenhum lançamento neste mês." }));
+            botao("Apagar", async () => { if (!(await modal({ titulo: "Apagar lançamento?", conteudo: `${l.descricao} — ${din(l.valor_cent)}`, confirmar: "Apagar", perigo: true }))) return; try { await fin(`lancamentos/${l.id}`, { metodo: "DELETE" }); aviso("Apagado.", "ok"); recarregar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno"))))))))) :
+        h("p", { class: "sub", text: todos.length ? "Nada com esse filtro." : mes > mesAtualLocal() ? "Nada programado para este mês." : "Nenhum lançamento neste mês." }));
+      encurtarListas(tabela);
     };
     busca.addEventListener("input", () => { finEstado.busca = busca.value; desenhar(); });
     const chips = h("div", { class: "abas abas-chips", role: "group", "aria-label": "Filtro" }, filtros.map(([v, n]) => h("button", { type: "button", class: "aba" + (finEstado.filtro === v ? " ativo" : ""), "aria-pressed": finEstado.filtro === v ? "true" : "false",
       onclick: e => { finEstado.filtro = v; chips.querySelectorAll(".aba").forEach(b => { b.classList.toggle("ativo", b === e.currentTarget); b.setAttribute("aria-pressed", b === e.currentTarget ? "true" : "false"); }); desenhar(); } }, n)));
     blocos.push(h("section", { class: "cartao vidro", style: "margin-top:12px" }, h("h3", { style: "margin:0 0 8px", text: `Lançamentos de ${nomeMesUi(mes)}` }), h("div", { class: "fin-filtros" }, chips, busca), tabela));
     desenhar();
-    // Leitura da IA, contas fixas e envio mensal.
     const analise = h("div", {});
     blocos.push(h("div", { class: "grade grade-2", style: "margin-top:12px" },
+      blocoRecorrentes(), blocoGestao(),
       h("section", { class: "cartao vidro" }, h("h3", { style: "margin:0 0 6px", text: "Leitura da DENIA" }),
         h("p", { class: "sub", text: "A IA lê só os números do mês (sem nomes de clientes) e aponta o que melhorou, o que piorou e uma ação prática. Não substitui o contador." }),
         analise, h("div", { class: "acoes" }, botao("Analisar este mês", async () => { trocar(analise, carregando("Analisando…")); try { const a = await fin(`analise?mes=${mes}`, { metodo: "POST", corpo: {} }); trocar(analise, h("p", { style: "white-space:pre-line", text: a.analise })); } catch (e) { trocar(analise); aviso(e.message, "erro"); } }, "btn-primario"))),
-      blocoRecorrentes(), blocoEnvioMensal()));
+      blocoEnvioMensal()));
     trocar(corpo, ...blocos);
 
     async function novaRecorrente() {
       const tipo = h("select", { class: "entrada" }, h("option", { value: "SAIDA", text: "Conta a pagar" }), h("option", { value: "ENTRADA", text: "Valor a receber" }));
       const desc = h("input", { class: "entrada", type: "text", maxlength: "160", placeholder: "Ex.: Aluguel, Internet, Salário da Ana" });
       const valor = h("input", { class: "entrada", type: "text", inputmode: "decimal", placeholder: "0,00" });
+      const freq = h("select", { class: "entrada" }, Object.entries(op.frequencias || { mensal: "Todo mês" }).map(([k, v]) => h("option", { value: k, text: v })));
+      freq.value = "mensal";
       const dia = h("input", { class: "entrada", type: "number", min: "1", max: "31", value: "5" });
+      const diaSem = h("select", { class: "entrada" }, ["Domingo", "Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado"].map((n, i) => h("option", { value: i, text: n })));
+      diaSem.value = "1";
+      const inicio = h("input", { class: "entrada", type: "month", value: mesAtualLocal() }), ate = h("input", { class: "entrada", type: "month" });
+      const categoria = campoCategoria(op, tipo, "");
+      const contato = h("input", { class: "entrada", type: "text", placeholder: "Fornecedor ou pagador (opcional)" });
+      const campoDia = campo("Dia do vencimento", dia), campoSem = campo("Dia da semana", diaSem);
+      const ajustar = () => { campoDia.classList.toggle("oculto", freq.value === "semanal"); campoSem.classList.toggle("oculto", freq.value !== "semanal"); };
+      freq.addEventListener("change", ajustar); ajustar();
       for (;;) {
-        if (!(await modal({ titulo: "Conta fixa do mês", conteudo: [h("p", { class: "sub", text: "A DENIA cria esta conta todo mês, no dia escolhido, para você só marcar como paga." }), campo("Tipo", tipo), campo("Descrição", desc), h("div", { class: "fin-duas" }, campo("Valor", valor), campo("Dia do vencimento", dia))], confirmar: "Salvar" }))) return;
-        try { await fin("recorrentes", { metodo: "POST", corpo: { tipo: tipo.value, descricao: desc.value, valor: valor.value, dia: Number(dia.value) } }); aviso("Conta fixa salva.", "ok"); recarregar(); return; }
+        if (!(await modal({ titulo: "Conta que se repete", conteudo: h("div", { class: "fin-form" }, h("p", { class: "sub", text: "A DENIA cria esta conta sozinha em cada vencimento. Nos meses futuros ela já aparece como prevista." }), campo("Tipo", tipo), campo("Descrição", desc),
+          h("div", { class: "fin-duas" }, campo("Valor", valor), campo("Repetir", freq)), h("div", { class: "fin-duas" }, campoDia, campoSem), h("div", { class: "fin-duas" }, campo("Começa em", inicio), campo("Termina em (opcional)", ate)),
+          h("div", { class: "fin-duas" }, campo("Categoria", categoria), campo("Quem", contato))), confirmar: "Salvar" }))) return;
+        try { await fin("recorrentes", { metodo: "POST", corpo: { tipo: tipo.value, descricao: desc.value, valor: valor.value, dia: Number(dia.value), dia_semana: Number(diaSem.value), frequencia: freq.value, inicio_mes: inicio.value, ate_mes: ate.value, categoria: categoria.value === "__nova" ? "" : categoria.value, contato: contato.value } }); aviso("Conta fixa salva.", "ok"); recarregar(); return; }
         catch (e) { aviso(e.message, "erro"); }
       }
     }
@@ -7138,12 +7268,50 @@ Botão só com texto = resposta.` })),
       const caixa = h("div", {}, carregando());
       fin("recorrentes").then(x => {
         const ativas = x.recorrentes.filter(r0 => r0.ativo);
+        const quando = r0 => r0.freq === "semanal" ? `toda ${["domingo", "segunda", "terça", "quarta", "quinta", "sexta", "sábado"][r0.dia_semana ?? 1]}` : `${(op.frequencias || {})[r0.freq || "mensal"] || "todo mês"}, dia ${r0.dia}`;
         trocar(caixa, ativas.length ? h("ul", { class: "prb-lista" }, ativas.map(r0 => h("li", { class: "prb-item", style: "border-color:var(--borda)" },
-          h("div", {}, h("strong", { text: `${r0.descricao} — ${din(r0.valor_cent)}` }), h("p", { class: "prb-meta", text: `${r0.tipo === "ENTRADA" ? "A receber" : "A pagar"} todo dia ${r0.dia}` }),
+          h("div", {}, h("strong", { text: `${r0.descricao} — ${din(r0.valor_cent)}` }), h("p", { class: "prb-meta", text: `${r0.tipo === "ENTRADA" ? "A receber" : "A pagar"} · ${quando(r0).toLowerCase()}${r0.ate_mes ? ` · até ${r0.ate_mes.split("-").reverse().join("/")}` : ""}` }),
             h("div", { class: "acoes" }, botao("Parar de repetir", async () => { try { await fin(`recorrentes/${r0.id}`, { metodo: "DELETE" }); aviso("Não repete mais.", "ok"); recarregar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno")))))) :
           h("p", { class: "sub", text: "Nenhuma conta fixa ainda." }));
       }).catch(e => trocar(caixa, h("p", { class: "sub", text: e.message })));
-      return h("section", { class: "cartao vidro" }, h("h3", { style: "margin:0 0 6px", text: "Contas fixas do mês" }), caixa, h("div", { class: "acoes" }, botao("+ Conta fixa", () => novaRecorrente(), "btn-secundario")));
+      return h("section", { class: "cartao vidro" }, h("h3", { style: "margin:0 0 6px", text: "Contas que se repetem" }), caixa, h("div", { class: "acoes" }, botao("+ Conta fixa", () => novaRecorrente(), "btn-secundario")));
+    }
+    // Gestão: categorias, orçamento, fechamento do mês e histórico de alterações.
+    function blocoGestao() {
+      const categorias = async () => {
+        const x = await fin("categorias");
+        const lista0 = tipo => h("ul", { class: "prb-lista" }, x.categorias[tipo].map(c => h("li", { class: "prb-item", style: "border-color:var(--borda)" }, h("div", {}, h("strong", { text: c.nome }), h("p", { class: "prb-meta", text: `${c.uso} lançamento(s)` }),
+          h("div", { class: "acoes" },
+            botao("Renomear", async () => { const novo = (window.prompt(`Novo nome para "${c.nome}" (os lançamentos vão junto):`, c.nome) || "").trim(); if (!novo || novo === c.nome) return; try { const r0 = await fin("categorias", { metodo: "PUT", corpo: { tipo, de: c.nome, nome: novo } }); aviso(`Renomeada (${r0.alterados} lançamentos).`, "ok"); fecharGaveta && fecharGaveta(); recarregar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno"),
+            botao("Ocultar", async () => { try { await fin("categorias", { metodo: "DELETE", corpo: { tipo, nome: c.nome } }); aviso("Não aparece mais na lista (os lançamentos continuam).", "ok"); fecharGaveta && fecharGaveta(); recarregar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno"))))));
+        const nova = tipo => botao(`+ Categoria de ${tipo === "ENTRADA" ? "entrada" : "saída"}`, async () => { const n = (window.prompt("Nome da categoria:") || "").trim(); if (!n) return; try { await fin("categorias", { metodo: "POST", corpo: { tipo, nome: n } }); aviso("Criada.", "ok"); fecharGaveta && fecharGaveta(); recarregar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario btn-pequeno");
+        gaveta("Categorias", [h("h3", { text: "Entradas" }), nova("ENTRADA"), lista0("ENTRADA"), h("h3", { text: "Saídas" }), nova("SAIDA"), lista0("SAIDA")]);
+      };
+      const orcamento = async () => {
+        const x = await fin("orcamento");
+        const ents = (op.categorias.SAIDA || []).map(c => { const v = (x.itens.find(i => i.tipo === "SAIDA" && i.categoria === c) || {}).valor_cent; return { c, e: h("input", { class: "entrada", type: "text", inputmode: "decimal", placeholder: "sem limite", value: v ? (v / 100).toFixed(2).replace(".", ",") : "" }) }; });
+        if (!(await modal({ titulo: "Orçamento mensal por categoria", conteudo: h("div", { class: "fin-form" }, h("p", { class: "sub", text: "Quanto pode gastar por mês em cada categoria. O financeiro mostra em vermelho o que passar." }), ents.map(({ c, e }) => campo(c, e))), confirmar: "Salvar orçamento" }))) return;
+        try { await fin("orcamento", { metodo: "PUT", corpo: { itens: ents.filter(x0 => x0.e.value).map(x0 => ({ tipo: "SAIDA", categoria: x0.c, valor: x0.e.value })) } }); aviso("Orçamento salvo.", "ok"); recarregar(); } catch (e) { aviso(e.message, "erro"); }
+      };
+      const fechamento = async () => {
+        if (fechado) {
+          const motivo = h("input", { class: "entrada", type: "text", placeholder: "Ex.: lançar comprovante esquecido" });
+          if (!(await modal({ titulo: `Reabrir ${nomeMesUi(mes)}?`, conteudo: h("div", { class: "fin-form" }, h("p", { class: "sub", text: "O motivo fica registrado no histórico." }), campo("Motivo (obrigatório)", motivo)), confirmar: "Reabrir" }))) return;
+          try { await fin("fechamento", { metodo: "POST", corpo: { mes, reabrir: true, motivo: motivo.value } }); aviso("Mês reaberto.", "ok"); recarregar(); } catch (e) { aviso(e.message, "erro"); }
+          return;
+        }
+        const obs = h("input", { class: "entrada", type: "text", placeholder: "Ex.: conferido com o extrato do banco" });
+        if (!(await modal({ titulo: `Fechar ${nomeMesUi(mes)}?`, conteudo: h("div", { class: "fin-form" }, h("p", { class: "sub", text: "Depois de fechado, ninguém altera os lançamentos deste mês até reabrir (com motivo). Use quando conferir com o extrato." }), campo("Observação", obs)), confirmar: "Fechar mês" }))) return;
+        try { await fin("fechamento", { metodo: "POST", corpo: { mes, obs: obs.value } }); aviso("Mês fechado.", "ok"); recarregar(); } catch (e) { aviso(e.message, "erro"); }
+      };
+      const historico = async () => {
+        const x = await fin("historico");
+        gaveta("Histórico de alterações", x.historico.length ? h("ul", { class: "prb-lista" }, x.historico.map(i => h("li", { class: "prb-item", style: "border-color:var(--borda)" }, h("div", {}, h("strong", { text: `${i.acao}` }), h("p", { class: "prb-meta", text: `${quando(i.ms)} · ${i.por || "DENIA"}` }), i.detalhe ? h("p", { class: "prb-meta", style: "word-break:break-word", text: i.detalhe }) : null)))) : vazio("Nada ainda", ""));
+      };
+      return h("section", { class: "cartao vidro" }, h("h3", { style: "margin:0 0 6px", text: "Gestão" }),
+        h("p", { class: "sub", text: "Categorias da empresa, orçamento do mês, fechamento (trava o mês conferido) e o histórico de tudo que foi alterado." }),
+        h("div", { class: "acoes" }, botao("Categorias", () => categorias().catch(e => aviso(e.message, "erro")), "btn-secundario"), botao("Orçamento", () => orcamento().catch(e => aviso(e.message, "erro")), "btn-secundario"),
+          mes < mesAtualLocal() ? botao(fechado ? "Reabrir o mês" : "Fechar o mês", fechamento, "btn-secundario") : null, botao("Histórico", () => historico().catch(e => aviso(e.message, "erro")), "btn-secundario")));
     }
     function blocoEnvioMensal() {
       const c = op.config || {};
@@ -7151,7 +7319,7 @@ Botão só com texto = resposta.` })),
       const emails = h("input", { class: "entrada", type: "text", placeholder: "Vazio = dono e administradores", value: c.emails || "" });
       const moedaSel = h("select", { class: "entrada" }, op.moedas.map(m0 => h("option", { value: m0, text: m0 })));
       moedaSel.value = moeda;
-      return h("section", { class: "cartao vidro", style: "grid-column:1/-1" }, h("h3", { style: "margin:0 0 6px", text: "Resumo do mês por e-mail" }),
+      return h("section", { class: "cartao vidro" }, h("h3", { style: "margin:0 0 6px", text: "Resumo do mês por e-mail" }),
         h("p", { class: "sub", text: "No dia 1, a DENIA manda o resumo do mês anterior com os gráficos em PDF e a leitura da IA." }),
         h("label", { class: "fin-check" }, ligado, " Enviar todo dia 1"),
         h("div", { class: "fin-duas" }, campo("Enviar para", emails, "Até 5 e-mails, separados por vírgula."), campo("Moeda", moedaSel)),
@@ -7167,7 +7335,7 @@ Botão só com texto = resposta.` })),
   const admEstado = { mes: null, moeda: "BRL" };
   const dinA = c => dinheiroFin(c, admEstado.moeda);
   const hojeUi = () => isoLocal(new Date());
-  const ABAS_ADMIN = { hoje: "O dia", agenda: "Agenda e compromissos", contas: "Banco e caixa", alugueis: "Aluguéis e locatários", manutencao: "Manutenção e obrigações", documentos: "Documentos e validades", relatorio: "Relatório do mês", ajustes: "Ajustes e importação" };
+  const ABAS_ADMIN = { hoje: "O dia", agenda: "Agenda e compromissos", contas: "Banco e caixa", alugueis: "Aluguéis e locatários", manutencao: "Manutenção e obrigações", documentos: "Documentos e validades", relatorio: "Relatório do mês", cadastros: "Cadastros", empresas: "Todas as empresas", ajustes: "Ajustes e importação" };
   const ABAS_EQUIPE = ["hoje", "agenda", "manutencao"];
   const entradaTxt = (valor, ph, extra = {}) => h("input", { class: "entrada", type: "text", value: valor ?? "", placeholder: ph || "", ...extra });
   const entradaData = valor => h("input", { class: "entrada", type: "date", value: valor || "" });
@@ -7187,7 +7355,7 @@ Botão só com texto = resposta.` })),
     if (!pode("ADMIN") && !ABAS_EQUIPE.includes(aba)) aba = "hoje";
     const corpo = h("div", {}, carregando());
     el.append(corpo);
-    const fn = { hoje: admHoje, agenda: admAgenda, contas: admContas, alugueis: admAlugueis, manutencao: admManutencao, documentos: admDocumentos, relatorio: admRelatorio, ajustes: admAjustes }[aba];
+    const fn = { hoje: admHoje, agenda: admAgenda, contas: admContas, alugueis: admAlugueis, manutencao: admManutencao, documentos: admDocumentos, relatorio: admRelatorio, cadastros: admCadastros, empresas: admEmpresas, ajustes: admAjustes }[aba];
     try { await fn(corpo, vivo); } catch (e) { if (vivo()) falha(corpo, e); }
   }
   const recarregarAdm = () => navegar();
@@ -7200,7 +7368,8 @@ Botão só com texto = resposta.` })),
     const t = d.totais, blocos = [];
     blocos.push(cabeca("O dia", `Tudo que precisa de atenção hoje, ${dataCurtaFin(d.hoje)}: compromissos, contas, manutenção, documentos e temporada.`,
       botao("+ Compromisso", () => novoCompromisso(null, d.hoje), "btn-primario"),
-      d.admin ? botao("+ Conta ou recebimento", () => irPara("#/financeiro"), "btn-secundario") : null));
+      d.admin ? botao("+ Conta ou recebimento", () => irPara("#/financeiro"), "btn-secundario") : null,
+      d.admin && (estado.eu.organizacoes || []).filter(o => ["OWNER", "ADMIN"].includes(o.papel)).length > 1 ? h("a", { class: "btn btn-secundario", href: "#/admin/empresas" }, "Todas as empresas") : null));
     const cards = [metrica("Compromissos hoje", String(t.agenda_hoje), t.agenda_atrasada ? `${t.agenda_atrasada} ficaram para trás` : "Nada atrasado")];
     if (d.admin) cards.push(metrica("A pagar vencido", dinA(t.pagar_vencido), `Próximos 7 dias: ${dinA(t.pagar_semana)}`), metrica("A receber vencido", dinA(t.receber_vencido), `Próximos 7 dias: ${dinA(t.receber_semana)}`));
     cards.push(metrica("Manutenção vencida", String(t.rotinas_vencidas), d.rotinas_sem_data ? `${d.rotinas_sem_data} obrigações sem data da última vez` : "Obrigações em dia"));
@@ -7231,14 +7400,10 @@ Botão só com texto = resposta.` })),
     trocar(el, ...blocos);
   }
   async function darBaixa(c) {
-    let contas = [];
-    try { contas = (await fin("opcoes")).contas || []; } catch { /* sem contas */ }
-    const data = entradaData(hojeUi()), forma = h("select", { class: "entrada" }, ["", "Pix", "Dinheiro", "Transferência", "Boleto", "Cartão de débito", "Cartão de crédito", "Outro"].map(f => h("option", { value: f, text: f || "—" })));
-    const valor = entradaValor(c.valor_cent), conta = h("select", { class: "entrada" }, h("option", { value: "", text: "Automático (dinheiro → caixa; o resto → banco)" }), contas.map(x => h("option", { value: x.id, text: x.nome })));
-    await formulario(c.tipo === "ENTRADA" ? "Registrar recebimento" : "Registrar pagamento", [h("p", { class: "sub", text: `${c.descricao} — ${dinA(c.valor_cent)}` }),
-      h("div", { class: "fin-duas" }, campo("Data", data), campo("Forma", forma)), h("div", { class: "fin-duas" }, campo("Valor efetivo", valor, "Mude se veio com multa, juros ou desconto."), contas.length ? campo("Conta", conta) : h("span"))], "Salvar",
-      async () => { await fin(`lancamentos/${c.id}/pagar`, { metodo: "POST", corpo: { data: data.value, forma: forma.value || undefined, valor_pago: valor.value, conta_id: conta.value || undefined } }); aviso("Registrado.", "ok"); recarregarAdm(); });
+    const op = await fin("opcoes");
+    await registrarPagamento(op, c, recarregarAdm);
   }
+
 
   // ----- Agenda
   async function novoCompromisso(a, dataPadrao) {
@@ -7254,7 +7419,10 @@ Botão só com texto = resposta.` })),
       async () => { await adm(a ? `agenda/${a.id}` : "agenda", { metodo: a ? "PUT" : "POST", corpo: { titulo: titulo.value, data: data.value, hora: hora.value || null, quem: quem.value, local: local.value, obs: obs.value, aviso_min: Number(aviso0.value), repetir: repetir.value, prioridade: alta.checked ? "ALTA" : "NORMAL" } }); aviso("Compromisso salvo.", "ok"); recarregarAdm(); });
   }
   async function admAgenda(el, vivo) {
-    const r = await adm("agenda");
+    // Mês a mês (passados e futuros); os atrasados sempre aparecem.
+    const mesA = admEstado.mesAgenda = admEstado.mesAgenda || mesAtualLocal();
+    const fimA = `${mesA}-${String(new Date(Date.UTC(+mesA.slice(0, 4), +mesA.slice(5, 7), 0)).getUTCDate()).padStart(2, "0")}`;
+    const r = await adm(`agenda?de=${mesA}-01&ate=${fimA}`);
     if (!vivo()) return;
     const porDia = new Map();
     for (const a of r.itens) { if (!porDia.has(a.data)) porDia.set(a.data, []); porDia.get(a.data).push(a); }
@@ -7264,6 +7432,8 @@ Botão só com texto = resposta.` })),
     const dias = [...porDia.keys()].sort();
     trocar(el, cabeca("Agenda e compromissos", "Compromissos da empresa com aviso por e-mail e no celular (assine o calendário em Ajustes). O que repete é recriado sozinho quando você marca como feito.",
       botao("+ Compromisso", () => novoCompromisso(null, r.hoje), "btn-primario"), pode("ADMIN") ? h("a", { class: "btn btn-secundario", href: "#/admin/ajustes" }, "Ver no celular") : null),
+      h("div", { class: "fin-mes" }, botao("‹", () => { admEstado.mesAgenda = somarMesUi(mesA, -1); navegar(); }, "btn-secundario btn-pequeno", { "aria-label": "Mês anterior" }), h("strong", { text: nomeMesUi(mesA) }),
+        botao("›", () => { admEstado.mesAgenda = somarMesUi(mesA, 1); navegar(); }, "btn-secundario btn-pequeno", { "aria-label": "Próximo mês" }), mesA !== mesAtualLocal() ? botao("Este mês", () => { admEstado.mesAgenda = mesAtualLocal(); navegar(); }, "btn-secundario btn-pequeno") : null),
       dias.length ? h("div", {}, dias.map(dia => h("section", { class: "cartao vidro", style: "margin-top:12px" },
         h("h3", { style: "margin:0 0 8px;text-transform:capitalize", text: `${dia === r.hoje ? "Hoje — " : dia < r.hoje ? "Atrasado — " : ""}${fmtDia.format(new Date(dia + "T12:00:00Z"))}` }),
         h("ul", { class: "prb-lista" }, porDia.get(dia).map(a => item(`${a.feito ? "✓ " : ""}${a.hora || "Dia todo"} · ${a.titulo}`, [a.local, a.quem && "com " + a.quem, a.repetir && { semanal: "toda semana", mensal: "todo mês", anual: "todo ano" }[a.repetir], a.prioridade === "ALTA" && "prioridade alta", a.obs].filter(Boolean).join(" · "),
@@ -7387,11 +7557,15 @@ Botão só com texto = resposta.` })),
     const indice = entradaTxt(l ? l.indice : "IGP-M", "IGP-M, IPCA…"), mesR = h("input", { class: "entrada", type: "number", min: "1", max: "12", value: (l && l.reajuste_mes) || "" });
     const multa = h("input", { class: "entrada", type: "number", min: "0", max: "100", step: "0.01", value: l ? l.multa_pct : 2 }), juros = h("input", { class: "entrada", type: "number", min: "0", max: "100", step: "0.01", value: l ? l.juros_pct : 1 });
     const garantia = entradaTxt(l && l.garantia, "Caução, fiador, seguro-fiança…"), obs = h("textarea", { class: "entrada", rows: "2" }, (l && l.obs) || "");
+    const period = h("select", { class: "entrada" }, h("option", { value: "mensal", text: "Mensal" }), h("option", { value: "semanal", text: "Semanal" }));
+    period.value = (l && l.periodicidade) || "mensal";
+    const diaSem = h("select", { class: "entrada" }, ["Domingo", "Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado"].map((n, i) => h("option", { value: i, text: n })));
+    diaSem.value = String(l && l.dia_semana != null ? l.dia_semana : 1);
     await formulario(l ? "Editar locatário" : "Novo locatário", [h("div", { class: "fin-duas" }, campo("Nome", nome), campo("Unidade", unidade)), h("div", { class: "fin-duas" }, campo("Responsável", resp), campo("Documento", doc)),
-      h("div", { class: "fin-duas" }, campo("Telefone", tel), campo("E-mail", email)), h("div", { class: "fin-duas" }, campo("Aluguel", aluguel), campo("Condomínio", cond)), h("div", { class: "fin-duas" }, campo("Outras cobranças", outras), campo("Dia do vencimento", dia)),
+      h("div", { class: "fin-duas" }, campo("Telefone", tel), campo("E-mail", email)), h("div", { class: "fin-duas" }, campo("Aluguel", aluguel), campo("Condomínio", cond)), h("div", { class: "fin-duas" }, campo("Outras cobranças", outras), campo("Cobrança", period)), h("div", { class: "fin-duas" }, campo("Dia do vencimento (mensal)", dia), campo("Dia da semana (semanal)", diaSem)),
       h("div", { class: "fin-duas" }, campo("Início do contrato", ini), campo("Fim do contrato", fim)), h("div", { class: "fin-duas" }, campo("Índice de reajuste", indice), campo("Mês do reajuste (1–12)", mesR)),
       h("div", { class: "fin-duas" }, campo("Multa por atraso (%)", multa), campo("Juros ao mês (%)", juros)), campo("Garantia", garantia), campo("Observações", obs)], "Salvar",
-      async () => { await adm(l ? `locatarios/${l.id}` : "locatarios", { metodo: l ? "PUT" : "POST", corpo: { nome: nome.value, unidade: unidade.value, responsavel: resp.value, documento: doc.value, telefone: tel.value, email: email.value, aluguel: aluguel.value || "0", condominio: cond.value || "0", outras: outras.value || "0", dia_venc: Number(dia.value), inicio: ini.value, fim: fim.value, indice: indice.value, reajuste_mes: Number(mesR.value) || null, multa_pct: multa.value, juros_pct: juros.value, garantia: garantia.value, obs: obs.value } }); aviso("Locatário salvo. A cobrança do mês já está em A receber.", "ok"); recarregarAdm(); });
+      async () => { await adm(l ? `locatarios/${l.id}` : "locatarios", { metodo: l ? "PUT" : "POST", corpo: { nome: nome.value, unidade: unidade.value, responsavel: resp.value, documento: doc.value, telefone: tel.value, email: email.value, aluguel: aluguel.value || "0", condominio: cond.value || "0", outras: outras.value || "0", dia_venc: Number(dia.value), inicio: ini.value, fim: fim.value, indice: indice.value, reajuste_mes: Number(mesR.value) || null, multa_pct: multa.value, juros_pct: juros.value, garantia: garantia.value, obs: obs.value, periodicidade: period.value, dia_semana: Number(diaSem.value) } }); aviso("Locatário salvo. A cobrança do mês já está em A receber.", "ok"); recarregarAdm(); });
   }
   async function admAlugueis(el, vivo) {
     const r = await adm("locatarios");
@@ -7400,12 +7574,17 @@ Botão só com texto = resposta.` })),
     const total = ativos.reduce((s, l) => s + l.aluguel_cent + l.condominio_cent + l.outras_cent, 0), aberto = ativos.reduce((s, l) => s + l.em_aberto_cent, 0), vencido = ativos.reduce((s, l) => s + l.vencido_cent, 0);
     const linha = l => {
       return h("tr", {},
-        h("td", {}, h("strong", { text: l.nome }), h("div", { class: "prb-meta", text: [l.unidade, l.responsavel, l.telefone].filter(Boolean).join(" · ") })),
-        h("td", { text: dinA(l.aluguel_cent + l.condominio_cent + l.outras_cent) }), h("td", { text: `dia ${l.dia_venc}` }),
+        h("td", {}, h("strong", { text: l.nome }), h("div", { class: "prb-meta", text: [l.unidade, l.responsavel, l.telefone, ...(r.isencoes || []).filter(x => x.locatario_id === l.id).map(x => `isento ${x.mes.split("-").reverse().join("/")}`)].filter(Boolean).join(" · ") })),
+        h("td", { text: dinA(l.aluguel_cent + l.condominio_cent + l.outras_cent) + (l.periodicidade === "semanal" ? " / semana" : "") }), h("td", { text: l.periodicidade === "semanal" ? `toda ${["domingo", "segunda", "terça", "quarta", "quinta", "sexta", "sábado"][l.dia_semana ?? 1]}` : `dia ${l.dia_venc}` }),
         h("td", {}, l.em_aberto.length ? h("div", {}, l.em_aberto.map(a => h("div", { class: "prb-meta" }, `${dataCurtaFin(a.data)}: ${dinA(a.valor_cent)}${a.dias > 0 ? ` · ${a.dias} dias de atraso${a.total > a.valor_cent ? ` · com multa e juros ${dinA(a.total)}` : ""}` : ""} `,
           botao("Recebi", () => darBaixa({ ...a, tipo: "ENTRADA" }), "btn-primario btn-pequeno")))) : selo("Em dia", "ok")),
         h("td", { text: [l.fim ? `contrato até ${dataCurtaFin(l.fim)}${l.contrato_vence_dias !== null && l.contrato_vence_dias <= 60 ? " (vencendo)" : ""}` : "", l.reajuste_proximo ? `reajuste ${l.indice || ""} em ${l.reajuste_proximo.split("-").reverse().join("/")}` : ""].filter(Boolean).join(" · ") || "—" }),
         h("td", {}, h("div", { class: "acoes", style: "flex-wrap:nowrap" }, botao("Editar", () => editarLocatario(l), "btn-secundario btn-pequeno"),
+          l.ativo ? botao("Isentar mês", async () => {
+            const mesI = h("input", { class: "entrada", type: "month", value: mesAtualLocal() }), motivo = entradaTxt("", "Ex.: obra na loja, acordo");
+            await formulario(`Isentar ${l.nome}`, [h("p", { class: "sub", text: "A cobrança daquele mês sai do a receber e não volta." }), campo("Mês", mesI), campo("Motivo", motivo)], "Isentar",
+              async () => { await adm(`locatarios/${l.id}/isentar`, { metodo: "POST", corpo: { mes: mesI.value, motivo: motivo.value } }); aviso("Mês isento.", "ok"); recarregarAdm(); });
+          }, "btn-secundario btn-pequeno") : null,
           l.ativo ? botao("Encerrar", async () => { if (!(await modal({ titulo: "Encerrar contrato?", conteudo: `${l.nome}: a DENIA para de gerar a cobrança mensal. O histórico continua.`, confirmar: "Encerrar", perigo: true }))) return; try { await adm(`locatarios/${l.id}`, { metodo: "DELETE" }); recarregarAdm(); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno") : null)));
     };
     const tabela = ls => h("div", { class: "tabela-rolagem" }, h("table", { class: "tabela fin-tabela" }, h("thead", {}, h("tr", {}, ["Locatário", "Valor mensal", "Vencimento", "Em aberto", "Contrato", ""].map(c => h("th", { text: c })))), h("tbody", {}, ls.map(linha))));
@@ -7419,32 +7598,92 @@ Botão só com texto = resposta.` })),
 
   // ----- Relatório do mês (layout aprovado)
   async function admRelatorio(el, vivo) {
-    const mes = admEstado.mes = admEstado.mes || somarMesUi(mesAtualLocal(), new Date().getDate() <= 10 ? -1 : 0);
-    const r = await adm(`relatorio?mes=${mes}`);
+    // Período: um mês, um trimestre, um ano ou datas escolhidas.
+    const pe = admEstado.periodo = admEstado.periodo || { tipo: "mes", mes: somarMesUi(mesAtualLocal(), new Date().getDate() <= 10 ? -1 : 0) };
+    const ultimo = m => `${m}-${String(new Date(Date.UTC(+m.slice(0, 4), +m.slice(5, 7), 0)).getUTCDate()).padStart(2, "0")}`;
+    let consulta, nomeArq;
+    if (pe.tipo === "mes") { consulta = `mes=${pe.mes}`; nomeArq = pe.mes; }
+    else if (pe.tipo === "tri") { const ini = `${pe.ano}-${String((pe.tri - 1) * 3 + 1).padStart(2, "0")}`; consulta = `de=${ini}-01&ate=${ultimo(somarMesUi(ini, 2))}`; nomeArq = `${pe.ano}-T${pe.tri}`; }
+    else if (pe.tipo === "ano") { consulta = `de=${pe.ano}-01-01&ate=${pe.ano}-12-31`; nomeArq = String(pe.ano); }
+    else { consulta = `de=${pe.de}&ate=${pe.ate}`; nomeArq = `${pe.de}_${pe.ate}`; }
+    const r = await adm(`relatorio?${consulta}`);
     if (!vivo()) return;
     admEstado.moeda = r.moeda || "BRL";
-    const trocarMes = n => { admEstado.mes = somarMesUi(mes, n); navegar(); };
+    const anoAtual = Number(mesAtualLocal().slice(0, 4));
+    const tipoSel = h("select", { class: "entrada", "aria-label": "Tipo de período", style: "max-width:160px" }, [["mes", "Mês"], ["tri", "Trimestre"], ["ano", "Ano"], ["livre", "Datas escolhidas"]].map(([v, n]) => h("option", { value: v, text: n })));
+    tipoSel.value = pe.tipo;
+    const controles = h("span", { class: "acoes", style: "margin:0" });
+    const aplicar = novo => { admEstado.periodo = novo; navegar(); };
+    const desenharControles = () => {
+      const t = tipoSel.value;
+      if (t === "mes") { const m = pe.tipo === "mes" ? pe.mes : mesAtualLocal(); trocar(controles, botao("‹", () => aplicar({ tipo: "mes", mes: somarMesUi(m, -1) }), "btn-secundario btn-pequeno", { "aria-label": "Mês anterior" }), h("input", { class: "entrada", type: "month", value: m, style: "max-width:170px", onchange: e => /^\d{4}-\d{2}$/.test(e.target.value) && aplicar({ tipo: "mes", mes: e.target.value }) }), botao("›", () => aplicar({ tipo: "mes", mes: somarMesUi(m, 1) }), "btn-secundario btn-pequeno", { "aria-label": "Próximo mês" })); }
+      else if (t === "tri") { const ano = h("select", { class: "entrada" }, Array.from({ length: 6 }, (_, i) => anoAtual - 4 + i).map(a => h("option", { value: a, text: a }))), tri = h("select", { class: "entrada" }, [1, 2, 3, 4].map(n => h("option", { value: n, text: `${n}º trimestre` }))); ano.value = String(pe.ano || anoAtual); tri.value = String(pe.tri || Math.ceil(Number(mesAtualLocal().slice(5)) / 3)); trocar(controles, ano, tri, botao("Ver", () => aplicar({ tipo: "tri", ano: Number(ano.value), tri: Number(tri.value) }), "btn-primario btn-pequeno")); }
+      else if (t === "ano") { const ano = h("select", { class: "entrada" }, Array.from({ length: 6 }, (_, i) => anoAtual - 4 + i).map(a => h("option", { value: a, text: a }))); ano.value = String(pe.ano || anoAtual); trocar(controles, ano, botao("Ver", () => aplicar({ tipo: "ano", ano: Number(ano.value) }), "btn-primario btn-pequeno")); }
+      else { const de = h("input", { class: "entrada", type: "date", value: pe.de || `${mesAtualLocal()}-01` }), ate = h("input", { class: "entrada", type: "date", value: pe.ate || hojeUi() }); trocar(controles, de, ate, botao("Ver", () => aplicar({ tipo: "livre", de: de.value, ate: ate.value }), "btn-primario btn-pequeno")); }
+    };
+    tipoSel.addEventListener("change", desenharControles); desenharControles();
     const tabelaGrupos = (grupos, total, rotulo) => h("div", { class: "tabela-rolagem" }, h("table", { class: "tabela fin-tabela" }, h("thead", {}, h("tr", {}, ["Descrição", "Data", "Forma", "Valor"].map(c => h("th", { text: c })))),
       h("tbody", {}, grupos.flatMap(g => [h("tr", { class: "fin-grupo" }, h("td", { colspan: "3" }, h("strong", { text: g.categoria })), h("td", {}, h("strong", { text: dinA(g.total) }))),
         ...g.itens.map(l => h("tr", {}, h("td", { text: l.descricao }), h("td", { text: dataCurtaFin(l.pago_em) }), h("td", { text: l.forma || "—" }), h("td", { text: dinA(l.valor_pago_cent ?? l.valor_cent) })))]),
         h("tr", { class: "fin-grupo" }, h("td", { colspan: "3" }, h("strong", { text: rotulo })), h("td", {}, h("strong", { text: dinA(total) }))))));
     const abertoT = (ls, total, rot) => ls.length ? [h("tr", { class: "fin-grupo" }, h("td", { colspan: "3" }, h("strong", { text: rot })), h("td", {}, h("strong", { text: dinA(total) }))), ...ls.map(l => h("tr", {}, h("td", { text: l.descricao }), h("td", { text: dataCurtaFin(l.data) }), h("td", { text: l.contato || "—" }), h("td", { text: dinA(l.valor_cent) })))] : [];
-    const metr = [metrica("Entrou", dinA(r.entrou), "Recebido no mês"), metrica("Saiu", dinA(r.saiu), "Pago no mês"), metrica("Resultado", dinA(r.resultado), r.resultado >= 0 ? "Sobrou no mês" : "Faltou no mês"),
-      metrica("Saldo no banco", r.saldos.some(s => s.tipo === "BANCO") ? dinA(r.banco_cent) : "—", `Em ${dataCurtaFin(r.fim)}`)];
+    const metr = [metrica("Entrou", dinA(r.entrou), "Recebido no período"), metrica("Saiu", dinA(r.saiu), "Pago no período"), metrica("Resultado", dinA(r.resultado), r.resultado >= 0 ? "Sobrou" : "Faltou"),
+      metrica("Saldo no banco", r.saldos.some(s0 => s0.tipo === "BANCO") ? dinA(r.banco_cent) : "—", `Em ${dataCurtaFin(r.fim)}`)];
     if (r.caixa_cent) metr.push(metrica("Dinheiro em caixa", dinA(r.caixa_cent), `Em ${dataCurtaFin(r.fim)}`));
-    trocar(el, cabeca("Relatório do mês", "No modelo aprovado: Entrou, Saiu, Resultado e Saldo no banco; entradas e saídas com total; em aberto; atrasos sem juros; assinatura; e a explicação na página seguinte.",
-      botao("Baixar PDF para assinar", async () => { try { await baixarDaApi(`adm/relatorio.pdf?mes=${mes}`, `relatorio-${mes}.pdf`); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario")),
-      h("div", { class: "fin-mes" }, botao("‹", () => trocarMes(-1), "btn-secundario btn-pequeno", { "aria-label": "Mês anterior" }), h("strong", { text: nomeMesUi(mes) }), botao("›", () => trocarMes(1), "btn-secundario btn-pequeno", { "aria-label": "Próximo mês", disabled: mes >= mesAtualLocal() })),
+    trocar(el, cabeca(r.periodo ? "Relatório do período" : "Relatório do mês", "No modelo aprovado: Entrou, Saiu, Resultado e Saldo no banco; entradas e saídas com total; em aberto; atrasos sem juros; assinatura logo abaixo da última tabela; e a explicação na página seguinte.",
+      botao("Baixar PDF para assinar", async () => { try { await baixarDaApi(`adm/relatorio.pdf?${consulta}`, `relatorio-${nomeArq}.pdf`); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario"),
+      botao("Planilha Excel", async () => { try { await baixarDaApi(`adm/relatorio.xlsx?${consulta}`, `relatorio-${nomeArq}.xlsx`); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario")),
+      h("div", { class: "fin-mes" }, tipoSel, controles, h("strong", { text: r.nome })),
       h("section", { class: "grade grade-4" }, metr),
-      h("section", { class: "cartao vidro", style: "margin-top:12px" }, h("h3", { style: "margin:0 0 8px", text: "Entradas" }), r.entradas.length ? tabelaGrupos(r.entradas, r.entrou, "Total de entradas") : listaVazia("Nenhuma entrada recebida no mês.")),
-      h("section", { class: "cartao vidro", style: "margin-top:12px" }, h("h3", { style: "margin:0 0 8px", text: "Saídas" }), r.saidas.length ? tabelaGrupos(r.saidas, r.saiu, "Total de saídas") : listaVazia("Nenhuma saída paga no mês.")),
+      h("section", { class: "cartao vidro", style: "margin-top:12px" }, h("h3", { style: "margin:0 0 8px", text: "Entradas" }), r.entradas.length ? tabelaGrupos(r.entradas, r.entrou, "Total de entradas") : listaVazia("Nenhuma entrada recebida no período.")),
+      h("section", { class: "cartao vidro", style: "margin-top:12px" }, h("h3", { style: "margin:0 0 8px", text: "Saídas" }), r.saidas.length ? tabelaGrupos(r.saidas, r.saiu, "Total de saídas") : listaVazia("Nenhuma saída paga no período.")),
       h("section", { class: "cartao vidro", style: "margin-top:12px" }, h("h3", { style: "margin:0 0 8px", text: `Em aberto em ${dataCurtaFin(r.fim)}: ${dinA(r.receber.total)}` }),
         r.receber.total ? h("div", { class: "tabela-rolagem" }, h("table", { class: "tabela fin-tabela" }, h("thead", {}, h("tr", {}, ["Descrição", "Vencimento", "Quem", "Valor"].map(c => h("th", { text: c })))),
-          h("tbody", {}, ...abertoT(r.receber.mes, r.receber.total_mes, `Do mês (${nomeMesUi(mes)})`), ...abertoT(r.receber.antes, r.receber.total_antes, "De meses anteriores")))) : listaVazia("Nada em aberto no fim do mês.")),
+          h("tbody", {}, ...abertoT(r.receber.mes, r.receber.total_mes, r.periodo ? "Do período" : `Do mês (${r.nome})`), ...abertoT(r.receber.antes, r.receber.total_antes, r.periodo ? "Antes do período" : "De meses anteriores")))) : listaVazia("Nada em aberto no fim do período.")),
       h("section", { class: "cartao vidro", style: "margin-top:12px" }, h("h3", { style: "margin:0 0 8px", text: `Pagos com atraso, sem multa e juros: ${r.atrasados.length} · deixou de ser cobrado ${dinA(r.atrasados_deixou)}` }),
-        r.atrasados.length ? h("ul", { class: "prb-lista" }, r.atrasados.map(l => item(`${l.contato || l.descricao} — ${dinA(l.valor_pago_cent ?? l.valor_cent)}`, `venceu ${dataCurtaFin(l.data)} · pago ${dataCurtaFin(l.pago_em)} · ${l.dias} dias · multa + juros do contrato ${dinA(l.deixou_cent)}`))) : listaVazia("Nenhum atraso no mês.")),
+        r.atrasados.length ? h("ul", { class: "prb-lista" }, r.atrasados.map(l => item(`${l.contato || l.descricao} — ${dinA(l.valor_pago_cent ?? l.valor_cent)}`, `venceu ${dataCurtaFin(l.data)} · pago ${dataCurtaFin(l.pago_em)} · ${l.dias} dias · multa + juros do contrato ${dinA(l.deixou_cent)}`))) : listaVazia("Nenhum atraso no período.")),
       h("section", { class: "cartao vidro", style: "margin-top:12px" }, h("h3", { style: "margin:0 0 8px", text: "Pontos a conferir" }),
         r.conferir.length ? h("ul", { class: "prb-lista" }, r.conferir.map(t => item(t, ""))) : listaVazia("Nada a conferir.")));
+  }
+
+  // ----- Cadastros: fornecedores/prestadores e centros de custo (imóveis, pessoas, veículos…)
+  async function admCadastros(el, vivo) {
+    const r = await adm("cadastros");
+    if (!vivo()) return;
+    const editar = async (x, tipo) => {
+      tipo = x ? x.tipo : tipo;
+      const nome = entradaTxt(x && x.nome, tipo === "CENTRO" ? "Ex.: Apto 302, Casa da praia, Carro, Filha" : "Ex.: Rei do Ar, Light, Contadora"), sub = entradaTxt(x && x.subtipo, tipo === "CENTRO" ? "Apartamento, Pessoa, Veículo…" : "Serviço (ex.: Ar-condicionado)");
+      const tel = entradaTxt(x && x.telefone, "Telefone / WhatsApp"), email = entradaTxt(x && x.email, "E-mail"), pix = entradaTxt(x && x.pix, "Chave Pix"), doc = entradaTxt(x && x.documento, "CPF ou CNPJ"), end = entradaTxt(x && x.endereco, "Endereço"), obs = h("textarea", { class: "entrada", rows: "2" }, (x && x.obs) || "");
+      const campos = tipo === "CENTRO" ? [campo("Nome", nome), campo("Tipo", sub), campo("Endereço", end), campo("Observações", obs)] : [campo("Nome", nome), campo("Serviço", sub), h("div", { class: "fin-duas" }, campo("Telefone", tel), campo("E-mail", email)), h("div", { class: "fin-duas" }, campo("Pix", pix), campo("Documento", doc)), campo("Observações", obs)];
+      await formulario(x ? "Editar cadastro" : tipo === "CENTRO" ? "Novo centro de custo" : "Novo fornecedor", campos, "Salvar",
+        async () => { await adm(x ? `cadastros/${x.id}` : "cadastros", { metodo: x ? "PUT" : "POST", corpo: { tipo, nome: nome.value, subtipo: sub.value, telefone: tel.value, email: email.value, pix: pix.value, documento: doc.value, endereco: end.value, obs: obs.value } }); aviso("Salvo.", "ok"); recarregarAdm(); });
+    };
+    const lista0 = tipo => { const ls = r.itens.filter(x => x.tipo === tipo && x.ativo); return ls.length ? h("ul", { class: "prb-lista" }, ls.map(x => item(x.nome, [x.subtipo, x.telefone, x.pix && "Pix: " + x.pix, x.endereco].filter(Boolean).join(" · "),
+      botao("Editar", () => editar(x), "btn-secundario btn-pequeno"), botao("Remover", async () => { try { await adm(`cadastros/${x.id}`, { metodo: "DELETE" }); recarregarAdm(); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno")))) : listaVazia("Nada cadastrado."); };
+    trocar(el, cabeca("Cadastros", "Fornecedores e prestadores (com telefone e Pix) e centros de custo: cada conta pode ser de um imóvel, de uma pessoa ou de um veículo, e o relatório mostra quanto foi para cada um."),
+      h("div", { class: "grade grade-2" },
+        h("section", { class: "cartao vidro" }, h("h3", { style: "margin:0 0 8px", text: "Fornecedores e prestadores" }), h("div", { class: "acoes" }, botao("+ Fornecedor", () => editar(null, "FORNECEDOR"), "btn-primario btn-pequeno")), lista0("FORNECEDOR")),
+        h("section", { class: "cartao vidro" }, h("h3", { style: "margin:0 0 8px", text: "Centros de custo (imóveis, pessoas, bens)" }), h("div", { class: "acoes" }, botao("+ Centro de custo", () => editar(null, "CENTRO"), "btn-primario btn-pequeno")), lista0("CENTRO"))));
+  }
+
+  // ----- Todas as empresas (administradora, grupo, quem cuida de várias)
+  async function admEmpresas(el, vivo) {
+    const mes = admEstado.mesEmp = admEstado.mesEmp || mesAtualLocal();
+    const r = await api(`/api/adm/consolidado?mes=${mes}`);
+    if (!vivo()) return;
+    const ok = r.empresas.filter(e => !e.erro), soma = k => ok.reduce((a, e) => a + (e[k] || 0), 0);
+    const trocarMes = n => { admEstado.mesEmp = somarMesUi(mes, n); navegar(); };
+    const abrir = id => { escolherEmpresa(id); location.hash = "#/admin/hoje"; };
+    trocar(el, cabeca("Todas as empresas", "Os números de cada empresa que você administra, lado a lado. Toque numa empresa para abrir."),
+      h("div", { class: "fin-mes" }, botao("‹", () => trocarMes(-1), "btn-secundario btn-pequeno"), h("strong", { text: nomeMesUi(mes) }), botao("›", () => trocarMes(1), "btn-secundario btn-pequeno")),
+      h("section", { class: "grade grade-4" }, metrica("Entrou (todas)", dinA(soma("entrou")), `${ok.length} empresa(s)`), metrica("Saiu (todas)", dinA(soma("saiu")), ""), metrica("Resultado (todas)", dinA(soma("resultado")), ""), metrica("Vencido a receber", dinA(soma("vencido_receber")), `A pagar vencido ${dinA(soma("vencido_pagar"))}`)),
+      h("section", { class: "cartao vidro", style: "margin-top:12px" }, h("div", { class: "tabela-rolagem" }, h("table", { class: "tabela fin-tabela adm-consolidado" },
+        h("thead", {}, h("tr", {}, ["Empresa", "Entrou", "Saiu", "Resultado", "Banco", "Caixa", "Em aberto", "Vencidas", "Agenda", ""].map(c => h("th", { text: c })))),
+        h("tbody", {}, r.empresas.map(e => e.erro ? h("tr", {}, h("td", { text: e.nome }), h("td", { colspan: "9", text: e.erro })) : h("tr", {},
+          h("td", {}, h("strong", { text: e.nome })), h("td", { class: "fin-mais", text: dinA(e.entrou) }), h("td", { class: "fin-menos", text: dinA(e.saiu) }), h("td", { text: dinA(e.resultado) }),
+          h("td", { text: e.tem_contas ? dinA(e.banco_cent) : "—" }), h("td", { text: e.caixa_cent ? dinA(e.caixa_cent) : "—" }), h("td", { text: dinA(e.a_receber) }),
+          h("td", {}, e.contas_vencidas ? selo(String(e.contas_vencidas), "erro") : selo("0", "ok")), h("td", { text: String(e.agenda_pendente) }),
+          h("td", {}, botao("Abrir", () => abrir(e.id), "btn-secundario btn-pequeno")))))))));
   }
 
   // ----- Ajustes: perfil, resumo diário, calendário no celular, temporada no financeiro e importação
@@ -7457,7 +7696,8 @@ Botão só com texto = resposta.` })),
     const resumo = h("input", { type: "checkbox", checked: c.resumo_diario !== 0 }), hora = h("input", { class: "entrada", type: "number", min: "5", max: "22", value: c.hora_resumo || 8 });
     const emails = entradaTxt(c.emails, "Vazio = dono e administradores"), tp = h("input", { type: "checkbox", checked: Boolean(c.tp_no_fin) });
     const assin = entradaTxt(String(c.assinaturas || "").split("|").join(", "), "Ex.: Administradora, Proprietário"), cidade = entradaTxt(c.cidade, "Ex.: Rio de Janeiro");
-    const salvar = async () => { try { await adm("config", { metodo: "PUT", corpo: { perfil: perfil.value, resumo_diario: resumo.checked, hora_resumo: Number(hora.value), emails: emails.value, tp_no_fin: tp.checked, assinaturas: assin.value.split(",").map(s => s.trim()).filter(Boolean), cidade: cidade.value } }); aviso("Ajustes salvos.", "ok"); } catch (e) { aviso(e.message, "erro"); } };
+    const emissor = entradaTxt(c.recibo_emissor, "Ex.: Shopping Infomix — CNPJ 00.000.000/0001-00");
+    const salvar = async () => { try { await adm("config", { metodo: "PUT", corpo: { perfil: perfil.value, resumo_diario: resumo.checked, hora_resumo: Number(hora.value), emails: emails.value, tp_no_fin: tp.checked, assinaturas: assin.value.split(",").map(s => s.trim()).filter(Boolean), cidade: cidade.value, recibo_emissor: emissor.value } }); aviso("Ajustes salvos.", "ok"); } catch (e) { aviso(e.message, "erro"); } };
     const link = h("div", {});
     const mostrarLink = caminho => trocar(link, h("p", { class: "sub", text: "Assine este endereço no celular (iPhone: Ajustes → Calendário → Contas → Adicionar conta → Outra → Adicionar calendário assinado; Google Agenda: Outras agendas → Do URL). Os alarmes chegam também no relógio." }),
       h("div", { class: "compor" }, h("input", { class: "entrada", type: "text", readonly: true, value: location.origin + caminho }), botao("Copiar", () => copiar(location.origin + caminho), "btn-secundario")),
@@ -7474,7 +7714,7 @@ Botão só com texto = resposta.` })),
     trocar(el, cabeca("Ajustes e importação", "Como a administração funciona nesta empresa."),
       h("div", { class: "grade grade-2" },
         h("section", { class: "cartao vidro" }, h("h3", { style: "margin:0 0 6px", text: "Perfil e relatório" }),
-          campo("Tipo de administração", perfil, "Define as categorias e as obrigações sugeridas."), campo("Quem assina o relatório do mês", assin, "Até 3 nomes, separados por vírgula."), campo("Cidade (para a data da assinatura)", cidade),
+          campo("Tipo de administração", perfil, "Define as categorias e as obrigações sugeridas."), campo("Quem assina o relatório do mês", assin, "Até 3 nomes, separados por vírgula."), campo("Cidade (para a data da assinatura)", cidade), campo("Quem emite os recibos", emissor, "Aparece no recibo de cada recebimento."),
           h("label", { class: "fin-check" }, tp, " Lançar as reservas da temporada como a receber no financeiro"),
           h("div", { class: "acoes" }, botao("Salvar", salvar, "btn-primario"))),
         h("section", { class: "cartao vidro" }, h("h3", { style: "margin:0 0 6px", text: "Resumo do dia por e-mail" }),

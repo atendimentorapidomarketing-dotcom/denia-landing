@@ -31,23 +31,28 @@ export const CATEGORIAS_PERFIL = {
     SAIDA: ["Limpeza e faxina", "Lavanderia", "Enxoval e reposição", "Manutenção", "Condomínio", "Energia", "Água", "Internet e TV", "Taxas das plataformas", "Repasse ao proprietário", "Impostos e taxas", "Outras despesas"] },
   mei: { ENTRADA: ["Serviços prestados", "Outras receitas"], SAIDA: ["DAS do MEI", "Contador", "Celular e internet", "Transporte", "Material de trabalho", "Cursos", "Outras despesas"] }
 };
-const FORMAS = ["Pix", "Dinheiro", "Cartão de crédito", "Cartão de débito", "Boleto", "Transferência", "Outro"];
+const FORMAS = ["Pix", "Dinheiro", "Cartão de crédito", "Cartão de débito", "Boleto", "Transferência", "Débito automático", "Cheque", "Outro"];
 const MOEDAS = { BRL: "pt-BR", USD: "en-US", EUR: "de-DE", GBP: "en-GB", ARS: "es-AR", CLP: "es-CL", MXN: "es-MX", COP: "es-CO", PEN: "es-PE", UYU: "es-UY", PYG: "es-PY" };
 
-// Colunas que a Administração acrescenta (conta, centro, valor pago); existem depois que ela rodou uma vez.
-const comAdmin = new WeakMap();
-async function temColunasAdmin(env) {
-  if (comAdmin.get(env.DB)) return true;
-  const ok = Boolean(await env.DB.prepare("SELECT conta_id, centro, valor_pago_cent FROM fin_lanc LIMIT 1").first().then(() => true).catch(() => false));
-  if (ok) comAdmin.set(env.DB, true);
-  return ok;
-}
+// Pagamento em mais de uma forma (parte Pix, parte dinheiro…), categorias da empresa, mês fechado, orçamento e histórico.
+const DDL_FIN_EXTRA = [
+  "CREATE TABLE IF NOT EXISTS fin_partes (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, lanc_id INTEGER NOT NULL, forma TEXT, valor_cent INTEGER NOT NULL, conta_id INTEGER)",
+  "CREATE INDEX IF NOT EXISTS fin_partes_lanc ON fin_partes(org_id, lanc_id)",
+  "CREATE TABLE IF NOT EXISTS fin_categorias (org_id INTEGER NOT NULL, tipo TEXT NOT NULL, nome TEXT NOT NULL, oculta INTEGER NOT NULL DEFAULT 0, criado_ms INTEGER, PRIMARY KEY (org_id, tipo, nome))",
+  "CREATE TABLE IF NOT EXISTS fin_fechamento (org_id INTEGER NOT NULL, mes TEXT NOT NULL, fechado INTEGER NOT NULL DEFAULT 1, obs TEXT, por TEXT, ms INTEGER, PRIMARY KEY (org_id, mes))",
+  "CREATE TABLE IF NOT EXISTS fin_orcamento (org_id INTEGER NOT NULL, tipo TEXT NOT NULL, categoria TEXT NOT NULL, valor_cent INTEGER NOT NULL, PRIMARY KEY (org_id, tipo, categoria))",
+  "CREATE TABLE IF NOT EXISTS fin_log (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, lanc_id INTEGER, acao TEXT NOT NULL, detalhe TEXT, por TEXT, ms INTEGER NOT NULL)",
+  "CREATE INDEX IF NOT EXISTS fin_log_org ON fin_log(org_id, ms)",
+  "CREATE INDEX IF NOT EXISTS fin_lanc_pago ON fin_lanc(org_id, pago_em)"
+];
 const prontos = new WeakSet();
 export async function garantirFinanceiro(env) {
   if (prontos.has(env.DB)) return;
   for (const s of DDL_FINANCEIRO) await env.DB.prepare(s).run();
   // Colunas da Administração: conta (banco/caixa), locatário, competência, valor efetivamente pago e centro de custo.
   for (const c of ["conta_id INTEGER", "locatario_id INTEGER", "competencia TEXT", "valor_pago_cent INTEGER", "centro TEXT"]) await env.DB.prepare("ALTER TABLE fin_lanc ADD COLUMN " + c).run().catch(() => { });
+  for (const c of ["freq TEXT", "inicio_mes TEXT", "dia_semana INTEGER", "ate_mes TEXT", "forma TEXT", "contato TEXT", "centro TEXT", "conta_id INTEGER"]) await env.DB.prepare("ALTER TABLE fin_recorrente ADD COLUMN " + c).run().catch(() => { });
+  for (const s of DDL_FIN_EXTRA) await env.DB.prepare(s).run();
   prontos.add(env.DB);
 }
 
@@ -72,6 +77,7 @@ export function dinheiro(cent, moeda = "BRL") {
   return new Intl.NumberFormat(MOEDAS[m], { style: "currency", currency: m }).format((Number(cent) || 0) / 100);
 }
 const mesDe = d => String(d).slice(0, 7);
+const somarDiasF = (d, n) => new Date(Date.parse(d + "T12:00:00Z") + n * 86400000).toISOString().slice(0, 10);
 function somarMes(mes, n) { const [a, m] = mes.split("-").map(Number); const t = new Date(Date.UTC(a, m - 1 + n, 1)); return t.toISOString().slice(0, 7); }
 const NOMES_MES = ["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"];
 const MES_LONGO = ["janeiro", "fevereiro", "março", "abril", "maio", "junho", "julho", "agosto", "setembro", "outubro", "novembro", "dezembro"];
@@ -173,19 +179,62 @@ export async function resumoDoMes(env, orgId, mes, agoraMs) {
   return { mes, nome: nomeMes(mes), totais: t, categorias, serie, comparativo, lancamentos: lanc.length, proximas, hoje };
 }
 
-// Recorrentes: cria a conta do mês uma vez só (aluguel, internet, salário...).
+// Recorrentes: cria a conta de cada ocorrência uma vez só (aluguel, internet, salário...).
+// Frequências: semanal (no dia da semana), mensal, bimestral, trimestral, semestral e anual (contando do mês de início).
+export const FREQUENCIAS = { semanal: "Toda semana", mensal: "Todo mês", bimestral: "A cada 2 meses", trimestral: "A cada 3 meses", semestral: "A cada 6 meses", anual: "Todo ano" };
+const PASSO = { mensal: 1, bimestral: 2, trimestral: 3, semestral: 6, anual: 12 };
+const mesesEntre = (a, b) => (Number(b.slice(0, 4)) - Number(a.slice(0, 4))) * 12 + Number(b.slice(5, 7)) - Number(a.slice(5, 7));
+export function ocorrencias(r, mes) {
+  const freq = FREQUENCIAS[r.freq] ? r.freq : "mensal", inicio = r.inicio_mes || (r.criado_ms ? new Date(r.criado_ms - 3 * 3600000).toISOString().slice(0, 7) : mes);
+  if (mes < inicio || (r.ate_mes && mes > r.ate_mes)) return [];
+  if (freq === "semanal") {
+    const ds = [], alvo = Number.isInteger(r.dia_semana) ? r.dia_semana : 1;
+    for (let d = 1; d <= ultimoDia(mes); d++) { const x = `${mes}-${String(d).padStart(2, "0")}`; if (new Date(x + "T12:00:00Z").getUTCDay() === alvo) ds.push(x); }
+    return ds;
+  }
+  if (mesesEntre(inicio, mes) % PASSO[freq]) return [];
+  return [`${mes}-${String(Math.min(Math.max(1, r.dia || 1), ultimoDia(mes))).padStart(2, "0")}`];
+}
+const chaveRec = (r, data) => r.freq === "semanal" ? `rec:${r.id}:${data}` : `rec:${r.id}:${data.slice(0, 7)}`;
 export async function gerarRecorrentes(env, orgId, mes, agoraMs) {
   await garantirFinanceiro(env);
   const rs = (await env.DB.prepare("SELECT * FROM fin_recorrente WHERE org_id=? AND ativo=1 AND (ultimo_mes IS NULL OR ultimo_mes < ?)").bind(orgId, mes).all()).results || [];
   let n = 0;
   for (const r of rs) {
-    const dia = Math.min(Math.max(1, r.dia || 1), ultimoDia(mes));
-    await env.DB.prepare(`INSERT OR IGNORE INTO fin_lanc(org_id,tipo,descricao,valor_cent,categoria,data,pago,recorrente_id,origem,chave_externa,criado_por,criado_ms)
-      VALUES(?,?,?,?,?,?,0,?,'recorrente',?,'DENIA',?)`).bind(orgId, r.tipo, r.descricao, r.valor_cent, r.categoria, `${mes}-${String(dia).padStart(2, "0")}`, r.id, `rec:${r.id}:${mes}`, agoraMs).run();
+    for (const data of ocorrencias(r, mes)) {
+      const x = await env.DB.prepare(`INSERT OR IGNORE INTO fin_lanc(org_id,tipo,descricao,valor_cent,categoria,data,pago,recorrente_id,origem,chave_externa,criado_por,criado_ms,forma,contato,centro,conta_id)
+        VALUES(?,?,?,?,?,?,0,?,'recorrente',?,'DENIA',?,?,?,?,?)`).bind(orgId, r.tipo, r.descricao, r.valor_cent, r.categoria, data, r.id, chaveRec(r, data), agoraMs, r.forma || null, r.contato || null, r.centro || null, r.conta_id || null).run();
+      if (x.meta?.changes) n++;
+    }
     await env.DB.prepare("UPDATE fin_recorrente SET ultimo_mes=? WHERE id=?").bind(mes, r.id).run();
-    n++;
   }
   return n;
+}
+// Meses futuros: o que já está programado (contas fixas e aluguéis) aparece como previsto, sem criar nada.
+export async function previstosDoMes(env, orgId, mes) {
+  await garantirFinanceiro(env);
+  const out = [];
+  const rs = (await env.DB.prepare("SELECT * FROM fin_recorrente WHERE org_id=? AND ativo=1").bind(orgId).all()).results || [];
+  for (const r of rs) for (const data of ocorrencias(r, mes)) {
+    const ja = await env.DB.prepare("SELECT 1 FROM fin_lanc WHERE org_id=? AND chave_externa=?").bind(orgId, chaveRec(r, data)).first();
+    if (!ja) out.push({ id: null, previsto: true, origem: "recorrente", recorrente_id: r.id, tipo: r.tipo, descricao: r.descricao, valor_cent: r.valor_cent, categoria: r.categoria, data, pago: 0, contato: r.contato || null, forma: r.forma || null });
+  }
+  try {
+    const fim = `${mes}-${String(ultimoDia(mes)).padStart(2, "0")}`;
+    const ls = (await env.DB.prepare("SELECT * FROM adm_locatarios WHERE org_id=? AND ativo=1 AND (inicio IS NULL OR inicio <= ?) AND (fim IS NULL OR fim = '' OR fim >= ?)").bind(orgId, fim, mes + "-01").all()).results || [];
+    const isentos = new Set(((await env.DB.prepare("SELECT locatario_id FROM adm_isencoes WHERE org_id=? AND mes=?").bind(orgId, mes).all().catch(() => null))?.results || []).map(x => x.locatario_id));
+    for (const l of ls) {
+      const total = (l.aluguel_cent || 0) + (l.condominio_cent || 0) + (l.outras_cent || 0);
+      if (total <= 0 || isentos.has(l.id)) continue;
+      const datas = l.periodicidade === "semanal" ? ocorrencias({ freq: "semanal", dia_semana: l.dia_semana ?? 1, inicio_mes: mes }, mes) : [`${mes}-${String(Math.min(Math.max(1, l.dia_venc || 5), ultimoDia(mes))).padStart(2, "0")}`];
+      for (const data of datas) {
+        const chave = l.periodicidade === "semanal" ? `alug:${l.id}:${data}` : `alug:${l.id}:${mes}`;
+        if (await env.DB.prepare("SELECT 1 FROM fin_lanc WHERE org_id=? AND chave_externa=?").bind(orgId, chave).first()) continue;
+        out.push({ id: null, previsto: true, origem: "aluguel", tipo: "ENTRADA", descricao: `Aluguel${l.unidade ? " — " + l.unidade : ""} — ${l.nome}`, valor_cent: l.periodicidade === "semanal" ? Math.round(total) : total, categoria: "Aluguéis recebidos", data, pago: 0, contato: l.nome, locatario_id: l.id });
+      }
+    }
+  } catch { /* sem administração */ }
+  return out.sort((a, b) => a.data.localeCompare(b.data));
 }
 
 // ---------------------------------------------------------------------------
@@ -265,25 +314,67 @@ export async function rotasFinanceiro(request, env, k, orgId, papel, resto) {
     if (v > 1e13) return "Valor alto demais.";
     if (!dataValida(c.data)) return "Data inválida.";
     return { tipo, valor_cent: Math.abs(v), descricao: re(c.descricao, 160), categoria: re(c.categoria, 60) || categoriaProvavel(c.descricao, tipo), data: c.data,
-      pago: c.pago ? 1 : 0, pago_em: c.pago ? (dataValida(c.pago_em) ? c.pago_em : c.data <= hoje ? c.data : hoje) : null, forma: FORMAS.includes(c.forma) ? c.forma : null, contato: re(c.contato, 120) || null, obs: re(c.obs, 500) || null,
+      pago: c.pago ? 1 : 0, pago_em: c.pago ? (dataValida(c.pago_em) ? c.pago_em : c.data <= hoje ? c.data : hoje) : null, forma: re(c.forma, 30) || null, contato: re(c.contato, 120) || null, obs: re(c.obs, 500) || null,
       conta_id: Number(c.conta_id) > 0 ? Number(c.conta_id) : null, centro: re(c.centro, 60) || null };
   };
 
-  if (partes[0] === "opcoes" && metodo === "GET") {
-    const usadas = (await env.DB.prepare("SELECT DISTINCT tipo, categoria FROM fin_lanc WHERE org_id=? AND categoria IS NOT NULL LIMIT 200").bind(orgId).all()).results || [];
+  const quem = k.sessao?.usuario?.email || null;
+  // Histórico: quem fez o quê, quando (não dá para apagar pela tela).
+  const registrar = (acao, lancId, detalhe) => env.DB.prepare("INSERT INTO fin_log(org_id,lanc_id,acao,detalhe,por,ms) VALUES(?,?,?,?,?,?)").bind(orgId, lancId || null, acao, re(typeof detalhe === "string" ? detalhe : JSON.stringify(detalhe), 1500), quem, ms).run().catch(() => { });
+  // Mês fechado: ninguém altera lançamentos daquele mês até reabrir (com motivo).
+  const fechados = new Set(((await env.DB.prepare("SELECT mes FROM fin_fechamento WHERE org_id=? AND fechado=1").bind(orgId).all()).results || []).map(x => x.mes));
+  const travado = (...datas) => { const m = datas.filter(Boolean).map(d => String(d).slice(0, 7)).find(x => fechados.has(x)); return m ? json({ erro: `O mês de ${nomeMes(m)} está fechado. Para alterar, reabra em Financeiro → Fechamento do mês (com o motivo).`, codigo: "MES_FECHADO" }, 409) : null; };
+  // Partes do pagamento: [{forma, valor, conta_id}] — várias formas no mesmo recebimento ou pagamento.
+  const lerPartes = lista => {
+    if (!Array.isArray(lista)) return null;
+    const ps = lista.map(x => ({ forma: re(x.forma, 30) || null, valor_cent: centavos(x.valor), conta_id: Number(x.conta_id) > 0 ? Number(x.conta_id) : null })).filter(x => x.valor_cent);
+    if (ps.some(x => x.valor_cent < 0)) return "Valor inválido numa das formas de pagamento.";
+    return ps.length ? ps : null;
+  };
+  const gravarPartes = async (lancId, ps) => {
+    await env.DB.prepare("DELETE FROM fin_partes WHERE org_id=? AND lanc_id=?").bind(orgId, lancId).run();
+    if (!ps || ps.length < 2) return;
+    for (const x of ps) await env.DB.prepare("INSERT INTO fin_partes(org_id,lanc_id,forma,valor_cent,conta_id) VALUES(?,?,?,?,?)").bind(orgId, lancId, x.forma, x.valor_cent, x.conta_id).run();
+  };
+  const formaDasPartes = ps => [...new Set(ps.map(x => x.forma || "Outro"))].join(" + ");
+  const comPartes = async lista => {
+    const ids = lista.filter(l => l.id && /\+/.test(l.forma || "")).map(l => l.id);
+    if (!ids.length) return lista;
+    const ps = (await env.DB.prepare(`SELECT * FROM fin_partes WHERE org_id=? AND lanc_id IN (${ids.map(() => "?").join(",")})`).bind(orgId, ...ids).all()).results || [];
+    return lista.map(l => ({ ...l, partes: ps.filter(x => x.lanc_id === l.id) }));
+  };
+  const categoriasDa = async () => {
     const cats = { ENTRADA: [...CATEGORIAS.ENTRADA], SAIDA: [...CATEGORIAS.SAIDA] };
     const perfilCats = CATEGORIAS_PERFIL[(await env.DB.prepare("SELECT perfil FROM adm_config WHERE org_id=?").bind(orgId).first().catch(() => null))?.perfil];
     if (perfilCats) for (const t of ["ENTRADA", "SAIDA"]) cats[t] = [...new Set([...perfilCats[t].filter(c => !/^Outr/.test(c)), ...cats[t]])];
-    for (const u of usadas) if (cats[u.tipo] && !cats[u.tipo].includes(u.categoria)) cats[u.tipo].push(u.categoria);
+    const proprias = (await env.DB.prepare("SELECT * FROM fin_categorias WHERE org_id=?").bind(orgId).all()).results || [];
+    const usadas = (await env.DB.prepare("SELECT DISTINCT tipo, categoria FROM fin_lanc WHERE org_id=? AND categoria IS NOT NULL LIMIT 400").bind(orgId).all()).results || [];
+    for (const u of [...proprias.filter(x => !x.oculta).map(x => ({ tipo: x.tipo, categoria: x.nome })), ...usadas]) if (cats[u.tipo] && !cats[u.tipo].includes(u.categoria)) cats[u.tipo].push(u.categoria);
+    for (const x of proprias.filter(x => x.oculta)) if (cats[x.tipo]) cats[x.tipo] = cats[x.tipo].filter(c => c !== x.nome);
+    return cats;
+  };
+
+  if (partes[0] === "opcoes" && metodo === "GET") {
     const contas = (await env.DB.prepare("SELECT id, nome, tipo, padrao FROM adm_contas WHERE org_id=? AND ativo=1 ORDER BY padrao DESC, tipo, id").bind(orgId).all().catch(() => null))?.results || [];
+    const centros = (await env.DB.prepare("SELECT id, nome, subtipo FROM adm_cadastros WHERE org_id=? AND tipo='CENTRO' AND ativo=1 ORDER BY nome").bind(orgId).all().catch(() => null))?.results || [];
+    const fornecedores = (await env.DB.prepare("SELECT id, nome, subtipo FROM adm_cadastros WHERE org_id=? AND tipo='FORNECEDOR' AND ativo=1 ORDER BY nome LIMIT 500").bind(orgId).all().catch(() => null))?.results || [];
     const perfil = (await env.DB.prepare("SELECT perfil FROM adm_config WHERE org_id=?").bind(orgId).first().catch(() => null))?.perfil || null;
-    return json({ categorias: cats, formas: FORMAS, moedas: Object.keys(MOEDAS), config: await config(), hoje, contas, perfil });
+    return json({ categorias: await categoriasDa(), formas: FORMAS, frequencias: FREQUENCIAS, moedas: Object.keys(MOEDAS), config: await config(), hoje, contas, centros, fornecedores, perfil, fechados: [...fechados].sort() });
   }
   if (partes[0] === "resumo" && metodo === "GET") {
     const mes = mesPedido();
-    if (mes === hoje.slice(0, 7)) await gerarRecorrentes(env, orgId, mes, ms);
+    if (mes <= hoje.slice(0, 7)) await gerarRecorrentes(env, orgId, mes, ms);
     const r = await resumoDoMes(env, orgId, mes, ms);
-    return json({ ...r, moeda: (await config()).moeda || "BRL" });
+    // Mês futuro: soma o que já está programado (contas fixas e aluguéis) como previsto.
+    if (mes > hoje.slice(0, 7)) {
+      const prev = await previstosDoMes(env, orgId, mes);
+      r.totais.previsto_receber = prev.filter(x => x.tipo === "ENTRADA").reduce((a, x) => a + x.valor_cent, 0);
+      r.totais.previsto_pagar = prev.filter(x => x.tipo === "SAIDA").reduce((a, x) => a + x.valor_cent, 0);
+      r.totais.a_receber += r.totais.previsto_receber; r.totais.a_pagar += r.totais.previsto_pagar;
+    }
+    const orc = (await env.DB.prepare("SELECT * FROM fin_orcamento WHERE org_id=?").bind(orgId).all()).results || [];
+    r.orcamento = orc.map(o => ({ ...o, realizado: (r.categorias.find(c => c.tipo === o.tipo && c.categoria === o.categoria) || {}).valor_cent || 0 }));
+    return json({ ...r, fechado: fechados.has(mes), moeda: (await config()).moeda || "BRL" });
   }
   if (partes[0] === "lancamentos" && !partes[1]) {
     if (metodo === "GET") {
@@ -292,28 +383,42 @@ export async function rotasFinanceiro(request, env, k, orgId, papel, resto) {
       if (tipo === "ENTRADA" || tipo === "SAIDA") { sql += " AND tipo=?"; args.push(tipo); }
       if (status === "aberto") sql += " AND pago=0"; else if (status === "pago") sql += " AND pago=1"; else if (status === "vencido") { sql += " AND pago=0 AND data<?"; args.push(hoje); }
       if (q) { sql += " AND (descricao LIKE ? OR categoria LIKE ? OR contato LIKE ?)"; args.push(`%${q}%`, `%${q}%`, `%${q}%`); }
-      const lista = (await env.DB.prepare(sql + " ORDER BY data DESC, id DESC LIMIT 1000").bind(...args).all()).results || [];
-      return json({ lancamentos: lista, hoje });
+      let lista = await comPartes((await env.DB.prepare(sql + " ORDER BY data DESC, id DESC LIMIT 2000").bind(...args).all()).results || []);
+      // Pagos neste mês mas lançados (vencidos) em outro: aparecem também, para o mês bater com o caixa.
+      const pagosAqui = status === "aberto" ? [] : (await env.DB.prepare("SELECT * FROM fin_lanc WHERE org_id=? AND pago=1 AND pago_em BETWEEN ? AND ? AND data NOT BETWEEN ? AND ? ORDER BY pago_em DESC LIMIT 500").bind(orgId, mes + "-01", mes + "-" + ultimoDia(mes), mes + "-01", mes + "-" + ultimoDia(mes)).all()).results || [];
+      if (!q && !tipo) lista = lista.concat((await comPartes(pagosAqui)).map(l => ({ ...l, de_outro_mes: true })));
+      const previstos = mes > hoje.slice(0, 7) && status !== "pago" ? await previstosDoMes(env, orgId, mes) : [];
+      return json({ lancamentos: lista, previstos, hoje, fechado: fechados.has(mes) });
     }
     if (metodo === "POST") {
       const { corpo, erro } = await lerCorpo(request); if (erro) return erro;
       const v = validar(corpo); if (typeof v === "string") return json({ erro: v }, 400);
       const parcelas = Math.min(Math.max(1, Number(corpo.parcelas) || 1), 60);
-      const extras = await temColunasAdmin(env);
+      const ps = lerPartes(corpo.partes); if (typeof ps === "string") return json({ erro: ps }, 400);
+      const t = travado(v.data, v.pago_em); if (t) return t;
       const ids = [];
       for (let i = 0; i < parcelas; i++) {
         const [a, m, d] = v.data.split("-").map(Number);
         const mesI = somarMes(`${a}-${String(m).padStart(2, "0")}`, i), data = `${mesI}-${String(Math.min(d, ultimoDia(mesI))).padStart(2, "0")}`;
-        const r = await env.DB.prepare(`INSERT INTO fin_lanc(org_id,tipo,descricao,valor_cent,categoria,data,pago,pago_em,forma,contato,obs,origem,criado_por,criado_ms,atualizado_ms${extras ? ",conta_id,centro" : ""})
-          VALUES(?,?,?,?,?,?,?,?,?,?,?,'manual',?,?,?${extras ? ",?,?" : ""})`).bind(orgId, v.tipo, parcelas > 1 ? `${v.descricao} (${i + 1}/${parcelas})` : v.descricao,
-          parcelas > 1 ? Math.round(v.valor_cent / parcelas) + (i === 0 ? v.valor_cent - Math.round(v.valor_cent / parcelas) * parcelas : 0) : v.valor_cent,
-          v.categoria, data, i === 0 ? v.pago : 0, i === 0 ? v.pago_em : null, v.forma, v.contato, v.obs, k.sessao?.usuario?.email || null, ms, ms, ...(extras ? [v.conta_id, v.centro] : [])).run();
-        ids.push(r.meta?.last_row_id);
+        const pagoAqui = i === 0 && v.pago, multi = pagoAqui && ps && ps.length > 1;
+        const pagoTotal = multi ? ps.reduce((a0, x) => a0 + x.valor_cent, 0) : null;
+        const valor = parcelas > 1 ? Math.round(v.valor_cent / parcelas) + (i === 0 ? v.valor_cent - Math.round(v.valor_cent / parcelas) * parcelas : 0) : v.valor_cent;
+        const r = await env.DB.prepare(`INSERT INTO fin_lanc(org_id,tipo,descricao,valor_cent,categoria,data,pago,pago_em,forma,contato,obs,origem,criado_por,criado_ms,atualizado_ms,conta_id,centro,valor_pago_cent)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,'manual',?,?,?,?,?,?)`).bind(orgId, v.tipo, parcelas > 1 ? `${v.descricao} (${i + 1}/${parcelas})` : v.descricao, valor,
+          v.categoria, data, pagoAqui ? 1 : 0, pagoAqui ? v.pago_em : null, multi ? formaDasPartes(ps) : v.forma, v.contato, v.obs, quem, ms, ms, v.conta_id, v.centro, multi && pagoTotal !== valor ? pagoTotal : null).run();
+        const id = r.meta?.last_row_id; ids.push(id);
+        if (multi) await gravarPartes(id, ps);
       }
-      if (corpo.repetir_todo_mes && parcelas === 1) {
-        await env.DB.prepare("INSERT INTO fin_recorrente(org_id,tipo,descricao,valor_cent,categoria,dia,ativo,ultimo_mes,criado_ms) VALUES(?,?,?,?,?,?,1,?,?)")
-          .bind(orgId, v.tipo, v.descricao, v.valor_cent, v.categoria, Number(v.data.slice(8)), mesDe(v.data), ms).run();
+      const freq = FREQUENCIAS[corpo.frequencia] ? corpo.frequencia : corpo.repetir_todo_mes ? "mensal" : null;
+      if (freq && parcelas === 1) {
+        const rr = await env.DB.prepare("INSERT INTO fin_recorrente(org_id,tipo,descricao,valor_cent,categoria,dia,ativo,ultimo_mes,criado_ms,freq,inicio_mes,dia_semana,ate_mes,forma,contato,centro,conta_id) VALUES(?,?,?,?,?,?,1,?,?,?,?,?,?,?,?,?,?)")
+          .bind(orgId, v.tipo, v.descricao, v.valor_cent, v.categoria, Number(v.data.slice(8)), mesDe(v.data), ms, freq, mesDe(v.data), new Date(v.data + "T12:00:00Z").getUTCDay(), mesValido(corpo.ate_mes) ? corpo.ate_mes : null, v.forma, v.contato, v.centro, v.conta_id).run();
+        // O lançamento de hoje já é a primeira ocorrência: liga ao recorrente para não duplicar.
+        const prim = { id: rr.meta?.last_row_id, freq };
+        await env.DB.prepare("UPDATE fin_lanc SET recorrente_id=?, chave_externa=? WHERE id=?").bind(prim.id, chaveRec(prim, v.data), ids[0]).run().catch(() => { });
+        if (freq === "semanal") await gerarRecorrentes(env, orgId, mesDe(v.data), ms);
       }
+      await registrar("criou", ids[0], { tipo: v.tipo, descricao: v.descricao, valor: v.valor_cent, data: v.data, pago: v.pago, parcelas, freq });
       return json({ ok: true, ids }, 201);
     }
   }
@@ -324,32 +429,126 @@ export async function rotasFinanceiro(request, env, k, orgId, papel, resto) {
     if (partes[2] === "pagar" && metodo === "POST") {
       const { corpo } = await lerCorpo(request);
       const pago = corpo?.desfazer ? 0 : 1, quando = pago ? (dataValida(corpo?.data) ? corpo.data : hoje) : null;
-      await env.DB.prepare("UPDATE fin_lanc SET pago=?, pago_em=?, forma=COALESCE(?,forma), atualizado_ms=? WHERE id=? AND org_id=?").bind(pago, quando, FORMAS.includes(corpo?.forma) ? corpo.forma : null, ms, id, orgId).run();
-      // Valor efetivamente pago (com multa e juros, ou com desconto) e a conta onde o dinheiro entrou/saiu.
-      if (await temColunasAdmin(env)) {
-        const vp = pago && corpo?.valor_pago !== undefined && corpo.valor_pago !== "" ? centavos(corpo.valor_pago) : null;
-        await env.DB.prepare("UPDATE fin_lanc SET valor_pago_cent=?, conta_id=COALESCE(?, conta_id) WHERE id=? AND org_id=?")
-          .bind(vp !== null && vp > 0 && vp !== atual.valor_cent ? Math.abs(vp) : null, pago && Number(corpo?.conta_id) > 0 ? Number(corpo.conta_id) : null, id, orgId).run();
-      }
+      if (quando && quando > somarDiasF(hoje, 1)) return json({ erro: "A data do pagamento não pode ser no futuro." }, 400);
+      const t = travado(atual.pago_em, quando); if (t) return t;
+      const ps = pago ? lerPartes(corpo?.partes) : null; if (typeof ps === "string") return json({ erro: ps }, 400);
+      const multi = ps && ps.length > 1;
+      const vp = multi ? ps.reduce((a0, x) => a0 + x.valor_cent, 0) : pago && corpo?.valor_pago !== undefined && corpo.valor_pago !== "" ? centavos(corpo.valor_pago) : null;
+      const forma = multi ? formaDasPartes(ps) : re(corpo?.forma, 30) || (ps && ps[0]?.forma) || null;
+      await env.DB.prepare("UPDATE fin_lanc SET pago=?, pago_em=?, forma=COALESCE(?,forma), valor_pago_cent=?, conta_id=COALESCE(?, conta_id), atualizado_ms=? WHERE id=? AND org_id=?")
+        .bind(pago, quando, forma, vp !== null && vp > 0 && vp !== atual.valor_cent ? Math.abs(vp) : null, pago && Number(corpo?.conta_id) > 0 ? Number(corpo.conta_id) : !multi && ps && ps[0]?.conta_id ? ps[0].conta_id : null, ms, id, orgId).run();
+      await gravarPartes(id, multi ? ps : null);
+      await registrar(pago ? (atual.tipo === "ENTRADA" ? "recebeu" : "pagou") : "desfez pagamento", id, { descricao: atual.descricao, data: quando, forma, valor: vp ?? atual.valor_cent });
       return json({ ok: true });
     }
+    if (partes[2] === "historico" && metodo === "GET") return json({ historico: (await env.DB.prepare("SELECT * FROM fin_log WHERE org_id=? AND lanc_id=? ORDER BY ms DESC LIMIT 100").bind(orgId, id).all()).results || [] });
     if (metodo === "PUT") {
       const { corpo, erro } = await lerCorpo(request); if (erro) return erro;
-      const v = validar({ ...atual, valor: atual.valor_cent / 100, ...corpo }); if (typeof v === "string") return json({ erro: v }, 400);
-      await env.DB.prepare("UPDATE fin_lanc SET tipo=?,descricao=?,valor_cent=?,categoria=?,data=?,pago=?,pago_em=?,forma=?,contato=?,obs=?,atualizado_ms=? WHERE id=? AND org_id=?")
-        .bind(v.tipo, v.descricao, v.valor_cent, v.categoria, v.data, v.pago, v.pago_em, v.forma, v.contato, v.obs, ms, id, orgId).run();
-      if (await temColunasAdmin(env)) await env.DB.prepare("UPDATE fin_lanc SET conta_id=?, centro=? WHERE id=? AND org_id=?").bind(v.conta_id, v.centro, id, orgId).run();
+      const v = validar({ ...atual, valor: atual.valor_cent / 100, ...corpo, forma: corpo.forma !== undefined ? corpo.forma : atual.forma }); if (typeof v === "string") return json({ erro: v }, 400);
+      const t = travado(atual.data, atual.pago_em, v.data, v.pago_em); if (t) return t;
+      await env.DB.prepare("UPDATE fin_lanc SET tipo=?,descricao=?,valor_cent=?,categoria=?,data=?,pago=?,pago_em=?,forma=?,contato=?,obs=?,conta_id=?,centro=?,atualizado_ms=? WHERE id=? AND org_id=?")
+        .bind(v.tipo, v.descricao, v.valor_cent, v.categoria, v.data, v.pago, v.pago_em, v.forma, v.contato, v.obs, v.conta_id, v.centro, ms, id, orgId).run();
+      if (!v.pago) await gravarPartes(id, null);
+      const mudou = Object.fromEntries(["descricao", "valor_cent", "categoria", "data", "pago", "pago_em", "forma", "contato"].filter(c => String(atual[c] ?? "") !== String(v[c] ?? "")).map(c => [c, [atual[c], v[c]]]));
+      await registrar("editou", id, mudou);
       return json({ ok: true });
     }
-    if (metodo === "DELETE") { await env.DB.prepare("DELETE FROM fin_lanc WHERE id=? AND org_id=?").bind(id, orgId).run(); return json({ ok: true }); }
+    if (metodo === "DELETE") {
+      const t = travado(atual.data, atual.pago_em); if (t) return t;
+      await env.DB.prepare("DELETE FROM fin_lanc WHERE id=? AND org_id=?").bind(id, orgId).run();
+      await gravarPartes(id, null);
+      await registrar("apagou", id, { descricao: atual.descricao, valor: atual.valor_cent, data: atual.data, pago: atual.pago });
+      return json({ ok: true });
+    }
   }
+  // Sugestões: contas que já existiram (para lançar de novo sem digitar tudo).
+  if (partes[0] === "sugestoes" && metodo === "GET") {
+    const ls = (await env.DB.prepare("SELECT tipo, descricao, categoria, contato, valor_cent, forma, centro, data FROM fin_lanc WHERE org_id=? ORDER BY data DESC, id DESC LIMIT 1500").bind(orgId).all()).results || [];
+    const vistos = new Map();
+    for (const l of ls) { const d = l.descricao.replace(/\s*\(\d+\/\d+\)$/, "").replace(/\s*\((dinheiro|pix|cartão|cartao|transferência|boleto)[^)]*\)$/i, ""); const k = l.tipo + "|" + d.toLowerCase(); if (!vistos.has(k)) vistos.set(k, { ...l, descricao: d }); }
+    return json({ sugestoes: [...vistos.values()].slice(0, 400) });
+  }
+  // Categorias próprias: criar, renomear (leva junto os lançamentos) e ocultar.
+  if (partes[0] === "categorias") {
+    if (metodo === "GET") {
+      const uso = (await env.DB.prepare("SELECT tipo, categoria, COUNT(*) n, SUM(valor_cent) v FROM fin_lanc WHERE org_id=? GROUP BY tipo, categoria").bind(orgId).all()).results || [];
+      const ocultas = (await env.DB.prepare("SELECT tipo, nome FROM fin_categorias WHERE org_id=? AND oculta=1").bind(orgId).all()).results || [];
+      const cats = await categoriasDa();
+      return json({ categorias: Object.fromEntries(["ENTRADA", "SAIDA"].map(t => [t, cats[t].map(nome => ({ nome, uso: (uso.find(u => u.tipo === t && u.categoria === nome) || {}).n || 0 }))])), ocultas });
+    }
+    const { corpo, erro } = await lerCorpo(request); if (erro) return erro;
+    const tipo = corpo.tipo === "ENTRADA" ? "ENTRADA" : corpo.tipo === "SAIDA" ? "SAIDA" : null, nome = re(corpo.nome, 60);
+    if (!tipo) return json({ erro: "Escolha se a categoria é de entrada ou de saída." }, 400);
+    if (metodo === "POST") {
+      if (!nome) return json({ erro: "Escreva o nome da categoria." }, 400);
+      await env.DB.prepare("INSERT INTO fin_categorias(org_id,tipo,nome,oculta,criado_ms) VALUES(?,?,?,0,?) ON CONFLICT(org_id,tipo,nome) DO UPDATE SET oculta=0").bind(orgId, tipo, nome, ms).run();
+      return json({ ok: true }, 201);
+    }
+    if (metodo === "PUT") {
+      const de = re(corpo.de, 60), para = nome;
+      if (!de || !para) return json({ erro: "Informe o nome atual e o novo." }, 400);
+      const meses = (await env.DB.prepare("SELECT DISTINCT substr(COALESCE(pago_em,data),1,7) m FROM fin_lanc WHERE org_id=? AND tipo=? AND categoria=?").bind(orgId, tipo, de).all()).results || [];
+      const f = meses.map(x => x.m).find(m => fechados.has(m)); if (f) return json({ erro: `Há lançamentos dessa categoria em ${nomeMes(f)}, que está fechado. Reabra o mês para renomear.`, codigo: "MES_FECHADO" }, 409);
+      const n = await env.DB.prepare("UPDATE fin_lanc SET categoria=? WHERE org_id=? AND tipo=? AND categoria=?").bind(para, orgId, tipo, de).run();
+      await env.DB.prepare("UPDATE fin_recorrente SET categoria=? WHERE org_id=? AND tipo=? AND categoria=?").bind(para, orgId, tipo, de).run();
+      await env.DB.prepare("UPDATE OR REPLACE fin_orcamento SET categoria=? WHERE org_id=? AND tipo=? AND categoria=?").bind(para, orgId, tipo, de).run();
+      await env.DB.prepare("INSERT INTO fin_categorias(org_id,tipo,nome,oculta,criado_ms) VALUES(?,?,?,0,?) ON CONFLICT(org_id,tipo,nome) DO UPDATE SET oculta=0").bind(orgId, tipo, para, ms).run();
+      await env.DB.prepare("INSERT INTO fin_categorias(org_id,tipo,nome,oculta,criado_ms) VALUES(?,?,?,1,?) ON CONFLICT(org_id,tipo,nome) DO UPDATE SET oculta=1").bind(orgId, tipo, de, ms).run();
+      await registrar("renomeou categoria", null, { tipo, de, para, lancamentos: n.meta?.changes || 0 });
+      return json({ ok: true, alterados: n.meta?.changes || 0 });
+    }
+    if (metodo === "DELETE") {
+      await env.DB.prepare("INSERT INTO fin_categorias(org_id,tipo,nome,oculta,criado_ms) VALUES(?,?,?,1,?) ON CONFLICT(org_id,tipo,nome) DO UPDATE SET oculta=1").bind(orgId, tipo, nome, ms).run();
+      return json({ ok: true });
+    }
+  }
+  // Fechamento do mês: trava o mês conferido; reabrir exige motivo e fica no histórico.
+  if (partes[0] === "fechamento") {
+    if (metodo === "GET") return json({ meses: (await env.DB.prepare("SELECT * FROM fin_fechamento WHERE org_id=? ORDER BY mes DESC").bind(orgId).all()).results || [],
+      historico: (await env.DB.prepare("SELECT * FROM fin_log WHERE org_id=? AND acao IN ('fechou o mês','reabriu o mês') ORDER BY ms DESC LIMIT 50").bind(orgId).all()).results || [] });
+    if (metodo === "POST") {
+      const { corpo, erro } = await lerCorpo(request); if (erro) return erro;
+      const mes = mesValido(corpo.mes) ? corpo.mes : null;
+      if (!mes) return json({ erro: "Escolha o mês." }, 400);
+      if (corpo.reabrir) {
+        if (re(corpo.motivo).length < 5) return json({ erro: "Escreva o motivo para reabrir (fica registrado)." }, 400);
+        await env.DB.prepare("UPDATE fin_fechamento SET fechado=0, obs=?, por=?, ms=? WHERE org_id=? AND mes=?").bind(re(corpo.motivo, 300), quem, ms, orgId, mes).run();
+        await registrar("reabriu o mês", null, { mes, motivo: re(corpo.motivo, 300) });
+        return json({ ok: true });
+      }
+      if (mes >= hoje.slice(0, 7)) return json({ erro: "Só dá para fechar um mês que já terminou." }, 400);
+      await env.DB.prepare("INSERT INTO fin_fechamento(org_id,mes,fechado,obs,por,ms) VALUES(?,?,1,?,?,?) ON CONFLICT(org_id,mes) DO UPDATE SET fechado=1, obs=excluded.obs, por=excluded.por, ms=excluded.ms").bind(orgId, mes, re(corpo.obs, 300) || null, quem, ms).run();
+      await registrar("fechou o mês", null, { mes, obs: re(corpo.obs, 300) });
+      return json({ ok: true });
+    }
+  }
+  // Orçamento mensal por categoria.
+  if (partes[0] === "orcamento") {
+    if (metodo === "GET") return json({ itens: (await env.DB.prepare("SELECT * FROM fin_orcamento WHERE org_id=? ORDER BY tipo DESC, categoria").bind(orgId).all()).results || [] });
+    if (metodo === "PUT") {
+      const { corpo, erro } = await lerCorpo(request); if (erro) return erro;
+      await env.DB.prepare("DELETE FROM fin_orcamento WHERE org_id=?").bind(orgId).run();
+      let n = 0;
+      for (const x of (Array.isArray(corpo.itens) ? corpo.itens : []).slice(0, 200)) {
+        const v = centavos(x.valor), tipo = x.tipo === "ENTRADA" ? "ENTRADA" : "SAIDA";
+        if (!re(x.categoria) || !v || v <= 0) continue;
+        await env.DB.prepare("INSERT OR REPLACE INTO fin_orcamento(org_id,tipo,categoria,valor_cent) VALUES(?,?,?,?)").bind(orgId, tipo, re(x.categoria, 60), v).run(); n++;
+      }
+      return json({ ok: true, itens: n });
+    }
+  }
+  if (partes[0] === "historico" && metodo === "GET") return json({ historico: (await env.DB.prepare("SELECT * FROM fin_log WHERE org_id=? ORDER BY ms DESC LIMIT 300").bind(orgId).all()).results || [] });
+
   if (partes[0] === "recorrentes") {
     if (metodo === "GET" && !partes[1]) return json({ recorrentes: (await env.DB.prepare("SELECT * FROM fin_recorrente WHERE org_id=? ORDER BY ativo DESC, tipo, descricao").bind(orgId).all()).results || [] });
     if (metodo === "POST" && !partes[1]) {
       const { corpo, erro } = await lerCorpo(request); if (erro) return erro;
       const v = validar({ ...corpo, data: hoje }); if (typeof v === "string") return json({ erro: v }, 400);
       const dia = Math.min(Math.max(1, Number(corpo.dia) || 5), 31);
-      const r = await env.DB.prepare("INSERT INTO fin_recorrente(org_id,tipo,descricao,valor_cent,categoria,dia,ativo,criado_ms) VALUES(?,?,?,?,?,?,1,?)").bind(orgId, v.tipo, v.descricao, v.valor_cent, v.categoria, dia, ms).run();
+      const freq = FREQUENCIAS[corpo.frequencia] ? corpo.frequencia : "mensal";
+      const r = await env.DB.prepare("INSERT INTO fin_recorrente(org_id,tipo,descricao,valor_cent,categoria,dia,ativo,criado_ms,freq,inicio_mes,dia_semana,ate_mes,forma,contato,centro) VALUES(?,?,?,?,?,?,1,?,?,?,?,?,?,?,?)")
+        .bind(orgId, v.tipo, v.descricao, v.valor_cent, v.categoria, dia, ms, freq, mesValido(corpo.inicio_mes) ? corpo.inicio_mes : hoje.slice(0, 7), Number.isInteger(Number(corpo.dia_semana)) && corpo.dia_semana !== "" ? Math.min(6, Math.max(0, Number(corpo.dia_semana))) : 1,
+          mesValido(corpo.ate_mes) ? corpo.ate_mes : null, v.forma, v.contato, v.centro).run();
       await gerarRecorrentes(env, orgId, hoje.slice(0, 7), ms);
       return json({ ok: true, id: r.meta?.last_row_id }, 201);
     }
@@ -364,14 +563,16 @@ export async function rotasFinanceiro(request, env, k, orgId, papel, resto) {
     const texto = String(corpo.conteudo || "");
     const itens = /<OFX>|<STMTTRN>/i.test(texto) ? lerOfx(texto) : lerCsv(texto);
     if (!itens.length) return json({ erro: "Não encontrei lançamentos neste arquivo. Use o extrato em OFX (Money/Quicken) ou CSV com colunas de data, descrição e valor." }, 400);
-    let novos = 0, repetidos = 0;
+    let novos = 0, repetidos = 0, fechadosIgnorados = 0;
     for (const it of itens.slice(0, 5000)) {
+      if (fechados.has(it.data.slice(0, 7))) { fechadosIgnorados++; continue; }
       const tipo = it.valor_cent > 0 ? "ENTRADA" : "SAIDA";
       const r = await env.DB.prepare(`INSERT OR IGNORE INTO fin_lanc(org_id,tipo,descricao,valor_cent,categoria,data,pago,pago_em,origem,chave_externa,criado_por,criado_ms,atualizado_ms)
         VALUES(?,?,?,?,?,?,1,?,'extrato',?,?,?,?)`).bind(orgId, tipo, it.descricao, Math.abs(it.valor_cent), categoriaProvavel(it.descricao, tipo), it.data, it.data, it.chave, k.sessao?.usuario?.email || null, ms, ms).run();
       if (r.meta?.changes) novos++; else repetidos++;
     }
-    return json({ ok: true, lidos: itens.length, novos, repetidos });
+    await registrar("importou extrato", null, { lidos: itens.length, novos, repetidos });
+    return json({ ok: true, lidos: itens.length, novos, repetidos, meses_fechados: fechadosIgnorados });
   }
   if (partes[0] === "config" && metodo === "PUT") {
     const { corpo, erro } = await lerCorpo(request); if (erro) return erro;
