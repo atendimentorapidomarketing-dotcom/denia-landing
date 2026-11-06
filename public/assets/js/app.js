@@ -249,6 +249,7 @@
     integracoes: { titulo: "Integrações", render: paginaIntegracoes },
     consumo: { titulo: "Consumo e custos", render: paginaConsumo, minimo: "ADMIN" },
     rotina: { titulo: "Rotina do especialista", render: paginaRotina },
+    ajuda: { titulo: "Ajuda e tutoriais", render: paginaAjuda },
     midias: { titulo: "Fotos e mídias", render: paginaMidias },
     equipe: { titulo: "Equipe", render: paginaEquipe, minimo: "ADMIN" },
     auditoria: { titulo: "Auditoria", render: paginaAuditoria, minimo: "ADMIN" },
@@ -512,6 +513,8 @@
     // Desenha a primeira tela na hora; a conferência da chave da IA corre junto (e só redesenha o Painel se faltar a chave).
     navegar();
     verificarIa().then(() => { if (estado.iaLigada === false && rotaAtual().nome === "painel") navegar(); });
+    // Primeiro acesso: tour guiado pela tela (uma vez por pessoa; dá para rever em Ajuda e tutoriais).
+    setTimeout(() => { if (!tourVisto() && !document.querySelector(".gaveta:not(.oculto), #modal:not(.oculto)")) tourBoasVindas(); }, 1400);
     // Adianta o que as telas de marketing usam (perfis e conexões).
     setTimeout(() => { if (estado.org && temRecurso("marketing")) { marcas().catch(() => {}); estadoGoogle().catch(() => {}); estadoMeta().catch(() => {}); } }, 600);
     // Adianta a lista de conversas enquanto a pessoa olha o painel.
@@ -3350,11 +3353,11 @@ Botão só com texto = resposta.` })),
 
   // ----- Plano e pagamento: teste grátis, planos (mensal/anual), assinatura (Pix, boleto, cartão) e histórico.
   const RECURSO_DA_ROTA = {
-    rotina: null, conversas: "ia_completa", atendimentos: "ia_completa", profissionais: "ia_completa", treinamento: "ia_completa", aprendizados: "ia_completa", clientes: "ia_completa", whatsapp: "ia_completa", guia: "ia_completa",
+    rotina: null, ajuda: null, conversas: "ia_completa", atendimentos: "ia_completa", profissionais: "ia_completa", treinamento: "ia_completa", aprendizados: "ia_completa", clientes: "ia_completa", whatsapp: "ia_completa", guia: "ia_completa",
     chatbot: "chatbot", temporada: "temporada", estudio: "marketing", midias: "marketing", calendario: "marketing", aprovacoes: "marketing", marcas: "marketing", instagram: "marketing", facebook: "marketing", google: "marketing", social: "marketing", denia: "voz"
   };
   window.DENIA_RECURSOS = window.DENIA_RECURSOS || { chatbot: "Chatbot do WhatsApp com botões e listas", chatbot_ia: "IA no chatbot", ia_completa: "IA completa de atendimento (atende como uma pessoa, com memória)", marketing: "Instagram, Facebook e Google: posts, artes, comentários e avaliações", voz: "DENIA por voz, ao vivo", multiempresa: "Várias empresas, marcas e unidades", temporada: "Locação por temporada" };
-  const ROTAS_LIVRES = ["plano", "conta", "equipe", "auditoria", "empresas", "contatos", "painel", "integracoes", "consumo", "problemas", "relatorios", "rotina"];
+  const ROTAS_LIVRES = ["plano", "conta", "equipe", "auditoria", "empresas", "contatos", "painel", "integracoes", "consumo", "problemas", "relatorios", "rotina", "ajuda"];
   const acessoAtual = () => (estado.org && estado.org.acesso) || { liberado: true, recursos: [], status: "?" };
   const temRecurso = r => !r || estado.eu.usuario.super_admin || (acessoAtual().liberado && (acessoAtual().recursos || []).includes(r));
   const NOME_STATUS_PLANO = { TESTE: "Teste grátis", ATIVO: "Ativo", ATRASADO: "Pagamento pendente", CANCELADO: "Cancelado (usa até o fim do período)", CORTESIA: "Cortesia — acesso total", BLOQUEADO: "Bloqueado", TESTE_ACABOU: "Teste encerrado" };
@@ -6689,6 +6692,98 @@ Botão só com texto = resposta.` })),
     })().catch(e => trocar(corpo, h("p", { class: "nota nota-alerta", text: e.message })));
     return h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Avaliação automática depois do serviço" }),
       h("p", { class: "dica", text: "Depois de cada serviço, a DENIA pergunta ao cliente se ficou tudo certo e, se ficou, pede a avaliação no Google. Escolha em qual perfil: o principal ou um perfil para cada tipo de serviço." }), corpo);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Tour guiado (primeiro acesso) e Ajuda: a tela escurece, só o ponto da vez fica aceso, com Próximo/Voltar/Pular.
+  // ---------------------------------------------------------------------------
+  const chaveTour = () => `denia_tour_v1_${(estado.eu && estado.eu.usuario && estado.eu.usuario.id) || "x"}`;
+  function tourVisto() { try { return localStorage.getItem(chaveTour()) === "1"; } catch { return true; } }
+  function marcarTour() { try { localStorage.setItem(chaveTour(), "1"); } catch { } }
+  function tour(passos, { aoFim } = {}) {
+    document.querySelectorAll(".tour-camada,.tour-foco,.tour-card").forEach(x => x.remove());
+    let i = 0, menuAberto = false;
+    const camada = h("div", { class: "tour-camada" }), foco = h("div", { class: "tour-foco oculto" });
+    const card = h("div", { class: "tour-card", role: "dialog", "aria-modal": "true", "aria-labelledby": "tour-titulo" });
+    document.body.append(camada, foco, card);
+    const celular = () => window.matchMedia("(max-width: 900px)").matches;
+    const visivel = el => el && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== "hidden";
+    let alvoAtual = null;
+    const posicionar = () => {
+      const el = alvoAtual;
+      const W = window.innerWidth, H = window.innerHeight, m = 16;
+      if (!el) { foco.classList.add("oculto"); camada.classList.add("escura"); card.style.left = Math.max(m, (W - card.offsetWidth) / 2) + "px"; card.style.top = Math.max(m, (H - card.offsetHeight) / 2) + "px"; return; }
+      const r = el.getBoundingClientRect(), pad = 6;
+      camada.classList.remove("escura"); foco.classList.remove("oculto");
+      Object.assign(foco.style, { left: r.left - pad + "px", top: r.top - pad + "px", width: r.width + pad * 2 + "px", height: r.height + pad * 2 + "px" });
+      const cw = card.offsetWidth, ch = card.offsetHeight;
+      let top = r.bottom + 14; if (top + ch > H - m) top = r.top - ch - 14; if (top < m) top = Math.min(H - ch - m, Math.max(m, r.top));
+      let left = r.left; if (r.right + 14 + cw < W - m && (top === Math.min(H - ch - m, Math.max(m, r.top)))) left = r.right + 14;
+      left = Math.min(W - cw - m, Math.max(m, left));
+      card.style.left = left + "px"; card.style.top = top + "px";
+    };
+    const fechar = concluiu => { camada.remove(); foco.remove(); card.remove(); window.removeEventListener("resize", posicionar); document.removeEventListener("keydown", tecla); if (menuAberto) fecharMenu(); marcarTour(); if (aoFim) aoFim(concluiu); };
+    const tecla = e => { if (e.key === "Escape") fechar(false); else if (e.key === "ArrowRight") avancar(); else if (e.key === "ArrowLeft" && i > 0) { i--; mostrar(); } };
+    const avancar = () => { if (i >= passos.length - 1) fechar(true); else { i++; mostrar(); } };
+    const desenhar = () => {
+      const p = passos[i], ultimo = i === passos.length - 1;
+      card.replaceChildren(...[h("span", { class: "tour-passo", text: `${i + 1} de ${passos.length}` }), h("h3", { id: "tour-titulo", text: p.titulo }), h("p", { text: p.texto }), p.extra ? p.extra() : null,
+        h("div", { class: "tour-acoes" }, !ultimo ? botao("Pular", () => fechar(false), "btn-secundario btn-pequeno tour-pular") : null, i > 0 ? botao("Voltar", () => { i--; mostrar(); }, "btn-secundario btn-pequeno") : null,
+          botao(ultimo ? "Entendi" : "Próximo", avancar, "btn-primario btn-pequeno"))].filter(Boolean));
+      requestAnimationFrame(posicionar);
+      const b = card.querySelector(".btn-primario"); if (b) b.focus({ preventScroll: true });
+    };
+    const mostrar = () => {
+      const p = passos[i];
+      const precisaMenu = p.menu && celular();
+      if (precisaMenu && !$("lateral").classList.contains("aberta")) { abrirMenuLateral(); menuAberto = true; }
+      if (!precisaMenu && menuAberto) { fecharMenu(); menuAberto = false; }
+      setTimeout(() => {
+        let el = p.alvo ? document.querySelector(p.alvo) : null;
+        if (el && !visivel(el)) el = null;
+        if (el) el.scrollIntoView({ block: "nearest" });
+        alvoAtual = el; desenhar();
+      }, precisaMenu ? 280 : 30);
+    };
+    window.addEventListener("resize", posicionar);
+    document.addEventListener("keydown", tecla);
+    mostrar();
+  }
+  function tourBoasVindas() {
+    if (rotaAtual().nome !== "painel") location.hash = "#/painel";
+    const nome = (estado.eu.usuario.nome || "").split(" ")[0];
+    tour([
+      { titulo: `Bem-vindo(a) à DENIA${nome ? ", " + nome : ""}!`, texto: "Em 1 minuto eu te mostro onde fica cada coisa. A DENIA atende seus clientes no WhatsApp, cuida do seu Google, cria posts para as redes e mostra tudo o que precisa de atenção. Use Próximo, ou Pular se já conhece." },
+      { alvo: "#empresa", menu: true, titulo: "Sua empresa", texto: "Se você cuida de mais de uma empresa, troque aqui. Cada empresa tem seus próprios dados, contas e equipe." },
+      { alvo: '#lateral-nav a[data-rota="marcas"]', menu: true, titulo: "Comece por aqui: Contas conectadas", texto: "Conecte o Google, o Instagram e o Facebook da empresa. É só entrar com a conta de vocês; a DENIA nunca guarda senha." },
+      { alvo: '#lateral-nav a[data-entra="whatsapp"]', menu: true, titulo: "WhatsApp", texto: "Conecte o número e escolha como atender: só botões, botões com IA ou a IA conversando. Lá ficam as conversas, a agenda, as campanhas e o pós-venda." },
+      { alvo: '#lateral-nav a[data-entra="google"]', menu: true, titulo: "Google", texto: "Avaliações respondidas, pedidos de avaliação, posts, posição no mapa, buscas e relatórios do seu perfil do Google." },
+      { alvo: '#lateral-nav a[data-entra="marketing"]', menu: true, titulo: "Marketing e conteúdo", texto: "Suba fotos ou vídeos, explique do seu jeito o que quer, e a IA escreve o post de cada rede. Nada sai sem a sua aprovação (se você quiser)." },
+      { alvo: '#lateral-nav a[data-rota="problemas"]', menu: true, titulo: "Problemas", texto: "Tudo o que precisa de você aparece aqui, com o motivo e como resolver: mensagem que não chegou, post que não saiu, cliente esperando." },
+      { alvo: '#lateral-nav a[data-rota="rotina"]', menu: true, titulo: "Rotina do especialista", texto: "O que fazer hoje para crescer, como uma agência faria: responder avaliações, postar, melhorar o perfil." },
+      { alvo: "#denia-orbe", titulo: "Fale com a DENIA", texto: "Pergunte por texto ou por voz: \"quantas avaliações chegaram?\", \"cria um post sobre a promoção\". Ela responde e faz por você." },
+      { alvo: '#lateral-nav a[data-rota="ajuda"]', menu: true, titulo: "Ajuda e tutoriais", texto: "Os passo a passo ficam aqui, e você pode rever este tour quando quiser. Bom trabalho! 🚀" }
+    ]);
+  }
+  const TUTORIAIS = [
+    ["Primeiros passos (10 minutos)", ["Em Contas conectadas, conecte o Google e o Instagram/Facebook da empresa.", "Em WhatsApp → Conexão do número, conecte o número da empresa.", "Em WhatsApp → Mensagens e IA, escolha o modo de atendimento e escreva sobre a empresa: horário, endereço, serviços, preços que podem ser informados e regras.", "Teste em WhatsApp → Testar antes de ligar para os clientes.", "Na Equipe, convide quem vai ajudar (cada pessoa com o seu acesso)."]],
+    ["Conectar o WhatsApp", ["Abra WhatsApp → Conexão do número.", "Siga o passo a passo da Meta com a conta que administra o número da empresa.", "Se o número já é usado no app do WhatsApp Business, use Conectar número (coexistência): o app continua funcionando.", "Depois de conectado, a DENIA mostra a saúde do número e as mensagens entregues."]],
+    ["Escolher como o robô atende", ["WhatsApp → Mensagens e IA → Modo de atendimento.", "Só botões: menu de opções, sem custo de IA.", "Botões + IA: a IA entra quando a pessoa escreve algo que o menu não resolve.", "IA completa: conversa como uma atendente, agenda e lembra de cada cliente.", "Escolha também o fuso horário da empresa e, se precisar, números que o robô nunca deve responder."]],
+    ["Treinar a IA (o que ela pode dizer)", ["Em Mensagens e IA (ou Inteligência da DENIA → Treinar a IA), escreva: jeito de atender, serviços, preços autorizados, regras e exemplos.", "Escreva como explicaria para uma atendente nova. Exemplos reais ajudam muito.", "A IA só fala o que está escrito: preço que não estiver lá, ela não inventa.", "Cada salvamento vira uma versão; dá para voltar a uma anterior."]],
+    ["Conectar o Google e pedir avaliações", ["Contas conectadas → Conectar Google, com a conta dona do perfil.", "Em Google → Pedir avaliações: link, QR code, cartões para imprimir e a mensagem pronta.", "Em Avaliação automática depois do serviço, escolha o perfil que recebe as avaliações (ou um perfil para cada tipo de serviço).", "As avaliações boas são respondidas sozinhas; as ruins chegam como aviso para você decidir."]],
+    ["Criar um post com as suas fotos ou vídeos", ["Marketing e conteúdo → Postar as minhas fotos e vídeos.", "Escolha a empresa, as fotos ou vídeos e explique do seu jeito o que quer dizer (pode usar o microfone do teclado).", "Marque onde publicar e se quer publicar agora, agendar ou só criar.", "No Google, escolha o tipo (Novidade, Oferta, Evento) e o botão (Ligar agora, Site…).", "Confira e, se quiser mudar, peça à IA: \"deixa mais curto\", \"fala da promoção\"."]],
+    ["Aprovar e acompanhar posts", ["Em Aprovações ficam os posts esperando você.", "Cada post mostra o resultado em cada rede: ✓ publicado, ✗ não publicado (com o motivo).", "Publicou na empresa errada? Abra o post e toque em Tirar do ar."]],
+    ["Pós-venda e garantia (automático)", ["Alguns dias depois de um atendimento concluído, a DENIA pergunta se ficou tudo certo.", "Se o cliente disser que ficou ótimo, ela pede a avaliação no Google.", "Se disser que tem problema, ela avisa a equipe e não fala em valor: quem decide a garantia são vocês.", "Para clientes que não falaram nas últimas 24 h, o WhatsApp exige um modelo aprovado (Modelos de mensagem)."]],
+    ["Equipe e permissões", ["Equipe → Convidar: cada pessoa recebe um e-mail para criar a senha.", "Administrador muda configurações; atendente conversa com os clientes; visualizador só acompanha.", "Na Auditoria aparece quem fez o quê."]],
+    ["Onde ver se algo deu errado", ["Problemas: o que precisa de atenção, com o motivo e como resolver.", "WhatsApp → Entregas das mensagens e Diagnóstico: por que uma mensagem não chegou.", "Consumo e custos: quanto a empresa está gastando com WhatsApp, IA e Google."]]
+  ];
+  async function paginaAjuda(el) {
+    el.appendChild(cabeca("Ajuda e tutoriais", "Passo a passo do que fazer na DENIA. Comece pelos primeiros passos."));
+    el.appendChild(h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Tour pela tela" }),
+      h("p", { class: "dica", text: "Mostra onde fica cada coisa, destacando os botões um por um." }),
+      h("div", { class: "acoes" }, botao("Ver o tour de novo", () => tourBoasVindas(), "btn-primario"))));
+    el.appendChild(h("section", { class: "ajuda-lista" }, TUTORIAIS.map(([t, passos], n) => h("details", { class: "cartao vidro ajuda-item", open: n === 0 },
+      h("summary", { text: t }), h("ol", { class: "passos" }, passos.map(x => h("li", { text: x })))))));
   }
 
   // QR code (biblioteca qrcode-generator, MIT) e páginas para imprimir os cartões de avaliação.

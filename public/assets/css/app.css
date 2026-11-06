@@ -1089,3 +1089,19 @@ video.post-arte-img { width:100%; max-height:520px; border-radius:12px; backgrou
 .foto-servico-img { aspect-ratio:4/3; border-radius:10px; overflow:hidden; background:rgba(255,255,255,.04); display:grid; place-items:center }
 .foto-servico-img img { width:100%; height:100%; object-fit:cover }
 @media (max-width:640px) { .fotos-servicos { grid-template-columns:1fr } }
+
+/* Tour guiado */
+.tour-camada { position:fixed; inset:0; z-index:200; background:transparent }
+.tour-camada.escura { background:rgba(3,6,20,.72) }
+.tour-foco { position:fixed; z-index:201; border-radius:12px; pointer-events:none; box-shadow:0 0 0 9999px rgba(3,6,20,.72), 0 0 0 2px var(--ciano), 0 0 24px rgba(34,211,238,.45); transition:left .25s, top .25s, width .25s, height .25s }
+.tour-card { position:fixed; z-index:202; width:min(360px, calc(100vw - 32px)); display:grid; gap:8px; padding:16px 18px; border-radius:16px; background:#0c1224; border:1px solid var(--borda-forte); box-shadow:var(--sombra); color:var(--texto) }
+.tour-card h3 { margin:0; font-size:17px }
+.tour-card p { margin:0; color:var(--texto-2); font-size:14.5px; line-height:1.5 }
+.tour-passo { font-size:12px; letter-spacing:.06em; text-transform:uppercase; color:var(--ciano) }
+.tour-acoes { display:flex; gap:8px; justify-content:flex-end; flex-wrap:wrap; margin-top:4px }
+.tour-pular { margin-right:auto }
+@media (prefers-reduced-motion: reduce) { .tour-foco { transition:none } }
+/* Ajuda */
+.ajuda-lista { display:grid; gap:10px }
+.ajuda-item summary { cursor:pointer; font-weight:600; font-size:15.5px }
+.ajuda-item .passos { margin:10px 0 0; padding-left:20px; display:grid; gap:6px; color:var(--texto-2) }
