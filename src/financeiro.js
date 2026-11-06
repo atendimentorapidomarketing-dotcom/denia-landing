@@ -17,17 +17,37 @@ export const DDL_FINANCEIRO = [
 ];
 
 export const CATEGORIAS = {
-  ENTRADA: ["Vendas e serviços", "Locação / diárias", "Comissões", "Outras receitas"],
+  ENTRADA: ["Vendas e serviços", "Locação / diárias", "Aluguéis recebidos", "Comissões", "Outras receitas"],
   SAIDA: ["Fornecedores e peças", "Salários e comissões", "Aluguel e condomínio", "Água, luz, internet e telefone", "Impostos e taxas",
-    "Marketing e anúncios", "Sistemas e assinaturas", "Transporte e combustível", "Manutenção", "Tarifas bancárias", "Retirada dos sócios", "Outras despesas"]
+    "Marketing e anúncios", "Sistemas e assinaturas", "Transporte e combustível", "Manutenção", "Tarifas bancárias", "Retirada dos sócios", "Transferências", "Outras despesas"]
+};
+// Categorias por perfil de administração (Administração → Ajustes): somam-se às padrão.
+export const CATEGORIAS_PERFIL = {
+  comercial: { ENTRADA: ["Aluguéis recebidos", "Condomínio recebido", "Multas e juros recebidos", "Outras receitas"],
+    SAIDA: ["Funcionários: salários", "Funcionários: encargos (INSS / FGTS)", "Energia", "Água e esgoto", "Internet e telefone", "Limpeza e material de limpeza", "Segurança e portaria", "Manutenção", "IPTU", "Impostos e taxas", "Contabilidade", "Seguro do prédio", "Tarifas bancárias", "Retirada dos sócios", "Transferências", "Outras despesas"] },
+  pessoal: { ENTRADA: ["Aluguéis recebidos", "Salário e pró-labore", "Outras receitas"],
+    SAIDA: ["Condomínio", "IPTU", "Energia", "Água", "Internet e telefone", "Escola e educação", "Saúde e plano", "Pensão", "Cartão de crédito", "Empréstimo e financiamento", "Funcionários domésticos", "Veículo", "Manutenção de imóvel", "Advogado e custas", "Seguro", "Despesas pessoais", "Outras despesas"] },
+  temporada: { ENTRADA: ["Locação / diárias", "Taxa de limpeza", "Taxa de administração", "Outras receitas"],
+    SAIDA: ["Limpeza e faxina", "Lavanderia", "Enxoval e reposição", "Manutenção", "Condomínio", "Energia", "Água", "Internet e TV", "Taxas das plataformas", "Repasse ao proprietário", "Impostos e taxas", "Outras despesas"] },
+  mei: { ENTRADA: ["Serviços prestados", "Outras receitas"], SAIDA: ["DAS do MEI", "Contador", "Celular e internet", "Transporte", "Material de trabalho", "Cursos", "Outras despesas"] }
 };
 const FORMAS = ["Pix", "Dinheiro", "Cartão de crédito", "Cartão de débito", "Boleto", "Transferência", "Outro"];
 const MOEDAS = { BRL: "pt-BR", USD: "en-US", EUR: "de-DE", GBP: "en-GB", ARS: "es-AR", CLP: "es-CL", MXN: "es-MX", COP: "es-CO", PEN: "es-PE", UYU: "es-UY", PYG: "es-PY" };
 
+// Colunas que a Administração acrescenta (conta, centro, valor pago); existem depois que ela rodou uma vez.
+const comAdmin = new WeakMap();
+async function temColunasAdmin(env) {
+  if (comAdmin.get(env.DB)) return true;
+  const ok = Boolean(await env.DB.prepare("SELECT conta_id, centro, valor_pago_cent FROM fin_lanc LIMIT 1").first().then(() => true).catch(() => false));
+  if (ok) comAdmin.set(env.DB, true);
+  return ok;
+}
 const prontos = new WeakSet();
 export async function garantirFinanceiro(env) {
   if (prontos.has(env.DB)) return;
   for (const s of DDL_FINANCEIRO) await env.DB.prepare(s).run();
+  // Colunas da Administração: conta (banco/caixa), locatário, competência, valor efetivamente pago e centro de custo.
+  for (const c of ["conta_id INTEGER", "locatario_id INTEGER", "competencia TEXT", "valor_pago_cent INTEGER", "centro TEXT"]) await env.DB.prepare("ALTER TABLE fin_lanc ADD COLUMN " + c).run().catch(() => { });
   prontos.add(env.DB);
 }
 
@@ -245,14 +265,19 @@ export async function rotasFinanceiro(request, env, k, orgId, papel, resto) {
     if (v > 1e13) return "Valor alto demais.";
     if (!dataValida(c.data)) return "Data inválida.";
     return { tipo, valor_cent: Math.abs(v), descricao: re(c.descricao, 160), categoria: re(c.categoria, 60) || categoriaProvavel(c.descricao, tipo), data: c.data,
-      pago: c.pago ? 1 : 0, pago_em: c.pago ? (dataValida(c.pago_em) ? c.pago_em : c.data <= hoje ? c.data : hoje) : null, forma: FORMAS.includes(c.forma) ? c.forma : null, contato: re(c.contato, 120) || null, obs: re(c.obs, 500) || null };
+      pago: c.pago ? 1 : 0, pago_em: c.pago ? (dataValida(c.pago_em) ? c.pago_em : c.data <= hoje ? c.data : hoje) : null, forma: FORMAS.includes(c.forma) ? c.forma : null, contato: re(c.contato, 120) || null, obs: re(c.obs, 500) || null,
+      conta_id: Number(c.conta_id) > 0 ? Number(c.conta_id) : null, centro: re(c.centro, 60) || null };
   };
 
   if (partes[0] === "opcoes" && metodo === "GET") {
     const usadas = (await env.DB.prepare("SELECT DISTINCT tipo, categoria FROM fin_lanc WHERE org_id=? AND categoria IS NOT NULL LIMIT 200").bind(orgId).all()).results || [];
     const cats = { ENTRADA: [...CATEGORIAS.ENTRADA], SAIDA: [...CATEGORIAS.SAIDA] };
+    const perfilCats = CATEGORIAS_PERFIL[(await env.DB.prepare("SELECT perfil FROM adm_config WHERE org_id=?").bind(orgId).first().catch(() => null))?.perfil];
+    if (perfilCats) for (const t of ["ENTRADA", "SAIDA"]) cats[t] = [...new Set([...perfilCats[t].filter(c => !/^Outr/.test(c)), ...cats[t]])];
     for (const u of usadas) if (cats[u.tipo] && !cats[u.tipo].includes(u.categoria)) cats[u.tipo].push(u.categoria);
-    return json({ categorias: cats, formas: FORMAS, moedas: Object.keys(MOEDAS), config: await config(), hoje });
+    const contas = (await env.DB.prepare("SELECT id, nome, tipo, padrao FROM adm_contas WHERE org_id=? AND ativo=1 ORDER BY padrao DESC, tipo, id").bind(orgId).all().catch(() => null))?.results || [];
+    const perfil = (await env.DB.prepare("SELECT perfil FROM adm_config WHERE org_id=?").bind(orgId).first().catch(() => null))?.perfil || null;
+    return json({ categorias: cats, formas: FORMAS, moedas: Object.keys(MOEDAS), config: await config(), hoje, contas, perfil });
   }
   if (partes[0] === "resumo" && metodo === "GET") {
     const mes = mesPedido();
@@ -274,14 +299,15 @@ export async function rotasFinanceiro(request, env, k, orgId, papel, resto) {
       const { corpo, erro } = await lerCorpo(request); if (erro) return erro;
       const v = validar(corpo); if (typeof v === "string") return json({ erro: v }, 400);
       const parcelas = Math.min(Math.max(1, Number(corpo.parcelas) || 1), 60);
+      const extras = await temColunasAdmin(env);
       const ids = [];
       for (let i = 0; i < parcelas; i++) {
         const [a, m, d] = v.data.split("-").map(Number);
         const mesI = somarMes(`${a}-${String(m).padStart(2, "0")}`, i), data = `${mesI}-${String(Math.min(d, ultimoDia(mesI))).padStart(2, "0")}`;
-        const r = await env.DB.prepare(`INSERT INTO fin_lanc(org_id,tipo,descricao,valor_cent,categoria,data,pago,pago_em,forma,contato,obs,origem,criado_por,criado_ms,atualizado_ms)
-          VALUES(?,?,?,?,?,?,?,?,?,?,?,'manual',?,?,?)`).bind(orgId, v.tipo, parcelas > 1 ? `${v.descricao} (${i + 1}/${parcelas})` : v.descricao,
+        const r = await env.DB.prepare(`INSERT INTO fin_lanc(org_id,tipo,descricao,valor_cent,categoria,data,pago,pago_em,forma,contato,obs,origem,criado_por,criado_ms,atualizado_ms${extras ? ",conta_id,centro" : ""})
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,'manual',?,?,?${extras ? ",?,?" : ""})`).bind(orgId, v.tipo, parcelas > 1 ? `${v.descricao} (${i + 1}/${parcelas})` : v.descricao,
           parcelas > 1 ? Math.round(v.valor_cent / parcelas) + (i === 0 ? v.valor_cent - Math.round(v.valor_cent / parcelas) * parcelas : 0) : v.valor_cent,
-          v.categoria, data, i === 0 ? v.pago : 0, i === 0 ? v.pago_em : null, v.forma, v.contato, v.obs, k.sessao?.usuario?.email || null, ms, ms).run();
+          v.categoria, data, i === 0 ? v.pago : 0, i === 0 ? v.pago_em : null, v.forma, v.contato, v.obs, k.sessao?.usuario?.email || null, ms, ms, ...(extras ? [v.conta_id, v.centro] : [])).run();
         ids.push(r.meta?.last_row_id);
       }
       if (corpo.repetir_todo_mes && parcelas === 1) {
@@ -299,6 +325,12 @@ export async function rotasFinanceiro(request, env, k, orgId, papel, resto) {
       const { corpo } = await lerCorpo(request);
       const pago = corpo?.desfazer ? 0 : 1, quando = pago ? (dataValida(corpo?.data) ? corpo.data : hoje) : null;
       await env.DB.prepare("UPDATE fin_lanc SET pago=?, pago_em=?, forma=COALESCE(?,forma), atualizado_ms=? WHERE id=? AND org_id=?").bind(pago, quando, FORMAS.includes(corpo?.forma) ? corpo.forma : null, ms, id, orgId).run();
+      // Valor efetivamente pago (com multa e juros, ou com desconto) e a conta onde o dinheiro entrou/saiu.
+      if (await temColunasAdmin(env)) {
+        const vp = pago && corpo?.valor_pago !== undefined && corpo.valor_pago !== "" ? centavos(corpo.valor_pago) : null;
+        await env.DB.prepare("UPDATE fin_lanc SET valor_pago_cent=?, conta_id=COALESCE(?, conta_id) WHERE id=? AND org_id=?")
+          .bind(vp !== null && vp > 0 && vp !== atual.valor_cent ? Math.abs(vp) : null, pago && Number(corpo?.conta_id) > 0 ? Number(corpo.conta_id) : null, id, orgId).run();
+      }
       return json({ ok: true });
     }
     if (metodo === "PUT") {
@@ -306,6 +338,7 @@ export async function rotasFinanceiro(request, env, k, orgId, papel, resto) {
       const v = validar({ ...atual, valor: atual.valor_cent / 100, ...corpo }); if (typeof v === "string") return json({ erro: v }, 400);
       await env.DB.prepare("UPDATE fin_lanc SET tipo=?,descricao=?,valor_cent=?,categoria=?,data=?,pago=?,pago_em=?,forma=?,contato=?,obs=?,atualizado_ms=? WHERE id=? AND org_id=?")
         .bind(v.tipo, v.descricao, v.valor_cent, v.categoria, v.data, v.pago, v.pago_em, v.forma, v.contato, v.obs, ms, id, orgId).run();
+      if (await temColunasAdmin(env)) await env.DB.prepare("UPDATE fin_lanc SET conta_id=?, centro=? WHERE id=? AND org_id=?").bind(v.conta_id, v.centro, id, orgId).run();
       return json({ ok: true });
     }
     if (metodo === "DELETE") { await env.DB.prepare("DELETE FROM fin_lanc WHERE id=? AND org_id=?").bind(id, orgId).run(); return json({ ok: true }); }

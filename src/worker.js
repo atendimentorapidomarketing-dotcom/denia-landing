@@ -27,12 +27,13 @@ import { comOrgUso, comRecurso, descarregarUso } from "./uso.js";
 import { DDL_TEMPORADA, ALTERS_TEMPORADA, rotasTemporada, icalPublico, webhookChannex, sincronizarTemporada, desligarInadimplentes, lembrarEstoque, limpezaPublica, avaliacoesDoCron } from "./temporada.js";
 import { openaiBruto } from "./marketing.js";
 import { rotasFinanceiro, financeiroDoCron } from "./financeiro.js";
+import { rotasAdmin, adminDoCron, icalAdmin } from "./administracao.js";
 import { DDL_PROBLEMAS, rotasProblemas, registrarProblema, resolverProblema, limparProblemas } from "./problemas.js";
 import { DDL_ZAP, webhookZap, rotasZap, webhookTelegram, segredoTelegram, tokenTelegramPlataforma, processarCampanhas, posVendaChatbot, lembrarAgenda, brutoRelatorioZap, avisarTelegramDaEmpresa } from "./zap.js";
 import { montarRelatorio, planilhaRelatorio, textoRelatorio, base64, ultimos7Dias, lerConfigRelatorio, horaDeEnviar, diaBR, dataBR, DIAS_SEMANA, inicioDoDia as inicioDoDiaBR } from "./relatorio.js";
 import { lerPlanos, acessoDa, recursoDaRota, planoMinimo, rotasPlano, webhookAsaas, lembretesDePlano, TESTE_DIAS, STATUS as STATUS_PLANO, PLANOS_PADRAO, RECURSOS } from "./planos.js";
 
-const VERSAO = "3.35.0";
+const VERSAO = "3.36.0";
 // Versão dos Termos de uso e da Política de privacidade aceitas no cadastro.
 const VERSAO_TERMOS = "2026-10-16";
 // WhatsApp da Central de Atendimento (botão flutuante do site).
@@ -1063,6 +1064,7 @@ async function apiOrg(request, env, sessao, orgId, resto, ctx) {
   if (resto.startsWith("engine/")) return proxyEngine(request, env, sessao, orgId, papel, resto.slice(7));
   const kit = { ...kitBase(env), sessao, emSegundoPlano: tarefa => { const t = Promise.resolve().then(tarefa).catch(e => console.error("segundo plano", e?.message)); if (ctx && ctx.waitUntil) ctx.waitUntil(t); return t; } };
   if (resto === "tp" || resto.startsWith("tp/")) return rotasTemporada(request, env, { ...(await kitZap(env, new URL(request.url).origin)), sessao, superAdmin: Boolean(sessao.usuario.super_admin), openai: openaiBruto, acesso: sessao.usuario.super_admin ? { ...acesso, limites: { ...acesso.limites, imoveis: 0 } } : acesso, avisar: async (o, texto) => { for (const para of await responsaveisDa(env, o)) await enviarEmail(env, para, "DENIA — hóspede precisa de você", texto); } }, orgId, papel, resto);
+  if (resto === "adm" || resto.startsWith("adm/")) return rotasAdmin(request, env, { ...kitBase(env), sessao }, orgId, papel, resto);
   if (resto === "fin" || resto.startsWith("fin/")) return rotasFinanceiro(request, env, { ...kitBase(env), sessao, comIA, openai: openaiBruto }, orgId, papel, resto);
   if (resto === "problemas" || resto.startsWith("problemas/")) {
     // Empresa com a IA da Central ligada: os avisos não urgentes dela (que não vão ao Telegram) entram aqui.
@@ -1297,7 +1299,7 @@ async function api(request, env, caminho, ctx) {
     return json({ whatsapp: whatsapp.length >= 10 ? whatsapp : "", email: emailValido(email) ? email : "", versao: VERSAO });
   }
   if (metodo !== "GET" && !postLegitimo(request)) return json({ erro: "Requisição não autorizada." }, 403);
-  if (!["GET", "POST"].includes(metodo)) return json({ erro: "Método não permitido." }, 405);
+  if (!["GET", "POST", "PUT", "DELETE"].includes(metodo)) return json({ erro: "Método não permitido." }, 405);
   try { await garantirSchema(env); }
   catch (e) {
     console.error("D1:", e?.message);
@@ -1422,6 +1424,7 @@ async function rotear(request, env, ctx) {
   if (caminho === "/webhook/telegram" && request.method === "POST") { await garantirSchema(env); return webhookTelegram(request, env, await kitZap(env)); }
   if (caminho === "/webhook/channex" && request.method === "POST") { await garantirSchema(env); return webhookChannex(request, env, await kitZap(env)); }
   if (caminho.startsWith("/tp/limpeza/") && ["GET", "POST"].includes(request.method)) { await garantirSchema(env); return comSeguranca((await limpezaPublica(request, env, await kitZap(env))) || new Response("Não encontrado.", { status: 404 }), request); }
+  if (caminho.startsWith("/adm/ical/") && request.method === "GET") { await garantirSchema(env); return (await icalAdmin(env, caminho, agora(env))) || new Response("Não encontrado.", { status: 404 }); }
   if (caminho.startsWith("/tp/ical/") && request.method === "GET") { await garantirSchema(env); return (await icalPublico(env, caminho)) || new Response("Não encontrado.", { status: 404 }); }
   if (caminho === "/webhook/asaas" && request.method === "POST") { await garantirSchema(env); return webhookAsaas(request, env, kitBase(env)); }
   if (!["GET", "HEAD"].includes(request.method)) return new Response("Método não permitido.", { status: 405 });
@@ -1519,6 +1522,7 @@ export default {
       await vigiarWhatsapp(env).catch(e => console.error("whatsapp", e?.message));
       await vigiarRecebimento(env).catch(e => console.error("vigia de recebimento", e?.message));
       await financeiroDoCron(env, { ...(await kitZap(env)), openai: openaiBruto, enviarEmail: (para, assunto, texto, anexos) => enviarEmail(env, para, assunto, texto, anexos), emailConfigurado: () => emailConfigurado(env), responsaveis: o => responsaveisDa(env, o) }).catch(e => console.error("financeiro", e?.message));
+      await adminDoCron(env, await kitZap(env)).catch(e => console.error("administração", e?.message));
       await limparBanco(env).catch(e => console.error("limpeza", e?.message));
       await sincronizarTemporada(env, await kitZap(env)).catch(e => console.error("temporada", e?.message));
       await processarCampanhas(env, await kitZap(env)).catch(e => console.error("campanhas", e?.message));
