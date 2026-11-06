@@ -3750,3 +3750,86 @@ test("Bloqueio no chatbot — a empresa bloqueia um número e o robô nunca resp
   const { bloqueadoNoChatbot } = await import("../src/zap.js");
   assert.equal(bloqueadoNoChatbot({ bloqueados: "+55 (21) 94444-3333" }, "21944443333"), true, "aceita com e sem DDI");
 });
+
+test("Vigia de recebimento — empresa que recebe todo dia e para de receber gera aviso; volta ao normal, resolve", async () => {
+  const { p, inf } = await duasEmpresasComChatbot();
+  const agora = Date.now();
+  for (let d = 1; d <= 14; d++) for (let i = 0; i < 10; i++)
+    p.env.DB.prepare("INSERT INTO plt_zap_msgs(org_id,telefone,direcao,origem,texto,criado_ms) VALUES(?,?, 'E','CLIENTE','oi',?)").bind(inf, "55219" + d + i, agora - d * 86400000 + i * 3600000).run();
+  p.env.__agora = () => agora + 12 * 3600000; // 12 h sem nada depois da última
+  const mod = await import("../src/worker.js");
+  await mod.default.scheduled({}, p.env, { waitUntil: pr => pr });
+  await new Promise(r => setTimeout(r, 50));
+  const pb = p.env.DB.q("SELECT titulo, resolvido_ms FROM plt_problemas WHERE org_id=? AND chave='recebimento_parado'", inf)[0];
+  assert.ok(pb, "registrou o aviso"); assert.match(pb.titulo, /Nenhuma mensagem do WhatsApp chegou há/);
+  assert.equal(p.env.DB.q("SELECT COUNT(*) n FROM plt_problemas WHERE org_id=1 AND chave='recebimento_parado'")[0].n, 0, "a outra empresa (sem movimento) não recebe aviso falso");
+  p.env.DB.prepare("INSERT INTO plt_zap_msgs(org_id,telefone,direcao,origem,texto,criado_ms) VALUES(?, '5521900', 'E','CLIENTE','voltou', ?)").bind(inf, agora + 12 * 3600000 - 60000).run();
+  await mod.default.scheduled({}, p.env, { waitUntil: pr => pr });
+  await new Promise(r => setTimeout(r, 50));
+  assert.ok(p.env.DB.q("SELECT resolvido_ms FROM plt_problemas WHERE org_id=? AND chave='recebimento_parado'", inf)[0].resolvido_ms, "resolveu sozinho quando as mensagens voltaram");
+  delete p.env.__agora;
+});
+
+test("Financeiro — valores em centavos, OFX e CSV do banco sem duplicar, parcelas, recorrentes e relatório do mês", async () => {
+  const f = await import("../src/financeiro.js");
+  assert.equal(f.centavos("1.234,56"), 123456); assert.equal(f.centavos("1234.56"), 123456); assert.equal(f.centavos("R$ -12,30"), -1230);
+  assert.equal(f.centavos("1.500"), 150000, "ponto de milhar"); assert.equal(f.centavos("abc"), null); assert.equal(f.centavos(10.1), 1010);
+  const ofx = "OFXHEADER:100\n<OFX><BANKTRANLIST><STMTTRN><TRNTYPE>DEBIT<DTPOSTED>20991005120000[-3:BRT]<TRNAMT>-150.00<FITID>A1<MEMO>CONTA LUZ ENEL</STMTTRN>" +
+    "<STMTTRN><TRNTYPE>CREDIT<DTPOSTED>20991006<TRNAMT>980.50<FITID>A2<MEMO>PIX RECEBIDO JOAO</STMTTRN></BANKTRANLIST></OFX>";
+  assert.deepEqual(f.lerOfx(ofx).map(i => [i.data, i.valor_cent]), [["2099-10-05", -15000], ["2099-10-06", 98050]]);
+  const csv = "Data;Histórico;Valor\n07/10/2099;Aluguel loja;-2.000,00\n08/10/2099;Venda balcão;350,00\n";
+  assert.deepEqual(f.lerCsv(csv).map(i => [i.data, i.valor_cent, i.descricao]), [["2099-10-07", -200000, "Aluguel loja"], ["2099-10-08", 35000, "Venda balcão"]]);
+  assert.equal(f.categoriaProvavel("CONTA LUZ ENEL", "SAIDA"), "Água, luz, internet e telefone");
+
+  const p = await criarPlataforma({ RESEND_API_KEY: "re_teste", EMAIL_REMETENTE: "DENIA <avisos@denia.test>" });
+  p.env.__agora = () => Date.parse("2099-10-20T15:00:00Z");
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  const base = "/api/orgs/1/fin";
+  assert.equal((await p.req(base + "/lancamentos", { metodo: "POST", quem: "admin", corpo: { tipo: "SAIDA", descricao: "", valor: "10", data: "2099-10-01" } })).status, 400, "descrição obrigatória");
+  assert.equal((await p.req(base + "/lancamentos", { metodo: "POST", quem: "admin", corpo: { tipo: "SAIDA", descricao: "x", valor: "0", data: "2099-10-01" } })).status, 400, "valor maior que zero");
+  const imp = await p.req(base + "/importar", { metodo: "POST", quem: "admin", corpo: { conteudo: ofx } });
+  assert.deepEqual([imp.dados.novos, imp.dados.repetidos], [2, 0]);
+  const imp2 = await p.req(base + "/importar", { metodo: "POST", quem: "admin", corpo: { conteudo: ofx } });
+  assert.deepEqual([imp2.dados.novos, imp2.dados.repetidos], [0, 2], "importar o mesmo extrato de novo não duplica");
+  assert.equal((await p.req(base + "/importar", { metodo: "POST", quem: "admin", corpo: { conteudo: csv } })).dados.novos, 2);
+  // Conta a pagar vencida e uma compra parcelada em 3x (R$ 100,00 → 33,34 + 33,33 + 33,33).
+  assert.equal((await p.req(base + "/lancamentos", { metodo: "POST", quem: "admin", corpo: { tipo: "SAIDA", descricao: "Fornecedor peças", valor: "500,00", data: "2099-10-10" } })).status, 201);
+  const parc = await p.req(base + "/lancamentos", { metodo: "POST", quem: "admin", corpo: { tipo: "SAIDA", descricao: "Compra notebook", valor: "100,00", data: "2099-10-31", parcelas: 3, pago: true } });
+  assert.equal(parc.dados.ids.length, 3);
+  const parcelas = p.env.DB.q("SELECT data, valor_cent, pago FROM fin_lanc WHERE descricao LIKE 'Compra notebook%' ORDER BY data");
+  assert.deepEqual(parcelas.map(x => x.data), ["2099-10-31", "2099-11-30", "2099-12-31"], "dia 31 vira o último dia do mês");
+  assert.equal(parcelas.reduce((s, x) => s + x.valor_cent, 0), 10000, "a soma das parcelas fecha o valor exato");
+  // Recorrente: cria a conta do mês uma vez só.
+  assert.equal((await p.req(base + "/recorrentes", { metodo: "POST", quem: "admin", corpo: { tipo: "SAIDA", descricao: "Internet", valor: "99,90", dia: 15 } })).status, 201);
+  await p.req(base + "/resumo?mes=2099-10", { quem: "admin" });
+  assert.equal(p.env.DB.q("SELECT COUNT(*) n FROM fin_lanc WHERE descricao='Internet'")[0].n, 1, "recorrente não duplica");
+
+  const r = (await p.req(base + "/resumo?mes=2099-10", { quem: "admin" })).dados;
+  assert.equal(r.totais.entradas, 98050 + 35000);
+  assert.equal(r.totais.saidas, 15000 + 200000 + 3334, "só o que foi pago entra nas saídas");
+  assert.equal(r.totais.a_pagar, 50000 + 9990);
+  assert.equal(r.totais.vencidas_pagar, 50000 + 9990, "vencidas antes de hoje (dia 20)");
+  assert.equal(r.serie.length, 6); assert.equal(r.serie[5].mes, "2099-10");
+  assert.ok(r.categorias.some(c => c.categoria === "Aluguel e condomínio" && c.valor_cent === 200000));
+  // Pagar a conta e desfazer.
+  const forn = p.env.DB.q("SELECT id FROM fin_lanc WHERE descricao='Fornecedor peças'")[0].id;
+  await p.req(`${base}/lancamentos/${forn}/pagar`, { metodo: "POST", quem: "admin", corpo: { forma: "Pix" } });
+  assert.equal((await p.req(base + "/resumo?mes=2099-10", { quem: "admin" })).dados.totais.a_pagar, 9990);
+  // PDF e CSV.
+  const pdf = await p.req(base + "/relatorio.pdf?mes=2099-10", { quem: "admin" });
+  assert.equal(pdf.r.headers.get("content-type"), "application/pdf");
+  assert.match(await pdf.r.text(), /^%PDF/);
+  const csvOut = await (await p.req(base + "/exportar.csv?mes=2099-10", { quem: "admin" })).r.text();
+  assert.match(csvOut, /Aluguel loja;Aluguel e condomínio;2000,00;Pago/);
+  // Dia 1 do mês seguinte: e-mail com o PDF para o dono, uma vez só.
+  p.env.__agora = () => Date.parse("2099-11-01T12:00:00Z");
+  const mod = await import("../src/worker.js");
+  const rodar = async () => { const pend = []; await mod.default.scheduled({}, p.env, { waitUntil: pr => pend.push(pr) }); await Promise.all(pend); };
+  await rodar(); await rodar();
+  const fin = p.emails.filter(e => /resumo financeiro de outubro de 2099/.test(e.subject));
+  assert.equal(fin.length, 1, "um e-mail só, mesmo com o cron rodando de novo");
+  assert.equal(fin[0].attachments[0].filename, "financeiro-2099-10.pdf");
+  assert.match(fin[0].text, /Entradas recebidas: R\$\s?1\.330,50/);
+  assert.equal(p.env.DB.q("SELECT COUNT(*) n FROM fin_lanc WHERE descricao='Internet'")[0].n, 2, "a internet de novembro foi criada");
+  delete p.env.__agora;
+});

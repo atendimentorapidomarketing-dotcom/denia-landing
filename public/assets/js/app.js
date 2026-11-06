@@ -3,6 +3,16 @@
 (function () {
   "use strict";
 
+  // Partes opcionais da tela (cond ? elemento : null) nunca viram o texto "null" na página.
+  for (const m of ["replaceChildren", "append", "prepend"]) {
+    const orig = Element.prototype[m];
+    if (orig && !orig.__denia) {
+      const novo = function (...xs) { return orig.apply(this, xs.filter(x => x !== null && x !== undefined && x !== false)); };
+      novo.__denia = true;
+      Element.prototype[m] = novo;
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Utilidades de interface
   // ---------------------------------------------------------------------------
@@ -202,6 +212,12 @@
   const org = (caminho, op) => api(`/api/orgs/${estado.org.id}/${caminho}`, op);
   function falha(el, e) {
     const conectar = e && e.dados && e.dados.codigo === "ENGINE_NAO_CONFIGURADO";
+    if (e && (e.dados && e.dados.codigo === "SEM_CONEXAO" || /Conecte o WhatsApp/.test(e.message || ""))) {
+      el.replaceChildren(h("div", { class: "cartao vidro" },
+        vazio("Falta conectar o WhatsApp desta empresa", "Assim que o número estiver conectado, esta tela mostra tudo automaticamente.", ICONES.elo),
+        pode("ADMIN") ? h("div", { class: "acoes", style: "justify-content:center" }, h("a", { class: "btn btn-primario", href: "#/chatbot/conexao" }, "Conectar o WhatsApp")) : null));
+      return;
+    }
     el.replaceChildren(h("div", { class: "cartao vidro" },
       vazio(conectar ? "A IA desta empresa ainda não foi conectada" : "Não foi possível carregar", e ? e.message : "", conectar ? ICONES.elo : ICONES.caixa),
       conectar && pode("ADMIN") ? h("div", { class: "acoes", style: "justify-content:center" }, h("a", { class: "btn btn-primario", href: "#/integracoes" }, "Conectar agora")) : null));
@@ -240,6 +256,7 @@
     denia: { titulo: "DENIA por voz", render: paginaDenia },
     problemas: { titulo: "Problemas", render: paginaProblemas },
     relatorios: { titulo: "Relatórios", render: paginaRelatorios },
+    financeiro: { titulo: "Financeiro", render: paginaFinanceiro },
     conversas: { titulo: "Conversas", render: paginaConversas },
     atendimentos: { titulo: "Pedidos de serviço", render: paginaAtendimentos },
     profissionais: { titulo: "Profissionais parceiros", render: paginaProfissionais },
@@ -3353,11 +3370,11 @@ Botão só com texto = resposta.` })),
 
   // ----- Plano e pagamento: teste grátis, planos (mensal/anual), assinatura (Pix, boleto, cartão) e histórico.
   const RECURSO_DA_ROTA = {
-    rotina: null, ajuda: null, conversas: "ia_completa", atendimentos: "ia_completa", profissionais: "ia_completa", treinamento: "ia_completa", aprendizados: "ia_completa", clientes: "ia_completa", whatsapp: "ia_completa", guia: "ia_completa",
+    rotina: null, ajuda: null, financeiro: null, conversas: "ia_completa", atendimentos: "ia_completa", profissionais: "ia_completa", treinamento: "ia_completa", aprendizados: "ia_completa", clientes: "ia_completa", whatsapp: "ia_completa", guia: "ia_completa",
     chatbot: "chatbot", temporada: "temporada", estudio: "marketing", midias: "marketing", calendario: "marketing", aprovacoes: "marketing", marcas: "marketing", instagram: "marketing", facebook: "marketing", google: "marketing", social: "marketing", denia: "voz"
   };
   window.DENIA_RECURSOS = window.DENIA_RECURSOS || { chatbot: "Chatbot do WhatsApp com botões e listas", chatbot_ia: "IA no chatbot", ia_completa: "IA completa de atendimento (atende como uma pessoa, com memória)", marketing: "Instagram, Facebook e Google: posts, artes, comentários e avaliações", voz: "DENIA por voz, ao vivo", multiempresa: "Várias empresas, marcas e unidades", temporada: "Locação por temporada" };
-  const ROTAS_LIVRES = ["plano", "conta", "equipe", "auditoria", "empresas", "contatos", "painel", "integracoes", "consumo", "problemas", "relatorios", "rotina", "ajuda"];
+  const ROTAS_LIVRES = ["plano", "conta", "equipe", "auditoria", "empresas", "contatos", "painel", "integracoes", "consumo", "problemas", "relatorios", "rotina", "ajuda", "financeiro"];
   const acessoAtual = () => (estado.org && estado.org.acesso) || { liberado: true, recursos: [], status: "?" };
   const temRecurso = r => !r || estado.eu.usuario.super_admin || (acessoAtual().liberado && (acessoAtual().recursos || []).includes(r));
   const NOME_STATUS_PLANO = { TESTE: "Teste grátis", ATIVO: "Ativo", ATRASADO: "Pagamento pendente", CANCELADO: "Cancelado (usa até o fim do período)", CORTESIA: "Cortesia — acesso total", BLOQUEADO: "Bloqueado", TESTE_ACABOU: "Teste encerrado" };
@@ -6924,6 +6941,223 @@ Botão só com texto = resposta.` })),
       : { ...g, rotulo: `${dataCompleta(g.ini)} a ${dataCompleta(g.fim)}`, curto: dataCurta(g.ini) });
   }
   // Gráfico de linha (uma métrica por vez, um só eixo), com a comparação tracejada e o valor de cada ponto ao passar o dedo/mouse.
+  // ---------------------------------------------------------------------------
+  // Financeiro: entradas, saídas, contas a pagar e a receber, extrato do banco e relatório do mês
+  // ---------------------------------------------------------------------------
+  const fin = (caminho, op) => org("fin/" + caminho, op);
+  const finEstado = { mes: null, filtro: "todos", busca: "" };
+  const mesAtualLocal = () => isoLocal(new Date()).slice(0, 7);
+  const somarMesUi = (mes, n) => { const [a, m] = mes.split("-").map(Number); const d = new Date(Date.UTC(a, m - 1 + n, 1)); return d.toISOString().slice(0, 7); };
+  const nomeMesUi = mes => new Intl.DateTimeFormat(LOCALE, { month: "long", year: "numeric", timeZone: "UTC" }).format(new Date(mes + "-15T12:00:00Z"));
+  const dataCurtaFin = d => d ? d.split("-").reverse().join("/") : "—";
+  async function baixarDaApi(caminho, nome) {
+    const r = await fetch(`/api/orgs/${estado.org.id}/${caminho}`, { credentials: "same-origin", headers: { "x-denia": "1" } });
+    if (!r.ok) { let m = "Não foi possível gerar o arquivo."; try { m = (await r.json()).erro || m; } catch { /* binário */ } throw new Error(m); }
+    const url = URL.createObjectURL(await r.blob());
+    const a = h("a", { href: url, download: nome }); document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 8000);
+  }
+  // Barras agrupadas (entradas x saídas), uma escala só a partir do zero, com dica ao passar o dedo/mouse.
+  function graficoBarrasFin(serie, moeda) {
+    const din = c => dinheiroFin(c, moeda);
+    const L = 520, A = 240, m = { e: 12, d: 12, t: 12, b: 28 }, larg = L - m.e - m.d, alt = A - m.t - m.b;
+    const max = Math.max(1, ...serie.flatMap(s => [s.entradas, s.saidas]));
+    const svg = document.createElementNS(SVG_NS, "svg");
+    const el = (tag, at) => { const n = document.createElementNS(SVG_NS, tag); for (const [k, v] of Object.entries(at)) n.setAttribute(k, v); return n; };
+    svg.setAttribute("viewBox", `0 0 ${L} ${A}`); svg.setAttribute("class", "grafico-svg"); svg.setAttribute("role", "img");
+    svg.setAttribute("aria-label", "Entradas e saídas dos últimos 6 meses: " + serie.map(s => `${s.rotulo}: entradas ${din(s.entradas)}, saídas ${din(s.saidas)}`).join("; "));
+    for (let g = 0; g <= 4; g++) svg.appendChild(el("line", { x1: m.e, x2: L - m.d, y1: m.t + alt * g / 4, y2: m.t + alt * g / 4, class: "grafico-grade" }));
+    const grupo = larg / serie.length, lb = Math.min(30, (grupo - 14) / 2);
+    const dica = h("div", { class: "grafico-dica oculto", role: "status" });
+    serie.forEach((s, i) => {
+      const x0 = m.e + i * grupo + grupo / 2 - lb - 1;
+      [["entradas", "var(--verde)"], ["saidas", "var(--vermelho)"]].forEach(([k, cor], j) => {
+        const a = Math.max(s[k] > 0 ? 2 : 0, alt * s[k] / max);
+        if (a) { const b = el("rect", { x: x0 + j * (lb + 2), y: m.t + alt - a, width: lb, height: a, rx: 4 }); b.style.fill = cor; b.style.stroke = "none"; svg.appendChild(b); }
+      });
+      const t = el("text", { x: m.e + i * grupo + grupo / 2, y: A - 8, class: "grafico-eixo", "text-anchor": "middle" }); t.textContent = s.rotulo; svg.appendChild(t);
+      const alvo = el("rect", { x: m.e + i * grupo, y: m.t, width: grupo, height: alt }); alvo.style.fill = "transparent"; alvo.style.stroke = "none";
+      const mostrar = () => {
+        trocar(dica, h("strong", { text: s.rotulo }), h("span", { text: `Entradas: ${din(s.entradas)}` }), h("span", { text: `Saídas: ${din(s.saidas)}` }), h("span", { text: `Resultado: ${din(s.saldo)}` }));
+        dica.classList.remove("oculto");
+        const r = svg.getBoundingClientRect(); dica.style.left = Math.min(Math.max(((m.e + i * grupo + grupo / 2) / L) * r.width, 90), r.width - 90) + "px";
+      };
+      alvo.addEventListener("pointerenter", mostrar); alvo.addEventListener("pointerdown", mostrar);
+      alvo.addEventListener("pointerleave", () => dica.classList.add("oculto"));
+      svg.appendChild(alvo);
+    });
+    const legenda = h("div", { class: "fin-legenda" }, h("span", {}, h("i", { style: "background:var(--verde)" }), "Entradas"), h("span", {}, h("i", { style: "background:var(--vermelho)" }), "Saídas"));
+    return h("div", {}, legenda, h("div", { class: "grafico" }, svg, dica));
+  }
+  const MOEDA_LOCALE = { BRL: "pt-BR", USD: "en-US", EUR: "de-DE", GBP: "en-GB", ARS: "es-AR", CLP: "es-CL", MXN: "es-MX", COP: "es-CO", PEN: "es-PE", UYU: "es-UY", PYG: "es-PY" };
+  const dinheiroFin = (cent, moeda = "BRL") => new Intl.NumberFormat(MOEDA_LOCALE[moeda] || LOCALE, { style: "currency", currency: moeda || "BRL" }).format((Number(cent) || 0) / 100);
+  const pctFin = v => v === null || v === undefined ? "sem comparação" : `${v > 0 ? "+" : ""}${String(v).replace(".", ",")}% vs. mês anterior`;
+
+  async function editarLancamento(op, l, tipoNovo, aoSalvar) {
+    const tipo = h("select", { class: "entrada" }, h("option", { value: "ENTRADA", text: "Entrada (dinheiro que entra)" }), h("option", { value: "SAIDA", text: "Saída (dinheiro que sai)" }));
+    tipo.value = l ? l.tipo : tipoNovo;
+    const desc = h("input", { class: "entrada", type: "text", maxlength: "160", placeholder: "Ex.: Aluguel da loja, Venda de celular", value: l ? l.descricao : "" });
+    const valor = h("input", { class: "entrada", type: "text", inputmode: "decimal", placeholder: "0,00", value: l ? (l.valor_cent / 100).toFixed(2).replace(".", ",") : "" });
+    const data = h("input", { class: "entrada", type: "date", value: l ? l.data : op.hoje });
+    const lista = "fin-cats-" + Math.random().toString(36).slice(2, 7);
+    const cats = h("datalist", { id: lista });
+    const preencherCats = () => trocar(cats, (op.categorias[tipo.value] || []).map(c => h("option", { value: c })));
+    preencherCats(); tipo.addEventListener("change", preencherCats);
+    const categoria = h("input", { class: "entrada", type: "text", list: lista, maxlength: "60", placeholder: "Escolha ou escreva (a DENIA sugere se ficar vazio)", value: l ? l.categoria || "" : "" });
+    const pago = h("input", { type: "checkbox", checked: l ? Boolean(l.pago) : true });
+    const forma = h("select", { class: "entrada" }, h("option", { value: "", text: "—" }), op.formas.map(f => h("option", { value: f, text: f })));
+    forma.value = l && l.forma ? l.forma : "";
+    const contato = h("input", { class: "entrada", type: "text", maxlength: "120", placeholder: "Cliente ou fornecedor (opcional)", value: l ? l.contato || "" : "" });
+    const parcelas = h("input", { class: "entrada", type: "number", min: "1", max: "60", value: "1" });
+    const repetir = h("input", { type: "checkbox" });
+    const conteudo = h("div", { class: "fin-form" },
+      campo("Tipo", tipo), campo("Descrição", desc), h("div", { class: "fin-duas" }, campo("Valor", valor), campo(l ? "Data" : "Data (ou vencimento)", data)),
+      campo("Categoria", categoria), cats,
+      h("label", { class: "fin-check" }, pago, " Já foi pago / recebido"),
+      h("div", { class: "fin-duas" }, campo("Forma de pagamento", forma), campo("Cliente ou fornecedor", contato)),
+      l ? null : h("div", { class: "fin-duas" }, campo("Parcelas", parcelas, "Divide o valor em parcelas mensais."), h("label", { class: "fin-check", style: "align-self:end" }, repetir, " Repetir todo mês")));
+    for (;;) {
+      if (!(await modal({ titulo: l ? "Editar lançamento" : tipoNovo === "ENTRADA" ? "Nova entrada" : "Nova saída", conteudo, confirmar: "Salvar" }))) return;
+      const corpo = { tipo: tipo.value, descricao: desc.value, valor: valor.value, data: data.value, categoria: categoria.value, pago: pago.checked, forma: forma.value, contato: contato.value };
+      if (!l) { corpo.parcelas = Number(parcelas.value) || 1; corpo.repetir_todo_mes = repetir.checked; }
+      try {
+        await fin(l ? `lancamentos/${l.id}` : "lancamentos", { metodo: l ? "PUT" : "POST", corpo });
+        aviso(l ? "Lançamento atualizado." : "Lançamento salvo.", "ok"); aoSalvar(); return;
+      } catch (e) { aviso(e.message, "erro"); }
+    }
+  }
+
+  async function paginaFinanceiro(el, _p, vivo) {
+    if (!pode("ADMIN")) { el.append(cabeca("Financeiro", ""), h("div", { class: "cartao vidro" }, vazio("Só o dono e os administradores veem o financeiro", "Peça acesso de administrador ao responsável pela empresa.", ICONES.caixa))); return; }
+    const mes = finEstado.mes = finEstado.mes || mesAtualLocal();
+    let op;
+    try { op = await fin("opcoes"); } catch (e) { if (vivo()) falha(el, e); return; }
+    if (!vivo()) return;
+    const moeda = (op.config && op.config.moeda) || "BRL", din = c => dinheiroFin(c, moeda);
+    const recarregar = () => navegar();
+    const importar = h("input", { type: "file", accept: ".ofx,.csv,.txt,text/csv", class: "oculto", onchange: async () => {
+      const f = importar.files[0]; importar.value = ""; if (!f) return;
+      if (f.size > 2_500_000) return aviso("Arquivo grande demais (máximo 2,5 MB). Exporte um período menor.", "erro");
+      try { const r = await fin("importar", { metodo: "POST", corpo: { conteudo: await f.text() } }); aviso(`${r.novos} lançamentos importados${r.repetidos ? `; ${r.repetidos} já estavam aqui e foram ignorados` : ""}.`, "ok"); recarregar(); }
+      catch (e) { aviso(e.message, "erro"); }
+    } });
+    el.append(cabeca("Financeiro", "Entradas, saídas e contas da empresa num lugar só. Só o dono e os administradores veem esta tela.",
+      botao("+ Entrada", () => editarLancamento(op, null, "ENTRADA", recarregar), "btn-primario"),
+      botao("+ Saída", () => editarLancamento(op, null, "SAIDA", recarregar), "btn-secundario"),
+      botao("Importar extrato do banco", () => importar.click(), "btn-secundario")), importar);
+    const trocarMes = n => { finEstado.mes = somarMesUi(mes, n); navegar(); };
+    el.append(h("div", { class: "fin-mes" },
+      botao("‹", () => trocarMes(-1), "btn-secundario btn-pequeno", { "aria-label": "Mês anterior" }),
+      h("strong", { text: nomeMesUi(mes) }),
+      botao("›", () => trocarMes(1), "btn-secundario btn-pequeno", { "aria-label": "Próximo mês", disabled: mes >= somarMesUi(mesAtualLocal(), 12) }),
+      mes !== mesAtualLocal() ? botao("Voltar para este mês", () => { finEstado.mes = mesAtualLocal(); navegar(); }, "btn-secundario btn-pequeno") : null,
+      h("span", { style: "flex:1" }),
+      botao("Relatório em PDF", async () => { try { await baixarDaApi(`fin/relatorio.pdf?mes=${mes}`, `financeiro-${mes}.pdf`); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno"),
+      botao("Planilha (CSV)", async () => { try { await baixarDaApi(`fin/exportar.csv?mes=${mes}`, `financeiro-${mes}.csv`); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno")));
+    const corpo = h("div", {}, carregando());
+    el.append(corpo);
+    let r, lista;
+    try { [r, lista] = await Promise.all([fin(`resumo?mes=${mes}`), fin(`lancamentos?mes=${mes}`)]); } catch (e) { if (vivo()) falha(corpo, e); return; }
+    if (!vivo()) return;
+    const t = r.totais;
+    const marcarPago = async (l, desfazer) => { try { await fin(`lancamentos/${l.id}/pagar`, { metodo: "POST", corpo: desfazer ? { desfazer: true } : {} }); aviso(desfazer ? "Voltou para em aberto." : l.tipo === "ENTRADA" ? "Marcado como recebido." : "Marcado como pago.", "ok"); recarregar(); } catch (e) { aviso(e.message, "erro"); } };
+    const vencidas = t.vencidas_pagar + t.vencidas_receber;
+    const blocos = [];
+    if (vencidas) blocos.push(h("p", { class: "prb-urgente", style: "display:block;margin:0 0 12px" , text: `Atenção: ${t.vencidas_pagar ? `${din(t.vencidas_pagar)} em contas a pagar vencidas` : ""}${t.vencidas_pagar && t.vencidas_receber ? " e " : ""}${t.vencidas_receber ? `${din(t.vencidas_receber)} a receber já vencidos` : ""}.` }));
+    blocos.push(h("section", { class: "grade grade-4" },
+      metrica("Entradas recebidas", din(t.entradas), pctFin(r.comparativo.entradas)),
+      metrica("Saídas pagas", din(t.saidas), pctFin(r.comparativo.saidas)),
+      metrica("Resultado do mês", din(t.saldo), t.margem !== null ? `Margem de ${String(t.margem).replace(".", ",")}%` : "Sem entradas no mês"),
+      metrica("Em aberto", din(t.a_receber - t.a_pagar), `A receber ${din(t.a_receber)} · a pagar ${din(t.a_pagar)}`)));
+    if (!r.lancamentos && !r.serie.some(s => s.entradas || s.saidas)) {
+      blocos.push(h("section", { class: "cartao vidro" }, vazio("Comece em 2 minutos", "Lance as entradas e saídas do mês, cadastre as contas fixas (aluguel, internet, salários) ou importe o extrato do banco em OFX ou CSV: a DENIA organiza por categoria, avisa o que vence e manda o resumo do mês por e-mail com gráficos.", ICONES.caixa),
+        h("div", { class: "acoes", style: "justify-content:center" }, botao("Importar extrato do banco", () => importar.click(), "btn-primario"), botao("+ Conta fixa do mês", () => novaRecorrente(), "btn-secundario"))));
+    } else {
+      const saidas = r.categorias.filter(c => c.tipo === "SAIDA"), maxC = Math.max(1, ...saidas.map(c => c.valor_cent));
+      blocos.push(h("div", { class: "grade grade-2", style: "margin-top:12px" },
+        h("section", { class: "cartao vidro" }, h("h3", { style: "margin:0 0 8px", text: "Últimos 6 meses" }), graficoBarrasFin(r.serie, moeda)),
+        h("section", { class: "cartao vidro" }, h("h3", { style: "margin:0 0 8px", text: "Para onde foi o dinheiro" }),
+          saidas.length ? h("ul", { class: "fin-cats" }, saidas.slice(0, 8).map(c => h("li", {},
+            h("div", { class: "fin-cat-topo" }, h("span", { text: c.categoria }), h("strong", { text: `${din(c.valor_cent)} · ${t.saidas ? Math.round(100 * c.valor_cent / t.saidas) : 0}%` })),
+            h("div", { class: "fin-cat-barra" }, h("i", { style: `width:${Math.max(2, 100 * c.valor_cent / maxC)}%` }))))) : h("p", { class: "sub", text: "Nenhuma saída paga neste mês." }))));
+    }
+    // Contas que vencem nos próximos 15 dias (e as vencidas).
+    if (r.proximas.length) blocos.push(h("section", { class: "cartao vidro", style: "margin-top:12px" }, h("h3", { style: "margin:0 0 8px", text: "Contas para os próximos 15 dias" }),
+      h("ul", { class: "prb-lista" }, r.proximas.map(l => h("li", { class: "prb-item", style: "border-color:var(--borda)" },
+        h("div", {}, h("strong", { text: `${l.descricao} — ${din(l.valor_cent)}` }),
+          h("p", { class: "prb-meta", text: `${l.tipo === "ENTRADA" ? "A receber" : "A pagar"} · vence ${dataCurtaFin(l.data)}${l.data < r.hoje ? " · VENCIDA" : ""}${l.contato ? " · " + l.contato : ""}` }),
+          h("div", { class: "acoes" }, botao(l.tipo === "ENTRADA" ? "Recebi" : "Paguei", () => marcarPago(l), "btn-primario btn-pequeno"))))))));
+    // Lançamentos do mês com filtros.
+    const filtros = [["todos", "Todos"], ["ENTRADA", "Entradas"], ["SAIDA", "Saídas"], ["aberto", "Em aberto"], ["vencido", "Vencidos"]];
+    const tabela = h("div", {});
+    const busca = h("input", { class: "entrada fin-busca", type: "search", placeholder: "Buscar descrição, categoria ou contato", "aria-label": "Buscar lançamento", value: finEstado.busca });
+    const desenhar = () => {
+      const q = finEstado.busca.toLowerCase();
+      const ls = lista.lancamentos.filter(l => (finEstado.filtro === "todos" || l.tipo === finEstado.filtro || (finEstado.filtro === "aberto" && !l.pago) || (finEstado.filtro === "vencido" && !l.pago && l.data < r.hoje))
+        && (!q || [l.descricao, l.categoria, l.contato].some(x => String(x || "").toLowerCase().includes(q))));
+      trocar(tabela, ls.length ? h("div", { class: "tabela-rolagem" }, h("table", { class: "tabela fin-tabela" },
+        h("thead", {}, h("tr", {}, ["Data", "Descrição", "Categoria", "Valor", "Situação", ""].map(c => h("th", { text: c })))),
+        h("tbody", {}, ls.map(l => h("tr", {},
+          h("td", { text: dataCurtaFin(l.data) }),
+          h("td", {}, h("strong", { text: l.descricao }), l.contato ? h("div", { class: "prb-meta", text: l.contato }) : null),
+          h("td", { text: l.categoria || "—" }),
+          h("td", { class: l.tipo === "ENTRADA" ? "fin-mais" : "fin-menos", text: (l.tipo === "ENTRADA" ? "+ " : "− ") + din(l.valor_cent) }),
+          h("td", {}, l.pago ? selo(l.tipo === "ENTRADA" ? "Recebido" : "Pago", "ok") : selo(l.data < r.hoje ? "Vencido" : "Em aberto", l.data < r.hoje ? "erro" : "aviso")),
+          h("td", {}, h("div", { class: "acoes", style: "flex-wrap:nowrap" },
+            l.pago ? botao("Desfazer", () => marcarPago(l, true), "btn-secundario btn-pequeno") : botao(l.tipo === "ENTRADA" ? "Recebi" : "Paguei", () => marcarPago(l), "btn-secundario btn-pequeno"),
+            botao("Editar", () => editarLancamento(op, l, l.tipo, recarregar), "btn-secundario btn-pequeno"),
+            botao("Apagar", async () => { if (!(await modal({ titulo: "Apagar lançamento?", conteudo: `${l.descricao} — ${din(l.valor_cent)}`, confirmar: "Apagar", perigo: true }))) return; try { await fin(`lancamentos/${l.id}`, { metodo: "DELETE" }); aviso("Apagado.", "ok"); recarregar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno")))))))) :
+        h("p", { class: "sub", text: lista.lancamentos.length ? "Nada com esse filtro." : "Nenhum lançamento neste mês." }));
+    };
+    busca.addEventListener("input", () => { finEstado.busca = busca.value; desenhar(); });
+    const chips = h("div", { class: "abas abas-chips", role: "group", "aria-label": "Filtro" }, filtros.map(([v, n]) => h("button", { type: "button", class: "aba" + (finEstado.filtro === v ? " ativo" : ""), "aria-pressed": finEstado.filtro === v ? "true" : "false",
+      onclick: e => { finEstado.filtro = v; chips.querySelectorAll(".aba").forEach(b => { b.classList.toggle("ativo", b === e.currentTarget); b.setAttribute("aria-pressed", b === e.currentTarget ? "true" : "false"); }); desenhar(); } }, n)));
+    blocos.push(h("section", { class: "cartao vidro", style: "margin-top:12px" }, h("h3", { style: "margin:0 0 8px", text: `Lançamentos de ${nomeMesUi(mes)}` }), h("div", { class: "fin-filtros" }, chips, busca), tabela));
+    desenhar();
+    // Leitura da IA, contas fixas e envio mensal.
+    const analise = h("div", {});
+    blocos.push(h("div", { class: "grade grade-2", style: "margin-top:12px" },
+      h("section", { class: "cartao vidro" }, h("h3", { style: "margin:0 0 6px", text: "Leitura da DENIA" }),
+        h("p", { class: "sub", text: "A IA lê só os números do mês (sem nomes de clientes) e aponta o que melhorou, o que piorou e uma ação prática. Não substitui o contador." }),
+        analise, h("div", { class: "acoes" }, botao("Analisar este mês", async () => { trocar(analise, carregando("Analisando…")); try { const a = await fin(`analise?mes=${mes}`, { metodo: "POST", corpo: {} }); trocar(analise, h("p", { style: "white-space:pre-line", text: a.analise })); } catch (e) { trocar(analise); aviso(e.message, "erro"); } }, "btn-primario"))),
+      blocoRecorrentes(), blocoEnvioMensal()));
+    trocar(corpo, ...blocos);
+
+    async function novaRecorrente() {
+      const tipo = h("select", { class: "entrada" }, h("option", { value: "SAIDA", text: "Conta a pagar" }), h("option", { value: "ENTRADA", text: "Valor a receber" }));
+      const desc = h("input", { class: "entrada", type: "text", maxlength: "160", placeholder: "Ex.: Aluguel, Internet, Salário da Ana" });
+      const valor = h("input", { class: "entrada", type: "text", inputmode: "decimal", placeholder: "0,00" });
+      const dia = h("input", { class: "entrada", type: "number", min: "1", max: "31", value: "5" });
+      for (;;) {
+        if (!(await modal({ titulo: "Conta fixa do mês", conteudo: [h("p", { class: "sub", text: "A DENIA cria esta conta todo mês, no dia escolhido, para você só marcar como paga." }), campo("Tipo", tipo), campo("Descrição", desc), h("div", { class: "fin-duas" }, campo("Valor", valor), campo("Dia do vencimento", dia))], confirmar: "Salvar" }))) return;
+        try { await fin("recorrentes", { metodo: "POST", corpo: { tipo: tipo.value, descricao: desc.value, valor: valor.value, dia: Number(dia.value) } }); aviso("Conta fixa salva.", "ok"); recarregar(); return; }
+        catch (e) { aviso(e.message, "erro"); }
+      }
+    }
+    function blocoRecorrentes() {
+      const caixa = h("div", {}, carregando());
+      fin("recorrentes").then(x => {
+        const ativas = x.recorrentes.filter(r0 => r0.ativo);
+        trocar(caixa, ativas.length ? h("ul", { class: "prb-lista" }, ativas.map(r0 => h("li", { class: "prb-item", style: "border-color:var(--borda)" },
+          h("div", {}, h("strong", { text: `${r0.descricao} — ${din(r0.valor_cent)}` }), h("p", { class: "prb-meta", text: `${r0.tipo === "ENTRADA" ? "A receber" : "A pagar"} todo dia ${r0.dia}` }),
+            h("div", { class: "acoes" }, botao("Parar de repetir", async () => { try { await fin(`recorrentes/${r0.id}`, { metodo: "DELETE" }); aviso("Não repete mais.", "ok"); recarregar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno")))))) :
+          h("p", { class: "sub", text: "Nenhuma conta fixa ainda." }));
+      }).catch(e => trocar(caixa, h("p", { class: "sub", text: e.message })));
+      return h("section", { class: "cartao vidro" }, h("h3", { style: "margin:0 0 6px", text: "Contas fixas do mês" }), caixa, h("div", { class: "acoes" }, botao("+ Conta fixa", () => novaRecorrente(), "btn-secundario")));
+    }
+    function blocoEnvioMensal() {
+      const c = op.config || {};
+      const ligado = h("input", { type: "checkbox", checked: c.email_mensal !== 0 });
+      const emails = h("input", { class: "entrada", type: "text", placeholder: "Vazio = dono e administradores", value: c.emails || "" });
+      const moedaSel = h("select", { class: "entrada" }, op.moedas.map(m0 => h("option", { value: m0, text: m0 })));
+      moedaSel.value = moeda;
+      return h("section", { class: "cartao vidro", style: "grid-column:1/-1" }, h("h3", { style: "margin:0 0 6px", text: "Resumo do mês por e-mail" }),
+        h("p", { class: "sub", text: "No dia 1, a DENIA manda o resumo do mês anterior com os gráficos em PDF e a leitura da IA." }),
+        h("label", { class: "fin-check" }, ligado, " Enviar todo dia 1"),
+        h("div", { class: "fin-duas" }, campo("Enviar para", emails, "Até 5 e-mails, separados por vírgula."), campo("Moeda", moedaSel)),
+        h("div", { class: "acoes" }, botao("Salvar", async () => { try { await fin("config", { metodo: "PUT", corpo: { email_mensal: ligado.checked, emails: emails.value, moeda: moedaSel.value } }); aviso("Salvo.", "ok"); if (moedaSel.value !== moeda) recarregar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario")));
+    }
+  }
+
   function graficoLinha(pontos, comparacao, nomeAtual, nomeComp) {
     // O desenho tem o tamanho real da área (sem "zoom"): letras e linhas ficam com o mesmo tamanho em qualquer tela.
     const disponivel = Math.round(Math.max(300, Math.min(1500, ((document.getElementById("conteudo") || {}).clientWidth || window.innerWidth) - 96)));

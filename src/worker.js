@@ -26,12 +26,13 @@ import { retornoGoogle, sincronizarGooglePendentes, vigiarPerfis, enviarRelatori
 import { comOrgUso, comRecurso, descarregarUso } from "./uso.js";
 import { DDL_TEMPORADA, ALTERS_TEMPORADA, rotasTemporada, icalPublico, webhookChannex, sincronizarTemporada, desligarInadimplentes, lembrarEstoque, limpezaPublica, avaliacoesDoCron } from "./temporada.js";
 import { openaiBruto } from "./marketing.js";
+import { rotasFinanceiro, financeiroDoCron } from "./financeiro.js";
 import { DDL_PROBLEMAS, rotasProblemas, registrarProblema, resolverProblema, limparProblemas } from "./problemas.js";
 import { DDL_ZAP, webhookZap, rotasZap, webhookTelegram, segredoTelegram, tokenTelegramPlataforma, processarCampanhas, posVendaChatbot, lembrarAgenda, brutoRelatorioZap, avisarTelegramDaEmpresa } from "./zap.js";
 import { montarRelatorio, planilhaRelatorio, textoRelatorio, base64, ultimos7Dias, lerConfigRelatorio, horaDeEnviar, diaBR, dataBR, DIAS_SEMANA, inicioDoDia as inicioDoDiaBR } from "./relatorio.js";
 import { lerPlanos, acessoDa, recursoDaRota, planoMinimo, rotasPlano, webhookAsaas, lembretesDePlano, TESTE_DIAS, STATUS as STATUS_PLANO, PLANOS_PADRAO, RECURSOS } from "./planos.js";
 
-const VERSAO = "3.34.1";
+const VERSAO = "3.35.0";
 // Versão dos Termos de uso e da Política de privacidade aceitas no cadastro.
 const VERSAO_TERMOS = "2026-10-16";
 // WhatsApp da Central de Atendimento (botão flutuante do site).
@@ -204,7 +205,7 @@ async function reconciliarContasLegadas(env) {
 function erroDoBanco(e) {
   const m = String(e?.message || e || "");
   if (/row.?read|rows? read|daily.*limit|exceeded.*limit|free.?tier/i.test(m)) return { codigo: "D1_LIMITE_LEITURA", erro: "O banco de dados atingiu o limite diário do plano gratuito da Cloudflare. Ele libera sozinho às 21h (horário de Brasília). Para nunca mais acontecer: Cloudflare → Workers → Planos → Workers Paid (US$ 5/mês)." };
-  if (/SQLITE_FULL|database or disk is full|storage|size limit|too large|exceeds.*size/i.test(m)) return { codigo: "D1_CHEIO", erro: "O banco de dados está cheio (limite de espaço do plano gratuito da Cloudflare). Assine o Workers Paid (US$ 5/mês) para ter 5 GB, ou fale com a equipe DENIA para liberar espaço." };
+  if (/SQLITE_FULL|database or disk is full|storage|size limit|too large|exceeds.*size/i.test(m)) return { codigo: "D1_CHEIO", erro: "O espaço de armazenamento do servidor acabou. A equipe DENIA já foi avisada; se precisar com urgência, fale com o suporte DENIA." };
   if (/D1_|SQLITE|database/i.test(m)) return { codigo: "D1_FORA", erro: "O banco de dados da plataforma está indisponível agora. Tente de novo em instantes." };
   return null;
 }
@@ -773,6 +774,30 @@ async function cuidarDasAvaliacoes(env, k) {
   }
 }
 
+// Vigia de recebimento: empresa que costuma receber mensagens no WhatsApp e ficou horas sem nenhuma → aviso
+// (Problemas + Telegram/e-mail). Pega número desconectado, webhook apontando para outro lugar, assinatura recusada.
+async function vigiarRecebimento(env) {
+  const agora = typeof env.__agora === "function" ? env.__agora() : Date.now();
+  const contas = (await env.DB.prepare("SELECT z.org_id, o.nome FROM plt_zap_contas z JOIN plt_organizacoes o ON o.id=z.org_id WHERE z.ativo=1 AND o.status='ATIVA'").all().catch(() => null))?.results || [];
+  const { registrarProblema, resolverProblema } = await import("./problemas.js");
+  for (const c of contas) {
+    const r = await env.DB.prepare("SELECT COUNT(*) n, MAX(criado_ms) ult FROM plt_zap_msgs WHERE org_id=? AND direcao='E' AND criado_ms > ?").bind(c.org_id, agora - 14 * 86400000).first().catch(() => null);
+    const porDia = Number(r?.n || 0) / 14, ult = Number(r?.ult || 0);
+    if (porDia < 5 || !ult) continue; // pouco movimento: não dá para saber se parou
+    const esperado = 86400000 / porDia, parado = agora - ult;
+    const chave = "recebimento_parado";
+    if (parado > Math.max(4 * 3600000, 6 * esperado)) {
+      const horas = Math.round(parado / 3600000);
+      const ja = await env.DB.prepare("SELECT 1 FROM plt_problemas WHERE org_id=? AND chave=? AND resolvido_ms IS NULL").bind(c.org_id, chave).first().catch(() => null);
+      await registrarProblema(env, c.org_id, { chave, area: "WHATSAPP", titulo: `Nenhuma mensagem do WhatsApp chegou há ${horas} h`, motivo: `Esta empresa recebe em média ${Math.round(porDia)} mensagens por dia e a última chegou há ${horas} h. Pode ser o número desconectado, o webhook da Meta apontando para outro endereço ou a chave do app recusada.`, dica: "Abra WhatsApp → Conexão do número e confira a última mensagem recebida e os avisos. No app da Meta, o webhook deve ser https://denia-ai.com/webhook/whatsapp.", link: "#/chatbot/conexao", gravidade: "ALTA" });
+      if (!ja) {
+        const { avisarTelegramDaEmpresa } = await import("./zap.js");
+        await avisarTelegramDaEmpresa(env, kitBase(env), c.org_id, `⚠️ A DENIA não recebe mensagens do WhatsApp de ${c.nome} há ${horas} h (normal: ~${Math.round(porDia)} por dia). Confira a conexão do número.`).catch(() => {});
+        if (emailConfigurado(env)) for (const para of await responsaveisDa(env, c.org_id)) await enviarEmail(env, para, `DENIA — o WhatsApp de ${c.nome} parou de chegar`, `Nenhuma mensagem do WhatsApp chegou há ${horas} h. Esta empresa recebe em média ${Math.round(porDia)} por dia.\n\nConfira em WhatsApp → Conexão do número. No app da Meta, o webhook deve ser https://denia-ai.com/webhook/whatsapp.`).catch(() => {});
+      }
+    } else await resolverProblema(env, c.org_id, chave);
+  }
+}
 // Cron: o WhatsApp de cada empresa está ENTREGANDO? (motor 31.2+). Se a Meta parou de entregar
 // (pagamento, token, número bloqueado) ou muitas mensagens falharam, avisa os responsáveis por
 // e-mail — no máximo uma vez a cada 6 horas para o mesmo problema.
@@ -1038,6 +1063,7 @@ async function apiOrg(request, env, sessao, orgId, resto, ctx) {
   if (resto.startsWith("engine/")) return proxyEngine(request, env, sessao, orgId, papel, resto.slice(7));
   const kit = { ...kitBase(env), sessao, emSegundoPlano: tarefa => { const t = Promise.resolve().then(tarefa).catch(e => console.error("segundo plano", e?.message)); if (ctx && ctx.waitUntil) ctx.waitUntil(t); return t; } };
   if (resto === "tp" || resto.startsWith("tp/")) return rotasTemporada(request, env, { ...(await kitZap(env, new URL(request.url).origin)), sessao, superAdmin: Boolean(sessao.usuario.super_admin), openai: openaiBruto, acesso: sessao.usuario.super_admin ? { ...acesso, limites: { ...acesso.limites, imoveis: 0 } } : acesso, avisar: async (o, texto) => { for (const para of await responsaveisDa(env, o)) await enviarEmail(env, para, "DENIA — hóspede precisa de você", texto); } }, orgId, papel, resto);
+  if (resto === "fin" || resto.startsWith("fin/")) return rotasFinanceiro(request, env, { ...kitBase(env), sessao, comIA, openai: openaiBruto }, orgId, papel, resto);
   if (resto === "problemas" || resto.startsWith("problemas/")) {
     // Empresa com a IA da Central ligada: os avisos não urgentes dela (que não vão ao Telegram) entram aqui.
     const avisosCentral = async () => {
@@ -1491,6 +1517,8 @@ export default {
       await cuidarDasAvaliacoes(env, k).catch(e => console.error("avaliações", e?.message));
       await tickMotores(env).catch(e => console.error("tick", e?.message));
       await vigiarWhatsapp(env).catch(e => console.error("whatsapp", e?.message));
+      await vigiarRecebimento(env).catch(e => console.error("vigia de recebimento", e?.message));
+      await financeiroDoCron(env, { ...(await kitZap(env)), openai: openaiBruto, enviarEmail: (para, assunto, texto, anexos) => enviarEmail(env, para, assunto, texto, anexos), emailConfigurado: () => emailConfigurado(env), responsaveis: o => responsaveisDa(env, o) }).catch(e => console.error("financeiro", e?.message));
       await limparBanco(env).catch(e => console.error("limpeza", e?.message));
       await sincronizarTemporada(env, await kitZap(env)).catch(e => console.error("temporada", e?.message));
       await processarCampanhas(env, await kitZap(env)).catch(e => console.error("campanhas", e?.message));
