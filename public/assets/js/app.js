@@ -3611,7 +3611,7 @@ Botão só com texto = resposta.` })),
     const botaoItem = (ic, rotulo, fn, ativo) => h("button", { type: "button", class: "barra-app-item" + (ativo ? " ativo" : ""), onclick: fn }, svgIc(ic), h("span", { text: rotulo }));
     if (modo) {
       const primeiros = visiveis.slice(0, 4), resto = visiveis.slice(4);
-      const curto = { "Desempenho do atendimento": "Desempenho", "Pedidos de serviço": "Pedidos", "Profissionais parceiros": "Profissionais", "Entregas das mensagens": "Entregas", "Palavras-chave e posição": "Palavras", "Pré-análise de empresas": "Pré-análise", "Mapa de posição": "Mapa", "Avaliações ruins (triagem)": "Ruins", "Posts no perfil": "Posts", "Calendário e criação com IA": "Calendário", "Visão geral (todos os perfis)": "Visão", "Custos da Meta": "Custos", "Número, qualidade e custos": "Número", "Visão geral e evolução": "Visão", "Mensagens dos hóspedes": "Mensagens", "Calendário e preços": "Calendário", "Desempenho e cliques": "Desempenho", "Estúdio de criação": "Estúdio", "Calendário de posts": "Calendário", "Visão do chatbot": "Visão", "Métricas de atendimento": "Métricas", "Avaliações 1★ (triagem)": "1 estrela", "Imóveis (todos)": "Imóveis", "Conexões e idiomas": "Conexões", "Palavras-chave e buscas": "Palavras", "Relatório semanal": "Relatório", "Posicionamento no Google": "Posição", "Google orgânico (SEO)": "SEO", "Concorrentes no Maps": "Concorrentes", "Clientes e etiquetas": "Clientes", "Modelos de mensagem": "Modelos", "Saúde do número": "Saúde", "Respostas rápidas": "Rápidas", "Perfil comercial": "Perfil", "Melhores horários": "Horários", "Recomendações": "Avaliações", "Melhorias e manutenção": "Melhorias", "Inventário e checklist": "Inventário", "Avaliações dos hóspedes": "Avaliações", "Agenda e compromissos": "Agenda", "Banco e caixa": "Banco", "Aluguéis e locatários": "Aluguéis", "Manutenção e obrigações": "Manutenção", "Documentos e validades": "Documentos", "Relatório do mês": "Relatório", "Ajustes e importação": "Ajustes", "O dia": "Hoje", "Todas as empresas": "Empresas", "Locação por temporada": "Temporada" };
+      const curto = { "Desempenho do atendimento": "Desempenho", "Pedidos de serviço": "Pedidos", "Profissionais parceiros": "Profissionais", "Entregas das mensagens": "Entregas", "Palavras-chave e posição": "Palavras", "Pré-análise de empresas": "Pré-análise", "Mapa de posição": "Mapa", "Avaliações ruins (triagem)": "Ruins", "Posts no perfil": "Posts", "Calendário e criação com IA": "Calendário", "Visão geral (todos os perfis)": "Visão", "Custos da Meta": "Custos", "Número, qualidade e custos": "Número", "Visão geral e evolução": "Visão", "Mensagens dos hóspedes": "Mensagens", "Calendário e preços": "Calendário", "Desempenho e cliques": "Desempenho", "Estúdio de criação": "Estúdio", "Calendário de posts": "Calendário", "Visão do chatbot": "Visão", "Métricas de atendimento": "Métricas", "Avaliações 1★ (triagem)": "1 estrela", "Imóveis (todos)": "Imóveis", "Conexões e idiomas": "Conexões", "Palavras-chave e buscas": "Palavras", "Relatório semanal": "Relatório", "Posicionamento no Google": "Posição", "Google orgânico (SEO)": "SEO", "Concorrentes no Maps": "Concorrentes", "Clientes e etiquetas": "Clientes", "Modelos de mensagem": "Modelos", "Saúde do número": "Saúde", "Respostas rápidas": "Rápidas", "Perfil comercial": "Perfil", "Melhores horários": "Horários", "Recomendações": "Avaliações", "Melhorias e manutenção": "Melhorias", "Inventário e checklist": "Inventário", "Avaliações dos hóspedes": "Avaliações", "Agenda e compromissos": "Agenda", "Banco e caixa": "Banco", "Aluguéis e locatários": "Aluguéis", "Manutenção e obrigações": "Manutenção", "Documentos e validades": "Documentos", "Relatório do mês": "Relatório", "Ajustes e importação": "Ajustes", "O dia": "Hoje", "Todas as empresas": "Empresas", "Agenda de todas as empresas": "Todas", "Locação por temporada": "Temporada" };
       b.replaceChildren(...primeiros.map(a => { const t = a.textContent.replace("›", "").trim(); return item(a, curto[t] || t.split(" ")[0]); }), botaoItem(IC.mais, "Mais", () => maisDoModo(modo, resto), resto.some(a => a.classList.contains("ativo"))));
     } else {
       const entra = m => nav.querySelector(`[data-entra="${m}"]`);
@@ -7146,6 +7146,7 @@ Botão só com texto = resposta.` })),
     }
   }
 
+  const arquivoBase64 = f => new Promise((ok, erro) => { const r = new FileReader(); r.onload = () => ok(String(r.result).replace(/^data:[^,]+,/, "")); r.onerror = () => erro(new Error("Não consegui ler o arquivo.")); r.readAsDataURL(f); });
   async function paginaFinanceiro(el, _p, vivo) {
     if (!pode("ADMIN")) { el.append(cabeca("Financeiro", ""), h("div", { class: "cartao vidro" }, vazio("Só o dono e os administradores veem o financeiro", "Peça acesso de administrador ao responsável pela empresa.", ICONES.caixa))); return; }
     const mes = finEstado.mes = finEstado.mes || mesAtualLocal();
@@ -7160,11 +7161,28 @@ Botão só com texto = resposta.` })),
       try { const r = await fin("importar", { metodo: "POST", corpo: { conteudo: await f.text() } }); aviso(`${r.novos} lançamentos importados${r.repetidos ? `; ${r.repetidos} já estavam aqui e foram ignorados` : ""}${r.meses_fechados ? `; ${r.meses_fechados} de meses fechados ficaram de fora` : ""}.`, "ok"); recarregar(); }
       catch (e) { aviso(e.message, "erro"); }
     } });
+    // Foto (ou PDF) do extrato ou do comprovante: a IA lê, a pessoa confere e escolhe o que lançar.
+    const foto = h("input", { type: "file", accept: "image/jpeg,image/png,image/webp,application/pdf", class: "oculto", onchange: async () => {
+      const f = foto.files[0]; foto.value = ""; if (!f) return;
+      if (f.size > 4_000_000) return aviso("Arquivo grande demais (máximo 4 MB).", "erro");
+      aviso("Lendo o arquivo… pode levar até um minuto.", "info");
+      let lido;
+      try { lido = await fin("ler-foto", { metodo: "POST", corpo: { tipo: f.type, base64: await arquivoBase64(f) } }); } catch (e) { return aviso(e.message, "erro"); }
+      if (!lido.itens.length) return aviso(lido.aviso || "Não encontrei lançamentos nesse arquivo.", "erro");
+      const marcas = lido.itens.map(x => ({ x, c: h("input", { type: "checkbox", checked: !x.ja_lancado }) }));
+      const ok = await modal({ titulo: `Encontrei ${lido.itens.length} lançamento(s)`, confirmar: "Lançar os marcados", conteudo: [
+        lido.aviso ? h("p", { class: "prb-urgente", style: "display:block", text: lido.aviso }) : null,
+        h("p", { class: "sub", text: "Confira antes de lançar. Os que já estão no financeiro vêm desmarcados." }),
+        h("div", { class: "fin-form" }, marcas.map(({ x, c }) => h("label", { class: "fin-check" }, c, ` ${dataCurtaFin(x.data)} · ${x.tipo === "ENTRADA" ? "+" : "−"} ${din(x.valor_cent)} · ${x.descricao}${x.ja_lancado ? " (já lançado)" : ""}`)))].filter(Boolean) });
+      if (!ok) return;
+      try { const r0 = await fin("importar-itens", { metodo: "POST", corpo: { itens: marcas.filter(m0 => m0.c.checked).map(m0 => m0.x) } }); aviso(`${r0.novos} lançado(s)${r0.repetidos ? `; ${r0.repetidos} já existiam` : ""}.`, "ok"); recarregar(); } catch (e) { aviso(e.message, "erro"); }
+    } });
     el.append(cabeca("Financeiro", "Contas a pagar e a receber, pagamentos, recebimentos e o caixa de cada mês — passados e futuros.",
       botao("+ Recebimento", () => editarLancamento(op, null, "ENTRADA", recarregar), "btn-primario"),
       botao("+ Conta a pagar", () => editarLancamento(op, null, "SAIDA", recarregar), "btn-secundario"),
       botao("Gasto rápido", () => gastoRapido(op, recarregar), "btn-secundario"),
-      botao("Importar extrato", () => importar.click(), "btn-secundario")), importar);
+      botao("Importar extrato", () => importar.click(), "btn-secundario"),
+      botao("Ler foto do extrato", () => foto.click(), "btn-secundario")), importar, foto);
     const trocarMes = n => { finEstado.mes = somarMesUi(mes, n); navegar(); };
     const seletorMes = h("input", { class: "entrada", type: "month", value: mes, "aria-label": "Escolher mês", style: "max-width:170px", onchange: e => { if (/^\d{4}-\d{2}$/.test(e.target.value)) { finEstado.mes = e.target.value; navegar(); } } });
     const fechado = (op.fechados || []).includes(mes);
@@ -7223,6 +7241,7 @@ Botão só com texto = resposta.` })),
           h("td", {}, l.previsto ? selo("Previsto", "info") : l.pago ? selo(`${l.tipo === "ENTRADA" ? "Recebido" : "Pago"} ${dataCurtaFin(l.pago_em).slice(0, 5)}${l.forma ? " · " + l.forma : ""}`, "ok") : selo(l.data < r.hoje ? "Vencido" : "Em aberto", l.data < r.hoje ? "erro" : "aviso")),
           h("td", {}, l.previsto ? h("span", { class: "prb-meta", text: l.origem === "aluguel" ? "aluguel programado" : "conta fixa" }) : h("div", { class: "acoes", style: "flex-wrap:nowrap" },
             l.pago ? botao("Desfazer", () => desfazer(l), "btn-secundario btn-pequeno") : botao(l.tipo === "ENTRADA" ? "Recebi" : "Paguei", () => registrarPagamento(op, l, recarregar), "btn-primario btn-pequeno"),
+            botao(l.anexos ? `📎 ${l.anexos}` : "📎", () => abrirAnexos(l), "btn-secundario btn-pequeno", { title: "Comprovantes e notas", "aria-label": "Comprovantes" }),
             l.pago && l.tipo === "ENTRADA" ? botao("Recibo", async () => { try { await baixarDaApi(`adm/recibo/${l.id}`, `recibo-${l.id}.pdf`); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno") : null,
             botao("Editar", () => editarLancamento(op, l, l.tipo, recarregar), "btn-secundario btn-pequeno"),
             botao("Apagar", async () => { if (!(await modal({ titulo: "Apagar lançamento?", conteudo: `${l.descricao} — ${din(l.valor_cent)}`, confirmar: "Apagar", perigo: true }))) return; try { await fin(`lancamentos/${l.id}`, { metodo: "DELETE" }); aviso("Apagado.", "ok"); recarregar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno"))))))))) :
@@ -7235,6 +7254,7 @@ Botão só com texto = resposta.` })),
     blocos.push(h("section", { class: "cartao vidro", style: "margin-top:12px" }, h("h3", { style: "margin:0 0 8px", text: `Lançamentos de ${nomeMesUi(mes)}` }), h("div", { class: "fin-filtros" }, chips, busca), tabela));
     desenhar();
     const analise = h("div", {});
+    blocos.push(blocoFluxo());
     blocos.push(h("div", { class: "grade grade-2", style: "margin-top:12px" },
       blocoRecorrentes(), blocoGestao(),
       h("section", { class: "cartao vidro" }, h("h3", { style: "margin:0 0 6px", text: "Leitura da DENIA" }),
@@ -7243,6 +7263,32 @@ Botão só com texto = resposta.` })),
       blocoEnvioMensal()));
     trocar(corpo, ...blocos);
 
+    function blocoFluxo() {
+      const caixa = h("div", {}, carregando());
+      fin("fluxo?meses=12").then(x => {
+        trocar(caixa, x.saldo_hoje === null ? h("p", { class: "sub" }, "Para ver o saldo projetado, cadastre o banco e o caixa em ", h("a", { href: "#/admin/contas", text: "Banco e caixa" }), ". Abaixo, o que já está programado para entrar e sair.") :
+          h("p", { class: "sub", text: `Saldo de hoje nas contas: ${din(x.saldo_hoje)}.${x.primeiro_mes_negativo ? ` Atenção: em ${nomeMesUi(x.primeiro_mes_negativo)} o saldo fica negativo se nada mudar.` : " O saldo não fica negativo nos próximos 12 meses com o que está programado."}` }),
+          h("div", { class: "tabela-rolagem" }, h("table", { class: "tabela fin-tabela fin-fluxo" }, h("thead", {}, h("tr", {}, ["Mês", "Vai entrar", "Vai sair", "Resultado", "Saldo no fim"].map(c => h("th", { text: c })))),
+            h("tbody", {}, x.meses.map(m0 => h("tr", {}, h("td", { text: m0.rotulo + (m0.mes === mesAtualLocal() ? " (inclui vencidos)" : "") }), h("td", { class: "fin-mais", text: din(m0.entradas) }), h("td", { class: "fin-menos", text: din(m0.saidas) }),
+              h("td", { class: m0.resultado < 0 ? "neg" : "", text: din(m0.resultado) }), h("td", { class: m0.saldo_fim !== null && m0.saldo_fim < 0 ? "neg" : "", text: m0.saldo_fim === null ? "—" : din(m0.saldo_fim) })))))));
+      }).catch(e => trocar(caixa, h("p", { class: "sub", text: e.message })));
+      return h("section", { class: "cartao vidro", style: "margin-top:12px" }, h("h3", { style: "margin:0 0 6px", text: "Fluxo de caixa dos próximos 12 meses" }), caixa);
+    }
+    async function abrirAnexos(l) {
+      const lista = h("div", {}, carregando());
+      const enviar = h("input", { type: "file", accept: "image/jpeg,image/png,image/webp,application/pdf", class: "oculto", onchange: async () => {
+        const f = enviar.files[0]; enviar.value = ""; if (!f) return;
+        if (f.size > 3_000_000) return aviso("Arquivo grande demais (máximo 3 MB).", "erro");
+        try { await fin(`lancamentos/${l.id}/anexos`, { metodo: "POST", corpo: { nome: f.name, tipo: f.type, base64: await arquivoBase64(f) } }); aviso("Comprovante anexado.", "ok"); carregar(); } catch (e) { aviso(e.message, "erro"); }
+      } });
+      const carregar = () => fin(`lancamentos/${l.id}/anexos`).then(x => trocar(lista, x.anexos.length ? h("ul", { class: "prb-lista" }, x.anexos.map(a0 => h("li", { class: "prb-item", style: "border-color:var(--borda)" }, h("div", {},
+        h("strong", { text: a0.nome }), h("p", { class: "prb-meta", text: `${Math.round(a0.tamanho / 1024)} KB · ${quando(a0.ms)}${a0.por ? " · " + a0.por : ""}` }),
+        h("div", { class: "acoes" }, h("a", { class: "btn btn-secundario btn-pequeno", href: `/api/orgs/${estado.org.id}/fin/anexos/${a0.id}`, target: "_blank", rel: "noopener" }, "Abrir"),
+          botao("Apagar", async () => { if (!(await modal({ titulo: "Apagar este arquivo?", conteudo: a0.nome, confirmar: "Apagar", perigo: true }))) return; try { await fin(`anexos/${a0.id}`, { metodo: "DELETE" }); carregar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno")))))) :
+        h("p", { class: "sub", text: "Nenhum comprovante ainda." }))).catch(e => trocar(lista, h("p", { class: "sub", text: e.message })));
+      carregar();
+      gaveta(`Comprovantes — ${l.descricao}`, [h("p", { class: "sub", text: "Foto ou PDF do comprovante, boleto ou nota (até 3 MB)." }), enviar, h("div", { class: "acoes" }, botao("Anexar arquivo", () => enviar.click(), "btn-primario")), lista]);
+    }
     async function novaRecorrente() {
       const tipo = h("select", { class: "entrada" }, h("option", { value: "SAIDA", text: "Conta a pagar" }), h("option", { value: "ENTRADA", text: "Valor a receber" }));
       const desc = h("input", { class: "entrada", type: "text", maxlength: "160", placeholder: "Ex.: Aluguel, Internet, Salário da Ana" });
@@ -7337,8 +7383,8 @@ Botão só com texto = resposta.` })),
   const admEstado = { mes: null, moeda: "BRL" };
   const dinA = c => dinheiroFin(c, admEstado.moeda);
   const hojeUi = () => isoLocal(new Date());
-  const ABAS_ADMIN = { hoje: "O dia", agenda: "Agenda e compromissos", contas: "Banco e caixa", alugueis: "Aluguéis e locatários", manutencao: "Manutenção e obrigações", documentos: "Documentos e validades", relatorio: "Relatório do mês", cadastros: "Cadastros", empresas: "Todas as empresas", ajustes: "Ajustes e importação" };
-  const ABAS_EQUIPE = ["hoje", "agenda", "manutencao"];
+  const ABAS_ADMIN = { hoje: "O dia", agenda: "Agenda e compromissos", contas: "Banco e caixa", alugueis: "Aluguéis e locatários", manutencao: "Manutenção e obrigações", documentos: "Documentos e validades", relatorio: "Relatório do mês", cadastros: "Cadastros", empresas: "Todas as empresas", tarefas: "Tarefas", geral: "Agenda de todas as empresas", ajustes: "Ajustes e importação" };
+  const ABAS_EQUIPE = ["hoje", "agenda", "manutencao", "tarefas", "geral"];
   const entradaTxt = (valor, ph, extra = {}) => h("input", { class: "entrada", type: "text", value: valor ?? "", placeholder: ph || "", ...extra });
   const entradaData = valor => h("input", { class: "entrada", type: "date", value: valor || "" });
   const entradaValor = cent => h("input", { class: "entrada", type: "text", inputmode: "decimal", placeholder: "0,00", value: cent ? (cent / 100).toFixed(2).replace(".", ",") : "" });
@@ -7357,7 +7403,7 @@ Botão só com texto = resposta.` })),
     if (!pode("ADMIN") && !ABAS_EQUIPE.includes(aba)) aba = "hoje";
     const corpo = h("div", {}, carregando());
     el.append(corpo);
-    const fn = { hoje: admHoje, agenda: admAgenda, contas: admContas, alugueis: admAlugueis, manutencao: admManutencao, documentos: admDocumentos, relatorio: admRelatorio, cadastros: admCadastros, empresas: admEmpresas, ajustes: admAjustes }[aba];
+    const fn = { hoje: admHoje, agenda: admAgenda, contas: admContas, alugueis: admAlugueis, manutencao: admManutencao, documentos: admDocumentos, relatorio: admRelatorio, cadastros: admCadastros, empresas: admEmpresas, tarefas: admTarefas, geral: admAgendaGeral, ajustes: admAjustes }[aba];
     try { await fn(corpo, vivo); } catch (e) { if (vivo()) falha(corpo, e); }
   }
   const recarregarAdm = () => navegar();
@@ -7372,6 +7418,7 @@ Botão só com texto = resposta.` })),
       botao("+ Compromisso", () => novoCompromisso(null, d.hoje), "btn-primario"),
       d.admin ? botao("+ Conta ou recebimento", () => irPara("#/financeiro"), "btn-secundario") : null,
       d.admin && (estado.eu.organizacoes || []).filter(o => ["OWNER", "ADMIN"].includes(o.papel)).length > 1 ? h("a", { class: "btn btn-secundario", href: "#/admin/empresas" }, "Todas as empresas") : null));
+    blocos.push(escreverCompromisso(() => recarregarAdm()));
     const cards = [metrica("Compromissos hoje", String(t.agenda_hoje), t.agenda_atrasada ? `${t.agenda_atrasada} ficaram para trás` : "Nada atrasado")];
     if (d.admin) cards.push(metrica("A pagar vencido", dinA(t.pagar_vencido), `Próximos 7 dias: ${dinA(t.pagar_semana)}`), metrica("A receber vencido", dinA(t.receber_vencido), `Próximos 7 dias: ${dinA(t.receber_semana)}`));
     cards.push(metrica("Manutenção vencida", String(t.rotinas_vencidas), d.rotinas_sem_data ? `${d.rotinas_sem_data} obrigações sem data da última vez` : "Obrigações em dia"));
@@ -7393,6 +7440,12 @@ Botão só com texto = resposta.` })),
         botao("Registrar feito", () => rotinaFeita(r), "btn-primario btn-pequeno")))) : listaVazia(d.rotinas_sem_data ? "Nada vencendo entre as obrigações com data. Informe quando foi a última vez das outras." : "Nada vencendo."),
       h("div", { class: "acoes" }, h("a", { class: "btn btn-secundario btn-pequeno", href: "#/admin/manutencao" }, "Ver todas")));
     const extras = [];
+    if ((d.tarefas || []).length) extras.push(h("section", { class: "cartao vidro" }, h("h3", { style: "margin:0 0 8px", text: "Tarefas (prazo nesta semana ou cobrar retorno)" }),
+      h("ul", { class: "prb-lista" }, d.tarefas.slice(0, 10).map(x => item(x.titulo, [x.prazo && `${x.atrasada ? "ATRASADA · " : ""}prazo ${dataCurtaFin(x.prazo)}`, x.cobrar && "cobrar retorno hoje", x.responsavel_nome].filter(Boolean).join(" · "),
+        botao("Concluir", async () => { try { await adm(`tarefas/${x.id}/feito`, { metodo: "POST", corpo: {} }); aviso("Concluída.", "ok"); recarregarAdm(); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario btn-pequeno")))),
+      h("div", { class: "acoes" }, h("a", { class: "btn btn-secundario btn-pequeno", href: "#/admin/tarefas" }, "Todas as tarefas"))));
+    if (d.admin && (d.reajustes || []).length) extras.push(h("section", { class: "cartao vidro" }, h("h3", { style: "margin:0 0 8px", text: "Reajuste de aluguel neste mês" }),
+      h("ul", { class: "prb-lista" }, d.reajustes.map(x => item(`${x.nome}${x.unidade ? " — " + x.unidade : ""}`, `${x.indice || "índice do contrato"} · aluguel atual ${dinA(x.aluguel_cent)}`, h("a", { class: "btn btn-primario btn-pequeno", href: "#/admin/alugueis" }, "Calcular reajuste"))))));
     if (d.documentos.length) extras.push(h("section", { class: "cartao vidro" }, h("h3", { style: "margin:0 0 8px", text: "Documentos vencendo" }),
       h("ul", { class: "prb-lista" }, d.documentos.map(x => item(x.titulo, x.dias < 0 ? `Venceu em ${dataCurtaFin(x.vence_em)}` : `Vence em ${dataCurtaFin(x.vence_em)} (${x.dias} dias)`)))));
     if (d.temporada.length) extras.push(h("section", { class: "cartao vidro" }, h("h3", { style: "margin:0 0 8px", text: "Temporada: entradas e saídas de hóspedes" }),
@@ -7408,40 +7461,172 @@ Botão só com texto = resposta.` })),
 
 
   // ----- Agenda
-  async function novoCompromisso(a, dataPadrao) {
-    const titulo = entradaTxt(a && a.titulo, "Ex.: Vistoria do AVCB, reunião com o contador"), data = entradaData(a ? a.data : dataPadrao || hojeUi()), hora = h("input", { class: "entrada", type: "time", value: (a && a.hora) || "" });
+  // Pessoas da equipe (responsáveis), guardadas por alguns minutos.
+  let equipeCache = null;
+  async function equipeAdm() {
+    if (equipeCache && equipeCache.org === estado.org.id && Date.now() - equipeCache.em < 120000) return equipeCache.d;
+    const d = await adm("equipe").catch(() => ({ equipe: [], eu: null }));
+    equipeCache = { org: estado.org.id, em: Date.now(), d };
+    return d;
+  }
+  const selectResponsavel = (equipe, atual) => { const s0 = h("select", { class: "entrada" }, h("option", { value: "", text: "Ninguém em especial" }), equipe.map(p0 => h("option", { value: p0.id, text: p0.nome }))); s0.value = atual ? String(atual) : ""; return s0; };
+  // Campo "escreva do jeito que fala": vistoria do AVCB terça às 10h.
+  function escreverCompromisso(aoCriar, { tarefa = false } = {}) {
+    const ent = h("input", { class: "entrada", type: "text", maxlength: "400", placeholder: tarefa ? "Escreva a tarefa: pedir orçamento da pintura até sexta" : "Escreva do jeito que fala: vistoria do AVCB terça às 10h", "aria-label": tarefa ? "Nova tarefa" : "Novo compromisso" });
+    const ir = async () => {
+      const t = ent.value.trim(); if (!t) return;
+      try { const r = await adm(tarefa ? "tarefas/texto" : "agenda/texto", { metodo: "POST", corpo: { texto: t } }); ent.value = ""; aviso(r.frase, "ok"); aoCriar && aoCriar(r); }
+      catch (e) {
+        // Faltou o dia: abre o formulário já preenchido com o que deu para entender.
+        if (!tarefa && e.dados && e.dados.parcial) { aviso(e.message, "erro"); novoCompromisso({ titulo: e.dados.parcial.titulo, hora: e.dados.parcial.hora }, hojeUi(), true); }
+        else aviso(e.message, "erro");
+      }
+    };
+    ent.addEventListener("keydown", e => { if (e.key === "Enter") ir(); });
+    return h("div", { class: "compor adm-escrever" }, ent, botao(tarefa ? "Anotar" : "Marcar", ir, "btn-primario"));
+  }
+
+  async function novoCompromisso(a, dataPadrao, rascunho) {
+    const editando = a && a.id && !rascunho;
+    if (editando && a.origem === "google") return aviso("Este compromisso vem do Google Agenda: altere lá. A DENIA atualiza sozinha.", "erro");
+    const { equipe } = await equipeAdm();
+    const titulo = entradaTxt(a && a.titulo, "Ex.: Vistoria do AVCB, reunião com o contador"), data = entradaData(a && a.data ? a.data : dataPadrao || hojeUi()), hora = h("input", { class: "entrada", type: "time", value: (a && a.hora) || "" });
     const quem = entradaTxt(a && a.quem, "Com quem (opcional)"), local = entradaTxt(a && a.local, "Onde (opcional)"), obs = h("textarea", { class: "entrada", rows: "2", placeholder: "Observações" }, (a && a.obs) || "");
     const aviso0 = h("select", { class: "entrada" }, [[0, "Na hora"], [15, "15 minutos antes"], [60, "1 hora antes"], [180, "3 horas antes"], [1440, "1 dia antes"], [2880, "2 dias antes"], [10080, "1 semana antes"]].map(([v, n]) => h("option", { value: v, text: n })));
-    aviso0.value = String(a ? a.aviso_min : 60);
+    aviso0.value = String(a && a.aviso_min != null ? a.aviso_min : 60);
     const repetir = h("select", { class: "entrada" }, [["", "Não repete"], ["semanal", "Toda semana"], ["mensal", "Todo mês"], ["anual", "Todo ano"]].map(([v, n]) => h("option", { value: v, text: n })));
     repetir.value = (a && a.repetir) || "";
+    const resp = selectResponsavel(equipe, a && a.responsavel_id);
     const alta = h("input", { type: "checkbox", checked: Boolean(a && a.prioridade === "ALTA") });
-    await formulario(a ? "Editar compromisso" : "Novo compromisso", [campo("Compromisso", titulo), h("div", { class: "fin-duas" }, campo("Data", data), campo("Hora", hora, "Vazio = o dia todo")),
-      h("div", { class: "fin-duas" }, campo("Avisar", aviso0), campo("Repetir", repetir)), h("div", { class: "fin-duas" }, campo("Com quem", quem), campo("Local", local)), campo("Observações", obs), h("label", { class: "fin-check" }, alta, " Prioridade alta")], "Salvar",
-      async () => { await adm(a ? `agenda/${a.id}` : "agenda", { metodo: a ? "PUT" : "POST", corpo: { titulo: titulo.value, data: data.value, hora: hora.value || null, quem: quem.value, local: local.value, obs: obs.value, aviso_min: Number(aviso0.value), repetir: repetir.value, prioridade: alta.checked ? "ALTA" : "NORMAL" } }); aviso("Compromisso salvo.", "ok"); recarregarAdm(); });
+    await formulario(editando ? "Editar compromisso" : "Novo compromisso", [campo("Compromisso", titulo), h("div", { class: "fin-duas" }, campo("Data", data), campo("Hora", hora, "Vazio = o dia todo")),
+      h("div", { class: "fin-duas" }, campo("Avisar", aviso0), campo("Repetir", repetir)), h("div", { class: "fin-duas" }, campo("Responsável (recebe o aviso)", resp), campo("Com quem", quem)), campo("Local", local), campo("Observações", obs), h("label", { class: "fin-check" }, alta, " Prioridade alta")], "Salvar",
+      async () => { await adm(editando ? `agenda/${a.id}` : "agenda", { metodo: editando ? "PUT" : "POST", corpo: { titulo: titulo.value, data: data.value, hora: hora.value || null, quem: quem.value, local: local.value, obs: obs.value, aviso_min: Number(aviso0.value), repetir: repetir.value, prioridade: alta.checked ? "ALTA" : "NORMAL", responsavel_id: resp.value || null } }); aviso("Compromisso salvo.", "ok"); recarregarAdm(); });
   }
+
+  // Agenda: lista, semana ou mês (grade), só os meus, e o campo para escrever o compromisso.
   async function admAgenda(el, vivo) {
-    // Mês a mês (passados e futuros); os atrasados sempre aparecem.
-    const mesA = admEstado.mesAgenda = admEstado.mesAgenda || mesAtualLocal();
-    const fimA = `${mesA}-${String(new Date(Date.UTC(+mesA.slice(0, 4), +mesA.slice(5, 7), 0)).getUTCDate()).padStart(2, "0")}`;
-    const r = await adm(`agenda?de=${mesA}-01&ate=${fimA}`);
+    const vis = admEstado.visAgenda = admEstado.visAgenda || armazenamento.ler("denia_adm_vis") || "lista";
+    const ref = admEstado.refAgenda = admEstado.refAgenda || hojeUi();
+    const segundaDe = d => { const x = new Date(d + "T12:00:00Z"); x.setUTCDate(x.getUTCDate() - ((x.getUTCDay() + 6) % 7)); return x.toISOString().slice(0, 10); };
+    const somarDiasUi = (d, n) => new Date(Date.parse(d + "T12:00:00Z") + n * 86400000).toISOString().slice(0, 10);
+    const mesRef = ref.slice(0, 7), ultimoDiaMes = m => `${m}-${String(new Date(Date.UTC(+m.slice(0, 4), +m.slice(5, 7), 0)).getUTCDate()).padStart(2, "0")}`;
+    let de, ate;
+    if (vis === "semana") { de = segundaDe(ref); ate = somarDiasUi(de, 6); }
+    else if (vis === "mes") { de = segundaDe(`${mesRef}-01`); ate = somarDiasUi(segundaDe(ultimoDiaMes(mesRef)), 6); }
+    else { de = `${mesRef}-01`; ate = ultimoDiaMes(mesRef); }
+    const minha = admEstado.agendaMinha ? "&minha=1" : "";
+    const r = await adm(`agenda?de=${de}&ate=${ate}${minha}`);
     if (!vivo()) return;
-    const porDia = new Map();
-    for (const a of r.itens) { if (!porDia.has(a.data)) porDia.set(a.data, []); porDia.get(a.data).push(a); }
     const feito = async (a, desfazer) => { try { const x = await adm(`agenda/${a.id}/feito`, { metodo: "POST", corpo: desfazer ? { desfazer: true } : {} }); aviso(x.proximo ? `Feito. Próxima vez: ${dataCurtaFin(x.proximo.data)}.` : desfazer ? "Voltou para pendente." : "Feito.", "ok"); recarregarAdm(); } catch (e) { aviso(e.message, "erro"); } };
-    const apagar = async a => { if (!(await modal({ titulo: "Apagar compromisso?", conteudo: a.titulo, confirmar: "Apagar", perigo: true }))) return; try { await adm(`agenda/${a.id}`, { metodo: "DELETE" }); aviso("Apagado.", "ok"); recarregarAdm(); } catch (e) { aviso(e.message, "erro"); } };
+    const apagar = async a => { if (!(await modal({ titulo: "Apagar compromisso?", conteudo: a.origem === "google" ? `${a.titulo}. Ele vem do Google Agenda: se continuar lá, volta na próxima sincronização.` : a.titulo, confirmar: "Apagar", perigo: true }))) return; try { await adm(`agenda/${a.id}`, { metodo: "DELETE" }); aviso("Apagado.", "ok"); recarregarAdm(); } catch (e) { aviso(e.message, "erro"); } };
     const fmtDia = new Intl.DateTimeFormat(LOCALE, { weekday: "long", day: "2-digit", month: "long", timeZone: "UTC" });
-    const dias = [...porDia.keys()].sort();
-    trocar(el, cabeca("Agenda e compromissos", "Compromissos da empresa com aviso por e-mail e no celular (assine o calendário em Ajustes). O que repete é recriado sozinho quando você marca como feito.",
-      botao("+ Compromisso", () => novoCompromisso(null, r.hoje), "btn-primario"), pode("ADMIN") ? h("a", { class: "btn btn-secundario", href: "#/admin/ajustes" }, "Ver no celular") : null),
-      h("div", { class: "fin-mes" }, botao("‹", () => { admEstado.mesAgenda = somarMesUi(mesA, -1); navegar(); }, "btn-secundario btn-pequeno", { "aria-label": "Mês anterior" }), h("strong", { text: nomeMesUi(mesA) }),
-        botao("›", () => { admEstado.mesAgenda = somarMesUi(mesA, 1); navegar(); }, "btn-secundario btn-pequeno", { "aria-label": "Próximo mês" }), mesA !== mesAtualLocal() ? botao("Este mês", () => { admEstado.mesAgenda = mesAtualLocal(); navegar(); }, "btn-secundario btn-pequeno") : null),
-      dias.length ? h("div", {}, dias.map(dia => h("section", { class: "cartao vidro", style: "margin-top:12px" },
+    const meta = a => [a.local, a.quem && "com " + a.quem, a.responsavel_nome && "responsável: " + a.responsavel_nome, a.repetir && { semanal: "toda semana", mensal: "todo mês", anual: "todo ano" }[a.repetir], a.origem === "google" && "Google Agenda", a.origem === "telegram" && "pelo Telegram", a.prioridade === "ALTA" && "prioridade alta", a.obs].filter(Boolean).join(" · ");
+    const andar = n => { admEstado.refAgenda = vis === "semana" ? somarDiasUi(ref, 7 * n) : `${somarMesUi(mesRef, n)}-01`; navegar(); };
+    const titulo = vis === "semana" ? `${dataCurtaFin(de).slice(0, 5)} a ${dataCurtaFin(ate)}` : nomeMesUi(mesRef);
+    const seg = (v, n) => h("button", { type: "button", class: "aba" + (vis === v ? " ativo" : ""), "aria-pressed": vis === v ? "true" : "false", onclick: () => { admEstado.visAgenda = v; armazenamento.gravar("denia_adm_vis", v); navegar(); } }, n);
+    const barra = h("div", { class: "fin-mes" },
+      botao("‹", () => andar(-1), "btn-secundario btn-pequeno", { "aria-label": "Anterior" }), h("strong", { text: titulo }), botao("›", () => andar(1), "btn-secundario btn-pequeno", { "aria-label": "Próximo" }),
+      botao("Hoje", () => { admEstado.refAgenda = hojeUi(); navegar(); }, "btn-secundario btn-pequeno"),
+      h("span", { style: "flex:1" }), h("div", { class: "abas abas-chips", role: "group", "aria-label": "Visualização" }, seg("lista", "Lista"), seg("semana", "Semana"), seg("mes", "Mês")),
+      h("label", { class: "fin-check" }, h("input", { type: "checkbox", checked: Boolean(admEstado.agendaMinha), onchange: e => { admEstado.agendaMinha = e.target.checked; navegar(); } }), " Só os meus"));
+    const tarefasDoDia = d => (r.tarefas || []).filter(t => t.prazo === d && !t.feito);
+    const itensDoDia = d => r.itens.filter(a => a.data === d);
+    let corpo;
+    if (vis === "lista") {
+      const dias = [...new Set([...r.itens.map(a => a.data), ...(r.tarefas || []).filter(t => !t.feito).map(t => t.prazo)])].sort();
+      corpo = dias.length ? h("div", {}, dias.map(dia => h("section", { class: "cartao vidro", style: "margin-top:12px" },
         h("h3", { style: "margin:0 0 8px;text-transform:capitalize", text: `${dia === r.hoje ? "Hoje — " : dia < r.hoje ? "Atrasado — " : ""}${fmtDia.format(new Date(dia + "T12:00:00Z"))}` }),
-        h("ul", { class: "prb-lista" }, porDia.get(dia).map(a => item(`${a.feito ? "✓ " : ""}${a.hora || "Dia todo"} · ${a.titulo}`, [a.local, a.quem && "com " + a.quem, a.repetir && { semanal: "toda semana", mensal: "todo mês", anual: "todo ano" }[a.repetir], a.prioridade === "ALTA" && "prioridade alta", a.obs].filter(Boolean).join(" · "),
+        h("ul", { class: "prb-lista" }, [...itensDoDia(dia).map(a => item(`${a.feito ? "✓ " : ""}${a.hora || "Dia todo"} · ${a.titulo}`, meta(a),
           a.feito ? botao("Desfazer", () => feito(a, true), "btn-secundario btn-pequeno") : botao("Feito", () => feito(a), "btn-primario btn-pequeno"),
-          botao("Editar", () => novoCompromisso(a), "btn-secundario btn-pequeno"), botao("Apagar", () => apagar(a), "btn-secundario btn-pequeno"))))))) :
-        h("section", { class: "cartao vidro" }, vazio("Agenda vazia", "Anote vistorias, reuniões, prazos e visitas de prestadores. A DENIA avisa por e-mail no horário escolhido.")));
+          a.origem === "google" ? null : botao("Editar", () => novoCompromisso(a), "btn-secundario btn-pequeno"), botao("Apagar", () => apagar(a), "btn-secundario btn-pequeno"))),
+          ...tarefasDoDia(dia).map(t => item(`☐ Tarefa: ${t.titulo}`, "prazo", h("a", { class: "btn btn-secundario btn-pequeno", href: "#/admin/tarefas" }, "Abrir tarefas")))])))) :
+        h("section", { class: "cartao vidro", style: "margin-top:12px" }, vazio("Nada neste mês", "Escreva acima do jeito que fala, ou toque em + Compromisso. A DENIA avisa por e-mail, Telegram e no celular."));
+    } else {
+      // Grade: semana (7 colunas) ou mês (semanas de segunda a domingo).
+      const dias = []; for (let d = de; d <= ate; d = somarDiasUi(d, 1)) dias.push(d);
+      const nomes = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"];
+      corpo = h("section", { class: "cartao vidro adm-grade-cartao", style: "margin-top:12px" }, h("div", { class: "adm-grade" + (vis === "semana" ? " adm-grade-semana" : "") },
+        nomes.map(n => h("div", { class: "adm-grade-cab", text: n })),
+        dias.map(d => {
+          const its = itensDoDia(d), tfs = tarefasDoDia(d), fora = vis === "mes" && d.slice(0, 7) !== mesRef;
+          const limite = vis === "mes" ? 3 : 12;
+          return h("div", { class: "adm-dia" + (d === r.hoje ? " hoje" : "") + (fora ? " fora" : ""), onclick: e => { if (e.target === e.currentTarget || e.target.classList.contains("adm-dia-n")) novoCompromisso(null, d); }, title: "Toque num espaço vazio para marcar neste dia" },
+            h("span", { class: "adm-dia-n", text: String(Number(d.slice(8))) }),
+            ...its.slice(0, limite).map(a => h("button", { type: "button", class: "adm-ev" + (a.feito ? " feito" : "") + (a.origem === "google" ? " google" : "") + (a.prioridade === "ALTA" ? " alta" : ""), title: `${a.hora || "Dia todo"} · ${a.titulo}${meta(a) ? " — " + meta(a) : ""}`, onclick: () => abrirEvento(a) }, h("b", { text: a.hora || "•" }), " ", a.titulo)),
+            ...tfs.slice(0, 2).map(t => h("a", { class: "adm-ev tarefa", href: "#/admin/tarefas", text: "☐ " + t.titulo })),
+            its.length > limite ? h("button", { type: "button", class: "adm-mais", onclick: () => { admEstado.visAgenda = "lista"; admEstado.refAgenda = d; navegar(); }, text: `+${its.length - limite}` }) : null);
+        })));
+    }
+    async function abrirEvento(a) {
+      gaveta(a.titulo, [h("p", { class: "sub", text: `${fmtDia.format(new Date(a.data + "T12:00:00Z"))}${a.hora ? " às " + a.hora : " (dia todo)"}` }), meta(a) ? h("p", { text: meta(a) }) : null,
+        h("div", { class: "acoes" }, a.feito ? botao("Desfazer", () => feito(a, true), "btn-secundario") : botao("Feito", () => feito(a), "btn-primario"),
+          a.origem === "google" ? null : botao("Editar", () => { fecharGaveta && fecharGaveta(); novoCompromisso(a); }, "btn-secundario"), botao("Apagar", () => apagar(a), "btn-secundario"))]);
+    }
+    trocar(el, cabeca("Agenda e compromissos", "Escreva do jeito que fala, marque por voz (DENIA por voz) ou pelo Telegram (/marcar). Aviso por e-mail, Telegram e no celular; o Google Agenda entra sozinho (Ajustes).",
+      botao("+ Compromisso", () => novoCompromisso(null, ref < r.hoje ? r.hoje : ref), "btn-primario"), h("a", { class: "btn btn-secundario", href: "#/admin/tarefas" }, "Tarefas"),
+      (estado.eu.organizacoes || []).length > 1 ? h("a", { class: "btn btn-secundario", href: "#/admin/geral" }, "Todas as empresas") : null),
+      escreverCompromisso(() => recarregarAdm()), barra, corpo);
+  }
+
+  // Tarefas: com ou sem prazo, checklist, responsável e "cobrar retorno em".
+  async function editarTarefa(t) {
+    const { equipe } = await equipeAdm();
+    const titulo = entradaTxt(t && t.titulo, "Ex.: Pedir 3 orçamentos da pintura"), prazo = entradaData(t && t.prazo), acompanhar = entradaData(t && t.acompanhar_em);
+    const resp = selectResponsavel(equipe, t && t.responsavel_id), obs = h("textarea", { class: "entrada", rows: "2", placeholder: "Detalhes" }, (t && t.obs) || "");
+    const lista = h("textarea", { class: "entrada", rows: "4", placeholder: "Um item por linha (opcional)" }, ((t && t.checklist) || []).map(x => x.t).join("\n"));
+    const alta = h("input", { type: "checkbox", checked: Boolean(t && t.prioridade === "ALTA") });
+    await formulario(t ? "Editar tarefa" : "Nova tarefa", [campo("Tarefa", titulo), h("div", { class: "fin-duas" }, campo("Prazo (opcional)", prazo), campo("Cobrar retorno em (opcional)", acompanhar, "A DENIA lembra nesse dia.")),
+      campo("Responsável", resp), campo("Checklist", lista), campo("Observações", obs), h("label", { class: "fin-check" }, alta, " Prioridade alta")], "Salvar",
+      async () => {
+        const antigos = new Map(((t && t.checklist) || []).map(x => [x.t, x.ok]));
+        const checklist = lista.value.split("\n").map(x => x.trim()).filter(Boolean).map(x => ({ t: x, ok: Boolean(antigos.get(x)) }));
+        await adm(t ? `tarefas/${t.id}` : "tarefas", { metodo: t ? "PUT" : "POST", corpo: { titulo: titulo.value, prazo: prazo.value, acompanhar_em: acompanhar.value, responsavel_id: resp.value || null, obs: obs.value, checklist, prioridade: alta.checked ? "ALTA" : "NORMAL" } });
+        aviso("Tarefa salva.", "ok"); recarregarAdm();
+      });
+  }
+  async function admTarefas(el, vivo) {
+    const ver = admEstado.verTarefas = admEstado.verTarefas || "abertas";
+    const r = await adm(`tarefas?ver=${ver}${admEstado.tarefasMinhas ? "&minhas=1" : ""}`);
+    if (!vivo()) return;
+    const marcar = async (t, desfazer) => { try { await adm(`tarefas/${t.id}/feito`, { metodo: "POST", corpo: desfazer ? { desfazer: true } : {} }); aviso(desfazer ? "Reaberta." : "Concluída.", "ok"); recarregarAdm(); } catch (e) { aviso(e.message, "erro"); } };
+    const marcarItem = async (t, i) => { const lista = t.checklist.map((x, j) => j === i ? { ...x, ok: !x.ok } : x); try { await adm(`tarefas/${t.id}`, { metodo: "PUT", corpo: { checklist: lista } }); recarregarAdm(); } catch (e) { aviso(e.message, "erro"); } };
+    const chip = (v, n) => h("button", { type: "button", class: "aba" + (ver === v ? " ativo" : ""), "aria-pressed": ver === v ? "true" : "false", onclick: () => { admEstado.verTarefas = v; navegar(); } }, n);
+    trocar(el, cabeca("Tarefas", "O que precisa ser feito, com ou sem prazo, quem cuida e quando cobrar retorno. Também por voz ou no Telegram (/tarefa).", botao("+ Tarefa", () => editarTarefa(null), "btn-primario")),
+      escreverCompromisso(() => recarregarAdm(), { tarefa: true }),
+      h("div", { class: "fin-mes" }, h("div", { class: "abas abas-chips", role: "group" }, chip("abertas", "Abertas"), chip("feitas", "Concluídas"), chip("todas", "Todas")),
+        h("label", { class: "fin-check" }, h("input", { type: "checkbox", checked: Boolean(admEstado.tarefasMinhas), onchange: e => { admEstado.tarefasMinhas = e.target.checked; navegar(); } }), " Só as minhas")),
+      h("section", { class: "cartao vidro" }, r.tarefas.length ? h("ul", { class: "prb-lista" }, r.tarefas.map(t => h("li", { class: "prb-item", style: "border-color:var(--borda)" }, h("div", {},
+        h("strong", { text: `${t.feito ? "✓ " : ""}${t.titulo}` }),
+        h("p", { class: "prb-meta", text: [t.prazo && `${t.atrasada ? "ATRASADA · " : ""}prazo ${dataCurtaFin(t.prazo)}`, t.cobrar ? "cobrar retorno hoje" : t.acompanhar_em && `cobrar retorno em ${dataCurtaFin(t.acompanhar_em)}`, t.responsavel_nome && "responsável: " + t.responsavel_nome, t.prioridade === "ALTA" && "prioridade alta", t.obs].filter(Boolean).join(" · ") }),
+        t.checklist.length ? h("div", { class: "adm-check" }, t.checklist.map((x, i) => h("label", { class: "fin-check" }, h("input", { type: "checkbox", checked: x.ok, onchange: () => marcarItem(t, i) }), " ", x.t))) : null,
+        h("div", { class: "acoes" }, t.feito ? botao("Reabrir", () => marcar(t, true), "btn-secundario btn-pequeno") : botao("Concluir", () => marcar(t), "btn-primario btn-pequeno"), botao("Editar", () => editarTarefa(t), "btn-secundario btn-pequeno"),
+          botao("Apagar", async () => { if (!(await modal({ titulo: "Apagar tarefa?", conteudo: t.titulo, confirmar: "Apagar", perigo: true }))) return; try { await adm(`tarefas/${t.id}`, { metodo: "DELETE" }); recarregarAdm(); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno")))))) :
+        vazio(ver === "feitas" ? "Nenhuma tarefa concluída" : "Nenhuma tarefa aberta", "Escreva acima: pedir orçamento da pintura até sexta.")));
+  }
+
+  // Agenda de todas as empresas, junta, por dia.
+  async function admAgendaGeral(el, vivo) {
+    const de = admEstado.geralDe = admEstado.geralDe || hojeUi();
+    const ate = new Date(Date.parse(de + "T12:00:00Z") + 13 * 86400000).toISOString().slice(0, 10);
+    const r = await api(`/api/adm/agenda-geral?de=${de}&ate=${ate}`);
+    if (!vivo()) return;
+    const cores = ["#2563eb", "#16a34a", "#d97706", "#9333ea", "#dc2626", "#0891b2", "#be185d"];
+    const corDe = id => cores[(r.empresas.findIndex(e => e.id === id) + cores.length) % cores.length];
+    const fmtDia = new Intl.DateTimeFormat(LOCALE, { weekday: "long", day: "2-digit", month: "long", timeZone: "UTC" });
+    const hoje = hojeUi();
+    const dias = [...new Set(r.itens.map(x => x.data))].sort();
+    const andar = n => { admEstado.geralDe = new Date(Date.parse(de + "T12:00:00Z") + n * 14 * 86400000).toISOString().slice(0, 10); navegar(); };
+    trocar(el, cabeca("Agenda de todas as empresas", "Compromissos e tarefas com prazo de todas as empresas que você acompanha, juntos. Toque para abrir a empresa."),
+      h("div", { class: "fin-mes" }, botao("‹", () => andar(-1), "btn-secundario btn-pequeno"), h("strong", { text: `${dataCurtaFin(de).slice(0, 5)} a ${dataCurtaFin(ate)}` }), botao("›", () => andar(1), "btn-secundario btn-pequeno"),
+        botao("Hoje", () => { admEstado.geralDe = hojeUi(); navegar(); }, "btn-secundario btn-pequeno"), h("span", { style: "flex:1" }),
+        ...r.empresas.map(e => h("span", { class: "adm-leg" }, h("i", { style: `background:${corDe(e.id)}` }), e.nome))),
+      dias.length ? h("div", {}, dias.map(d => h("section", { class: "cartao vidro", style: "margin-top:12px" },
+        h("h3", { style: "margin:0 0 8px;text-transform:capitalize", text: `${d === hoje ? "Hoje — " : d < hoje ? "Atrasado — " : ""}${fmtDia.format(new Date(d + "T12:00:00Z"))}` }),
+        h("ul", { class: "prb-lista" }, r.itens.filter(x => x.data === d).map(x => h("li", { class: "prb-item", style: `border-color:${corDe(x.empresa_id)}` }, h("div", {},
+          h("strong", { text: `${x.feito ? "✓ " : ""}${x.tarefa ? "☐ Tarefa: " : (x.hora || "Dia todo") + " · "}${x.titulo}` }),
+          h("p", { class: "prb-meta", text: [x.empresa, x.local, x.responsavel_nome && "responsável: " + x.responsavel_nome, x.origem === "google" && "Google Agenda"].filter(Boolean).join(" · ") }),
+          h("div", { class: "acoes" }, botao("Abrir", () => { escolherEmpresa(x.empresa_id); location.hash = x.tarefa ? "#/admin/tarefas" : "#/admin/agenda"; }, "btn-secundario btn-pequeno"))))))))) :
+        h("section", { class: "cartao vidro", style: "margin-top:12px" }, vazio("Nada nessas duas semanas", "")));
   }
 
   // ----- Manutenção e obrigações
@@ -7569,6 +7754,23 @@ Botão só com texto = resposta.` })),
       h("div", { class: "fin-duas" }, campo("Multa por atraso (%)", multa), campo("Juros ao mês (%)", juros)), campo("Garantia", garantia), campo("Observações", obs)], "Salvar",
       async () => { await adm(l ? `locatarios/${l.id}` : "locatarios", { metodo: l ? "PUT" : "POST", corpo: { nome: nome.value, unidade: unidade.value, responsavel: resp.value, documento: doc.value, telefone: tel.value, email: email.value, aluguel: aluguel.value || "0", condominio: cond.value || "0", outras: outras.value || "0", dia_venc: Number(dia.value), inicio: ini.value, fim: fim.value, indice: indice.value, reajuste_mes: Number(mesR.value) || null, multa_pct: multa.value, juros_pct: juros.value, garantia: garantia.value, obs: obs.value, periodicidade: period.value, dia_semana: Number(diaSem.value) } }); aviso("Locatário salvo. A cobrança do mês já está em A receber.", "ok"); recarregarAdm(); });
   }
+  async function reajustar(l) {
+    const indice = h("select", { class: "entrada" }, ["IGP-M", "IPCA", "INPC", "IGP-DI"].map(x => h("option", { value: x, text: x })));
+    indice.value = ["IGP-M", "IPCA", "INPC", "IGP-DI"].includes(String(l.indice || "").toUpperCase()) ? String(l.indice).toUpperCase() : "IGP-M";
+    const resultado = h("div", {}, h("p", { class: "sub", text: "Escolha o índice e toque em Calcular. A DENIA busca o índice oficial no Banco Central (acumulado dos 12 meses anteriores ao mês do reajuste)." }));
+    const pct = h("input", { class: "entrada", type: "text", inputmode: "decimal" }), novo = entradaValor(null), vale = h("input", { class: "entrada", type: "month", value: mesAtualLocal() });
+    const calcular = async () => {
+      trocar(resultado, carregando("Buscando no Banco Central…"));
+      try {
+        const r = await adm(`locatarios/${l.id}/reajuste?indice=${encodeURIComponent(indice.value)}`);
+        pct.value = String(Math.max(0, r.acumulado_pct).toFixed(4)).replace(".", ","); novo.value = (r.novo_aluguel_cent / 100).toFixed(2).replace(".", ",");
+        trocar(resultado, h("p", { text: `${r.indice} de ${r.de.split("-").reverse().join("/")} a ${r.ate.split("-").reverse().join("/")}: ${String(r.acumulado_pct.toFixed(2)).replace(".", ",")}% acumulado. Aluguel de ${dinA(r.aluguel_cent)} para ${dinA(r.novo_aluguel_cent)}.` }), r.aviso ? h("p", { class: "prb-urgente", style: "display:block", text: r.aviso }) : null);
+      } catch (e) { trocar(resultado, h("p", { class: "prb-urgente", style: "display:block", text: e.message })); }
+    };
+    await formulario(`Reajuste — ${l.nome}`, [h("div", { class: "fin-duas" }, campo("Índice", indice), h("div", { style: "align-self:end" }, botao("Calcular", calcular, "btn-secundario"))), resultado,
+      h("div", { class: "fin-duas" }, campo("Percentual (%)", pct), campo("Aluguel novo", novo)), campo("Vale a partir de", vale, "A cobrança desse mês (se ainda aberta) já sai com o valor novo.")], "Aplicar reajuste",
+      async () => { const r = await adm(`locatarios/${l.id}/reajuste`, { metodo: "POST", corpo: { pct: pct.value, novo_valor: novo.value, indice: indice.value, vale_de: vale.value } }); aviso(`Reajustado: ${dinA(r.de_cent)} → ${dinA(r.para_cent)}.`, "ok"); recarregarAdm(); });
+  }
   async function admAlugueis(el, vivo) {
     const r = await adm("locatarios");
     if (!vivo()) return;
@@ -7582,6 +7784,7 @@ Botão só com texto = resposta.` })),
           botao("Recebi", () => darBaixa({ ...a, tipo: "ENTRADA" }), "btn-primario btn-pequeno")))) : selo("Em dia", "ok")),
         h("td", { text: [l.fim ? `contrato até ${dataCurtaFin(l.fim)}${l.contrato_vence_dias !== null && l.contrato_vence_dias <= 60 ? " (vencendo)" : ""}` : "", l.reajuste_proximo ? `reajuste ${l.indice || ""} em ${l.reajuste_proximo.split("-").reverse().join("/")}` : ""].filter(Boolean).join(" · ") || "—" }),
         h("td", {}, h("div", { class: "acoes", style: "flex-wrap:nowrap" }, botao("Editar", () => editarLocatario(l), "btn-secundario btn-pequeno"),
+          l.ativo ? botao("Reajuste", () => reajustar(l), "btn-secundario btn-pequeno") : null,
           l.ativo ? botao("Isentar mês", async () => {
             const mesI = h("input", { class: "entrada", type: "month", value: mesAtualLocal() }), motivo = entradaTxt("", "Ex.: obra na loja, acordo");
             await formulario(`Isentar ${l.nome}`, [h("p", { class: "sub", text: "A cobrança daquele mês sai do a receber e não volta." }), campo("Mês", mesI), campo("Motivo", motivo)], "Isentar",
@@ -7703,7 +7906,15 @@ Botão só com texto = resposta.` })),
     const assin = entradaTxt(String(c.assinaturas || "").split("|").join(", "), "Ex.: Administradora, Proprietário"), cidade = entradaTxt(c.cidade, "Ex.: Rio de Janeiro");
     const emissor = entradaTxt(c.recibo_emissor, "Ex.: Shopping Infomix — CNPJ 00.000.000/0001-00");
     const endereco = entradaTxt(c.endereco, "Ex.: Rua Voluntários da Pátria, 261 — Botafogo");
-    const salvar = async () => { try { await adm("config", { metodo: "PUT", corpo: { perfil: perfil.value, resumo_diario: resumo.checked, hora_resumo: Number(hora.value), emails: emails.value, tp_no_fin: tp.checked, assinaturas: assin.value.split(",").map(s => s.trim()).filter(Boolean), cidade: cidade.value, recibo_emissor: emissor.value, endereco: endereco.value } }); aviso("Ajustes salvos.", "ok"); } catch (e) { aviso(e.message, "erro"); } };
+    // Google Agenda (endereço secreto .ics) e para onde vão os avisos.
+    const gcal = h("input", { class: "entrada", type: "url", value: c.gcal_url || "", placeholder: "https://calendar.google.com/calendar/ical/…/basic.ics", autocomplete: "off" });
+    const avEmail = h("input", { type: "checkbox", checked: c.aviso_email !== 0 }), avTg = h("input", { type: "checkbox", checked: c.aviso_telegram !== 0 });
+    const zapModelo = entradaTxt(c.zap_modelo, "nome do modelo aprovado (ex.: lembrete_compromisso)"), zapNumeros = entradaTxt(c.zap_numeros, "Ex.: 5521999998888 (até 5, separados por vírgula)");
+    const statusG = h("p", { class: "sub", text: c.gcal_url ? (c.gcal_erro ? "⚠️ " + c.gcal_erro : c.gcal_ms ? `Última leitura: ${quando(c.gcal_ms)} · ${c.gcal_n || 0} evento(s) no período` : "Ainda não lido.") : "Não conectado." });
+    const salvar = async () => { try { const x = await adm("config", { metodo: "PUT", corpo: { perfil: perfil.value, resumo_diario: resumo.checked, hora_resumo: Number(hora.value), emails: emails.value, tp_no_fin: tp.checked, assinaturas: assin.value.split(",").map(s => s.trim()).filter(Boolean), cidade: cidade.value, recibo_emissor: emissor.value, endereco: endereco.value,
+      gcal_url: gcal.value.trim(), aviso_email: avEmail.checked, aviso_telegram: avTg.checked, zap_modelo: zapModelo.value.trim(), zap_numeros: zapNumeros.value, zap_idioma: "pt_BR" } });
+      if (x.google && !x.google.ok) aviso("Salvo, mas não consegui ler o Google Agenda: " + x.google.erro, "erro"); else aviso(x.google ? `Salvo. ${x.google.eventos} evento(s) trazidos do Google Agenda.` : "Ajustes salvos.", "ok");
+      if (x.google) navegar(); } catch (e) { aviso(e.message, "erro"); } };
     const link = h("div", {});
     const mostrarLink = caminho => trocar(link, h("p", { class: "sub", text: "Assine este endereço no celular (iPhone: Ajustes → Calendário → Contas → Adicionar conta → Outra → Adicionar calendário assinado; Google Agenda: Outras agendas → Do URL). Os alarmes chegam também no relógio." }),
       h("div", { class: "compor" }, h("input", { class: "entrada", type: "text", readonly: true, value: location.origin + caminho }), botao("Copiar", () => copiar(location.origin + caminho), "btn-secundario")),
@@ -7726,6 +7937,16 @@ Botão só com texto = resposta.` })),
         h("section", { class: "cartao vidro" }, h("h3", { style: "margin:0 0 6px", text: "Resumo do dia por e-mail" }),
           h("p", { class: "sub", text: "Todo dia, no horário escolhido: compromissos, contas vencendo, manutenção, documentos e temporada. Dia sem nada não manda e-mail." }),
           h("label", { class: "fin-check" }, resumo, " Mandar o resumo do dia"), h("div", { class: "fin-duas" }, campo("Hora (Brasília)", hora), campo("Para", emails)),
+          h("div", { class: "acoes" }, botao("Salvar", salvar, "btn-primario"))),
+        h("section", { class: "cartao vidro" }, h("h3", { style: "margin:0 0 6px", text: "Trazer o Google Agenda" }),
+          h("p", { class: "sub", text: "No computador, abra o Google Agenda → Configurações → clique na sua agenda → Integrar agenda → copie o \"Endereço secreto no formato iCal\" e cole aqui. A DENIA traz os eventos a cada 15 minutos (o que você apagar lá, sai daqui)." }),
+          campo("Endereço secreto (iCal)", gcal), statusG,
+          h("div", { class: "acoes" }, botao("Salvar e ler agora", salvar, "btn-primario"), c.gcal_url ? botao("Ler de novo", async () => { try { const x = await adm("gcal/sincronizar", { metodo: "POST" }); aviso(`${x.eventos} evento(s) lidos.`, "ok"); navegar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario") : null)),
+        h("section", { class: "cartao vidro" }, h("h3", { style: "margin:0 0 6px", text: "Avisos de compromissos e tarefas" }),
+          h("p", { class: "sub", text: "O aviso vai para o responsável do compromisso (e para os e-mails acima). Também no grupo do Telegram da empresa, onde dá para escrever /agenda, /marcar vistoria terça às 10h e /tarefa pedir orçamento." }),
+          h("label", { class: "fin-check" }, avEmail, " Por e-mail"), h("label", { class: "fin-check" }, avTg, " No Telegram da empresa (conecte em WhatsApp → Conexão → Telegram)"),
+          h("p", { class: "sub", style: "margin-top:8px", text: "WhatsApp: a Meta só deixa a empresa iniciar conversa com um modelo aprovado. Crie em WhatsApp → Modelos de mensagem um modelo de Utilidade com duas variáveis ({{1}} o compromisso, {{2}} quando) e escreva o nome dele aqui." }),
+          h("div", { class: "fin-duas" }, campo("Modelo aprovado", zapModelo), campo("Números que recebem", zapNumeros)),
           h("div", { class: "acoes" }, botao("Salvar", salvar, "btn-primario"))),
         h("section", { class: "cartao vidro" }, h("h3", { style: "margin:0 0 6px", text: "Agenda no celular e no relógio" }),
           h("p", { class: "sub", text: "Compromissos, contas a pagar e receber, manutenção e documentos aparecem no calendário do iPhone ou do Google, com alarmes." }), link,

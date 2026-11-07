@@ -47,7 +47,15 @@ export const DDL_ADMIN = [
 ];
 const ALTERS_ADMIN = ["ALTER TABLE adm_locatarios ADD COLUMN periodicidade TEXT", "ALTER TABLE adm_locatarios ADD COLUMN dia_semana INTEGER", "ALTER TABLE adm_config ADD COLUMN recibo_emissor TEXT", "ALTER TABLE adm_config ADD COLUMN endereco TEXT",
   // Pontos a conferir escritos à mão para o relatório de um mês.
-  "CREATE TABLE IF NOT EXISTS adm_rel_notas (org_id INTEGER NOT NULL, mes TEXT NOT NULL, texto TEXT, ms INTEGER, PRIMARY KEY (org_id, mes))"];
+  "CREATE TABLE IF NOT EXISTS adm_rel_notas (org_id INTEGER NOT NULL, mes TEXT NOT NULL, texto TEXT, ms INTEGER, PRIMARY KEY (org_id, mes))",
+  // Tarefas (com ou sem prazo), checklist, responsável e data para cobrar retorno ("acompanhar em").
+  `CREATE TABLE IF NOT EXISTS adm_tarefas (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, titulo TEXT NOT NULL, responsavel_id INTEGER, prazo TEXT, acompanhar_em TEXT,
+    checklist TEXT, prioridade TEXT NOT NULL DEFAULT 'NORMAL', feito INTEGER NOT NULL DEFAULT 0, feito_em TEXT, obs TEXT, criado_por TEXT, criado_ms INTEGER, avisado TEXT)`,
+  "CREATE INDEX IF NOT EXISTS adm_tarefas_org ON adm_tarefas(org_id, feito)",
+  // Reajustes aplicados aos aluguéis (histórico: índice, percentual, de quanto para quanto).
+  "CREATE TABLE IF NOT EXISTS adm_reajustes (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, locatario_id INTEGER NOT NULL, indice TEXT, pct REAL, de_cent INTEGER, para_cent INTEGER, vale_de TEXT, por TEXT, ms INTEGER)",
+  ...["responsavel_id INTEGER", "origem TEXT"].map(c => "ALTER TABLE adm_agenda ADD COLUMN " + c),
+  ...["gcal_url TEXT", "gcal_ms INTEGER", "gcal_erro TEXT", "gcal_n INTEGER", "aviso_telegram INTEGER NOT NULL DEFAULT 1", "aviso_email INTEGER NOT NULL DEFAULT 1", "zap_modelo TEXT", "zap_idioma TEXT", "zap_numeros TEXT"].map(c => "ALTER TABLE adm_config ADD COLUMN " + c)];
 
 const prontos = new WeakSet();
 export async function garantirAdmin(env) {
@@ -245,12 +253,16 @@ export async function oDia(env, orgId, agoraMs) {
       WHERE r.org_id=? AND r.status <> 'CANCELADA' AND r.tipo='RESERVA' AND (r.inicio BETWEEN ? AND ? OR r.fim BETWEEN ? AND ?) ORDER BY r.inicio LIMIT 50`, orgId, hoje, somarDias(hoje, 2), hoje, somarDias(hoje, 2));
   } catch { /* sem temporada */ }
   const saldos = await saldosNa(env, orgId, hoje);
+  const tarefas = (await q("SELECT t.*, COALESCE(NULLIF(u.nome,''), u.email) AS responsavel_nome FROM adm_tarefas t LEFT JOIN plt_usuarios u ON u.id=t.responsavel_id WHERE t.org_id=? AND t.feito=0 AND ((t.prazo IS NOT NULL AND t.prazo <= ?) OR (t.acompanhar_em IS NOT NULL AND t.acompanhar_em <= ?)) ORDER BY COALESCE(t.prazo, t.acompanhar_em) LIMIT 50", orgId, semana, hoje))
+    .map(x => ({ ...x, atrasada: x.prazo && x.prazo < hoje, cobrar: x.acompanhar_em && x.acompanhar_em <= hoje }));
+  const mesN = Number(hoje.slice(5, 7));
+  const reajustes = await q("SELECT id, nome, unidade, indice, aluguel_cent FROM adm_locatarios WHERE org_id=? AND ativo=1 AND reajuste_mes=? AND (inicio IS NULL OR inicio < ?)", orgId, mesN, somarDias(hoje, -300)).catch(() => []);
   const soma = (ls, f) => ls.filter(f).reduce((s, l) => s + l.valor_cent, 0);
   return {
     hoje, agora: agoraLocal(agoraMs),
     agenda: agenda.map(a => ({ ...a, atrasado: a.data < hoje })),
     contas: contas.map(c => ({ ...c, vencida: c.data < hoje })),
-    rotinas, rotinas_sem_data: semData, documentos, temporada, saldos,
+    rotinas, rotinas_sem_data: semData, documentos, temporada, saldos, tarefas, reajustes,
     totais: {
       pagar_vencido: soma(contas, c => c.tipo === "SAIDA" && c.data < hoje), pagar_semana: soma(contas, c => c.tipo === "SAIDA" && c.data >= hoje),
       receber_vencido: soma(contas, c => c.tipo === "ENTRADA" && c.data < hoje), receber_semana: soma(contas, c => c.tipo === "ENTRADA" && c.data >= hoje),
@@ -268,6 +280,8 @@ export function textoDoDia(d, empresa, moeda = "BRL") {
   if (hojeC.length) L.push("Vence hoje:", ...hojeC.map(c => `• ${c.tipo === "ENTRADA" ? "Receber" : "Pagar"} ${c.descricao}: ${f(c.valor_cent)}`), "");
   if (venc.length) L.push(`Vencidas: ${venc.length} (a pagar ${f(d.totais.pagar_vencido)} · a receber ${f(d.totais.receber_vencido)})`, "");
   if (d.rotinas.length) L.push("Manutenção e obrigações:", ...d.rotinas.slice(0, 10).map(r => `• ${r.titulo}: ${r.situacao === "VENCIDA" ? `vencida desde ${br(r.proxima)}` : `vence ${br(r.proxima)}`}`), "");
+  if (d.tarefas && d.tarefas.length) L.push("Tarefas:", ...d.tarefas.map(x => `• ${x.titulo}${x.prazo ? ` (prazo ${br(x.prazo)})` : ""}${x.cobrar ? " — cobrar retorno" : ""}${x.responsavel_nome ? " — " + x.responsavel_nome : ""}`), "");
+  if (d.reajustes && d.reajustes.length) L.push("Reajuste de aluguel neste mês:", ...d.reajustes.map(x => `• ${x.nome}${x.unidade ? " (" + x.unidade + ")" : ""}: ${x.indice || "índice do contrato"}`), "");
   if (d.documentos.length) L.push("Documentos:", ...d.documentos.map(x => `• ${x.titulo}: ${x.dias < 0 ? "venceu em" : "vence em"} ${br(x.vence_em)}`), "");
   if (d.temporada.length) L.push("Temporada (hoje a depois de amanhã):", ...d.temporada.map(t => `• ${t.inicio >= d.hoje && t.inicio <= somarDias(d.hoje, 2) ? `Entrada ${br(t.inicio)}` : `Saída ${br(t.fim)}`}: ${t.hospede || "hóspede"} — ${t.imovel}`), "");
   if (d.saldos.length) L.push("Saldos de hoje:", ...d.saldos.map(s => `• ${s.nome}: ${f(s.saldo_cent)}`), "");
@@ -715,6 +729,197 @@ export async function reservasNoFinanceiro(env, orgId, agoraMs) {
 }
 
 // ---------------------------------------------------------------------------
+// Compromisso escrito ou falado em português: "vistoria do AVCB terça às 10h", "reunião amanhã 14:30 no escritório",
+// "dia 15 às 9h pagar o IPTU", "15/11 contador". Sem IA: regras simples e previsíveis (a IA da voz usa o mesmo caminho).
+// ---------------------------------------------------------------------------
+const DIAS_SEMANA = { domingo: 0, segunda: 1, "segunda-feira": 1, terca: 2, "terça": 2, "terca-feira": 2, "terça-feira": 2, quarta: 3, "quarta-feira": 3, quinta: 4, "quinta-feira": 4, sexta: 5, "sexta-feira": 5, sabado: 6, "sábado": 6 };
+const MESES_N = { janeiro: 1, fevereiro: 2, "março": 3, marco: 3, abril: 4, maio: 5, junho: 6, julho: 7, agosto: 8, setembro: 9, outubro: 10, novembro: 11, dezembro: 12 };
+export function interpretarCompromisso(texto, hoje) {
+  let t = ` ${String(texto || "").replace(/\s+/g, " ").trim()} `;
+  if (!t.trim()) return { erro: "Escreva o compromisso." };
+  let data = null, hora = null, m;
+  const tira = re0 => { t = t.replace(re0, " "); };
+  // Hora: 14h, 14h30, 14:30, às 9, 9 da manhã, 3 da tarde
+  m = [...t.matchAll(/\s(?:às|as|a partir das)?\s*(\d{1,2})(?:[:h](\d{2}))?\s*(?:h(?:oras?)?)?\s*(da manhã|da manha|da tarde|da noite)?(?=[\s,.!?])/gi)].find(x => /[:h]|às|as|da (manh|tarde|noite)/i.test(x[0]) && !/\//.test(x[0]));
+  if (m) {
+    let hh = Number(m[1]); const mm = Number(m[2] || 0);
+    if (/tarde|noite/i.test(m[3] || "") && hh < 12) hh += 12;
+    if (hh <= 23 && mm <= 59) { hora = `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`; tira(m[0]); }
+  }
+  const base = new Date(hoje + "T12:00:00Z");
+  const iso = d => d.toISOString().slice(0, 10);
+  if ((m = /\s(depois de amanhã|depois de amanha)(?=[\s,.!?])/i.exec(t))) { data = somarDias(hoje, 2); tira(m[0]); }
+  else if ((m = /\s(amanhã|amanha)(?=[\s,.!?])/i.exec(t))) { data = somarDias(hoje, 1); tira(m[0]); }
+  else if ((m = /\s(hoje)(?=[\s,.!?])/i.exec(t))) { data = hoje; tira(m[0]); }
+  if (!data && (m = /\s(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?(?=[\s,.!?])/.exec(t))) {
+    const d = Number(m[1]), mes = Number(m[2]); let ano = m[3] ? Number(m[3].length === 2 ? "20" + m[3] : m[3]) : base.getUTCFullYear();
+    let x = `${ano}-${String(mes).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+    if (!m[3] && x < hoje) x = `${ano + 1}${x.slice(4)}`;
+    if (dataValida(x)) { data = x; tira(m[0]); }
+  }
+  if (!data && (m = /\s(?:dia\s+)?(\d{1,2})\s+de\s+(janeiro|fevereiro|março|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)(?:\s+de\s+(\d{4}))?(?=[\s,.!?])/i.exec(t))) {
+    const ano = m[3] ? Number(m[3]) : base.getUTCFullYear();
+    let x = `${ano}-${String(MESES_N[m[2].toLowerCase()]).padStart(2, "0")}-${String(Number(m[1])).padStart(2, "0")}`;
+    if (!m[3] && x < hoje) x = `${ano + 1}${x.slice(4)}`;
+    if (dataValida(x)) { data = x; tira(m[0]); }
+  }
+  if (!data && (m = /\s(?:na |no |nesta |neste |próxima |proxima |próximo |proximo )?(domingo|segunda(?:-feira)?|ter[cç]a(?:-feira)?|quarta(?:-feira)?|quinta(?:-feira)?|sexta(?:-feira)?|s[aá]bado)(?=[\s,.!?])/i.exec(t))) {
+    const alvo = DIAS_SEMANA[m[1].toLowerCase()];
+    let dif = (alvo - base.getUTCDay() + 7) % 7; if (dif === 0) dif = 7;
+    data = somarDias(hoje, dif); tira(m[0]);
+  }
+  if (!data && (m = /\s(?:dia|no dia)\s+(\d{1,2})(?=[\s,.!?])/i.exec(t))) {
+    const d = Number(m[1]); let mes = hoje.slice(0, 7);
+    if (d < Number(hoje.slice(8))) mes = somarMes(mes, 1);
+    const x = `${mes}-${String(d).padStart(2, "0")}`; if (dataValida(x)) { data = x; tira(m[0]); }
+  }
+  let local = null;
+  if ((m = /\s(?:no|na|em)\s+(escrit[oó]rio|loja|shopping|cart[oó]rio|banco|pr[eé]dio|condom[ií]nio|apartamento|apto [\w\d]+|sala [\w\d]+|stand [\w\d]+)(?=[\s,.!?]|$)/i.exec(t))) { local = m[1]; tira(m[0]); }
+  let titulo = t.replace(/^\s*(?:me\s+)?(?:lembr[ae](?:r)?\s+(?:de\s+)?|marc[ao]r?\s+(?:um[a]?\s+)?|agend[ae]r?\s+(?:um[a]?\s+)?|anot[ae]r?\s+(?:na agenda\s+)?|compromisso:?\s+|agenda:?\s+)/i, "").replace(/\s+([,.!?])/g, "$1").replace(/^[\s,.\-–—]+|[\s,.\-–—]+$/g, "").replace(/\s{2,}/g, " ");
+  titulo = titulo.replace(/\s(?:às|as|para|pra|de|no|na|em)$/i, "").trim();
+  if (!titulo) return { erro: "Não entendi o que é o compromisso." };
+  if (!data) return { erro: "Diga também o dia (ex.: amanhã, terça, 15/11).", titulo: titulo.charAt(0).toUpperCase() + titulo.slice(1), hora };
+  return { titulo: titulo.charAt(0).toUpperCase() + titulo.slice(1), data, hora, local };
+}
+
+async function criarCompromisso(env, orgId, v, origem, agoraMs) {
+  const r = await env.DB.prepare("INSERT INTO adm_agenda(org_id,titulo,data,hora,duracao_min,quem,local,prioridade,aviso_min,repetir,obs,criado_ms,responsavel_id,origem) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+    .bind(orgId, v.titulo, v.data, v.hora || null, v.duracao_min || 60, v.quem || null, v.local || null, v.prioridade || "NORMAL", v.aviso_min ?? 60, v.repetir || null, v.obs || null, agoraMs, v.responsavel_id || null, origem || null).run();
+  return r.meta?.last_row_id;
+}
+// Para Telegram, voz e WhatsApp: cria a partir do texto e devolve uma frase de confirmação.
+export async function compromissoPorTexto(env, orgId, texto, agoraMs, origem = "texto") {
+  await garantirAdmin(env);
+  const hoje = hojeLocal(agoraMs), v = interpretarCompromisso(texto, hoje);
+  if (v.erro) return { ok: false, erro: v.erro, parcial: v };
+  const id = await criarCompromisso(env, orgId, v, origem, agoraMs);
+  return { ok: true, id, ...v, frase: `Anotado: ${v.titulo} — ${nomeDia(v.data, hoje)}${v.hora ? " às " + v.hora : ""}${v.local ? " (" + v.local + ")" : ""}.` };
+}
+export async function tarefaPorTexto(env, orgId, texto, agoraMs, quem = null) {
+  await garantirAdmin(env);
+  const hoje = hojeLocal(agoraMs), v = interpretarCompromisso(texto, hoje);
+  const titulo = re(v.titulo || texto, 200); if (!titulo) return { ok: false, erro: "Escreva a tarefa." };
+  const r = await env.DB.prepare("INSERT INTO adm_tarefas(org_id,titulo,prazo,criado_por,criado_ms) VALUES(?,?,?,?,?)").bind(orgId, titulo, v.data || null, quem, agoraMs).run();
+  return { ok: true, id: r.meta?.last_row_id, titulo, prazo: v.data || null, frase: `Tarefa anotada: ${titulo}${v.data ? " (prazo " + nomeDia(v.data, hoje) + ")" : ""}.` };
+}
+const NOMES_DIA = ["domingo", "segunda", "terça", "quarta", "quinta", "sexta", "sábado"];
+function nomeDia(d, hoje) {
+  const dif = diasEntre(hoje, d);
+  if (dif === 0) return "hoje"; if (dif === 1) return "amanhã";
+  return `${NOMES_DIA[new Date(d + "T12:00:00Z").getUTCDay()]}, ${br(d)}`;
+}
+// Agenda em texto (para Telegram, voz e resumo): hoje e os próximos dias, com tarefas.
+export async function agendaEmTexto(env, orgId, agoraMs, dias = 2) {
+  await garantirAdmin(env);
+  const hoje = hojeLocal(agoraMs), ate = somarDias(hoje, dias);
+  const ag = (await env.DB.prepare("SELECT * FROM adm_agenda WHERE org_id=? AND feito=0 AND data <= ? ORDER BY data, COALESCE(hora,'99:99') LIMIT 40").bind(orgId, ate).all()).results || [];
+  const tf = (await env.DB.prepare("SELECT * FROM adm_tarefas WHERE org_id=? AND feito=0 AND ((prazo IS NOT NULL AND prazo <= ?) OR (acompanhar_em IS NOT NULL AND acompanhar_em <= ?)) ORDER BY COALESCE(prazo, acompanhar_em) LIMIT 20").bind(orgId, ate, hoje).all()).results || [];
+  if (!ag.length && !tf.length) return "Nada na agenda para hoje e os próximos dias. 🙂";
+  const L = [];
+  let dia = "";
+  for (const a of ag) {
+    const rot = a.data < hoje ? "Atrasados" : nomeDia(a.data, hoje).replace(/^./, c => c.toUpperCase());
+    if (rot !== dia) { L.push(`\n${rot}:`); dia = rot; }
+    L.push(`• ${a.hora || "dia todo"} — ${a.titulo}${a.local ? " (" + a.local + ")" : ""}${a.data < hoje ? " · " + br(a.data) : ""}`);
+  }
+  if (tf.length) { L.push("\nTarefas:"); for (const x of tf) L.push(`• ${x.titulo}${x.prazo ? " · prazo " + br(x.prazo) : ""}${x.acompanhar_em && x.acompanhar_em <= hoje ? " · cobrar retorno" : ""}`); }
+  return L.join("\n").trim();
+}
+
+// ---------------------------------------------------------------------------
+// Google Agenda (e qualquer calendário .ics): a DENIA lê o "endereço secreto no formato iCal" e traz os eventos.
+// O caminho de volta já existe: o calendário da DENIA assinado no Google/iPhone. Assim os dois lados ficam iguais.
+// ---------------------------------------------------------------------------
+function lerIcs(texto, de, ate) {
+  const linhas = String(texto || "").replace(/\r\n[ \t]/g, "").replace(/\n[ \t]/g, "").split(/\r?\n/);
+  const eventos = []; let e = null;
+  const valor = l => l.slice(l.indexOf(":") + 1);
+  const quando = l => {
+    const v = valor(l), tz = /TZID=([^;:]+)/.exec(l)?.[1] || "";
+    if (/VALUE=DATE/.test(l) || /^\d{8}$/.test(v)) return { data: `${v.slice(0, 4)}-${v.slice(4, 6)}-${v.slice(6, 8)}`, hora: null };
+    const m = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})/.exec(v); if (!m) return null;
+    if (v.endsWith("Z") || (!tz && /Z$/.test(v))) { const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]) - 3 * 3600000); return { data: d.toISOString().slice(0, 10), hora: d.toISOString().slice(11, 16) }; }
+    return { data: `${m[1]}-${m[2]}-${m[3]}`, hora: `${m[4]}:${m[5]}` }; // horário local (ex.: America/Sao_Paulo)
+  };
+  const desc = v => v.replace(/\\n/gi, "\n").replace(/\\,/g, ",").replace(/\;/g, ";").replace(/\\\\/g, "\\");
+  for (const l of linhas) {
+    if (l === "BEGIN:VEVENT") e = {};
+    else if (l === "END:VEVENT") { if (e?.uid && e.ini && e.status !== "CANCELLED") eventos.push(e); e = null; }
+    else if (e) {
+      const k0 = l.split(/[;:]/)[0];
+      if (k0 === "UID") e.uid = valor(l); else if (k0 === "SUMMARY") e.titulo = desc(valor(l)); else if (k0 === "LOCATION") e.local = desc(valor(l));
+      else if (k0 === "DESCRIPTION") e.obs = desc(valor(l)); else if (k0 === "DTSTART") e.ini = quando(l); else if (k0 === "DTEND") e.fim = quando(l);
+      else if (k0 === "RRULE") e.rrule = valor(l); else if (k0 === "STATUS") e.status = valor(l); else if (k0 === "RECURRENCE-ID") e.recid = quando(l);
+    }
+  }
+  // Repetições simples (diária, semanal, mensal, anual) dentro da janela.
+  const out = [];
+  for (const ev of eventos) {
+    const dur = ev.fim && ev.ini.hora && ev.fim.hora && ev.fim.data === ev.ini.data ? Math.max(15, (Number(ev.fim.hora.slice(0, 2)) * 60 + Number(ev.fim.hora.slice(3))) - (Number(ev.ini.hora.slice(0, 2)) * 60 + Number(ev.ini.hora.slice(3)))) : 60;
+    const add = d => { if (d >= de && d <= ate) out.push({ uid: ev.uid + (ev.recid ? "@" + ev.recid.data : ""), chave: `${ev.uid}:${d}`, titulo: ev.titulo || "(sem título)", data: d, hora: ev.ini.hora, local: ev.local || null, obs: ev.obs || null, duracao_min: dur }); };
+    if (!ev.rrule || ev.recid) { add(ev.ini.data); continue; }
+    const p = Object.fromEntries(ev.rrule.split(";").map(x => x.split("=")));
+    const passo = Math.max(1, Number(p.INTERVAL) || 1), limite = Number(p.COUNT) || 500;
+    const fimR = p.UNTIL ? `${p.UNTIL.slice(0, 4)}-${p.UNTIL.slice(4, 6)}-${p.UNTIL.slice(6, 8)}` : ate;
+    const dias = p.BYDAY ? p.BYDAY.split(",").map(x => ["SU", "MO", "TU", "WE", "TH", "FR", "SA"].indexOf(x.slice(-2))) : null;
+    let n = 0;
+    for (let d = ev.ini.data, i = 0; d <= fimR && d <= ate && n < limite && i < 2000; i++) {
+      if (p.FREQ === "WEEKLY" && dias) {
+        const sem = Math.floor(diasEntre(ev.ini.data, d) / 7);
+        if (sem % passo === 0 && dias.includes(new Date(d + "T12:00:00Z").getUTCDay())) { add(d); n++; }
+        d = somarDias(d, 1); continue;
+      }
+      add(d); n++;
+      d = p.FREQ === "DAILY" ? somarDias(d, passo) : p.FREQ === "WEEKLY" ? somarDias(d, 7 * passo) : p.FREQ === "MONTHLY" ? somarMesesData(d, passo) : p.FREQ === "YEARLY" ? somarMesesData(d, 12 * passo) : "9999-12-31";
+    }
+  }
+  return out;
+}
+export async function sincronizarGoogle(env, orgId, url, agoraMs) {
+  await garantirAdmin(env);
+  const hoje = hojeLocal(agoraMs), de = somarDias(hoje, -30), ate = somarDias(hoje, 180);
+  let texto;
+  try {
+    const r = await fetch(url, { headers: { accept: "text/calendar" }, signal: AbortSignal.timeout(15000) });
+    if (!r.ok) throw new Error(`o Google respondeu ${r.status}`);
+    texto = await r.text();
+    if (!/BEGIN:VCALENDAR/.test(texto)) throw new Error("o endereço não é de um calendário (.ics)");
+  } catch (e) {
+    await env.DB.prepare("UPDATE adm_config SET gcal_ms=?, gcal_erro=? WHERE org_id=?").bind(agoraMs, re(`Não consegui ler o calendário: ${e?.message || e}`, 300), orgId).run();
+    return { ok: false, erro: e?.message || String(e) };
+  }
+  const evs = lerIcs(texto, de, ate);
+  const vistos = new Set();
+  let novos = 0;
+  for (const ev of evs.slice(0, 1500)) {
+    const ext = "gcal:" + ev.chave; vistos.add(ext);
+    const r = await env.DB.prepare(`INSERT INTO adm_agenda(org_id,titulo,data,hora,duracao_min,local,obs,aviso_min,externo,origem,criado_ms) VALUES(?,?,?,?,?,?,?,30,?,'google',?)
+      ON CONFLICT(org_id, externo) DO UPDATE SET titulo=excluded.titulo, data=excluded.data, hora=excluded.hora, duracao_min=excluded.duracao_min, local=excluded.local, obs=excluded.obs`)
+      .bind(orgId, re(ev.titulo, 160), ev.data, ev.hora, ev.duracao_min, re(ev.local, 120) || null, re(ev.obs, 800) || null, ext, agoraMs).run();
+    if (r.meta?.changes && r.meta?.last_row_id) novos++;
+  }
+  // O que foi apagado no Google sai da DENIA também (só os que vieram do Google, na janela lida).
+  const antigos = (await env.DB.prepare("SELECT id, externo FROM adm_agenda WHERE org_id=? AND origem='google' AND data BETWEEN ? AND ?").bind(orgId, de, ate).all()).results || [];
+  let removidos = 0;
+  for (const a of antigos) if (!vistos.has(a.externo)) { await env.DB.prepare("DELETE FROM adm_agenda WHERE id=?").bind(a.id).run(); removidos++; }
+  await env.DB.prepare("UPDATE adm_config SET gcal_ms=?, gcal_erro=NULL, gcal_n=? WHERE org_id=?").bind(agoraMs, evs.length, orgId).run();
+  return { ok: true, eventos: evs.length, removidos };
+}
+
+// Agenda de todas as empresas (para quem cuida de várias), num período.
+export async function agendaGeral(env, orgs, de, ate, agoraMs) {
+  await garantirAdmin(env);
+  const out = [], hoje = hojeLocal(agoraMs);
+  for (const o of orgs) {
+    const ag = (await env.DB.prepare("SELECT a.*, u.nome AS responsavel_nome, u.email AS responsavel_email FROM adm_agenda a LEFT JOIN plt_usuarios u ON u.id=a.responsavel_id WHERE a.org_id=? AND ((a.data BETWEEN ? AND ?) OR (a.feito=0 AND a.data < ?)) ORDER BY a.data, COALESCE(a.hora,'99:99') LIMIT 500").bind(o.id, de, ate, hoje).all()).results || [];
+    for (const a of ag) out.push({ ...a, empresa: o.nome, empresa_id: o.id });
+    const tf = (await env.DB.prepare("SELECT * FROM adm_tarefas WHERE org_id=? AND feito=0 AND prazo IS NOT NULL AND prazo <= ? ORDER BY prazo LIMIT 200").bind(o.id, ate).all()).results || [];
+    for (const x of tf) out.push({ tarefa: true, id: x.id, titulo: x.titulo, data: x.prazo, hora: null, empresa: o.nome, empresa_id: o.id, feito: 0 });
+  }
+  return out.sort((a, b) => a.data.localeCompare(b.data) || String(a.hora || "99").localeCompare(String(b.hora || "99")));
+}
+
+// ---------------------------------------------------------------------------
 // Rotas: /api/orgs/:id/adm/...
 // ---------------------------------------------------------------------------
 export async function rotasAdmin(request, env, k, orgId, papel, resto) {
@@ -725,7 +930,7 @@ export async function rotasAdmin(request, env, k, orgId, papel, resto) {
   // Agenda e manutenção a equipe pode ver e usar; dinheiro, contratos e configuração só o dono e os administradores.
   const area = partes[0];
   if (!equipe) return json({ erro: "Seu perfil é somente leitura." }, 403);
-  if (!["dia", "agenda", "rotinas", "servicos"].includes(area) && !admin) return json({ erro: "Esta parte da administração é visível só para o dono e os administradores." }, 403);
+  if (!["dia", "agenda", "rotinas", "servicos", "tarefas", "equipe"].includes(area) && !admin) return json({ erro: "Esta parte da administração é visível só para o dono e os administradores." }, 403);
   const quem = k.sessao?.usuario?.email || null;
   const config = async () => {
     let c = await env.DB.prepare("SELECT * FROM adm_config WHERE org_id=?").bind(orgId).first();
@@ -743,6 +948,58 @@ export async function rotasAdmin(request, env, k, orgId, papel, resto) {
     return json({ ...d, moeda: await moeda(), config: admin ? await config() : null, admin });
   }
 
+  // Pessoas da equipe (para escolher o responsável de um compromisso ou tarefa).
+  const membros = async () => (await env.DB.prepare("SELECT u.id, COALESCE(NULLIF(u.nome,''), u.email) AS nome, u.email, m.papel FROM plt_membros m JOIN plt_usuarios u ON u.id=m.usuario_id WHERE m.org_id=? AND u.ativo=1 ORDER BY nome").bind(orgId).all().catch(() => null))?.results || [];
+  const responsavelValido = async idR => { const n = Number(idR) || 0; if (!n) return null; return (await membros()).some(x => x.id === n) ? n : null; };
+  if (area === "equipe" && metodo === "GET") return json({ equipe: await membros(), eu: k.sessao?.usuario?.id || null });
+
+  // ----- Tarefas (com ou sem prazo), checklist, responsável e "cobrar retorno em"
+  if (area === "tarefas") {
+    const validar = async (c, atual = {}) => {
+      const v = { ...atual, ...c };
+      if (!re(v.titulo)) return "Escreva a tarefa.";
+      if (v.prazo && !dataValida(v.prazo)) return "Prazo inválido.";
+      if (v.acompanhar_em && !dataValida(v.acompanhar_em)) return "Data de acompanhamento inválida.";
+      const lista = Array.isArray(v.checklist) ? v.checklist : (() => { try { return JSON.parse(v.checklist || "[]"); } catch { return []; } })();
+      return { titulo: re(v.titulo, 200), prazo: v.prazo || null, acompanhar_em: v.acompanhar_em || null, prioridade: v.prioridade === "ALTA" ? "ALTA" : "NORMAL", obs: re(v.obs, 1500) || null,
+        responsavel_id: await responsavelValido(v.responsavel_id), checklist: JSON.stringify(lista.slice(0, 40).map(x => ({ t: re(x.t ?? x, 160), ok: Boolean(x.ok) })).filter(x => x.t)) };
+    };
+    if (metodo === "GET" && !id1) {
+      const ver = url.searchParams.get("ver") || "abertas";
+      const itens = (await env.DB.prepare(`SELECT t.*, COALESCE(NULLIF(u.nome,''), u.email) AS responsavel_nome FROM adm_tarefas t LEFT JOIN plt_usuarios u ON u.id=t.responsavel_id WHERE t.org_id=? ${ver === "feitas" ? "AND t.feito=1" : ver === "todas" ? "" : "AND t.feito=0"}
+        ${url.searchParams.get("minhas") ? "AND t.responsavel_id=" + Number(k.sessao?.usuario?.id || 0) : ""} ORDER BY t.feito, CASE WHEN t.prazo IS NULL THEN 1 ELSE 0 END, t.prazo, t.id DESC LIMIT 500`).bind(orgId).all()).results || [];
+      return json({ hoje, tarefas: itens.map(x => ({ ...x, checklist: (() => { try { return JSON.parse(x.checklist || "[]"); } catch { return []; } })(), atrasada: !x.feito && x.prazo && x.prazo < hoje, cobrar: !x.feito && x.acompanhar_em && x.acompanhar_em <= hoje })) });
+    }
+    if (metodo === "POST" && partes[1] === "texto") {
+      const { c, erro } = await corpo(); if (erro) return erro;
+      const r = await tarefaPorTexto(env, orgId, c.texto, ms, quem);
+      return r.ok ? json(r, 201) : json({ erro: r.erro }, 400);
+    }
+    if (metodo === "POST" && !id1) {
+      const { c, erro } = await corpo(); if (erro) return erro;
+      const v = await validar(c); if (typeof v === "string") return json({ erro: v }, 400);
+      const r = await env.DB.prepare("INSERT INTO adm_tarefas(org_id,titulo,responsavel_id,prazo,acompanhar_em,checklist,prioridade,obs,criado_por,criado_ms) VALUES(?,?,?,?,?,?,?,?,?,?)")
+        .bind(orgId, v.titulo, v.responsavel_id, v.prazo, v.acompanhar_em, v.checklist, v.prioridade, v.obs, quem, ms).run();
+      return json({ ok: true, id: r.meta?.last_row_id }, 201);
+    }
+    if (id1) {
+      const atual = await env.DB.prepare("SELECT * FROM adm_tarefas WHERE id=? AND org_id=?").bind(id1, orgId).first();
+      if (!atual) return json({ erro: "Tarefa não encontrada." }, 404);
+      if (partes[2] === "feito" && metodo === "POST") {
+        const { c } = await corpo();
+        await env.DB.prepare("UPDATE adm_tarefas SET feito=?, feito_em=? WHERE id=?").bind(c?.desfazer ? 0 : 1, c?.desfazer ? null : hoje, id1).run();
+        return json({ ok: true });
+      }
+      if (metodo === "PUT") {
+        const { c, erro } = await corpo(); if (erro) return erro;
+        const v = await validar(c, { ...atual, checklist: (() => { try { return JSON.parse(atual.checklist || "[]"); } catch { return []; } })() }); if (typeof v === "string") return json({ erro: v }, 400);
+        await env.DB.prepare("UPDATE adm_tarefas SET titulo=?,responsavel_id=?,prazo=?,acompanhar_em=?,checklist=?,prioridade=?,obs=?,avisado=NULL WHERE id=?").bind(v.titulo, v.responsavel_id, v.prazo, v.acompanhar_em, v.checklist, v.prioridade, v.obs, id1).run();
+        return json({ ok: true });
+      }
+      if (metodo === "DELETE") { await env.DB.prepare("DELETE FROM adm_tarefas WHERE id=? AND org_id=?").bind(id1, orgId).run(); return json({ ok: true }); }
+    }
+  }
+
   // ----- Agenda e compromissos
   if (area === "agenda") {
     const validar = (c, atual = {}) => {
@@ -751,19 +1008,31 @@ export async function rotasAdmin(request, env, k, orgId, papel, resto) {
       if (!dataValida(v.data)) return "Escolha a data.";
       if (v.hora && !horaValida(v.hora)) return "Hora inválida (use 14:30).";
       return { titulo: re(v.titulo, 160), data: v.data, hora: v.hora || null, duracao_min: inteiro(v.duracao_min, 5, 1440, 60), quem: re(v.quem, 60) || null, local: re(v.local, 120) || null,
-        prioridade: v.prioridade === "ALTA" ? "ALTA" : "NORMAL", aviso_min: inteiro(v.aviso_min, 0, 10080, 60), repetir: ["semanal", "mensal", "anual"].includes(v.repetir) ? v.repetir : null, obs: re(v.obs, 800) || null };
+        prioridade: v.prioridade === "ALTA" ? "ALTA" : "NORMAL", aviso_min: inteiro(v.aviso_min, 0, 10080, 60), repetir: ["semanal", "mensal", "anual"].includes(v.repetir) ? v.repetir : null, obs: re(v.obs, 800) || null,
+        responsavel_id: v.responsavel_id === undefined ? atual.responsavel_id ?? null : Number(v.responsavel_id) || null };
     };
     if (metodo === "GET" && !id1) {
       const de = dataValida(url.searchParams.get("de")) ? url.searchParams.get("de") : somarDias(hoje, -30), ate = dataValida(url.searchParams.get("ate")) ? url.searchParams.get("ate") : somarDias(hoje, 120);
-      const itens = (await env.DB.prepare("SELECT * FROM adm_agenda WHERE org_id=? AND ((data BETWEEN ? AND ?) OR (feito=0 AND data < ?)) ORDER BY data, COALESCE(hora,'99:99') LIMIT 1000").bind(orgId, de, ate, hoje).all()).results || [];
-      return json({ itens, hoje });
+      const minha = url.searchParams.get("minha") ? " AND a.responsavel_id=" + Number(k.sessao?.usuario?.id || 0) : "";
+      const itens = (await env.DB.prepare(`SELECT a.*, COALESCE(NULLIF(u.nome,''), u.email) AS responsavel_nome FROM adm_agenda a LEFT JOIN plt_usuarios u ON u.id=a.responsavel_id WHERE a.org_id=? AND ((a.data BETWEEN ? AND ?) OR (a.feito=0 AND a.data < ?))${minha} ORDER BY a.data, COALESCE(a.hora,'99:99') LIMIT 1500`).bind(orgId, de, ate, hoje).all()).results || [];
+      // Tarefas com prazo aparecem no calendário também.
+      const tarefas = (await env.DB.prepare("SELECT id, titulo, prazo, feito FROM adm_tarefas WHERE org_id=? AND prazo BETWEEN ? AND ?").bind(orgId, de, ate).all()).results || [];
+      return json({ itens, tarefas, hoje });
+    }
+    // Compromisso escrito do jeito que se fala: "vistoria do AVCB terça às 10h".
+    if (metodo === "POST" && partes[1] === "texto") {
+      const { c, erro } = await corpo(); if (erro) return erro;
+      const r = await compromissoPorTexto(env, orgId, c.texto, ms, "texto");
+      if (!r.ok) return json({ erro: r.erro, parcial: r.parcial }, 400);
+      if (c.responsavel_id) await env.DB.prepare("UPDATE adm_agenda SET responsavel_id=? WHERE id=?").bind(await responsavelValido(c.responsavel_id), r.id).run();
+      return json(r, 201);
     }
     if (metodo === "POST" && !id1) {
       const { c, erro } = await corpo(); if (erro) return erro;
       const v = validar(c); if (typeof v === "string") return json({ erro: v }, 400);
-      const r = await env.DB.prepare("INSERT INTO adm_agenda(org_id,titulo,data,hora,duracao_min,quem,local,prioridade,aviso_min,repetir,obs,criado_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)")
-        .bind(orgId, v.titulo, v.data, v.hora, v.duracao_min, v.quem, v.local, v.prioridade, v.aviso_min, v.repetir, v.obs, ms).run();
-      return json({ ok: true, id: r.meta?.last_row_id }, 201);
+      v.responsavel_id = await responsavelValido(v.responsavel_id);
+      const id = await criarCompromisso(env, orgId, v, "painel", ms);
+      return json({ ok: true, id }, 201);
     }
     if (id1) {
       const atual = await env.DB.prepare("SELECT * FROM adm_agenda WHERE id=? AND org_id=?").bind(id1, orgId).first();
@@ -775,17 +1044,17 @@ export async function rotasAdmin(request, env, k, orgId, papel, resto) {
         let proximo = null;
         if (atual.repetir) {
           const data = atual.repetir === "semanal" ? somarDias(atual.data, 7) : somarMesesData(atual.data, atual.repetir === "anual" ? 12 : 1);
-          const r = await env.DB.prepare("INSERT INTO adm_agenda(org_id,titulo,data,hora,duracao_min,quem,local,prioridade,aviso_min,repetir,obs,criado_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)")
-            .bind(orgId, atual.titulo, data, atual.hora, atual.duracao_min, atual.quem, atual.local, atual.prioridade, atual.aviso_min, atual.repetir, atual.obs, ms).run();
-          proximo = { id: r.meta?.last_row_id, data };
+          proximo = { id: await criarCompromisso(env, orgId, { ...atual, data }, atual.origem || "painel", ms), data };
         }
         return json({ ok: true, proximo });
       }
       if (metodo === "PUT") {
         const { c, erro } = await corpo(); if (erro) return erro;
+        if (atual.origem === "google") return json({ erro: "Este compromisso vem do Google Agenda: altere lá (a DENIA atualiza sozinha)." }, 409);
         const v = validar(c, atual); if (typeof v === "string") return json({ erro: v }, 400);
-        await env.DB.prepare("UPDATE adm_agenda SET titulo=?,data=?,hora=?,duracao_min=?,quem=?,local=?,prioridade=?,aviso_min=?,repetir=?,obs=?,avisado_ms=NULL WHERE id=?")
-          .bind(v.titulo, v.data, v.hora, v.duracao_min, v.quem, v.local, v.prioridade, v.aviso_min, v.repetir, v.obs, id1).run();
+        v.responsavel_id = await responsavelValido(v.responsavel_id);
+        await env.DB.prepare("UPDATE adm_agenda SET titulo=?,data=?,hora=?,duracao_min=?,quem=?,local=?,prioridade=?,aviso_min=?,repetir=?,obs=?,responsavel_id=?,avisado_ms=NULL WHERE id=?")
+          .bind(v.titulo, v.data, v.hora, v.duracao_min, v.quem, v.local, v.prioridade, v.aviso_min, v.repetir, v.obs, v.responsavel_id, id1).run();
         return json({ ok: true });
       }
       if (metodo === "DELETE") { await env.DB.prepare("DELETE FROM adm_agenda WHERE id=? AND org_id=?").bind(id1, orgId).run(); return json({ ok: true }); }
@@ -903,6 +1172,49 @@ export async function rotasAdmin(request, env, k, orgId, papel, resto) {
         return { ...l, em_aberto: ab, em_aberto_cent: ab.reduce((s, a) => s + a.valor_cent, 0), vencido_cent: ab.filter(a => a.data < hoje).reduce((s, a) => s + a.valor_cent, 0), reajuste_proximo: reajusteProximo,
           contrato_vence_dias: l.fim ? diasEntre(hoje, l.fim) : null };
       }) });
+    }
+    // Reajuste pelo índice oficial (Banco Central): acumulado dos 12 meses anteriores ao mês do reajuste.
+    if (id1 && partes[2] === "reajuste") {
+      const l = await env.DB.prepare("SELECT * FROM adm_locatarios WHERE id=? AND org_id=?").bind(id1, orgId).first();
+      if (!l) return json({ erro: "Locatário não encontrado." }, 404);
+      if (metodo === "GET") {
+        const indice = String(url.searchParams.get("indice") || l.indice || "IGP-M").toUpperCase();
+        const SERIES = { "IGP-M": 189, "IGPM": 189, "IPCA": 433, "INPC": 188, "IGP-DI": 190 };
+        const serie = SERIES[indice.replace(/\s/g, "")];
+        if (!serie) return json({ erro: "Índice não reconhecido. Use IGP-M, IPCA, INPC ou IGP-DI." }, 400);
+        // Meses de referência: os 12 que terminam no mês anterior ao do reajuste (o último índice já divulgado).
+        const mesRef = l.reajuste_mes ? `${hoje.slice(0, 4)}-${String(l.reajuste_mes).padStart(2, "0")}` : hoje.slice(0, 7);
+        let ultimo = somarMes(mesRef, -1); if (ultimo >= hoje.slice(0, 7)) ultimo = somarMes(hoje.slice(0, 7), -1);
+        const primeiro = somarMes(ultimo, -11);
+        const fmt = m0 => `01/${m0.slice(5)}/${m0.slice(0, 4)}`;
+        let dados;
+        try {
+          const r = await fetch(`https://api.bcb.gov.br/dados/serie/bcdata.sgs.${serie}/dados?formato=json&dataInicial=${fmt(primeiro)}&dataFinal=${fmt(ultimo)}`, { signal: AbortSignal.timeout(15000), headers: { accept: "application/json" } });
+          if (!r.ok) throw new Error("o Banco Central respondeu " + r.status);
+          dados = await r.json();
+        } catch (e) { return json({ erro: "Não consegui buscar o índice no Banco Central agora: " + (e?.message || e) }, 502); }
+        const meses = (Array.isArray(dados) ? dados : []).map(x => ({ mes: `${String(x.data).slice(6, 10)}-${String(x.data).slice(3, 5)}`, pct: Number(String(x.valor).replace(",", ".")) })).filter(x => Number.isFinite(x.pct));
+        if (meses.length < 12) return json({ erro: `O Banco Central ainda não tem os 12 meses do ${indice} até ${ultimo.split("-").reverse().join("/")} (veio ${meses.length}).`, meses }, 409);
+        const acum = (meses.slice(-12).reduce((a0, x) => a0 * (1 + x.pct / 100), 1) - 1) * 100;
+        const pct = Math.round(acum * 10000) / 10000, base = l.aluguel_cent || 0;
+        const novo = Math.round(base * (1 + Math.max(0, pct) / 100));
+        return json({ indice, de: primeiro, ate: ultimo, meses: meses.slice(-12), acumulado_pct: pct, aluguel_cent: base, novo_aluguel_cent: novo,
+          negativo: pct < 0, aviso: pct < 0 ? `O ${indice} acumulado foi negativo (${String(pct).replace(".", ",")}%). Muitos contratos mantêm o valor quando o índice é negativo: confira a cláusula.` : "" });
+      }
+      if (metodo === "POST") {
+        const { c, erro } = await corpo(); if (erro) return erro;
+        const pct = Number(String(c.pct ?? "").replace(",", "."));
+        if (!Number.isFinite(pct) || pct < -50 || pct > 100) return json({ erro: "Percentual inválido." }, 400);
+        const novo = c.novo_valor !== undefined && c.novo_valor !== "" ? centavos(c.novo_valor) : Math.round(l.aluguel_cent * (1 + pct / 100));
+        if (!novo || novo <= 0) return json({ erro: "Valor novo inválido." }, 400);
+        const vale = mesValido(c.vale_de) ? c.vale_de : hoje.slice(0, 7);
+        await env.DB.prepare("UPDATE adm_locatarios SET aluguel_cent=? WHERE id=?").bind(novo, id1).run();
+        await env.DB.prepare("INSERT INTO adm_reajustes(org_id,locatario_id,indice,pct,de_cent,para_cent,vale_de,por,ms) VALUES(?,?,?,?,?,?,?,?,?)").bind(orgId, id1, re(c.indice, 20) || l.indice || null, pct, l.aluguel_cent, novo, vale, quem, ms).run();
+        // A cobrança do mês em que passa a valer (ainda em aberto) já sai com o valor novo.
+        const total = novo + (l.condominio_cent || 0) + (l.outras_cent || 0);
+        const atual = await env.DB.prepare("UPDATE fin_lanc SET valor_cent=? WHERE org_id=? AND locatario_id=? AND competencia>=? AND pago=0 AND origem='aluguel'").bind(total, orgId, id1, vale).run();
+        return json({ ok: true, de_cent: l.aluguel_cent, para_cent: novo, cobrancas_atualizadas: atual.meta?.changes || 0 });
+      }
     }
     // Isentar o aluguel de um mês (ou desfazer a isenção). A cobrança em aberto daquele mês sai do a receber.
     if (metodo === "POST" && id1 && partes[2] === "isentar") {
@@ -1085,8 +1397,22 @@ export async function rotasAdmin(request, env, k, orgId, papel, resto) {
       await env.DB.prepare("UPDATE adm_config SET perfil=?, resumo_diario=?, emails=?, hora_resumo=?, tp_no_fin=?, assinaturas=?, cidade=?, recibo_emissor=?, endereco=?, atualizado_ms=? WHERE org_id=?")
         .bind(PERFIS[c.perfil] ? c.perfil : null, c.resumo_diario ? 1 : 0, emails, inteiro(c.hora_resumo, 5, 22, 8), c.tp_no_fin ? 1 : 0, assin || null, re(c.cidade, 60) || null, re(c.recibo_emissor, 160) || null, re(c.endereco, 160) || null, ms, orgId).run();
       if (c.tp_no_fin) await reservasNoFinanceiro(env, orgId, ms);
-      return json({ ok: true, config: await config() });
+      // Avisos (e-mail, Telegram, WhatsApp com modelo aprovado) e o calendário do Google para trazer.
+      const gcal = String(c.gcal_url || "").trim();
+      if (gcal && !/^https:\/\/[^\s]+$/i.test(gcal)) return json({ erro: "O endereço do Google Agenda deve começar com https:// (Configurações da agenda → Endereço secreto no formato iCal)." }, 400);
+      const numeros = String(c.zap_numeros || "").split(/[\s,;]+/).map(x => x.replace(/\D/g, "")).filter(x => x.length >= 10 && x.length <= 15).slice(0, 5).join(",");
+      await env.DB.prepare("UPDATE adm_config SET gcal_url=?, aviso_email=?, aviso_telegram=?, zap_modelo=?, zap_idioma=?, zap_numeros=? WHERE org_id=?")
+        .bind(gcal || null, c.aviso_email === false ? 0 : 1, c.aviso_telegram === false ? 0 : 1, /^[a-z0-9_]{1,512}$/.test(String(c.zap_modelo || "")) ? c.zap_modelo : null, /^[a-z]{2}(_[A-Z]{2})?$/.test(String(c.zap_idioma || "")) ? c.zap_idioma : "pt_BR", numeros || null, orgId).run();
+      let google = null;
+      if (gcal) google = await sincronizarGoogle(env, orgId, gcal, ms);
+      return json({ ok: true, config: await config(), google });
     }
+  }
+  if (area === "gcal" && partes[1] === "sincronizar" && metodo === "POST") {
+    const c = await config();
+    if (!c.gcal_url) return json({ erro: "Cole primeiro o endereço secreto do Google Agenda em Ajustes." }, 400);
+    const r = await sincronizarGoogle(env, orgId, c.gcal_url, ms);
+    return r.ok ? json(r) : json({ erro: "Não consegui ler o Google Agenda: " + r.erro }, 502);
   }
   if (area === "ical" && metodo === "POST") {
     await config();
@@ -1116,30 +1442,61 @@ export async function adminDoCron(env, k) {
     out.cobrancas += await gerarCobrancas(env, org_id, hoje.slice(0, 7), ms).catch(() => 0);
   for (const { org_id } of (await env.DB.prepare("SELECT org_id FROM adm_config WHERE tp_no_fin=1 LIMIT 100").all()).results || [])
     await reservasNoFinanceiro(env, org_id, ms).catch(e => console.error("adm reservas", e?.message));
-  if (!k.emailConfigurado || !k.emailConfigurado()) return out;
-  const destinos = async orgId => { const c = await env.DB.prepare("SELECT emails FROM adm_config WHERE org_id=?").bind(orgId).first(); const l = String(c?.emails || "").split(/,\s*/).filter(Boolean); return l.length ? l : await k.responsaveis(orgId); };
-  // Compromisso com hora: e-mail no horário do aviso (uma vez só).
+  // Google Agenda: traz os eventos a cada 15 minutos.
+  for (const c of (await env.DB.prepare("SELECT org_id, gcal_url FROM adm_config WHERE gcal_url IS NOT NULL AND COALESCE(gcal_ms,0) < ? LIMIT 10").bind(ms - 15 * 60000).all()).results || [])
+    await sincronizarGoogle(env, c.org_id, c.gcal_url, ms).catch(e => console.error("adm google", e?.message));
+  const email = Boolean(k.emailConfigurado && k.emailConfigurado());
+  const cfgDe = async orgId => (await env.DB.prepare("SELECT * FROM adm_config WHERE org_id=?").bind(orgId).first()) || {};
+  // Para onde vai o aviso: o responsável (se houver) e os e-mails da administração; Telegram do grupo; WhatsApp por modelo aprovado.
+  const avisar = async (orgId, assunto, texto, responsavelId, params) => {
+    const c = await cfgDe(orgId); let n = 0;
+    if (email && c.aviso_email !== 0) {
+      const lista = String(c.emails || "").split(/,\s*/).filter(Boolean);
+      const resp = responsavelId ? (await env.DB.prepare("SELECT email FROM plt_usuarios WHERE id=? AND ativo=1").bind(responsavelId).first().catch(() => null))?.email : null;
+      const para = [...new Set([...(resp ? [resp] : []), ...(lista.length ? lista : resp ? [] : await k.responsaveis(orgId))])];
+      for (const e of para) if (await k.enviarEmail(e, assunto, texto)) n++;
+    }
+    if (c.aviso_telegram !== 0 && k.avisarTelegram) { if (await k.avisarTelegram(orgId, `🔔 ${assunto}\n${texto}`).catch(() => false)) n++; }
+    if (c.zap_modelo && c.zap_numeros && k.enviarModeloZap) for (const tel of String(c.zap_numeros).split(",").filter(Boolean)) if (await k.enviarModeloZap(orgId, tel, c.zap_modelo, c.zap_idioma || "pt_BR", params).catch(() => false)) n++;
+    return n;
+  };
+  // Compromisso com hora: aviso no horário escolhido (uma vez só). Dia todo: às 8h do dia.
   const agoraMin = Date.parse(`${hoje}T${agoraLocal(ms)}:00Z`);
-  const pend = (await env.DB.prepare("SELECT * FROM adm_agenda WHERE feito=0 AND avisado_ms IS NULL AND hora IS NOT NULL AND data BETWEEN ? AND ? LIMIT 200").bind(hoje, somarDias(hoje, 8)).all()).results || [];
+  const pend = (await env.DB.prepare("SELECT * FROM adm_agenda WHERE feito=0 AND avisado_ms IS NULL AND data BETWEEN ? AND ? LIMIT 300").bind(hoje, somarDias(hoje, 8)).all()).results || [];
   for (const a of pend) {
-    const inicio = Date.parse(`${a.data}T${a.hora}:00Z`);
-    if (agoraMin < inicio - (a.aviso_min || 0) * 60000 || agoraMin > inicio + 30 * 60000) continue;
+    const inicio = Date.parse(`${a.data}T${a.hora || "08:00"}:00Z`);
+    const avisoMin = a.hora ? (a.aviso_min || 0) : Math.max(0, a.aviso_min >= 1440 ? a.aviso_min : 0);
+    if (agoraMin < inicio - avisoMin * 60000 || agoraMin > inicio + 30 * 60000) continue;
     await env.DB.prepare("UPDATE adm_agenda SET avisado_ms=? WHERE id=?").bind(ms, a.id).run();
-    const texto = `${a.titulo}\n${br(a.data)} às ${a.hora}${a.local ? "\nLocal: " + a.local : ""}${a.quem ? "\nCom: " + a.quem : ""}${a.obs ? "\n\n" + a.obs : ""}${k.base ? `\n\nAgenda: ${k.base}/app#/admin/agenda` : ""}`;
-    for (const para of await destinos(a.org_id)) if (await k.enviarEmail(para, `Lembrete: ${a.titulo} às ${a.hora}`, texto)) out.avisos++;
+    const quando = `${br(a.data)}${a.hora ? " às " + a.hora : " (dia todo)"}`;
+    const texto = `${a.titulo}\n${quando}${a.local ? "\nLocal: " + a.local : ""}${a.quem ? "\nCom: " + a.quem : ""}${a.obs ? "\n\n" + a.obs : ""}${k.base ? `\n\nAgenda: ${k.base}/app#/admin/agenda` : ""}`;
+    out.avisos += await avisar(a.org_id, `Lembrete: ${a.titulo}${a.hora ? " às " + a.hora : ""}`, texto, a.responsavel_id, [a.titulo, quando]);
   }
-  // Resumo do dia por e-mail, no horário escolhido.
+  // Tarefas: no dia do prazo e no dia de cobrar retorno (uma vez por dia).
+  if (hora >= 8) {
+    const tf = (await env.DB.prepare("SELECT * FROM adm_tarefas WHERE feito=0 AND COALESCE(avisado,'') < ? AND (prazo = ? OR acompanhar_em = ?) LIMIT 200").bind(hoje, hoje, hoje).all()).results || [];
+    for (const x of tf) {
+      await env.DB.prepare("UPDATE adm_tarefas SET avisado=? WHERE id=?").bind(hoje, x.id).run();
+      const motivo = x.acompanhar_em === hoje ? "Cobrar retorno hoje" : "Prazo hoje";
+      out.avisos += await avisar(x.org_id, `${motivo}: ${x.titulo}`, `${x.titulo}\n${motivo}.${x.obs ? "\n\n" + x.obs : ""}${k.base ? `\n\nTarefas: ${k.base}/app#/admin/tarefas` : ""}`, x.responsavel_id, [x.titulo, motivo]);
+    }
+  }
+  // Resumo do dia no horário escolhido (e-mail e Telegram).
   const cfgs = (await env.DB.prepare("SELECT * FROM adm_config WHERE resumo_diario=1 AND COALESCE(ultimo_resumo,'') < ? AND hora_resumo <= ? LIMIT 20").bind(hoje, hora).all()).results || [];
   for (const c of cfgs) {
     try {
       await env.DB.prepare("UPDATE adm_config SET ultimo_resumo=? WHERE org_id=?").bind(hoje, c.org_id).run();
       const d = await oDia(env, c.org_id, ms);
-      const tem = d.agenda.length || d.contas.length || d.rotinas.length || d.documentos.length || d.temporada.length;
-      if (!tem) continue; // dia vazio: não manda e-mail à toa
+      const tem = d.agenda.length || d.contas.length || d.rotinas.length || d.documentos.length || d.temporada.length || d.tarefas.length;
+      if (!tem) continue; // dia vazio: não manda aviso à toa
       const emp = (await env.DB.prepare("SELECT nome FROM plt_organizacoes WHERE id=?").bind(c.org_id).first().catch(() => null))?.nome || "";
       const moeda = (await env.DB.prepare("SELECT moeda FROM fin_config WHERE org_id=?").bind(c.org_id).first().catch(() => null))?.moeda || "BRL";
       const texto = textoDoDia(d, emp, moeda) + (k.base ? `\n\nAbrir o painel: ${k.base}/app#/admin/hoje` : "");
-      for (const para of await destinos(c.org_id)) if (await k.enviarEmail(para, `DENIA — seu dia ${br(hoje)}${emp ? " (" + emp + ")" : ""}`, texto)) out.resumos++;
+      if (email && c.aviso_email !== 0) {
+        const lista = String(c.emails || "").split(/,\s*/).filter(Boolean);
+        for (const para of lista.length ? lista : await k.responsaveis(c.org_id)) if (await k.enviarEmail(para, `DENIA — seu dia ${br(hoje)}${emp ? " (" + emp + ")" : ""}`, texto)) out.resumos++;
+      }
+      if (c.aviso_telegram !== 0 && k.avisarTelegram && await k.avisarTelegram(c.org_id, "☀️ " + texto).catch(() => false)) out.resumos++;
     } catch (e) { console.error("adm resumo", c.org_id, e?.message); }
   }
   return out;
