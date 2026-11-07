@@ -1581,7 +1581,9 @@ function marcaPorNome(marcasOrg, nome, obrigatoria = true) {
   return m;
 }
 const ACOES_TP = ["tp_resumo", "tp_precos", "tp_config", "tp_disponibilidade", "tp_estoque", "tp_nota", "tp_cotacao", "tp_mercado"];
-const TIPOS_ACAO = ["criar_semana", "criar_post", "aprovar_posts", "publicar_post", "treinar", "pausar_ia", "google_resumo", "atualizar_google", "responder_avaliacoes", "relatorio_google", ...ACOES_TP];
+// Administração: compromissos e tarefas (a DENIA anota na agenda quando a pessoa pede, por voz ou por escrito).
+const ACOES_ADM = ["adm_compromisso", "adm_tarefa", "adm_agenda"];
+const TIPOS_ACAO = ["criar_semana", "criar_post", "aprovar_posts", "publicar_post", "treinar", "pausar_ia", "google_resumo", "atualizar_google", "responder_avaliacoes", "relatorio_google", ...ACOES_TP, ...ACOES_ADM];
 const ACOES_GOOGLE = ["google_resumo", "atualizar_google", "responder_avaliacoes", "relatorio_google"];
 // Deixa a ação pronta para a tela executar: marca resolvida, campos conferidos.
 function prepararAcao(a, marcasOrg, txt) {
@@ -1596,6 +1598,7 @@ function prepararAcao(a, marcasOrg, txt) {
   if (tipo === "criar_semana") Object.assign(p, { quantidade: Math.max(1, Math.min(14, Number(a.quantidade) || 3)), semana: a.semana === "esta" ? "esta" : "proxima", com_artes: a.com_artes !== false });
   if (tipo === "criar_post") Object.assign(p, { tema: txt(a.tema, 600), formato: ["post", "carrossel", "story", "reels"].includes(a.formato) ? a.formato : "post", data: /^\d{4}-\d{2}-\d{2}$/.test(String(a.data || "")) ? a.data : "", hora: /^\d{2}:\d{2}$/.test(String(a.hora || "")) ? a.hora : "", com_arte: a.com_arte !== false });
   if (tipo === "aprovar_posts" && a.marca) { const m = marcaPorNome(marcasOrg, a.marca); Object.assign(p, { marca: m.nome, marca_id: m.id }); }
+  if (ACOES_ADM.includes(tipo)) return { tipo, texto: txt(a.texto, 400), titulo: txt(a.titulo, 160), data: /^\d{4}-\d{2}-\d{2}$/.test(String(a.data || "")) ? a.data : "", hora: /^\d{2}:\d{2}$/.test(String(a.hora || "")) ? a.hora : "", local: txt(a.local, 120), dias: Number(a.dias) || 2 };
   if (tipo === "publicar_post") p.post_id = Number(a.post_id) || 0;
   if (tipo === "treinar") {
     p.campo = CAMPOS_TREINO.includes(a.campo) ? a.campo : "instrucoes";
@@ -1700,6 +1703,24 @@ async function executarTemporada(a, contexto, txt) {
 async function executarAcao(a, { marcasOrg, contexto, txt }) {
   const tipo = String(a?.tipo || "");
   if (ACOES_TP.includes(tipo)) return contexto.tp ? executarTemporada({ ...a, tipo }, contexto, txt) : { tipo, ok: false, resumo: "Locação por temporada indisponível aqui." };
+  if (ACOES_ADM.includes(tipo)) {
+    if (!contexto.adm) return { tipo, ok: false, resumo: "A agenda não está disponível aqui." };
+    if (tipo === "adm_agenda") {
+      const hoje = new Date(Date.now() - 3 * 3600000).toISOString().slice(0, 10), ate = new Date(Date.parse(hoje) + Math.min(31, Math.max(0, Number(a.dias) || 2)) * 86400000).toISOString().slice(0, 10);
+      const r = await contexto.adm("GET", `agenda?de=${hoje}&ate=${ate}`);
+      if (r.status >= 400) return { tipo, ok: false, resumo: r.dados?.erro || "Não consegui ler a agenda." };
+      const itens = (r.dados.itens || []).filter(x => !x.feito);
+      return { tipo, ok: true, resumo: itens.length ? itens.slice(0, 12).map(x => `${x.data.split("-").reverse().join("/").slice(0, 5)} ${x.hora || "dia todo"} — ${x.titulo}`).join("; ") : "Nada na agenda nesse período.", abrir: "#/admin/agenda" };
+    }
+    // Com data e hora já calculadas pela IA, grava direto; senão, entende o texto do jeito que foi falado.
+    const caminho = tipo === "adm_tarefa" ? "tarefas" : "agenda";
+    const r = a.titulo && (a.data || tipo === "adm_tarefa")
+      ? await contexto.adm("POST", caminho, tipo === "adm_tarefa" ? { titulo: a.titulo, prazo: a.data || null } : { titulo: a.titulo, data: a.data, hora: a.hora || null, local: a.local || null })
+      : await contexto.adm("POST", `${caminho}/texto`, { texto: a.texto || a.titulo });
+    if (r.status >= 400) return { tipo, ok: false, resumo: r.dados?.erro || "Não consegui anotar." };
+    const d = r.dados || {};
+    return { tipo, ok: true, resumo: d.frase || (tipo === "adm_tarefa" ? `Tarefa anotada: ${a.titulo}.` : `Anotado: ${a.titulo} em ${String(a.data).split("-").reverse().join("/")}${a.hora ? " às " + a.hora : ""}.`), abrir: tipo === "adm_tarefa" ? "#/admin/tarefas" : "#/admin/agenda" };
+  }
   const acharMarca = (nome, obrigatoria = true) => marcaPorNome(marcasOrg, nome, obrigatoria);
   const falhou = r => r.status >= 400 ? (r.dados?.erro || "Não foi possível fazer agora.") : "";
   const canais = Array.isArray(a.canais) && a.canais.length ? a.canais : undefined;
@@ -1857,6 +1878,10 @@ Você também EXECUTA ações quando a pessoa pede claramente. Ações disponív
 - {"tipo":"atualizar_google","marca":"nome"} — busca agora as avaliações e o desempenho no Google.
 - {"tipo":"responder_avaliacoes","marca":"nome","publicar":false} — escreve uma resposta específica para cada avaliação sem resposta. publicar=true só quando a pessoa pedir claramente para publicar; as avaliações graves ou que podem violar as regras do Google nunca são publicadas sozinhas — avise quais precisam de uma pessoa e o motivo.
 - {"tipo":"relatorio_google","marca":"nome"} — gera agora o relatório de especialista da marca (o que melhorou, o que precisa de atenção, buscas e plano da semana).
+AGENDA E TAREFAS DA EMPRESA (datas AAAA-MM-DD calculadas a partir da data de hoje; hora HH:MM):
+- {"tipo":"adm_compromisso","titulo":"Vistoria do AVCB","data":"AAAA-MM-DD","hora":"HH:MM","local":"opcional"} — anota um compromisso na agenda.
+- {"tipo":"adm_tarefa","titulo":"Pedir orçamento da pintura","data":"AAAA-MM-DD (prazo, opcional)"} — anota uma tarefa.
+- {"tipo":"adm_agenda","dias":2} — lê os compromissos de hoje e dos próximos dias (use para "o que tenho hoje/amanhã/essa semana").
 LOCAÇÃO POR TEMPORADA (imóveis no Airbnb, Booking e Vrbo) — use o nome do imóvel; datas sempre AAAA-MM-DD:
 - {"tipo":"tp_resumo","imovel":"nome ou vazio"} — ocupação, receita, próximas entradas, estoque acabando.
 - {"tipo":"tp_precos","imovel":"nome","de":"AAAA-MM-DD","ate":"AAAA-MM-DD","preco":800,"minimo":3} — muda a diária e/ou o mínimo de noites de um período (vai para as plataformas conectadas). "voltar_ao_base":true volta ao preço normal.
@@ -1900,7 +1925,7 @@ Use os DADOS DO PAINEL para responder sobre conversas do WhatsApp, atendimentos,
 ${ESPECIALISTA_DIGITAL}
 ${ESPECIALISTA_TEMPORADA}
 Para assuntos de fora (notícias, concorrentes, tendências, preços de mercado, qualquer dúvida do mundo), use a ferramenta pesquisar_web e conte o resultado de forma curta, citando de onde veio.
-Quando a pessoa pedir claramente uma ação, use a ferramenta certa (criar_semana, criar_post, aprovar_posts, publicar_post, treinar, pausar_ia, google_resumo, atualizar_google, responder_avaliacoes, relatorio_google). Para perguntas sobre o Google de uma marca (avaliações, nota, ligações, buscas, posição), use google_resumo antes de responder. Antes, diga numa frase curta o que vai fazer ("Vou abrir o treinamento e acrescentar isso"); a pessoa vê você fazendo na tela e pode pausar ou parar. Quando a ferramenta devolver o resultado, conte em uma frase. Se faltar algo essencial (por exemplo qual marca, havendo mais de uma), pergunte antes.
+Agenda: para marcar compromisso use adm_compromisso (calcule a data a partir de hoje), para tarefa adm_tarefa e para "o que tenho hoje/amanhã" adm_agenda. Quando a pessoa pedir claramente uma ação, use a ferramenta certa (criar_semana, criar_post, aprovar_posts, publicar_post, treinar, pausar_ia, google_resumo, atualizar_google, responder_avaliacoes, relatorio_google). Para perguntas sobre o Google de uma marca (avaliações, nota, ligações, buscas, posição), use google_resumo antes de responder. Antes, diga numa frase curta o que vai fazer ("Vou abrir o treinamento e acrescentar isso"); a pessoa vê você fazendo na tela e pode pausar ou parar. Quando a ferramenta devolver o resultado, conte em uma frase. Se faltar algo essencial (por exemplo qual marca, havendo mais de uma), pergunte antes.
 Locação por temporada: para preços, disponibilidade, estoque, melhorias, cotação e mercado use as ferramentas tp_*. Datas em AAAA-MM-DD (se a pessoa disser "próximo fim de semana", calcule a partir da data de hoje). Antes de mudar preço ou fechar datas, confirme o imóvel e o período em uma frase.
 Treinamento: prefira acrescentar; substituir só se pedirem para trocar tudo daquele campo (aí o texto é o campo inteiro já reescrito). Escreva o texto do treinamento como instrução clara para a IA que atende os clientes no WhatsApp.
 Publicar: com a marca conectada (Contas conectadas → Conectar Instagram e Facebook), os posts aprovados saem sozinhos no horário marcado e publicar_post publica na hora. Sem conexão, o post fica aprovado. No Google Meu Negócio é igual: com a marca conectada (Contas conectadas → Conectar Google) os posts saem no perfil e as respostas às avaliações são publicadas direto no Google. Diga isso com honestidade.
@@ -1930,6 +1955,9 @@ ${contexto.dados}`;
         { type: "function", name: "tp_nota", description: "Anota uma melhoria ou manutenção para um imóvel.", parameters: { type: "object", properties: { imovel: imovelP, texto: { type: "string" }, prioridade: { type: "string", enum: ["ALTA", "MEDIA", "BAIXA"] } }, required: ["imovel", "texto"] } },
         { type: "function", name: "tp_cotacao", description: "Calcula quanto fica uma estadia (diárias, descontos, limpeza, hóspede extra).", parameters: { type: "object", properties: { imovel: imovelP, inicio: dataP, fim: dataP, hospedes: { type: "integer" } }, required: ["imovel", "inicio", "fim"] } },
         { type: "function", name: "tp_mercado", description: "Pesquisa na internet diárias de imóveis parecidos na região, se o anúncio aparece no Google, eventos e se o preço está bom.", parameters: { type: "object", properties: { imovel: imovelP, pergunta: { type: "string" }, periodo: { type: "string" } }, required: ["imovel"] } },
+        { type: "function", name: "adm_compromisso", description: "Anota um compromisso na agenda da empresa.", parameters: { type: "object", properties: { titulo: { type: "string" }, data: dataP, hora: { type: "string", description: "HH:MM (vazio = dia todo)" }, local: { type: "string" } }, required: ["titulo", "data"] } },
+        { type: "function", name: "adm_tarefa", description: "Anota uma tarefa da empresa (com prazo opcional).", parameters: { type: "object", properties: { titulo: { type: "string" }, data: { type: "string", description: "Prazo AAAA-MM-DD (opcional)" } }, required: ["titulo"] } },
+        { type: "function", name: "adm_agenda", description: "Lê os compromissos de hoje e dos próximos dias.", parameters: { type: "object", properties: { dias: { type: "integer", minimum: 0, maximum: 31 } } } },
         { type: "function", name: "dados_do_painel", description: "Busca os dados mais recentes do painel (conversas, atendimentos, posts, treinamento).", parameters: { type: "object", properties: {} } }
       ];
       // Com a voz da pessoa (ElevenLabs), a conversa ao vivo devolve texto e o painel fala com a voz clonada.

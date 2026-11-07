@@ -738,7 +738,7 @@ test("Voz ao vivo — chave temporária com ferramentas, pesquisa na internet, e
   assert.deepEqual([r.dados.chave, r.dados.url], ["ek_temporaria", "https://api.openai.com/v1/realtime/calls"], "o navegador recebe só uma chave temporária");
   assert.ok(!JSON.stringify(r.dados).includes("sk-proj"), "a chave de verdade nunca vai para o navegador");
   assert.equal(sessao.audio.input.turn_detection.type, "semantic_vad", "detecta sozinho quando a pessoa terminou de falar");
-  assert.deepEqual(sessao.tools.map(t => t.name), ["criar_semana", "criar_post", "aprovar_posts", "publicar_post", "treinar", "pausar_ia", "google_resumo", "atualizar_google", "responder_avaliacoes", "relatorio_google", "pesquisar_web", "tp_resumo", "tp_precos", "tp_disponibilidade", "tp_config", "tp_estoque", "tp_nota", "tp_cotacao", "tp_mercado", "dados_do_painel"]);
+  assert.deepEqual(sessao.tools.map(t => t.name), ["criar_semana", "criar_post", "aprovar_posts", "publicar_post", "treinar", "pausar_ia", "google_resumo", "atualizar_google", "responder_avaliacoes", "relatorio_google", "pesquisar_web", "tp_resumo", "tp_precos", "tp_disponibilidade", "tp_config", "tp_estoque", "tp_nota", "tp_cotacao", "tp_mercado", "adm_compromisso", "adm_tarefa", "adm_agenda", "dados_do_painel"]);
   assert.match(sessao.instructions, /Clínica Sol/);
   assert.match(sessao.instructions, /IA do WhatsApp/);
   const busca = await p.req("/api/orgs/1/assistente/pesquisar", { metodo: "POST", quem: "admin", corpo: { pergunta: "tendências" } });
@@ -1788,6 +1788,16 @@ test("Telegram — bot da plataforma conecta o grupo com um toque e a equipe res
     assert.match(tg.at(-1).corpo.text, /Enviado para/);
     await upd("/resumo");
     assert.match(tg.at(-1).corpo.text, /Mensagens recebidas: 1/);
+    // Agenda pelo Telegram: marcar, ver e anotar tarefa.
+    await upd("/marcar vistoria do AVCB amanhã às 10h");
+    assert.match(tg.at(-1).corpo.text, /Anotado: Vistoria do AVCB — amanhã às 10:00/);
+    assert.equal(p.env.DB.q("SELECT origem FROM adm_agenda WHERE org_id=? AND titulo='Vistoria do AVCB'", inf)[0].origem, "telegram");
+    await upd("/marcar comprar lâmpadas");
+    assert.match(tg.at(-1).corpo.text, /Diga também o dia/);
+    await upd("/tarefa pedir orçamento da pintura");
+    assert.match(tg.at(-1).corpo.text, /Tarefa anotada: Pedir orçamento da pintura/);
+    await upd("/agenda");
+    assert.match(tg.at(-1).corpo.text, /Vistoria do AVCB/);
     // Outro grupo (de outra empresa ou desconhecido) não consegue responder clientes do Infomix.
     const antes = p.engine.enviados.length;
     await p.req("/webhook/telegram", { metodo: "POST", cabecalhos: { "x-telegram-bot-api-secret-token": segredo }, corpo: { message: { message_id: 99, chat: { id: -100888, type: "group" }, text: "oi", reply_to_message: { message_id: idAviso } } } });
@@ -4044,5 +4054,111 @@ test("Financeiro completo — várias formas, categorias, contas que se repetem,
   // Todas as empresas de quem administra várias.
   const cons = await ok("/api/adm/consolidado?mes=2099-10");
   assert.ok(cons.empresas.length >= 1); assert.equal(typeof cons.empresas[0].resultado, "number");
+  delete p.env.__agora;
+});
+
+
+test("Agenda executiva — escrever o compromisso, responsável, tarefas, Google Agenda, todas as empresas e avisos", async () => {
+  const p = await criarPlataforma({ RESEND_API_KEY: "re_teste", EMAIL_REMETENTE: "DENIA <avisos@denia.test>" });
+  p.env.__agora = () => Date.parse("2099-10-20T11:00:00Z"); // 08:00 em Brasília, terça-feira
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  const A = "/api/orgs/1/adm";
+  const ok = async (caminho, op = {}) => { const r = await p.req(caminho, { quem: "admin", ...op }); assert.ok(r.status < 300, `${caminho}: ${r.status} ${JSON.stringify(r.dados)}`); return r.dados; };
+  const add = await p.req("/api/orgs/1/membros", { metodo: "POST", quem: "admin", corpo: { nome: "Mirella", email: "mirella@adm.test", papel: "AGENTE" } });
+  const mirella = add.dados.usuario_id;
+  // Escrito do jeito que se fala.
+  const c1 = await ok(A + "/agenda/texto", { metodo: "POST", corpo: { texto: "Reunião com o contador sexta às 14h30 no escritório", responsavel_id: mirella } });
+  assert.deepEqual([c1.titulo, c1.data, c1.hora, c1.local], ["Reunião com o contador", "2099-10-23", "14:30", "escritório"]);
+  assert.equal((await p.req(A + "/agenda/texto", { metodo: "POST", quem: "admin", corpo: { texto: "comprar lâmpadas" } })).status, 400);
+  await ok(A + "/agenda", { metodo: "POST", corpo: { titulo: "Visita do eletricista", data: "2099-10-20", hora: "09:00", aviso_min: 60 } });
+  const ag = (await ok(A + "/agenda?de=2099-10-01&ate=2099-10-31")).itens;
+  assert.equal(ag.find(x => x.titulo === "Reunião com o contador").responsavel_nome, "Mirella");
+  assert.ok((await ok(A + "/equipe")).equipe.some(x => x.nome === "Mirella"));
+  // Tarefas: checklist, prazo, cobrar retorno.
+  const t1 = (await ok(A + "/tarefas", { metodo: "POST", corpo: { titulo: "Orçamento da pintura", prazo: "2099-10-20", acompanhar_em: "2099-10-20", responsavel_id: mirella, checklist: ["Pedir 3 orçamentos", "Comparar"] } })).id;
+  await ok(A + "/tarefas/texto", { metodo: "POST", corpo: { texto: "renovar seguro do prédio dia 30" } });
+  let tfs = (await ok(A + "/tarefas")).tarefas;
+  assert.equal(tfs.find(x => x.id === t1).checklist.length, 2);
+  assert.equal(tfs.find(x => x.titulo === "Renovar seguro do prédio").prazo, "2099-10-30");
+  await ok(`${A}/tarefas/${t1}`, { metodo: "PUT", corpo: { checklist: [{ t: "Pedir 3 orçamentos", ok: true }, { t: "Comparar", ok: false }] } });
+  assert.equal((await ok(A + "/tarefas")).tarefas.find(x => x.id === t1).checklist[0].ok, true);
+  const dia = await ok(A + "/dia");
+  assert.ok(dia.tarefas.some(x => x.id === t1 && x.cobrar));
+  // Google Agenda pelo endereço secreto (.ics): traz, repete semanalmente e apaga o que sumiu.
+  const ics = ["BEGIN:VCALENDAR", "BEGIN:VEVENT", "UID:g1@google.com", "DTSTART;TZID=America/Sao_Paulo:20991021T100000", "DTEND;TZID=America/Sao_Paulo:20991021T110000", "SUMMARY:Dentista", "END:VEVENT",
+    "BEGIN:VEVENT", "UID:g2@google.com", "DTSTART;VALUE=DATE:20991022", "SUMMARY:Feriado da firma", "END:VEVENT",
+    "BEGIN:VEVENT", "UID:g3@google.com", "DTSTART:20991020T120000Z", "RRULE:FREQ=WEEKLY;COUNT=3", "SUMMARY:Reunião semanal", "END:VEVENT", "END:VCALENDAR"].join("\r\n");
+  p.web = { "https://calendar.google.com/calendar/ical/x/private-abc/basic.ics": ics };
+  const cfg = await ok(A + "/config", { metodo: "PUT", corpo: { gcal_url: "https://calendar.google.com/calendar/ical/x/private-abc/basic.ics", resumo_diario: true } });
+  assert.equal(cfg.google.ok, true);
+  const doGoogle = p.env.DB.q("SELECT titulo, data, hora FROM adm_agenda WHERE origem='google' ORDER BY data, titulo");
+  assert.deepEqual(doGoogle.map(x => [x.titulo, x.data, x.hora]), [["Reunião semanal", "2099-10-20", "09:00"], ["Dentista", "2099-10-21", "10:00"], ["Feriado da firma", "2099-10-22", null], ["Reunião semanal", "2099-10-27", "09:00"], ["Reunião semanal", "2099-11-03", "09:00"]]);
+  const idG = p.env.DB.q("SELECT id FROM adm_agenda WHERE titulo='Dentista'")[0].id;
+  assert.equal((await p.req(`${A}/agenda/${idG}`, { metodo: "PUT", quem: "admin", corpo: { titulo: "x" } })).status, 409, "o que vem do Google se altera no Google");
+  p.web["https://calendar.google.com/calendar/ical/x/private-abc/basic.ics"] = ics.replace(/BEGIN:VEVENT\r\nUID:g1[\s\S]*?END:VEVENT\r\n/, "");
+  await ok(A + "/gcal/sincronizar", { metodo: "POST" });
+  assert.equal(p.env.DB.q("SELECT COUNT(*) n FROM adm_agenda WHERE titulo='Dentista'")[0].n, 0, "apagado no Google, sai da DENIA");
+  // Todas as empresas: a agenda de cada uma junta.
+  const ger = await ok("/api/adm/agenda-geral?de=2099-10-20&ate=2099-10-31");
+  assert.ok(ger.itens.some(x => x.titulo === "Reunião com o contador" && x.empresa));
+  assert.ok(ger.itens.some(x => x.tarefa && x.titulo === "Renovar seguro do prédio"));
+  // Avisos: o responsável recebe por e-mail; o resumo do dia inclui as tarefas.
+  p.env.__agora = () => Date.parse("2099-10-20T11:05:00Z");
+  const mod = await import("../src/worker.js");
+  const rodar = async () => { const pend = []; await mod.default.scheduled({}, p.env, { waitUntil: pr => pend.push(pr) }); await Promise.all(pend); };
+  await rodar(); await rodar();
+  assert.equal(p.emails.filter(e => /^Lembrete: Visita do eletricista às 09:00/.test(e.subject)).length >= 1, true);
+  const cobrar = p.emails.filter(e => /^Cobrar retorno hoje: Orçamento da pintura/.test(e.subject));
+  assert.ok(cobrar.some(e => e.to.includes("mirella@adm.test")), "vai para o responsável");
+  assert.equal(new Set(cobrar.map(e => e.to[0])).size, cobrar.length, "uma vez por pessoa");
+  const resumo = p.emails.filter(e => /^DENIA — seu dia 20\/10\/2099/.test(e.subject));
+  assert.equal(resumo.length >= 1, true); assert.match(resumo[0].text, /Tarefas:/);
+  delete p.env.__agora;
+});
+
+test("Financeiro — fluxo de caixa de 12 meses, reajuste pelo índice do Banco Central, comprovante anexado e extrato por foto", async () => {
+  const p = await criarPlataforma();
+  p.env.__agora = () => Date.parse("2099-10-20T15:00:00Z");
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  const A = "/api/orgs/1/adm", F = "/api/orgs/1/fin";
+  const ok = async (caminho, op = {}) => { const r = await p.req(caminho, { quem: "admin", ...op }); assert.ok(r.status < 300, `${caminho}: ${r.status} ${JSON.stringify(r.dados)}`); return r.dados; };
+  await ok(A + "/contas", { metodo: "POST", corpo: { nome: "Banco", tipo: "BANCO", saldo: "1.000,00", saldo_em: "2099-10-19" } });
+  await ok(F + "/recorrentes", { metodo: "POST", corpo: { tipo: "SAIDA", descricao: "Folha", valor: "3000", dia: 5, frequencia: "mensal" } });
+  const loc = (await ok(A + "/locatarios", { metodo: "POST", corpo: { nome: "Loja A", aluguel: "2000", dia_venc: 10, reajuste_mes: 11, indice: "IGP-M" } })).id;
+  // Fluxo: saldo de hoje + o que vai entrar e sair, mês a mês; avisa o primeiro mês que fica negativo.
+  const fl = await ok(F + "/fluxo?meses=12");
+  assert.equal(fl.saldo_hoje, 100000); assert.equal(fl.meses.length, 12);
+  assert.equal(fl.meses[1].entradas, 200000); assert.equal(fl.meses[1].saidas, 300000);
+  assert.ok(fl.primeiro_mes_negativo, "a folha é maior que o aluguel: aparece o mês negativo");
+  // Reajuste: IGP-M acumulado dos 12 meses anteriores. Em 20/10 o índice de outubro ainda não saiu: usa 10/2098 a 09/2099.
+  const valores = [0.5, 0.4, -0.2, 0.3, 0.6, 0.1, 0.2, 0.3, 0.4, 0.5, 0.2, 0.3];
+  const meses = ["10/2098", "11/2098", "12/2098", "01/2099", "02/2099", "03/2099", "04/2099", "05/2099", "06/2099", "07/2099", "08/2099", "09/2099"];
+  p.web = { "https://api.bcb.gov.br/dados/serie/bcdata.sgs.189/dados?formato=json&dataInicial=01/10/2098&dataFinal=01/09/2099": JSON.stringify(meses.map((m, i) => ({ data: "01/" + m, valor: String(valores[i]) }))) };
+  const rj = await ok(`${A}/locatarios/${loc}/reajuste?indice=IGP-M`);
+  const esperado = (valores.reduce((a, v) => a * (1 + v / 100), 1) - 1) * 100;
+  assert.ok(Math.abs(rj.acumulado_pct - esperado) < 0.001);
+  assert.equal(rj.novo_aluguel_cent, Math.round(200000 * (1 + esperado / 100)));
+  const ap = await ok(`${A}/locatarios/${loc}/reajuste`, { metodo: "POST", corpo: { pct: rj.acumulado_pct, indice: "IGP-M", vale_de: "2099-11" } });
+  assert.equal(ap.para_cent, rj.novo_aluguel_cent);
+  assert.equal(p.env.DB.q("SELECT aluguel_cent FROM adm_locatarios WHERE id=?", loc)[0].aluguel_cent, rj.novo_aluguel_cent);
+  assert.equal(p.env.DB.q("SELECT COUNT(*) n FROM adm_reajustes")[0].n, 1);
+  // Comprovante anexado ao lançamento (só foto ou PDF, até 3 MB) e baixado de volta igual.
+  const id = (await ok(F + "/lancamentos", { metodo: "POST", corpo: { tipo: "SAIDA", descricao: "Conta de luz", valor: "300", data: "2099-10-10", pago: true } })).ids[0];
+  const png = Buffer.from("89504E470D0A1A0A" + "00".repeat(60), "hex").toString("base64");
+  assert.equal((await p.req(`${F}/lancamentos/${id}/anexos`, { metodo: "POST", quem: "admin", corpo: { nome: "x.exe", tipo: "application/x-msdownload", base64: png } })).status, 400);
+  const an = (await ok(`${F}/lancamentos/${id}/anexos`, { metodo: "POST", corpo: { nome: "comprovante.png", tipo: "image/png", base64: png } })).id;
+  assert.equal((await ok(F + "/lancamentos?mes=2099-10")).lancamentos.find(l => l.id === id).anexos, 1);
+  const baixa = await p.req(`${F}/anexos/${an}`, { quem: "admin" });
+  assert.equal(baixa.r.headers.get("content-type"), "image/png");
+  assert.equal(Buffer.from(await baixa.r.arrayBuffer()).toString("base64"), png);
+  // Extrato por foto: a IA lê, a DENIA marca o que já foi lançado, a pessoa confere e importa sem duplicar.
+  p.openai = () => ({ output_text: JSON.stringify({ itens: [{ data: "2099-10-10", descricao: "Conta de luz", valor: 300, tipo: "SAIDA" }, { data: "2099-10-12", descricao: "Pix recebido Loja A", valor: 2000, tipo: "ENTRADA", contato: "Loja A", id_transacao: "E123" }], aviso: "" }) });
+  p.env.OPENAI_API_KEY = "sk-teste";
+  const lido = await ok(F + "/ler-foto", { metodo: "POST", corpo: { tipo: "image/png", base64: png } });
+  assert.equal(lido.itens.length, 2);
+  assert.equal(lido.itens[0].ja_lancado, "Conta de luz", "avisa o que já está lançado");
+  const imp = await ok(F + "/importar-itens", { metodo: "POST", corpo: { itens: lido.itens.filter(x => !x.ja_lancado) } });
+  assert.equal(imp.novos, 1);
+  assert.equal((await ok(F + "/importar-itens", { metodo: "POST", corpo: { itens: lido.itens.filter(x => !x.ja_lancado) } })).novos, 0, "não duplica");
   delete p.env.__agora;
 });

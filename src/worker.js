@@ -27,13 +27,13 @@ import { comOrgUso, comRecurso, descarregarUso } from "./uso.js";
 import { DDL_TEMPORADA, ALTERS_TEMPORADA, rotasTemporada, icalPublico, webhookChannex, sincronizarTemporada, desligarInadimplentes, lembrarEstoque, limpezaPublica, avaliacoesDoCron } from "./temporada.js";
 import { openaiBruto } from "./marketing.js";
 import { rotasFinanceiro, financeiroDoCron } from "./financeiro.js";
-import { rotasAdmin, adminDoCron, icalAdmin, consolidadoAdmin } from "./administracao.js";
+import { rotasAdmin, adminDoCron, icalAdmin, consolidadoAdmin, agendaGeral, agendaEmTexto } from "./administracao.js";
 import { DDL_PROBLEMAS, rotasProblemas, registrarProblema, resolverProblema, limparProblemas } from "./problemas.js";
-import { DDL_ZAP, webhookZap, rotasZap, webhookTelegram, segredoTelegram, tokenTelegramPlataforma, processarCampanhas, posVendaChatbot, lembrarAgenda, brutoRelatorioZap, avisarTelegramDaEmpresa } from "./zap.js";
+import { DDL_ZAP, webhookZap, rotasZap, webhookTelegram, segredoTelegram, tokenTelegramPlataforma, processarCampanhas, posVendaChatbot, lembrarAgenda, brutoRelatorioZap, avisarTelegramDaEmpresa , enviarModeloZap } from "./zap.js";
 import { montarRelatorio, planilhaRelatorio, textoRelatorio, base64, ultimos7Dias, lerConfigRelatorio, horaDeEnviar, diaBR, dataBR, DIAS_SEMANA, inicioDoDia as inicioDoDiaBR } from "./relatorio.js";
 import { lerPlanos, acessoDa, recursoDaRota, planoMinimo, rotasPlano, webhookAsaas, lembretesDePlano, TESTE_DIAS, STATUS as STATUS_PLANO, PLANOS_PADRAO, RECURSOS } from "./planos.js";
 
-const VERSAO = "3.38.0";
+const VERSAO = "3.39.0";
 // Versão dos Termos de uso e da Política de privacidade aceitas no cadastro.
 const VERSAO_TERMOS = "2026-10-16";
 // WhatsApp da Central de Atendimento (botão flutuante do site).
@@ -1041,7 +1041,9 @@ async function contextoAssistente(env, orgId) {
       if (notas?.results?.length) linhas.push("MELHORIAS ABERTAS: " + notas.results.map(n => `${nome(n.imovel_id)}: ${n.texto.slice(0, 80)} [${n.prioridade}]`).join("; ") + ".");
     }
   } catch { /* módulo de temporada ainda sem tabelas */ }
-  linhas.push(`Data de hoje: ${new Date().toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" })}.`);
+  // Administração: agenda, tarefas e contas da semana (para a DENIA responder "o que tenho hoje?").
+  try { linhas.push("AGENDA E TAREFAS (hoje e próximos dias):\n" + await agendaEmTexto(env, orgId, agora(env), 3)); } catch { /* sem administração */ }
+  linhas.push(`Data de hoje: ${new Date(agora(env)).toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo", weekday: "long" })}, ${new Date(agora(env)).toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" })}.`);
   return { empresa: o?.nome || "empresa", dados: linhas.join("\n") };
 }
 
@@ -1124,12 +1126,13 @@ async function apiOrg(request, env, sessao, orgId, resto, ctx) {
       const req = new Request(new URL(`/api/orgs/${orgId}/${base}/${caminho}`, request.url), { method: metodo, headers: { "content-type": "application/json", origin: new URL(request.url).origin }, body: metodo === "POST" ? JSON.stringify(corpo || {}) : undefined });
       const rota = caminho.split("?")[0];
       const r = base === "mk" ? await apiMarketing(req, await comIA(env, orgId), kit, orgId, papel, rota)
+        : base === "adm" ? await rotasAdmin(req, env, { ...kitBase(env), sessao }, orgId, papel, "adm/" + rota)
         : base === "tp" ? await apiOrg(req, env, sessao, orgId, "tp/" + rota)
           : await proxyEngine(req, env, sessao, orgId, papel, rota);
       return { status: r.status, dados: await r.json().catch(() => ({})) };
     };
     const ctx = ["assistente/conversa", "assistente/ao-vivo", "assistente/contexto"].includes(resto) ? await contextoAssistente(env, orgId) : { empresa: "", dados: "" };
-    return apiAssistente(request, comRecurso(await comIA(env, orgId), "assistente"), kit, orgId, papel, resto, { ...ctx, mk: interno("mk"), engine: interno("engine"), tp: interno("tp") });
+    return apiAssistente(request, comRecurso(await comIA(env, orgId), "assistente"), kit, orgId, papel, resto, { ...ctx, mk: interno("mk"), engine: interno("engine"), tp: interno("tp"), adm: interno("adm") });
   }
 
   if (resto === "membros" && metodo === "GET") {
@@ -1402,6 +1405,14 @@ async function api(request, env, caminho, ctx) {
     return json({ ...(await lerPlanos(env)), recursos: RECURSOS, cobranca: Boolean(String(env.ASAAS_API_KEY || "").trim()) });
   }
   // Todas as empresas de quem administra várias (administradora, grupo): números do mês lado a lado.
+  // Agenda de todas as empresas da pessoa, num período (compromissos e tarefas com prazo).
+  if (caminho === "/api/adm/agenda-geral" && metodo === "GET") {
+    const q0 = new URL(request.url).searchParams, ok = d => /^\d{4}-\d{2}-\d{2}$/.test(d || "");
+    const hojeL = new Date(agora(env) - 3 * 3600000).toISOString().slice(0, 10);
+    const de = ok(q0.get("de")) ? q0.get("de") : hojeL, ate = ok(q0.get("ate")) ? q0.get("ate") : new Date(Date.parse(hojeL) + 14 * 86400000).toISOString().slice(0, 10);
+    const orgs = (await organizacoesDo(env, u)).filter(o => ["OWNER", "ADMIN", "AGENTE"].includes(o.papel)).slice(0, 60);
+    return json({ de, ate, itens: await agendaGeral(env, orgs, de, ate, agora(env)), empresas: orgs.map(o => ({ id: o.id, nome: o.nome })) });
+  }
   if (caminho === "/api/adm/consolidado" && metodo === "GET") {
     const orgs = (await organizacoesDo(env, u)).filter(o => ["OWNER", "ADMIN"].includes(o.papel)).slice(0, 60);
     const mes = /^\d{4}-(0[1-9]|1[0-2])$/.test(new URL(request.url).searchParams.get("mes") || "") ? new URL(request.url).searchParams.get("mes") : null;
@@ -1528,7 +1539,7 @@ export default {
       await vigiarWhatsapp(env).catch(e => console.error("whatsapp", e?.message));
       await vigiarRecebimento(env).catch(e => console.error("vigia de recebimento", e?.message));
       await financeiroDoCron(env, { ...(await kitZap(env)), openai: openaiBruto, enviarEmail: (para, assunto, texto, anexos) => enviarEmail(env, para, assunto, texto, anexos), emailConfigurado: () => emailConfigurado(env), responsaveis: o => responsaveisDa(env, o) }).catch(e => console.error("financeiro", e?.message));
-      await adminDoCron(env, await kitZap(env)).catch(e => console.error("administração", e?.message));
+      { const kz = await kitZap(env); await adminDoCron(env, { ...kz, avisarTelegram: (o, t) => avisarTelegramDaEmpresa(env, kz, o, t), enviarModeloZap: (o, tel, modelo, idioma, vars) => enviarModeloZap(env, kz, o, tel, modelo, idioma, vars) }).catch(e => console.error("administração", e?.message)); }
       await limparBanco(env).catch(e => console.error("limpeza", e?.message));
       await sincronizarTemporada(env, await kitZap(env)).catch(e => console.error("temporada", e?.message));
       await processarCampanhas(env, await kitZap(env)).catch(e => console.error("campanhas", e?.message));

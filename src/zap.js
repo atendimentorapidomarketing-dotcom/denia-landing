@@ -11,6 +11,7 @@ import { acessoDa, lerPlanos } from "./planos.js";
 const GRAPH = "https://graph.facebook.com/v21.0";
 import { registrarProblema, resolverProblema, quandoBR } from "./problemas.js";
 import { contarConversas, inicioDoDia } from "./relatorio.js";
+import { compromissoPorTexto, tarefaPorTexto, agendaEmTexto } from "./administracao.js";
 export const DDL_ZAP = [
   `CREATE TABLE IF NOT EXISTS plt_zap_contas (org_id INTEGER PRIMARY KEY, phone_number_id TEXT UNIQUE, waba_id TEXT, numero TEXT, nome_verificado TEXT, token_cifrado TEXT, segredo_cifrado TEXT, telegram_cifrado TEXT, ativo INTEGER NOT NULL DEFAULT 1, modo TEXT NOT NULL DEFAULT 'BOTOES', config TEXT, atualizado_ms INTEGER)`,
   `CREATE TABLE IF NOT EXISTS plt_zap_itens (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, pai_id INTEGER NOT NULL DEFAULT 0, tipo TEXT NOT NULL, titulo TEXT NOT NULL, descricao TEXT, texto TEXT, palavras TEXT, ordem INTEGER NOT NULL DEFAULT 0, ativo INTEGER NOT NULL DEFAULT 1)`,
@@ -1662,6 +1663,18 @@ export async function enviarDaEquipe(env, k, orgId, tel, texto) {
   return ok ? { ok: true, nome: c.nome } : { erro: "A Meta não aceitou a mensagem. Veja o motivo na conversa.", status: 502 };
 }
 
+// Lembrete da administração pelo WhatsApp: só por modelo aprovado pela Meta (mensagem que a empresa inicia).
+export async function enviarModeloZap(env, k, orgId, telefone, modelo, idioma, variaveis = []) {
+  const conta = await contaDa(env, orgId);
+  if (!conta?.phone_number_id || !conta?.token_cifrado) return false;
+  const token = await k.decifrar(env, conta.token_cifrado);
+  const params = variaveis.slice(0, 10).map(v => ({ type: "text", text: cortar(String(v ?? "-"), 200) || "-" }));
+  try {
+    const d = await graphZap(token, "POST", `${encodeURIComponent(conta.phone_number_id)}/messages`, { messaging_product: "whatsapp", to: String(telefone).replace(/\D/g, ""), type: "template", template: { name: modelo, language: { code: idioma || "pt_BR" }, ...(params.length ? { components: [{ type: "body", parameters: params }] } : {}) } });
+    return Boolean(d?.messages?.[0]?.id);
+  } catch { return false; }
+}
+
 // ---------------------------------------------------------------------------
 // Bot do Telegram da plataforma: conecta o grupo com um toque e deixa a equipe responder por lá.
 // ---------------------------------------------------------------------------
@@ -1695,7 +1708,18 @@ export async function webhookTelegram(request, env, k) {
   }
   const conta = await env.DB.prepare("SELECT * FROM plt_zap_contas WHERE telegram_chat=?").bind(String(chat.id)).first();
   if (!conta) { if (/^\/(start|ajuda|help)/.test(texto)) await responder("Olá! Eu sou o bot de avisos da DENIA. Para conectar este grupo, use o link do painel: Chatbot do WhatsApp → Conexão → Telegram."); return new Response("ok"); }
-  if (/^\/(ajuda|help)/.test(texto)) { await responder("• Responda um aviso para falar com o cliente no WhatsApp (o robô pausa nessa conversa).\n• Responda um aviso com /robo para devolver a conversa ao robô.\n• /resumo — números de hoje."); return new Response("ok"); }
+  if (/^\/(ajuda|help)/.test(texto)) { await responder("• Responda um aviso para falar com o cliente no WhatsApp (o robô pausa nessa conversa).\n• Responda um aviso com /robo para devolver a conversa ao robô.\n• /resumo — números de hoje.\n• /agenda — compromissos e tarefas de hoje e dos próximos dias.\n• /marcar vistoria do AVCB terça às 10h — anota na agenda.\n• /tarefa pedir orçamento da pintura até sexta — anota uma tarefa."); return new Response("ok"); }
+  // Agenda pelo Telegram: /agenda, /marcar <compromisso>, /tarefa <tarefa>.
+  if (/^\/agenda(@\w+)?\s*$/i.test(texto)) { await responder("📅 " + await agendaEmTexto(env, conta.org_id, agora, 2)); return new Response("ok"); }
+  let mAg;
+  if ((mAg = texto.match(/^\/(marcar|compromisso|lembrar)(?:@\w+)?\s+([\s\S]{3,400})$/i))) {
+    const r = await compromissoPorTexto(env, conta.org_id, mAg[2], agora, "telegram");
+    await responder(r.ok ? "✅ " + r.frase : `⚠️ ${r.erro} Exemplo: /marcar vistoria do AVCB terça às 10h`); return new Response("ok");
+  }
+  if ((mAg = texto.match(/^\/tarefa(?:@\w+)?\s+([\s\S]{3,400})$/i))) {
+    const r = await tarefaPorTexto(env, conta.org_id, mAg[1], agora, [msg.from?.first_name, msg.from?.last_name].filter(Boolean).join(" ") || "Telegram");
+    await responder(r.ok ? "✅ " + r.frase : "⚠️ " + r.erro); return new Response("ok");
+  }
   if (/^\/resumo/.test(texto)) {
     const ini = Date.parse(new Date(agora - 3 * 3600000).toISOString().slice(0, 10) + "T03:00:00Z");
     const [m1, b1, p1] = await env.DB.batch([

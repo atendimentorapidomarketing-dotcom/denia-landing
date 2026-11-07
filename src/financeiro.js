@@ -43,7 +43,10 @@ const DDL_FIN_EXTRA = [
   "CREATE TABLE IF NOT EXISTS fin_orcamento (org_id INTEGER NOT NULL, tipo TEXT NOT NULL, categoria TEXT NOT NULL, valor_cent INTEGER NOT NULL, PRIMARY KEY (org_id, tipo, categoria))",
   "CREATE TABLE IF NOT EXISTS fin_log (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, lanc_id INTEGER, acao TEXT NOT NULL, detalhe TEXT, por TEXT, ms INTEGER NOT NULL)",
   "CREATE INDEX IF NOT EXISTS fin_log_org ON fin_log(org_id, ms)",
-  "CREATE INDEX IF NOT EXISTS fin_lanc_pago ON fin_lanc(org_id, pago_em)"
+  "CREATE INDEX IF NOT EXISTS fin_lanc_pago ON fin_lanc(org_id, pago_em)",
+  // Comprovantes e notas anexados ao lançamento (até 3 MB cada).
+  "CREATE TABLE IF NOT EXISTS fin_anexos (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, lanc_id INTEGER NOT NULL, nome TEXT, tipo TEXT NOT NULL, tamanho INTEGER, dados TEXT NOT NULL, por TEXT, ms INTEGER)",
+  "CREATE INDEX IF NOT EXISTS fin_anexos_lanc ON fin_anexos(org_id, lanc_id)"
 ];
 const prontos = new WeakSet();
 export async function garantirFinanceiro(env) {
@@ -388,6 +391,12 @@ export async function rotasFinanceiro(request, env, k, orgId, papel, resto) {
       // Pagos neste mês mas lançados (vencidos) em outro: aparecem também, para o mês bater com o caixa.
       const pagosAqui = status === "aberto" ? [] : (await env.DB.prepare("SELECT * FROM fin_lanc WHERE org_id=? AND pago=1 AND pago_em BETWEEN ? AND ? AND data NOT BETWEEN ? AND ? ORDER BY pago_em DESC LIMIT 500").bind(orgId, mes + "-01", mes + "-" + ultimoDia(mes), mes + "-01", mes + "-" + ultimoDia(mes)).all()).results || [];
       if (!q && !tipo) lista = lista.concat((await comPartes(pagosAqui)).map(l => ({ ...l, de_outro_mes: true })));
+      const ids = lista.map(l => l.id).filter(Boolean);
+      if (ids.length) {
+        const comAnexo = new Map();
+        for (let i = 0; i < ids.length; i += 200) { const pd = ids.slice(i, i + 200); for (const x of (await env.DB.prepare(`SELECT lanc_id, COUNT(*) n FROM fin_anexos WHERE org_id=? AND lanc_id IN (${pd.map(() => "?").join(",")}) GROUP BY lanc_id`).bind(orgId, ...pd).all()).results || []) comAnexo.set(x.lanc_id, x.n); }
+        lista = lista.map(l => comAnexo.has(l.id) ? { ...l, anexos: comAnexo.get(l.id) } : l);
+      }
       const previstos = mes > hoje.slice(0, 7) && status !== "pago" ? await previstosDoMes(env, orgId, mes) : [];
       return json({ lancamentos: lista, previstos, hoje, fechado: fechados.has(mes) });
     }
@@ -458,6 +467,7 @@ export async function rotasFinanceiro(request, env, k, orgId, papel, resto) {
     if (metodo === "DELETE") {
       const t = travado(atual.data, atual.pago_em); if (t) return t;
       await env.DB.prepare("DELETE FROM fin_lanc WHERE id=? AND org_id=?").bind(id, orgId).run();
+      await env.DB.prepare("DELETE FROM fin_anexos WHERE org_id=? AND lanc_id=?").bind(orgId, id).run();
       await gravarPartes(id, null);
       await registrar("apagou", id, { descricao: atual.descricao, valor: atual.valor_cent, data: atual.data, pago: atual.pago });
       return json({ ok: true });
@@ -538,6 +548,97 @@ export async function rotasFinanceiro(request, env, k, orgId, papel, resto) {
       }
       return json({ ok: true, itens: n });
     }
+  }
+  // ----- Comprovantes anexados
+  if (partes[0] === "lancamentos" && /^\d+$/.test(partes[1] || "") && partes[2] === "anexos") {
+    const id = Number(partes[1]);
+    if (!(await env.DB.prepare("SELECT 1 FROM fin_lanc WHERE id=? AND org_id=?").bind(id, orgId).first())) return json({ erro: "Lançamento não encontrado." }, 404);
+    if (metodo === "GET") return json({ anexos: (await env.DB.prepare("SELECT id, nome, tipo, tamanho, por, ms FROM fin_anexos WHERE org_id=? AND lanc_id=? ORDER BY id").bind(orgId, id).all()).results || [] });
+    if (metodo === "POST") {
+      const { corpo, erro } = await lerCorpo(request, 4_500_000); if (erro) return erro;
+      const tipo = String(corpo.tipo || ""), dados = String(corpo.base64 || "").replace(/^data:[^,]+,/, "");
+      if (!/^(image\/(jpeg|png|webp|heic)|application\/pdf)$/.test(tipo)) return json({ erro: "Envie foto (JPG, PNG) ou PDF." }, 400);
+      if (!/^[A-Za-z0-9+/=\s]+$/.test(dados) || dados.length < 40) return json({ erro: "Arquivo inválido." }, 400);
+      const tamanho = Math.floor(dados.replace(/\s/g, "").length * 3 / 4);
+      if (tamanho > 3_000_000) return json({ erro: "Arquivo grande demais (máximo 3 MB)." }, 413);
+      const n = (await env.DB.prepare("SELECT COUNT(*) n FROM fin_anexos WHERE org_id=? AND lanc_id=?").bind(orgId, id).first())?.n || 0;
+      if (n >= 10) return json({ erro: "No máximo 10 arquivos por lançamento." }, 400);
+      const r = await env.DB.prepare("INSERT INTO fin_anexos(org_id,lanc_id,nome,tipo,tamanho,dados,por,ms) VALUES(?,?,?,?,?,?,?,?)").bind(orgId, id, re(corpo.nome, 120) || "comprovante", tipo, tamanho, dados.replace(/\s/g, ""), quem, ms).run();
+      await registrar("anexou comprovante", id, { nome: re(corpo.nome, 120), tamanho });
+      return json({ ok: true, id: r.meta?.last_row_id }, 201);
+    }
+  }
+  if (partes[0] === "anexos" && /^\d+$/.test(partes[1] || "")) {
+    const a0 = await env.DB.prepare("SELECT * FROM fin_anexos WHERE id=? AND org_id=?").bind(Number(partes[1]), orgId).first();
+    if (!a0) return json({ erro: "Arquivo não encontrado." }, 404);
+    if (metodo === "DELETE") { await env.DB.prepare("DELETE FROM fin_anexos WHERE id=?").bind(a0.id).run(); await registrar("apagou comprovante", a0.lanc_id, { nome: a0.nome }); return json({ ok: true }); }
+    const bin = Uint8Array.from(atob(a0.dados), c => c.charCodeAt(0));
+    return new Response(bin, { headers: { "content-type": a0.tipo, "content-disposition": `inline; filename="${String(a0.nome).replace(/[^\w.\- ]/g, "_")}"`, "cache-control": "private, max-age=300", "x-content-type-options": "nosniff" } });
+  }
+  // ----- Extrato ou comprovante por foto: a IA lê e devolve as linhas para a pessoa conferir antes de lançar.
+  if (partes[0] === "ler-foto" && metodo === "POST") {
+    const { corpo, erro } = await lerCorpo(request, 6_000_000); if (erro) return erro;
+    const tipo = String(corpo.tipo || ""), dados = String(corpo.base64 || "").replace(/^data:[^,]+,/, "").replace(/\s/g, "");
+    if (!/^(image\/(jpeg|png|webp)|application\/pdf)$/.test(tipo)) return json({ erro: "Envie a foto (JPG ou PNG) ou o PDF do extrato ou comprovante." }, 400);
+    if (dados.length > 5_500_000) return json({ erro: "Arquivo grande demais (máximo 4 MB)." }, 413);
+    const envIA = await k.comIA(env, orgId);
+    if (!String(envIA.OPENAI_API_KEY || "").trim()) return json({ erro: "A inteligência ainda não foi ligada (falta a chave da OpenAI em Integrações)." }, 400);
+    const arquivo = tipo === "application/pdf" ? { type: "input_file", filename: "extrato.pdf", file_data: `data:application/pdf;base64,${dados}` } : { type: "input_image", image_url: `data:${tipo};base64,${dados}` };
+    let d;
+    try {
+      d = await k.openai(envIA, "responses", { model: String(envIA.OPENAI_MODEL || "gpt-5.6-luna").trim(), max_output_tokens: 4000,
+        instructions: `Você lê extratos bancários e comprovantes (Pix, TED, boleto) de empresas brasileiras. Devolva SÓ JSON: {"itens":[{"data":"AAAA-MM-DD","descricao":"texto curto","valor":123.45,"tipo":"ENTRADA"|"SAIDA","contato":"quem pagou ou recebeu, se aparecer","id_transacao":"se aparecer"}],"aviso":"algo que a pessoa deve conferir, ou vazio"}. Entrada = dinheiro que entrou na conta; saída = que saiu. Não invente: se não der para ler um valor ou data, deixe o item de fora e explique no aviso. Ano atual: ${hoje.slice(0, 4)}.`,
+        input: [{ role: "user", content: [{ type: "input_text", text: "Leia os lançamentos deste arquivo." }, arquivo] }] }, { timeout: 90000 });
+    } catch (e) { return json({ erro: e.message || "A IA não conseguiu ler agora. Tente de novo." }, 502); }
+    const bruto = String(d?.output_text || (d?.output || []).flatMap(o => o.content || []).map(c => c.text || "").join(""));
+    let r0; try { r0 = JSON.parse(bruto.slice(bruto.indexOf("{"), bruto.lastIndexOf("}") + 1)); } catch { return json({ erro: "Não consegui entender o arquivo. Tente uma foto mais nítida, reta e com boa luz." }, 422); }
+    const itens = (Array.isArray(r0.itens) ? r0.itens : []).slice(0, 300).map(x => ({ data: dataValida(x.data) ? x.data : null, descricao: re(x.descricao, 160), valor_cent: Math.abs(centavos(x.valor) || 0), tipo: x.tipo === "ENTRADA" ? "ENTRADA" : "SAIDA", contato: re(x.contato, 120) || null, id_transacao: re(x.id_transacao, 80) || null }))
+      .filter(x => x.data && x.descricao && x.valor_cent > 0);
+    // Já lançado? (mesmo valor e data, ou mesmo número da transação)
+    for (const x of itens) {
+      const ja = await env.DB.prepare("SELECT id, descricao FROM fin_lanc WHERE org_id=? AND tipo=? AND COALESCE(valor_pago_cent, valor_cent)=? AND (COALESCE(pago_em, data)=? OR (? IS NOT NULL AND chave_externa=?)) LIMIT 1").bind(orgId, x.tipo, x.valor_cent, x.data, x.id_transacao, "foto:" + x.id_transacao).first();
+      if (ja) x.ja_lancado = ja.descricao;
+      x.categoria = categoriaProvavel(x.descricao, x.tipo);
+    }
+    return json({ itens, aviso: re(r0.aviso, 500) });
+  }
+  if (partes[0] === "importar-itens" && metodo === "POST") {
+    const { corpo, erro } = await lerCorpo(request, 400000); if (erro) return erro;
+    let novos = 0, repetidos = 0, travados = 0;
+    for (const x of (Array.isArray(corpo.itens) ? corpo.itens : []).slice(0, 300)) {
+      const v = validar({ tipo: x.tipo, descricao: x.descricao, valor: (Number(x.valor_cent) || 0) / 100, data: x.data, categoria: x.categoria, pago: true, pago_em: x.data, contato: x.contato, forma: x.forma });
+      if (typeof v === "string") continue;
+      if (fechados.has(v.data.slice(0, 7))) { travados++; continue; }
+      const chave = x.id_transacao ? "foto:" + re(x.id_transacao, 80) : `foto:${v.tipo}:${v.data}:${v.valor_cent}:${v.descricao.toLowerCase().slice(0, 40)}`;
+      const r = await env.DB.prepare(`INSERT OR IGNORE INTO fin_lanc(org_id,tipo,descricao,valor_cent,categoria,data,pago,pago_em,forma,contato,origem,chave_externa,criado_por,criado_ms,atualizado_ms) VALUES(?,?,?,?,?,?,1,?,?,?,'extrato',?,?,?,?)`)
+        .bind(orgId, v.tipo, v.descricao, v.valor_cent, v.categoria, v.data, v.data, v.forma, v.contato, chave, quem, ms, ms).run();
+      if (r.meta?.changes) novos++; else repetidos++;
+    }
+    await registrar("importou por foto", null, { novos, repetidos });
+    return json({ ok: true, novos, repetidos, meses_fechados: travados });
+  }
+  // ----- Fluxo de caixa dos próximos meses: saldo de hoje + o que está para entrar e sair (lançado ou programado).
+  if (partes[0] === "fluxo" && metodo === "GET") {
+    const n = Math.min(24, Math.max(3, Number(url.searchParams.get("meses")) || 12));
+    let saldoIni = null;
+    try {
+      const contas = (await env.DB.prepare("SELECT id FROM adm_contas WHERE org_id=? AND ativo=1").bind(orgId).all()).results || [];
+      if (contas.length) { const { saldosNa } = await import("./administracao.js"); saldoIni = (await saldosNa(env, orgId, hoje)).reduce((a, x) => a + x.saldo_cent, 0); }
+    } catch { saldoIni = null; }
+    const meses = [];
+    let saldo = saldoIni ?? 0;
+    for (let i = 0; i < n; i++) {
+      const mes = somarMes(hoje.slice(0, 7), i), fim = `${mes}-${String(ultimoDia(mes)).padStart(2, "0")}`;
+      // Mês atual: inclui o que está vencido e não foi pago (ainda vai ter que entrar ou sair).
+      const abertos = (await env.DB.prepare(`SELECT tipo, SUM(valor_cent) v FROM fin_lanc WHERE org_id=? AND pago=0 AND COALESCE(fora_conta,0)=0 AND data <= ? ${i ? "AND data >= ?" : ""} GROUP BY tipo`).bind(...(i ? [orgId, fim, mes + "-01"] : [orgId, fim])).all()).results || [];
+      const prev = i ? await previstosDoMes(env, orgId, mes) : [];
+      const ent = (abertos.find(x => x.tipo === "ENTRADA")?.v || 0) + prev.filter(x => x.tipo === "ENTRADA").reduce((a, x) => a + x.valor_cent, 0);
+      const sai = (abertos.find(x => x.tipo === "SAIDA")?.v || 0) + prev.filter(x => x.tipo === "SAIDA").reduce((a, x) => a + x.valor_cent, 0);
+      saldo += ent - sai;
+      meses.push({ mes, rotulo: NOMES_MES[Number(mes.slice(5)) - 1] + "/" + mes.slice(2, 4), entradas: ent, saidas: sai, resultado: ent - sai, saldo_fim: saldoIni === null ? null : saldo });
+    }
+    const negativo = saldoIni === null ? null : meses.find(m0 => m0.saldo_fim < 0) || null;
+    return json({ hoje, saldo_hoje: saldoIni, meses, primeiro_mes_negativo: negativo ? negativo.mes : null });
   }
   if (partes[0] === "historico" && metodo === "GET") return json({ historico: (await env.DB.prepare("SELECT * FROM fin_log WHERE org_id=? ORDER BY ms DESC LIMIT 300").bind(orgId).all()).results || [] });
 
