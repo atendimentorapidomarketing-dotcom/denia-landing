@@ -50,7 +50,7 @@ export async function garantirFinanceiro(env) {
   if (prontos.has(env.DB)) return;
   for (const s of DDL_FINANCEIRO) await env.DB.prepare(s).run();
   // Colunas da Administração: conta (banco/caixa), locatário, competência, valor efetivamente pago e centro de custo.
-  for (const c of ["conta_id INTEGER", "locatario_id INTEGER", "competencia TEXT", "valor_pago_cent INTEGER", "centro TEXT"]) await env.DB.prepare("ALTER TABLE fin_lanc ADD COLUMN " + c).run().catch(() => { });
+  for (const c of ["conta_id INTEGER", "locatario_id INTEGER", "competencia TEXT", "valor_pago_cent INTEGER", "centro TEXT", "fora_conta INTEGER"]) await env.DB.prepare("ALTER TABLE fin_lanc ADD COLUMN " + c).run().catch(() => { });
   for (const c of ["freq TEXT", "inicio_mes TEXT", "dia_semana INTEGER", "ate_mes TEXT", "forma TEXT", "contato TEXT", "centro TEXT", "conta_id INTEGER"]) await env.DB.prepare("ALTER TABLE fin_recorrente ADD COLUMN " + c).run().catch(() => { });
   for (const s of DDL_FIN_EXTRA) await env.DB.prepare(s).run();
   prontos.add(env.DB);
@@ -156,6 +156,7 @@ export async function resumoDoMes(env, orgId, mes, agoraMs) {
   const t = { entradas: 0, saidas: 0, a_receber: 0, a_pagar: 0, vencidas_pagar: 0, vencidas_receber: 0 };
   const cats = {};
   for (const l of lanc) {
+    if (l.fora_conta) continue; // pago fora da conta da empresa: não entra nos números
     const ent = l.tipo === "ENTRADA";
     if (l.pago) { t[ent ? "entradas" : "saidas"] += l.valor_cent; const k = (ent ? "E|" : "S|") + (l.categoria || (ent ? "Outras receitas" : "Outras despesas")); cats[k] = (cats[k] || 0) + l.valor_cent; }
     else { t[ent ? "a_receber" : "a_pagar"] += l.valor_cent; if (l.data < hoje) t[ent ? "vencidas_receber" : "vencidas_pagar"] += l.valor_cent; }
@@ -165,7 +166,7 @@ export async function resumoDoMes(env, orgId, mes, agoraMs) {
   const categorias = Object.entries(cats).map(([k, v]) => ({ tipo: k[0] === "E" ? "ENTRADA" : "SAIDA", categoria: k.slice(2), valor_cent: v })).sort((a, b) => b.valor_cent - a.valor_cent);
   // Últimos 6 meses (só o que foi pago/recebido), para o gráfico e a comparação.
   const ini = somarMes(mes, -5) + "-01";
-  const serieR = (await env.DB.prepare("SELECT substr(data,1,7) AS mes, tipo, SUM(valor_cent) AS v FROM fin_lanc WHERE org_id=? AND pago=1 AND data BETWEEN ? AND ? GROUP BY 1,2").bind(orgId, ini, ate).all()).results || [];
+  const serieR = (await env.DB.prepare("SELECT substr(data,1,7) AS mes, tipo, SUM(valor_cent) AS v FROM fin_lanc WHERE org_id=? AND pago=1 AND COALESCE(fora_conta,0)=0 AND data BETWEEN ? AND ? GROUP BY 1,2").bind(orgId, ini, ate).all()).results || [];
   const serie = [];
   for (let i = -5; i <= 0; i++) {
     const m = somarMes(mes, i);
@@ -315,7 +316,7 @@ export async function rotasFinanceiro(request, env, k, orgId, papel, resto) {
     if (!dataValida(c.data)) return "Data inválida.";
     return { tipo, valor_cent: Math.abs(v), descricao: re(c.descricao, 160), categoria: re(c.categoria, 60) || categoriaProvavel(c.descricao, tipo), data: c.data,
       pago: c.pago ? 1 : 0, pago_em: c.pago ? (dataValida(c.pago_em) ? c.pago_em : c.data <= hoje ? c.data : hoje) : null, forma: re(c.forma, 30) || null, contato: re(c.contato, 120) || null, obs: re(c.obs, 500) || null,
-      conta_id: Number(c.conta_id) > 0 ? Number(c.conta_id) : null, centro: re(c.centro, 60) || null };
+      conta_id: Number(c.conta_id) > 0 ? Number(c.conta_id) : null, centro: re(c.centro, 60) || null, fora_conta: c.fora_conta ? 1 : 0 };
   };
 
   const quem = k.sessao?.usuario?.email || null;
@@ -403,8 +404,8 @@ export async function rotasFinanceiro(request, env, k, orgId, papel, resto) {
         const pagoAqui = i === 0 && v.pago, multi = pagoAqui && ps && ps.length > 1;
         const pagoTotal = multi ? ps.reduce((a0, x) => a0 + x.valor_cent, 0) : null;
         const valor = parcelas > 1 ? Math.round(v.valor_cent / parcelas) + (i === 0 ? v.valor_cent - Math.round(v.valor_cent / parcelas) * parcelas : 0) : v.valor_cent;
-        const r = await env.DB.prepare(`INSERT INTO fin_lanc(org_id,tipo,descricao,valor_cent,categoria,data,pago,pago_em,forma,contato,obs,origem,criado_por,criado_ms,atualizado_ms,conta_id,centro,valor_pago_cent)
-          VALUES(?,?,?,?,?,?,?,?,?,?,?,'manual',?,?,?,?,?,?)`).bind(orgId, v.tipo, parcelas > 1 ? `${v.descricao} (${i + 1}/${parcelas})` : v.descricao, valor,
+        const r = await env.DB.prepare(`INSERT INTO fin_lanc(org_id,tipo,descricao,valor_cent,categoria,data,pago,pago_em,forma,contato,obs,origem,criado_por,criado_ms,atualizado_ms,conta_id,centro,valor_pago_cent,fora_conta)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,'${corpo.rapido ? "rapido" : "manual"}',?,?,?,?,?,?,${v.fora_conta})`).bind(orgId, v.tipo, parcelas > 1 ? `${v.descricao} (${i + 1}/${parcelas})` : v.descricao, valor,
           v.categoria, data, pagoAqui ? 1 : 0, pagoAqui ? v.pago_em : null, multi ? formaDasPartes(ps) : v.forma, v.contato, v.obs, quem, ms, ms, v.conta_id, v.centro, multi && pagoTotal !== valor ? pagoTotal : null).run();
         const id = r.meta?.last_row_id; ids.push(id);
         if (multi) await gravarPartes(id, ps);
@@ -446,8 +447,9 @@ export async function rotasFinanceiro(request, env, k, orgId, papel, resto) {
       const { corpo, erro } = await lerCorpo(request); if (erro) return erro;
       const v = validar({ ...atual, valor: atual.valor_cent / 100, ...corpo, forma: corpo.forma !== undefined ? corpo.forma : atual.forma }); if (typeof v === "string") return json({ erro: v }, 400);
       const t = travado(atual.data, atual.pago_em, v.data, v.pago_em); if (t) return t;
-      await env.DB.prepare("UPDATE fin_lanc SET tipo=?,descricao=?,valor_cent=?,categoria=?,data=?,pago=?,pago_em=?,forma=?,contato=?,obs=?,conta_id=?,centro=?,atualizado_ms=? WHERE id=? AND org_id=?")
-        .bind(v.tipo, v.descricao, v.valor_cent, v.categoria, v.data, v.pago, v.pago_em, v.forma, v.contato, v.obs, v.conta_id, v.centro, ms, id, orgId).run();
+      if (corpo.fora_conta === undefined) v.fora_conta = atual.fora_conta ? 1 : 0;
+      await env.DB.prepare("UPDATE fin_lanc SET tipo=?,descricao=?,valor_cent=?,categoria=?,data=?,pago=?,pago_em=?,forma=?,contato=?,obs=?,conta_id=?,centro=?,fora_conta=?,atualizado_ms=? WHERE id=? AND org_id=?")
+        .bind(v.tipo, v.descricao, v.valor_cent, v.categoria, v.data, v.pago, v.pago_em, v.forma, v.contato, v.obs, v.conta_id, v.centro, v.fora_conta, ms, id, orgId).run();
       if (!v.pago) await gravarPartes(id, null);
       const mudou = Object.fromEntries(["descricao", "valor_cent", "categoria", "data", "pago", "pago_em", "forma", "contato"].filter(c => String(atual[c] ?? "") !== String(v[c] ?? "")).map(c => [c, [atual[c], v[c]]]));
       await registrar("editou", id, mudou);

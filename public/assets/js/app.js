@@ -7063,6 +7063,7 @@ Botão só com texto = resposta.` })),
     const centro = (op.centros || []).length ? h("select", { class: "entrada" }, h("option", { value: "", text: "—" }), op.centros.map(c => h("option", { value: c.nome, text: c.nome + (c.subtipo ? ` (${c.subtipo})` : "") }))) : null;
     if (centro) centro.value = l ? l.centro || "" : pre.centro || "";
     const pago = h("input", { type: "checkbox", checked: l ? Boolean(l.pago) : pre.pago !== undefined ? pre.pago : false });
+    const fora = h("input", { type: "checkbox", checked: Boolean(l && l.fora_conta) });
     const pagoEm = h("input", { class: "entrada", type: "date", value: l && l.pago_em ? l.pago_em : op.hoje });
     const centavosDe = () => { const n = Number(String(valor.value).replace(/[^\d,.-]/g, "").replace(/\.(?=\d{3}(\D|$))/g, "").replace(",", ".")); return Number.isFinite(n) ? Math.round(n * 100) : 0; };
     const formas = campoFormas(op, centavosDe, l ? l.forma : pre.forma || armazenamento.ler("denia_fin_forma") || "");
@@ -7090,11 +7091,12 @@ Botão só com texto = resposta.` })),
       h("div", { class: "fin-duas" }, campo("Categoria", categoria), campo("Cliente ou fornecedor", contato)), h("datalist", { id: fornList }, (op.fornecedores || []).map(f => h("option", { value: f.nome }))),
       centro ? campo("Centro de custo (imóvel, pessoa…)", centro) : null,
       l ? null : h("div", { class: "fin-duas" }, campo("Repetir", freq, "Cria sozinho nas próximas datas."), campo("Parcelas", parcelas, "Divide o valor em parcelas mensais.")),
-      h("label", { class: "fin-check" }, pago, " Já foi pago / recebido"), blocoPago, campo("Observação", obs));
+      h("label", { class: "fin-check" }, pago, " Já foi pago / recebido"), blocoPago, campo("Observação", obs),
+      h("label", { class: "fin-check" }, fora, " Pago fora da conta da empresa (por outra pessoa): fica fora dos números e aparece como observação no relatório"));
     for (;;) {
       if (!(await modal({ titulo: l ? "Editar lançamento" : tipoNovo === "ENTRADA" ? "Nova entrada / recebimento" : "Nova conta / saída", conteudo, confirmar: "Salvar" }))) return;
       const fp = formas._ler();
-      const corpo = { tipo: tipo.value, descricao: desc.value, valor: valor.value, data: data.value, categoria: categoria.value === "__nova" ? "" : categoria.value, pago: pago.checked, pago_em: pagoEm.value, contato: contato.value, obs: obs.value, centro: centro ? centro.value : undefined, ...(pago.checked ? fp : {}) };
+      const corpo = { tipo: tipo.value, descricao: desc.value, valor: valor.value, data: data.value, categoria: categoria.value === "__nova" ? "" : categoria.value, pago: pago.checked, pago_em: pagoEm.value, contato: contato.value, obs: obs.value, centro: centro ? centro.value : undefined, fora_conta: fora.checked, ...(pago.checked ? fp : {}) };
       if (!l) { corpo.parcelas = Number(parcelas.value) || 1; corpo.frequencia = freq.value || undefined; }
       try {
         if (l) {
@@ -7138,7 +7140,7 @@ Botão só com texto = resposta.` })),
     for (;;) {
       if (!(await modal({ titulo: "Gasto rápido", conteudo: h("div", { class: "fin-form" }, h("p", { class: "sub", text: "Entra como pago hoje. Para contas com vencimento, use + Saída." }), campo("O que foi", desc), campo("Valor", valor), campo("Forma", forma), campo("Categoria", categoria)), confirmar: "Lançar" }))) return;
       try {
-        await fin("lancamentos", { metodo: "POST", corpo: { tipo: "SAIDA", descricao: desc.value, valor: valor.value, data: op.hoje, pago: true, pago_em: op.hoje, forma: escolhida, categoria: categoria.value === "__nova" ? "" : categoria.value } });
+        await fin("lancamentos", { metodo: "POST", corpo: { tipo: "SAIDA", descricao: desc.value, valor: valor.value, data: op.hoje, pago: true, pago_em: op.hoje, rapido: true, forma: escolhida, categoria: categoria.value === "__nova" ? "" : categoria.value } });
         armazenamento.gravar("denia_fin_forma", escolhida); aviso("Gasto lançado.", "ok"); aoSalvar(); return;
       } catch (e) { aviso(e.message, "erro"); }
     }
@@ -7215,7 +7217,7 @@ Botão só com texto = resposta.` })),
         h("thead", {}, h("tr", {}, ["Venc.", "Descrição", "Categoria", "Valor", "Situação", ""].map(c => h("th", { text: c })))),
         h("tbody", {}, ls.map(l => h("tr", { class: l.previsto ? "fin-previsto" : "" },
           h("td", { text: dataCurtaFin(l.data) }),
-          h("td", {}, h("strong", { text: l.descricao }), h("div", { class: "prb-meta", text: [l.contato, l.centro, l.de_outro_mes ? `pago em ${dataCurtaFin(l.pago_em)} (vencia em outro mês)` : ""].filter(Boolean).join(" · ") })),
+          h("td", {}, h("strong", { text: l.descricao }), h("div", { class: "prb-meta", text: [l.contato, l.centro, l.fora_conta ? "pago fora da conta (não entra nos números)" : "", l.de_outro_mes ? `pago em ${dataCurtaFin(l.pago_em)} (vencia em outro mês)` : ""].filter(Boolean).join(" · ") })),
           h("td", { text: l.categoria || "—" }),
           h("td", { class: l.tipo === "ENTRADA" ? "fin-mais" : "fin-menos", text: (l.tipo === "ENTRADA" ? "+ " : "− ") + din(l.valor_pago_cent ?? l.valor_cent) }),
           h("td", {}, l.previsto ? selo("Previsto", "info") : l.pago ? selo(`${l.tipo === "ENTRADA" ? "Recebido" : "Pago"} ${dataCurtaFin(l.pago_em).slice(0, 5)}${l.forma ? " · " + l.forma : ""}`, "ok") : selo(l.data < r.hoje ? "Vencido" : "Em aberto", l.data < r.hoje ? "erro" : "aviso")),
@@ -7627,6 +7629,7 @@ Botão só com texto = resposta.` })),
         ...g.itens.map(l => h("tr", {}, h("td", { text: l.descricao }), h("td", { text: dataCurtaFin(l.pago_em) }), h("td", { text: l.forma || "—" }), h("td", { text: dinA(l.valor_pago_cent ?? l.valor_cent) })))]),
         h("tr", { class: "fin-grupo" }, h("td", { colspan: "3" }, h("strong", { text: rotulo })), h("td", {}, h("strong", { text: dinA(total) }))))));
     const abertoT = (ls, total, rot) => ls.length ? [h("tr", { class: "fin-grupo" }, h("td", { colspan: "3" }, h("strong", { text: rot })), h("td", {}, h("strong", { text: dinA(total) }))), ...ls.map(l => h("tr", {}, h("td", { text: l.descricao }), h("td", { text: dataCurtaFin(l.data) }), h("td", { text: l.contato || "—" }), h("td", { text: dinA(l.valor_cent) })))] : [];
+    const notas = h("textarea", { class: "entrada", rows: "3", placeholder: "Ex.: AZYP Patrimonial (R$ 15.000): confirmar com o administrador o que é essa transferência." }, r.notas || "");
     const metr = [metrica("Entrou", dinA(r.entrou), "Recebido no período"), metrica("Saiu", dinA(r.saiu), "Pago no período"), metrica("Resultado", dinA(r.resultado), r.resultado >= 0 ? "Sobrou" : "Faltou"),
       metrica("Saldo no banco", r.saldos.some(s0 => s0.tipo === "BANCO") ? dinA(r.banco_cent) : "—", `Em ${dataCurtaFin(r.fim)}`)];
     if (r.caixa_cent) metr.push(metrica("Dinheiro em caixa", dinA(r.caixa_cent), `Em ${dataCurtaFin(r.fim)}`));
@@ -7642,8 +7645,10 @@ Botão só com texto = resposta.` })),
           h("tbody", {}, ...abertoT(r.receber.mes, r.receber.total_mes, r.periodo ? "Do período" : `Do mês (${r.nome})`), ...abertoT(r.receber.antes, r.receber.total_antes, r.periodo ? "Antes do período" : "De meses anteriores")))) : listaVazia("Nada em aberto no fim do período.")),
       h("section", { class: "cartao vidro", style: "margin-top:12px" }, h("h3", { style: "margin:0 0 8px", text: `Pagos com atraso, sem multa e juros: ${r.atrasados.length} · deixou de ser cobrado ${dinA(r.atrasados_deixou)}` }),
         r.atrasados.length ? h("ul", { class: "prb-lista" }, r.atrasados.map(l => item(`${l.contato || l.descricao} — ${dinA(l.valor_pago_cent ?? l.valor_cent)}`, `venceu ${dataCurtaFin(l.data)} · pago ${dataCurtaFin(l.pago_em)} · ${l.dias} dias · multa + juros do contrato ${dinA(l.deixou_cent)}`))) : listaVazia("Nenhum atraso no período.")),
-      h("section", { class: "cartao vidro", style: "margin-top:12px" }, h("h3", { style: "margin:0 0 8px", text: "Pontos a conferir" }),
-        r.conferir.length ? h("ul", { class: "prb-lista" }, r.conferir.map(t => item(t, ""))) : listaVazia("Nada a conferir.")));
+      h("section", { class: "cartao vidro", style: "margin-top:12px" }, h("h3", { style: "margin:0 0 8px", text: "Pontos para conferir" }),
+        r.conferir.length ? h("ul", { class: "prb-lista" }, r.conferir.map(t => item(t, ""))) : listaVazia("Nada a conferir automaticamente."),
+        h("p", { class: "sub", style: "margin:10px 0 4px", text: "Seus pontos (saem no PDF, um por linha):" }), notas,
+        h("div", { class: "acoes" }, botao("Salvar pontos", async () => { try { await adm("relatorio-notas", { metodo: "PUT", corpo: { mes: r.fim.slice(0, 7), texto: notas.value } }); aviso("Salvo. Já sai no PDF.", "ok"); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno"))));
   }
 
   // ----- Cadastros: fornecedores/prestadores e centros de custo (imóveis, pessoas, veículos…)
@@ -7697,7 +7702,8 @@ Botão só com texto = resposta.` })),
     const emails = entradaTxt(c.emails, "Vazio = dono e administradores"), tp = h("input", { type: "checkbox", checked: Boolean(c.tp_no_fin) });
     const assin = entradaTxt(String(c.assinaturas || "").split("|").join(", "), "Ex.: Administradora, Proprietário"), cidade = entradaTxt(c.cidade, "Ex.: Rio de Janeiro");
     const emissor = entradaTxt(c.recibo_emissor, "Ex.: Shopping Infomix — CNPJ 00.000.000/0001-00");
-    const salvar = async () => { try { await adm("config", { metodo: "PUT", corpo: { perfil: perfil.value, resumo_diario: resumo.checked, hora_resumo: Number(hora.value), emails: emails.value, tp_no_fin: tp.checked, assinaturas: assin.value.split(",").map(s => s.trim()).filter(Boolean), cidade: cidade.value, recibo_emissor: emissor.value } }); aviso("Ajustes salvos.", "ok"); } catch (e) { aviso(e.message, "erro"); } };
+    const endereco = entradaTxt(c.endereco, "Ex.: Rua Voluntários da Pátria, 261 — Botafogo");
+    const salvar = async () => { try { await adm("config", { metodo: "PUT", corpo: { perfil: perfil.value, resumo_diario: resumo.checked, hora_resumo: Number(hora.value), emails: emails.value, tp_no_fin: tp.checked, assinaturas: assin.value.split(",").map(s => s.trim()).filter(Boolean), cidade: cidade.value, recibo_emissor: emissor.value, endereco: endereco.value } }); aviso("Ajustes salvos.", "ok"); } catch (e) { aviso(e.message, "erro"); } };
     const link = h("div", {});
     const mostrarLink = caminho => trocar(link, h("p", { class: "sub", text: "Assine este endereço no celular (iPhone: Ajustes → Calendário → Contas → Adicionar conta → Outra → Adicionar calendário assinado; Google Agenda: Outras agendas → Do URL). Os alarmes chegam também no relógio." }),
       h("div", { class: "compor" }, h("input", { class: "entrada", type: "text", readonly: true, value: location.origin + caminho }), botao("Copiar", () => copiar(location.origin + caminho), "btn-secundario")),
@@ -7714,7 +7720,7 @@ Botão só com texto = resposta.` })),
     trocar(el, cabeca("Ajustes e importação", "Como a administração funciona nesta empresa."),
       h("div", { class: "grade grade-2" },
         h("section", { class: "cartao vidro" }, h("h3", { style: "margin:0 0 6px", text: "Perfil e relatório" }),
-          campo("Tipo de administração", perfil, "Define as categorias e as obrigações sugeridas."), campo("Quem assina o relatório do mês", assin, "Até 3 nomes, separados por vírgula."), campo("Cidade (para a data da assinatura)", cidade), campo("Quem emite os recibos", emissor, "Aparece no recibo de cada recebimento."),
+          campo("Tipo de administração", perfil, "Define as categorias e as obrigações sugeridas."), campo("Quem assina o relatório do mês", assin, "Até 3, separados por vírgula. Ex.: Elaborado por (nome e assinatura), Administrador / responsável (de acordo)"), campo("Endereço (sai no cabeçalho do relatório)", endereco), campo("Cidade (para a data da assinatura)", cidade), campo("Quem emite os recibos", emissor, "Aparece no recibo de cada recebimento."),
           h("label", { class: "fin-check" }, tp, " Lançar as reservas da temporada como a receber no financeiro"),
           h("div", { class: "acoes" }, botao("Salvar", salvar, "btn-primario"))),
         h("section", { class: "cartao vidro" }, h("h3", { style: "margin:0 0 6px", text: "Resumo do dia por e-mail" }),
