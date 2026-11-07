@@ -3889,7 +3889,7 @@ test("Administração — banco e caixa, aluguéis com atraso, relatório no lay
   const pdf = await p.req(A + "/relatorio.pdf?mes=2099-10", { quem: "admin" });
   assert.equal(pdf.r.headers.get("content-type"), "application/pdf");
   const txtPdf = Buffer.from(await pdf.r.arrayBuffer()).toString("latin1");
-  for (const t of ["Entrou", "Saiu", "Resultado", "Saldo no banco", "Pagos com atraso, sem multa e juros", "Administradora", "Pontos a conferir", "Como ler este relat"]) assert.ok(txtPdf.includes(t), "PDF tem " + t);
+  for (const t of ["Entrou", "Saiu", "Resultado", "Saldo no banco", "Pagaram com atraso e sem juros", "TOTAL QUE DEIXOU DE SER COBRADO", "Administradora", "Pontos para conferir", "Explica", "Para onde foi o dinheiro"]) assert.ok(txtPdf.includes(t), "PDF tem " + t);
   assert.ok((txtPdf.match(/\/Type \/Page /g) || []).length >= 2, "explicação na página seguinte");
 
   // Agenda: aviso por e-mail no horário e repetição mensal.
@@ -4025,6 +4025,15 @@ test("Financeiro completo — várias formas, categorias, contas que se repetem,
   await ok(A + "/cadastros", { metodo: "POST", corpo: { tipo: "CENTRO", nome: "Apto 302", subtipo: "Apartamento" } });
   const op2 = await ok(F + "/opcoes");
   assert.equal(op2.fornecedores[0].nome, "Rei do Ar"); assert.equal(op2.centros[0].nome, "Apto 302");
+  // Pago fora da conta: não entra no que saiu, mas aparece como observação; pontos escritos à mão saem no relatório.
+  const antes = (await ok(A + "/relatorio?mes=2099-10")).saiu;
+  await ok(F + "/lancamentos", { metodo: "POST", corpo: { tipo: "SAIDA", descricao: "Aluguel do imóvel", valor: "30000", data: "2099-10-30", pago: true, fora_conta: true } });
+  await ok(A + "/relatorio-notas", { metodo: "PUT", corpo: { mes: "2099-10", texto: "Confirmar a transferência AZYP" } });
+  const rel10 = await ok(A + "/relatorio?mes=2099-10");
+  assert.equal(rel10.saiu, antes, "fora da conta não soma");
+  assert.equal(rel10.fora_conta[0].valor_cent, 3000000); assert.equal(rel10.notas, "Confirmar a transferência AZYP");
+  const pdfP = Buffer.from(await (await p.req(A + "/relatorio.pdf?mes=2099-10", { quem: "admin" })).r.arrayBuffer()).toString("latin1");
+  for (const t of ["Confirmar a transfer", "Pago fora da conta", "Pagaram com atraso", "Por forma de pagamento"]) assert.ok(pdfP.includes(t), "PDF: " + t);
   // Relatório de um período (trimestre) em PDF e planilha.
   const tri = await ok(A + "/relatorio?de=2099-08-01&ate=2099-10-31");
   assert.equal(tri.periodo, true); assert.equal(tri.inicio, "2099-08-01");

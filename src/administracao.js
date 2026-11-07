@@ -45,7 +45,9 @@ export const DDL_ADMIN = [
   // Mês isento de aluguel (a cobrança daquele mês não é gerada).
   "CREATE TABLE IF NOT EXISTS adm_isencoes (org_id INTEGER NOT NULL, locatario_id INTEGER NOT NULL, mes TEXT NOT NULL, motivo TEXT, por TEXT, ms INTEGER, PRIMARY KEY (org_id, locatario_id, mes))"
 ];
-const ALTERS_ADMIN = ["ALTER TABLE adm_locatarios ADD COLUMN periodicidade TEXT", "ALTER TABLE adm_locatarios ADD COLUMN dia_semana INTEGER", "ALTER TABLE adm_config ADD COLUMN recibo_emissor TEXT"];
+const ALTERS_ADMIN = ["ALTER TABLE adm_locatarios ADD COLUMN periodicidade TEXT", "ALTER TABLE adm_locatarios ADD COLUMN dia_semana INTEGER", "ALTER TABLE adm_config ADD COLUMN recibo_emissor TEXT", "ALTER TABLE adm_config ADD COLUMN endereco TEXT",
+  // Pontos a conferir escritos à mão para o relatório de um mês.
+  "CREATE TABLE IF NOT EXISTS adm_rel_notas (org_id INTEGER NOT NULL, mes TEXT NOT NULL, texto TEXT, ms INTEGER, PRIMARY KEY (org_id, mes))"];
 
 const prontos = new WeakSet();
 export async function garantirAdmin(env) {
@@ -161,7 +163,7 @@ export async function saldosNa(env, orgId, data) {
   const contas = await contasDa(env, orgId);
   if (!contas.length) return [];
   const minimo = contas.reduce((m, c) => c.saldo_em < m ? c.saldo_em : m, data), maximo = contas.reduce((m, c) => c.saldo_em > m ? c.saldo_em : m, data);
-  const lanc = (await env.DB.prepare("SELECT id, tipo, valor_cent, valor_pago_cent, forma, conta_id, pago_em FROM fin_lanc WHERE org_id=? AND pago=1 AND pago_em > ? AND pago_em <= ?").bind(orgId, minimo, maximo).all()).results || [];
+  const lanc = (await env.DB.prepare("SELECT id, tipo, valor_cent, valor_pago_cent, forma, conta_id, pago_em FROM fin_lanc WHERE org_id=? AND pago=1 AND COALESCE(fora_conta,0)=0 AND pago_em > ? AND pago_em <= ?").bind(orgId, minimo, maximo).all()).results || [];
   const tr = (await env.DB.prepare("SELECT * FROM adm_transf WHERE org_id=? AND data > ? AND data <= ?").bind(orgId, minimo, maximo).all()).results || [];
   // Pagamento dividido (parte Pix, parte dinheiro): cada parte vai para a sua conta.
   const partes = (await env.DB.prepare("SELECT p.* FROM fin_partes p JOIN fin_lanc l ON l.id=p.lanc_id WHERE p.org_id=? AND l.pago=1 AND l.pago_em > ? AND l.pago_em <= ?").bind(orgId, minimo, maximo).all()).results || [];
@@ -282,7 +284,9 @@ export async function relatorioDoMes(env, orgId, mes, agoraMs, periodo = null) {
   const ini = periodo ? periodo.de : mes + "-01", fim = periodo ? periodo.ate : `${mes}-${String(ultimoDia(mes)).padStart(2, "0")}`, hoje = hojeLocal(agoraMs);
   const corte = fim < hoje ? fim : hoje;
   const q = async (sql, ...a) => (await env.DB.prepare(sql).bind(...a).all()).results || [];
-  const pagos = await q("SELECT * FROM fin_lanc WHERE org_id=? AND pago=1 AND pago_em BETWEEN ? AND ? ORDER BY pago_em, id", orgId, ini, fim);
+  const todosPagos = await q("SELECT * FROM fin_lanc WHERE org_id=? AND pago=1 AND pago_em BETWEEN ? AND ? ORDER BY pago_em, id", orgId, ini, fim);
+  // "Pago fora da conta" (ex.: pago por outra pessoa): fica fora dos números e aparece só como observação.
+  const pagos = todosPagos.filter(l => !l.fora_conta), foraConta = todosPagos.filter(l => l.fora_conta);
   const agrupar = tipo => {
     const g = new Map();
     for (const l of pagos.filter(x => x.tipo === tipo)) { const c = l.categoria || (tipo === "ENTRADA" ? "Outras receitas" : "Outras despesas"); if (!g.has(c)) g.set(c, []); g.get(c).push(l); }
@@ -307,6 +311,54 @@ export async function relatorioDoMes(env, orgId, mes, agoraMs, periodo = null) {
     .map(l => { const loc = multaDe.get(l.locatario_id) || {}, e = encargosAtraso(l.valor_cent, l.data, l.pago_em, loc.multa_pct, loc.juros_pct); return { ...l, dias: e.dias, deixou_cent: e.multa + e.juros }; });
   const saldos = await saldosNa(env, orgId, fim);
   const banco = saldos.filter(s => s.tipo === "BANCO"), caixa = saldos.filter(s => s.tipo === "CAIXA");
+  // ----- Detalhes da prestação de contas (linha a linha, como no modelo aprovado)
+  const ids = pagos.map(l => l.id);
+  const partesDe = new Map();
+  for (let i = 0; i < ids.length; i += 90) {
+    const pedaco = ids.slice(i, i + 90);
+    for (const x of await q(`SELECT * FROM fin_partes WHERE org_id=? AND lanc_id IN (${pedaco.map(() => "?").join(",")})`, orgId, ...pedaco)) { if (!partesDe.has(x.lanc_id)) partesDe.set(x.lanc_id, []); partesDe.get(x.lanc_id).push(x); }
+  }
+  const semanaDe = l => /semanal/i.test(l.descricao) ? ` · semana ${br(l.data).slice(0, 5)}` : "";
+  const quemDe = l => l.locatario_id ? `${l.contato || l.descricao}${semanaDe(l)}` : l.contato && !l.descricao.toLowerCase().includes(String(l.contato).toLowerCase()) ? `${l.contato} · ${l.descricao}` : l.descricao;
+  const extraDe = l => { const m = /\((?:em m[ãa]os|restante|desconto|isen)[^)]*\)/i.exec(l.descricao) || /desconto[^·]*/i.exec(l.obs || ""); return m ? m[0].replace(/^\(|\)$/g, "") : ""; };
+  const atrasoTxt = (venc, pago, rapido) => rapido ? "—" : (() => { const d = diasDeAtraso(venc, pago); return d > 0 ? `${d} dia${d > 1 ? "s" : ""}` : "no prazo"; })();
+  const rapidoDe = l => l.origem === "rapido" || /^central:mov:/.test(l.chave_externa || "") || l.origem === "extrato";
+  const linhasDe = tipo => pagos.filter(l => l.tipo === tipo).flatMap(l => {
+    const ps = partesDe.get(l.id), acres = Math.max(0, valorDe(l) - l.valor_cent);
+    const base = { id: l.id, pago_em: l.pago_em, venc: l.data, quem: quemDe(l), para: l.contato || "", descricao: l.descricao, extra: extraDe(l), atraso: atrasoTxt(l.data, l.pago_em, rapidoDe(l)), rapido: rapidoDe(l), categoria: l.categoria || "" };
+    if (ps && ps.length > 1) return ps.map((x, i) => ({ ...base, forma: x.forma || "", juros_cent: i ? 0 : acres, valor_cent: x.valor_cent, extra: i ? "restante" : `parte em ${String(x.forma || "").toLowerCase()}` }));
+    return [{ ...base, forma: l.forma || "", juros_cent: acres, valor_cent: valorDe(l) }];
+  });
+  const linhas_entradas = linhasDe("ENTRADA"), linhas_saidas = linhasDe("SAIDA");
+  const porForma = ls => { const m = new Map(); for (const l of ls) m.set(l.forma || "Outro", (m.get(l.forma || "Outro") || 0) + l.valor_cent); return [...m.entries()].map(([forma, valor_cent]) => ({ forma, valor_cent })).sort((a, b) => b.valor_cent - a.valor_cent); };
+  // Recebimentos com atraso que não são aluguel de contrato (sem multa prevista): entram na lista com "—".
+  const atrasados_outros = pagos.filter(l => l.tipo === "ENTRADA" && !l.locatario_id && !rapidoDe(l) && diasDeAtraso(l.data, l.pago_em) > 0 && valorDe(l) <= l.valor_cent).map(l => ({ ...l, dias: diasDeAtraso(l.data, l.pago_em), deixou_cent: null }));
+  const pagaram_juros = [...juntos.values()].filter(l => valorDe(l) > l.valor_cent).map(l => ({ quem: l.contato || l.descricao, acrescimo_cent: valorDe(l) - l.valor_cent }));
+  const isentos = (await q("SELECT i.*, l.nome FROM adm_isencoes i LEFT JOIN adm_locatarios l ON l.id=i.locatario_id WHERE i.org_id=? AND i.mes BETWEEN ? AND ? ORDER BY l.nome", orgId, ini.slice(0, 7), fim.slice(0, 7))).map(x => x.nome).filter(Boolean);
+  const contrato = (await q("SELECT multa_pct, juros_pct, COUNT(*) n FROM adm_locatarios WHERE org_id=? AND ativo=1 GROUP BY 1,2 ORDER BY n DESC LIMIT 1", orgId))[0] || null;
+  // Para onde foi o dinheiro: despesas, retiradas dos sócios e transferências.
+  const ehRetirada = l => /retirad/i.test(l.categoria || ""), ehTransf = l => /transfer/i.test(l.categoria || "");
+  const saiPagos = pagos.filter(l => l.tipo === "SAIDA");
+  const retiradas = saiPagos.filter(ehRetirada), transfs = saiPagos.filter(l => ehTransf(l) && !ehRetirada(l));
+  const destino = {
+    despesas_cent: saiPagos.filter(l => !ehRetirada(l) && !ehTransf(l)).reduce((a, l) => a + valorDe(l), 0),
+    retiradas: Object.values(retiradas.reduce((m, l) => { const k = l.contato || l.descricao.replace(/^(pix|pg|transfer[eê]ncia)\s+(p\/|para|pra)?\s*/i, "").trim() || "sócios"; (m[k] = m[k] || { quem: k, itens: [], total_cent: 0 }).itens.push({ data: l.pago_em, valor_cent: valorDe(l) }); m[k].total_cent += valorDe(l); return m; }, {})),
+    transferencias: transfs.map(l => ({ quem: l.contato || l.descricao, data: l.pago_em, valor_cent: valorDe(l) }))
+  };
+  // Onde está o dinheiro: banco e espécie (o que entrou e saiu em dinheiro no período).
+  const especie = { recebido_cent: linhas_entradas.filter(l => l.forma === "Dinheiro").reduce((a, l) => a + l.valor_cent, 0), pago_cent: linhas_saidas.filter(l => l.forma === "Dinheiro").reduce((a, l) => a + l.valor_cent, 0) };
+  // Conferência com o extrato: se o saldo do banco foi informado depois do fim do período, mostra o caminho até ele.
+  const conferencia = [];
+  for (const s of banco) {
+    if (s.base_em <= fim) continue;
+    const contas = await contasDa(env, orgId);
+    const movs = (await q("SELECT * FROM fin_lanc WHERE org_id=? AND pago=1 AND COALESCE(fora_conta,0)=0 AND pago_em > ? AND pago_em <= ? ORDER BY pago_em", orgId, fim, s.base_em)).filter(l => contaDoLancamento(l, contas) === s.id);
+    const trs = (await q("SELECT * FROM adm_transf WHERE org_id=? AND data > ? AND data <= ? AND (de_id=? OR para_id=?)", orgId, fim, s.base_em, s.id, s.id));
+    const ent = movs.filter(l => l.tipo === "ENTRADA").map(l => ({ data: l.pago_em, valor_cent: valorDe(l) })).concat(trs.filter(t => t.para_id === s.id).map(t => ({ data: t.data, valor_cent: t.valor_cent })));
+    const sai = movs.filter(l => l.tipo === "SAIDA").map(l => ({ data: l.pago_em, valor_cent: valorDe(l) })).concat(trs.filter(t => t.de_id === s.id).map(t => ({ data: t.data, valor_cent: t.valor_cent })));
+    conferencia.push({ conta: s.nome, saldo_fim_cent: s.saldo_cent, entradas: ent, saidas: sai, base_em: s.base_em, base_cent: s.base_cent });
+  }
+  const notas = (await env.DB.prepare("SELECT texto FROM adm_rel_notas WHERE org_id=? AND mes=?").bind(orgId, fim.slice(0, 7)).first().catch(() => null))?.texto || "";
   const tr = await q("SELECT t.*, c.nome AS de_nome, p.nome AS para_conta FROM adm_transf t LEFT JOIN adm_contas c ON c.id=t.de_id LEFT JOIN adm_contas p ON p.id=t.para_id WHERE t.org_id=? AND t.data BETWEEN ? AND ? ORDER BY t.data", orgId, ini, fim);
   // Pontos a conferir: só fatos que a pessoa precisa olhar — nada de suposição.
   const conferir = [];
@@ -316,6 +368,7 @@ export async function relatorioDoMes(env, orgId, mes, agoraMs, periodo = null) {
   if (semCat.length) conferir.push(`${semCat.length} lançamento(s) em "Outros"/sem categoria (${dinheiro(semCat.reduce((s, l) => s + valorDe(l), 0))}). Vale classificar.`);
   const dinheiroSemDestino = pagos.filter(l => l.tipo === "ENTRADA" && l.forma === "Dinheiro");
   if (dinheiroSemDestino.length && caixa.length) conferir.push(`Entrou ${dinheiro(dinheiroSemDestino.reduce((s, l) => s + valorDe(l), 0))} em dinheiro no mês. Confirme onde está esse dinheiro (caixa, depósito ou entregue a alguém).`);
+  for (const l of foraConta) conferir.push(`${l.descricao} (${dinheiro(valorDe(l))}, ${br(l.pago_em)}): foi pago fora da conta da empresa e não entra nos números. Confirmar de onde saiu o dinheiro.`);
   const vencRec = antes(receber);
   if (vencRec.length) conferir.push(`${vencRec.length} cobrança(s) de meses anteriores continuam em aberto (${dinheiro(soma(vencRec))}).`);
   const acima = pagos.filter(l => l.tipo === "SAIDA").sort((a, b) => valorDe(b) - valorDe(a))[0];
@@ -325,67 +378,98 @@ export async function relatorioDoMes(env, orgId, mes, agoraMs, periodo = null) {
     banco_cent: banco.reduce((s, b) => s + b.saldo_cent, 0), caixa_cent: caixa.reduce((s, b) => s + b.saldo_cent, 0), saldos,
     receber: { mes: doMes(receber), antes: antes(receber), total: soma(receber), total_mes: soma(doMes(receber)), total_antes: soma(antes(receber)) },
     pagar: { mes: doMes(pagar), antes: antes(pagar), total: soma(pagar) },
-    atrasados, atrasados_total: atrasados.reduce((s, l) => s + valorDe(l), 0), atrasados_deixou: atrasados.reduce((s, l) => s + l.deixou_cent, 0), transferencias: tr, conferir
+    atrasados, atrasados_total: atrasados.reduce((s, l) => s + valorDe(l), 0), atrasados_deixou: atrasados.reduce((s, l) => s + l.deixou_cent, 0), transferencias: tr, conferir,
+    linhas_entradas, linhas_saidas, forma_entradas: porForma(linhas_entradas), forma_saidas: porForma(linhas_saidas), juros_recebidos_cent: linhas_entradas.reduce((a, l) => a + l.juros_cent, 0),
+    juros_pagos_cent: linhas_saidas.reduce((a, l) => a + l.juros_cent, 0), atrasados_outros, pagaram_juros, isentos, contrato, destino, especie, conferencia,
+    fora_conta: foraConta.map(l => ({ descricao: l.descricao, data: l.pago_em, valor_cent: valorDe(l), tipo: l.tipo })), notas
   };
 }
 
-export function pdfRelatorioMes(r, empresa, { moeda = "BRL", assinaturas = [], cidade = "", logo = null } = {}) {
-  const f = c => dinheiro(c, moeda);
+// Prestação de contas no modelo aprovado (papel branco): Entrou / Saiu / Resultado / Saldo no banco; entradas e saídas
+// linha a linha com atraso e juros; em aberto do mês e de antes; quem pagou atrasado sem juros (e quanto deixou de ser
+// cobrado); declaração e assinaturas logo abaixo; e, na página seguinte, a explicação do resultado e os pontos a conferir.
+export function pdfRelatorioMes(r, empresa, { moeda = "BRL", assinaturas = [], cidade = "", endereco = "", geradoEm = "", logo = null } = {}) {
+  const f = c => dinheiro(c, moeda), menos = c => "− " + f(c), mais = c => "+ " + f(c);
+  const VERDE = "#15803d", VERMELHO = "#b91c1c", AZUL = "#1d4ed8";
+  const mesTxt = r.periodo ? r.nome : r.nome.replace(/^./, c => c.toUpperCase());
   const blocos = [];
-  const metr = [
-    { rotulo: "Entrou", valor: f(r.entrou), nota: "Recebido no mês", cor: "#16a34a" },
-    { rotulo: "Saiu", valor: f(r.saiu), nota: "Pago no mês", cor: "#dc2626" },
-    { rotulo: "Resultado", valor: f(r.resultado), nota: r.resultado >= 0 ? "Sobrou no mês" : "Faltou no mês", cor: r.resultado >= 0 ? "#2563eb" : "#dc2626" },
-    { rotulo: "Saldo no banco", valor: r.saldos.some(s => s.tipo === "BANCO") ? f(r.banco_cent) : "—", nota: `Em ${br(r.fim)}`, cor: "#0f766e" }
-  ];
-  if (r.caixa_cent) metr.push({ rotulo: "Dinheiro em caixa", valor: f(r.caixa_cent), nota: `Em espécie em ${br(r.fim)}`, cor: "#a16207" });
-  blocos.push({ tipo: "metricas", itens: metr });
-  const tabelaGrupos = (titulo, grupos, total) => {
-    const linhas = [];
-    for (const g of grupos) {
-      linhas.push({ celulas: [g.categoria, "", "", f(g.total)], negrito: true, fundo: "#eef2f7" });
-      for (const l of g.itens) linhas.push([`   ${l.descricao}`, br(l.pago_em), l.forma || "", f(valorDe(l))]);
-    }
-    linhas.push({ celulas: [`Total de ${titulo.toLowerCase()}`, "", "", f(total)], negrito: true, fundo: "#e5e7eb" });
-    return { tipo: "tabela", colunas: ["Descrição", "Data", "Forma", "Valor"], larguras: [3.4, 0.9, 1, 1.2], alinharDireita: [3], linhas };
-  };
-  const tabelas = [];
-  tabelas.push({ titulo: "Entradas", t: r.entradas.length ? tabelaGrupos("Entradas", r.entradas, r.entrou) : null, vazio: "Nenhuma entrada recebida no mês." });
-  tabelas.push({ titulo: "Saídas", t: r.saidas.length ? tabelaGrupos("Saídas", r.saidas, r.saiu) : null, vazio: "Nenhuma saída paga no mês." });
+  const bancoNome = (r.saldos.find(s => s.tipo === "BANCO") || {}).nome || "";
+  blocos.push({ tipo: "caixas", itens: [
+    { rotulo: "(+) Entrou", valor: mais(r.entrou), cor: VERDE },
+    { rotulo: "(−) Saiu", valor: menos(r.saiu), cor: VERMELHO },
+    { rotulo: r.periodo ? "(=) Resultado do período" : "(=) Resultado do mês", valor: (r.resultado < 0 ? "− " : "+ ") + f(Math.abs(r.resultado)), cor: r.resultado < 0 ? VERMELHO : VERDE, fundo: r.resultado < 0 ? "#fdecec" : "#ecfdf3", borda: r.resultado < 0 ? "#f5b5b5" : "#a7e3bf" },
+    { rotulo: `Saldo no banco${bancoNome ? " " + bancoNome : ""} em ${br(r.fim).slice(0, 5)}`, valor: r.saldos.some(s => s.tipo === "BANCO") ? f(r.banco_cent) : "—", cor: "#111827" }] });
+  const resTxt = `${r.resultado < 0 ? "− " : ""}${f(Math.abs(r.resultado))}`;
+  blocos.push({ tipo: "rico", tamanho: 9, partes: [
+    { t: `Resultado de ${r.periodo ? "período" : r.nome.split(" de ")[0]}: ${resTxt}`, negrito: true, cor: r.resultado < 0 ? VERMELHO : VERDE },
+    { t: ` — ${r.resultado < 0 ? `${empresa || "a empresa"} gastou ${f(-r.resultado)} a mais do que recebeu` : `sobrou ${f(r.resultado)}`}. (${f(r.entrou)} − ${f(r.saiu)} = ${resTxt})`, cor: r.resultado < 0 ? VERMELHO : "#374151" }] });
+  const atrasoCel = t => ({ t, cor: t === "no prazo" || t === "—" ? "#374151" : VERMELHO });
+  // Entradas
+  blocos.push({ tipo: "secao", texto: "Entradas — o que foi recebido" });
+  if (r.linhas_entradas.length) blocos.push({ tipo: "tabela", colunas: ["Pago em", "Quem pagou", "Venc.", "Forma", "Atraso", "Juros/multa", "Valor recebido"], larguras: [0.75, 3.1, 0.75, 0.95, 0.8, 0.95, 1.25], alinharDireita: [5, 6],
+    linhas: [...r.linhas_entradas.map(l => [br(l.pago_em).slice(0, 5), { t: l.quem, cinza: l.extra }, br(l.venc).slice(0, 5), l.forma || "—", atrasoCel(l.atraso), l.juros_cent ? f(l.juros_cent) : "não", f(l.valor_cent)]),
+      { celulas: ["TOTAL RECEBIDO", "", "", "", "", r.juros_recebidos_cent ? f(r.juros_recebidos_cent) : "", f(r.entrou)], negrito: true, borda: true }] });
+  else blocos.push({ tipo: "texto", texto: "Nada foi recebido no período.", tamanho: 9 });
+  if (r.forma_entradas.length) blocos.push({ tipo: "texto", tamanho: 8.5, cor: "#4b5563", texto: `Por forma de pagamento: ${r.forma_entradas.map(x => `${x.forma} ${f(x.valor_cent)}`).join(" · ")}.` });
+  // Saídas
+  blocos.push({ tipo: "secao", texto: "Saídas — o que foi pago" });
+  if (r.linhas_saidas.length) blocos.push({ tipo: "tabela", colunas: ["Pago em", "Descrição", "Para quem", "Forma", "Atraso", "Juros", "Valor"], larguras: [0.75, 2.7, 1.4, 1, 0.75, 0.6, 1.2], alinharDireita: [5, 6],
+    linhas: [...r.linhas_saidas.map(l => [br(l.pago_em).slice(0, 5), { t: l.descricao, cinza: l.rapido ? "gasto do dia a dia" : "" }, l.para && l.para !== l.descricao ? l.para : "", l.forma || "—", atrasoCel(l.atraso), l.juros_cent ? f(l.juros_cent) : "não", f(l.valor_cent)]),
+      { celulas: ["TOTAL PAGO", "", "", "", "", "", f(r.saiu)], negrito: true, borda: true }] });
+  else blocos.push({ tipo: "texto", texto: "Nada foi pago no período.", tamanho: 9 });
+  if (r.forma_saidas.length) blocos.push({ tipo: "texto", tamanho: 8.5, cor: "#4b5563", texto: `Por forma de pagamento: ${r.forma_saidas.map(x => `${x.forma} ${f(x.valor_cent)}`).join(" · ")}.${r.juros_pagos_cent ? ` Juros e multa pagos: ${f(r.juros_pagos_cent)}.` : " Nenhuma conta foi paga com juros."}` });
+  // Em aberto
   const lab = r.receber;
-  if (lab.total) {
-    const linhas = [];
-    if (lab.mes.length) { linhas.push({ celulas: [r.periodo ? `Do período (${r.nome})` : `Do mês (${r.nome})`, "", "", f(lab.total_mes)], negrito: true, fundo: "#eef2f7" }); for (const l of lab.mes) linhas.push([`   ${l.descricao}`, br(l.data), l.contato || "", f(l.valor_cent)]); }
-    if (lab.antes.length) { linhas.push({ celulas: [r.periodo ? "Antes do período" : "De meses anteriores", "", "", f(lab.total_antes)], negrito: true, fundo: "#eef2f7" }); for (const l of lab.antes) linhas.push([`   ${l.descricao}`, br(l.data), l.contato || "", f(l.valor_cent)]); }
-    linhas.push({ celulas: ["Total em aberto", "", "", f(lab.total)], negrito: true, fundo: "#e5e7eb" });
-    tabelas.push({ titulo: `Em aberto em ${br(r.fim)} (a receber)`, t: { tipo: "tabela", colunas: ["Descrição", "Vencimento", "Quem", "Valor"], larguras: [3, 1, 1.3, 1.2], alinharDireita: [3], linhas } });
+  blocos.push({ tipo: "secao", texto: "Em aberto: o que ainda não foi pago" });
+  const tabAberto = ls => ({ tipo: "tabela", colunas: ["Venc.", "Quem", "Valor"], larguras: [0.9, 5, 1.3], alinharDireita: [2],
+    linhas: ls.map(l => [br(l.data).slice(0, l.data.slice(0, 4) === r.fim.slice(0, 4) ? 5 : 10).replace(/\/(\d{2})(\d{2})$/, "/$2"), { t: l.locatario_id ? `${l.contato || l.descricao}${/semanal/i.test(l.descricao) ? ` · semana ${br(l.data).slice(0, 5)}` : ""}` : l.descricao, cinza: /desconto/i.test(l.obs || "") ? l.obs : "" }, f(l.valor_cent)]) });
+  if (lab.mes.length) { blocos.push({ tipo: "subsecao", texto: r.periodo ? "Do período" : `De ${r.nome.split(" de ")[0]}` }); const t = tabAberto(lab.mes); t.linhas.push({ celulas: [r.periodo ? "SUBTOTAL DO PERÍODO" : `SUBTOTAL ${r.nome.split(" de ")[0].toUpperCase()}`, "", f(lab.total_mes)], negrito: true, borda: true }); blocos.push(t); }
+  if (lab.antes.length) { blocos.push({ tipo: "subsecao", texto: r.periodo ? "De antes do período" : "De meses anteriores" }); const t = tabAberto(lab.antes); t.linhas.push({ celulas: ["SUBTOTAL ANTERIORES", "", f(lab.total_antes)], negrito: true, borda: true }); blocos.push(t); }
+  blocos.push({ tipo: "texto", tamanho: 8.5, cor: "#374151", texto: `${lab.total ? `Total em aberto até ${br(r.fim)}: ${f(lab.total_mes)} + ${f(lab.total_antes)} = ${f(lab.total)}.` : `Nada em aberto até ${br(r.fim)}.`} Contas a pagar vencidas até ${br(r.fim)}: ${r.pagar.total ? f(r.pagar.total) + " em aberto" : "nenhuma em aberto"}.${r.isentos.length ? ` Isentos (não pagam): ${r.isentos.join(", ")}.` : ""}` });
+  // Pagaram com atraso e sem juros — a assinatura vem logo abaixo desta última tabela.
+  const SIG = 120;
+  const lista = [...r.atrasados.map(l => ({ quem: l.contato || l.descricao, semana: /semanal/i.test(l.descricao) ? ` · semana ${br(l.data).slice(0, 5)}` : "", ...l })), ...r.atrasados_outros.map(l => ({ quem: l.contato ? `${l.contato}` : l.descricao, semana: "", ...l }))];
+  if (lista.length) {
+    blocos.push({ tipo: "secao", texto: "Pagaram com atraso e sem juros" });
+    const ct = r.contrato ? `O contrato prevê multa de ${String(r.contrato.multa_pct).replace(".", ",")}% + juros de ${String(r.contrato.juros_pct).replace(".", ",")}% ao mês. ` : "";
+    const pj = r.pagaram_juros.length ? `${r.pagaram_juros.length === 1 ? "Só " + r.pagaram_juros[0].quem + " pagou" : r.pagaram_juros.map(x => x.quem).join(", ") + " pagaram"} juros e multa (${f(r.pagaram_juros.reduce((a, x) => a + x.acrescimo_cent, 0))}). ` : "";
+    blocos.push({ tipo: "texto", tamanho: 8.5, cor: "#374151", texto: `${ct}${pj}Os abaixo atrasaram e pagaram o valor normal:` });
+    blocos.push({ tipo: "tabela", reservaFim: SIG, colunas: ["Quem", "Venc.", "Pagou em", "Atraso", "Valor", "Poderia ter cobrado"], larguras: [3, 0.75, 0.85, 0.85, 1.2, 1.45], alinharDireita: [4, 5],
+      linhas: [...lista.map(l => [l.quem + l.semana, br(l.data).slice(0, 5), br(l.pago_em).slice(0, 5), { t: `${l.dias} dia${l.dias > 1 ? "s" : ""}`, cor: VERMELHO }, f(valorDe(l)), l.deixou_cent == null ? "—" : f(l.deixou_cent)]),
+        { celulas: ["TOTAL QUE DEIXOU DE SER COBRADO", "", "", "", "", f(r.atrasados_deixou)], negrito: true, borda: true }] });
   }
-  if (r.pagar.total) tabelas.push({ titulo: `Contas a pagar em aberto em ${br(r.fim)}`, t: { tipo: "tabela", colunas: ["Descrição", "Vencimento", "Valor"], larguras: [3.6, 1, 1.2], alinharDireita: [2],
-    linhas: [...[...r.pagar.antes, ...r.pagar.mes].map(l => [l.descricao, br(l.data), f(l.valor_cent)]), { celulas: ["Total a pagar", "", f(r.pagar.total)], negrito: true, fundo: "#e5e7eb" }] } });
-  if (r.atrasados.length) tabelas.push({ titulo: "Pagos com atraso, sem multa e juros", t: { tipo: "tabela", colunas: ["Pago em", "Quem", "Dias", "Aluguel", "Multa + juros (contrato)"], larguras: [0.9, 2.6, 0.6, 1.1, 1.5], alinharDireita: [2, 3, 4],
-    linhas: [...r.atrasados.map(l => [br(l.pago_em), l.contato || l.descricao, String(l.dias), f(valorDe(l)), f(l.deixou_cent)]), { celulas: ["Total", `${r.atrasados.length} pagos com atraso`, "", f(r.atrasados_total), f(r.atrasados_deixou)], negrito: true, fundo: "#e5e7eb" }] } });
-  // A assinatura fica logo abaixo da última tabela, na mesma página.
-  const SIG = 112;
-  tabelas.forEach((x, i) => {
-    blocos.push({ tipo: "titulo", texto: x.titulo });
-    if (x.t) blocos.push(i === tabelas.length - 1 ? { ...x.t, reservaFim: SIG } : x.t);
-    else blocos.push({ tipo: "texto", texto: x.vazio });
-  });
-  blocos.push({ tipo: "assinatura", local: `${cidade ? cidade + ", " : ""}____ de ______________ de ${r.fim.slice(0, 4)}.`, nomes: assinaturas.length ? assinaturas : ["Responsável pela administração", "Proprietário"] });
-  // Próxima página: explicação simples e o que conferir.
-  blocos.push({ tipo: "quebra" }, { tipo: "titulo", texto: "Como ler este relatório" });
-  const exp = [
-    `Entrou (${f(r.entrou)}) é tudo que foi recebido de ${br(r.inicio)} a ${br(r.fim)}, pela data em que o dinheiro entrou. Saiu (${f(r.saiu)}) é tudo que foi pago no mesmo período.`,
-    `Resultado (${f(r.resultado)}) é Entrou menos Saiu. ${r.resultado >= 0 ? "Positivo: sobrou dinheiro no mês." : "Negativo: saiu mais do que entrou no mês."}`,
-    r.saldos.length ? `Saldo no banco é o saldo calculado de cada conta no fim do dia ${br(r.fim)}: ${r.saldos.map(s => `${s.nome} ${f(s.saldo_cent)}`).join("; ")}. Depósitos do caixa no banco não contam como entrada nem saída.` : "O saldo no banco aparece quando a conta e um saldo conhecido forem cadastrados.",
-    lab.total ? `Em aberto (${f(lab.total)}) são cobranças que venciam até ${br(r.fim)} e não estavam pagas nesse dia: ${f(lab.total_mes)} do mês e ${f(lab.total_antes)} de meses anteriores.` : "Não havia cobranças em aberto no fim do mês.",
-    r.atrasados.length ? `Pagos com atraso: ${r.atrasados.length} aluguel(éis), somando ${f(r.atrasados_total)}, foram pagos depois do vencimento (contando o próximo dia útil) pelo valor original. Pela multa e pelos juros de cada contrato, deixaram de ser cobrados ${f(r.atrasados_deixou)}.` : "Nenhum aluguel foi pago com atraso no mês."
-  ];
-  if (r.transferencias.length) exp.push(`Movimentos entre contas no mês (não são entrada nem saída): ${r.transferencias.map(t => `${br(t.data)} ${t.de_nome || "?"} → ${t.para_conta || t.para_nome || "?"} ${f(t.valor_cent)}`).join("; ")}.`);
-  blocos.push({ tipo: "lista", itens: exp.map(t => ({ texto: t })) });
-  blocos.push({ tipo: "titulo", texto: "Pontos a conferir" });
-  blocos.push(r.conferir.length ? { tipo: "lista", itens: r.conferir.map(t => ({ texto: t, cor: "#d97706" })) } : { tipo: "texto", texto: "Nada a conferir: todos os lançamentos do mês têm categoria e as contas estão com saldo informado." });
-  return gerarPdf({ titulo: r.periodo ? "Relatório do período" : "Relatório do mês", subtitulo: `${empresa ? empresa + " · " : ""}${r.nome}`, rodape: "DENIA · valores conforme lançados na plataforma", corPrincipal: "#1e3a8a", logo, blocos });
+  blocos.push({ tipo: "assinatura", declaracao: "Declaro que conferi as informações deste relatório (entradas, saídas e valores em aberto) e que estão de acordo.",
+    nomes: assinaturas.length ? assinaturas : ["Elaborado por (nome e assinatura)", "Administrador / responsável (de acordo)"], data: `${cidade ? cidade + ", " : ""}Data: ____/____/________` });
+  // Página seguinte: explicação
+  blocos.push({ tipo: "quebra" }, { tipo: "secao", texto: "Explicação do resultado" });
+  const d = r.destino;
+  const linhasDest = [[`Despesas (contas, funcionários, manutenção, compras)`, f(d.despesas_cent)]];
+  // Retiradas numa linha só (mesmo que o nome tenha sido escrito de jeitos diferentes em cada Pix).
+  const itensRet = d.retiradas.flatMap(x => x.itens).sort((a0, b0) => a0.data.localeCompare(b0.data));
+  if (itensRet.length) { const nomes = [...new Set(d.retiradas.map(x => x.quem.split(" ")[0].toLowerCase()))]; linhasDest.push([`Retiradas ${nomes.length === 1 && nomes[0] !== "sócios" ? "para " + d.retiradas[0].quem.split(" ")[0].replace(/^./, c => c.toUpperCase()) : "dos sócios"} (${itensRet.map(i0 => `${br(i0.data).slice(0, 5)} ${f(i0.valor_cent)}`).join(" · ")})`, f(itensRet.reduce((a0, i0) => a0 + i0.valor_cent, 0))]); }
+  for (const x of d.transferencias) linhasDest.push([`Transferência para ${x.quem} (${br(x.data).slice(0, 5)})`, f(x.valor_cent)]);
+  linhasDest.push({ celulas: ["= Total que saiu (igual ao total da tabela Saídas)", f(r.saiu)], negrito: true, borda: true });
+  blocos.push({ tipo: "subsecao", texto: "Para onde foi o dinheiro que saiu" }, { tipo: "tabela", semCabecalho: true, colunas: ["", ""], larguras: [5, 1.4], alinharDireita: [1], linhas: linhasDest });
+  const onde = [];
+  for (const s of r.saldos.filter(x => x.tipo === "BANCO")) onde.push([`Conta ${s.nome}${r.conferencia.some(c => c.conta === s.nome) ? " (conferido com o extrato abaixo)" : ""}`, f(s.saldo_cent)]);
+  for (const s of r.saldos.filter(x => x.tipo === "CAIXA")) onde.push([`Dinheiro em espécie: recebido ${f(r.especie.recebido_cent)} − pago ${f(r.especie.pago_cent)} no período (confirmar se está em mãos ou se foi depositado)`, f(s.saldo_cent)]);
+  if (onde.length) blocos.push({ tipo: "subsecao", texto: `Onde está o dinheiro em ${br(r.fim)}` }, { tipo: "tabela", semCabecalho: true, colunas: ["", ""], larguras: [5, 1.4], alinharDireita: [1], linhas: onde });
+  for (const c of r.conferencia) {
+    const ls = [[`Saldo da conta em ${br(r.fim)}`, f(c.saldo_fim_cent)]];
+    const sai = c.saidas.reduce((a, x) => a + x.valor_cent, 0), ent = c.entradas.reduce((a, x) => a + x.valor_cent, 0);
+    if (sai) ls.push([`(−) Saídas de ${[...new Set(c.saidas.map(x => br(x.data).slice(0, 5)))].join(", ")} (${c.saidas.map(x => f(x.valor_cent)).join(" + ")})`, menos(sai)]);
+    if (ent) ls.push([`(+) Entradas de ${[...new Set(c.entradas.map(x => br(x.data).slice(0, 5)))].join(", ")}`, mais(ent)]);
+    ls.push({ celulas: [`= Saldo em ${br(c.base_em)} (igual ao extrato informado)`, f(c.base_cent)], negrito: true, borda: true });
+    blocos.push({ tipo: "subsecao", texto: `Conferência com o extrato do banco (${c.conta})` }, { tipo: "tabela", semCabecalho: true, colunas: ["", ""], larguras: [5, 1.4], alinharDireita: [1], linhas: ls });
+  }
+  for (const x of r.fora_conta) blocos.push({ tipo: "texto", tamanho: 8.5, cor: "#374151", texto: `Pago fora da conta da empresa (não entra nas contas acima): ${x.descricao} ${f(x.valor_cent)} em ${br(x.data)}. Confirmar de onde saiu o dinheiro.` });
+  blocos.push({ tipo: "texto", tamanho: 8, cor: "#6b7280", texto: `Datas reais de pagamento entre ${br(r.inicio)} e ${br(r.fim)}. Atraso contado pela regra do dia útil: vencimento em sábado, domingo ou feriado pode ser pago no dia útil seguinte sem atraso.` });
+  const pontos = [...String(r.notas || "").split(/\n+/).map(t => t.replace(/^[•\-\s]+/, "").trim()).filter(Boolean), ...r.conferir];
+  blocos.push({ tipo: "subsecao", texto: "Pontos para conferir" });
+  blocos.push(pontos.length ? { tipo: "lista", itens: pontos.map(t => ({ texto: t, cor: "#9ca3af" })) } : { tipo: "texto", texto: "Nada a conferir.", tamanho: 9 });
+  return gerarPdf({ estilo: "limpo", corPrincipal: AZUL, logo, titulo: r.periodo ? `Resultado de ${r.nome}` : `Resultado de ${mesTxt}`,
+    subtitulo: [empresa, endereco, geradoEm ? `gerado em ${geradoEm}` : ""].filter(Boolean).join(" · "),
+    rodape: `DENIA · ${empresa || ""} · ${r.periodo ? r.nome : r.nome.replace(/^./, c => c.toUpperCase()).replace(" de ", "/")}`, blocos });
 }
 
 // ---------------------------------------------------------------------------
@@ -540,10 +624,11 @@ export async function importarCentral(env, orgId, dados, quem, agoraMs) {
   };
   for (const c of lista(dados.cobrancas)) {
     const loc = mapaLoc.get(c.lojistaId), v = cents(c.valor), venc = dt(c.venc);
+    if (c.status === "isenta" && loc && mesValido(c.competencia)) { await env.DB.prepare("INSERT OR IGNORE INTO adm_isencoes(org_id,locatario_id,mes,motivo,por,ms) VALUES(?,?,?,?,?,?)").bind(orgId, loc.id, c.competencia, re(c.obs || c.descontoTxt, 200) || "Isento (Central)", quem, agoraMs).run(); n.ignorados++; continue; }
     if (c.status === "isenta" || c.status === "cancelada" || !v || !venc) { n.ignorados++; continue; }
     const ref = c.semana ? `semanal (venc. ${br(venc)})` : mesValido(c.competencia) ? nomeMes(c.competencia) : "";
     await recebido({ tipo: "ENTRADA", descricao: `Aluguel ${ref}${loc?.unidade ? " — " + loc.unidade : ""} — ${loc?.nome || "locatário"}`.replace("Aluguel  —", "Aluguel —"),
-      valor_cent: v, categoria: "Aluguéis recebidos", data: venc, contato: loc?.nome, obs: c.obs, chave: `central:cob:${c.id}`,
+      valor_cent: v, categoria: "Aluguéis recebidos", data: venc, contato: loc?.nome, obs: [re(c.descontoTxt, 120), re(c.obs, 300)].filter(Boolean).join(" · ") || null, chave: `central:cob:${c.id}`,
       locatario_id: loc?.id, competencia: mesValido(c.competencia) ? c.competencia : venc.slice(0, 7) }, c, () => n.cobrancas++);
   }
   for (const c of lista(dados.receber)) {
@@ -562,7 +647,12 @@ export async function importarCentral(env, orgId, dados, quem, agoraMs) {
     if (!v || !venc) { n.ignorados++; continue; }
     const pago = c.status === "paga";
     // "Paga fora da conta" na Central não entra nos números (ex.: paga por outra pessoa): fica de fora aqui também.
-    if (pago && c.foraDaConta) { n.fora_da_conta++; continue; }
+    if (pago && c.foraDaConta) {
+      const r0 = await env.DB.prepare(`INSERT OR IGNORE INTO fin_lanc(org_id,tipo,descricao,valor_cent,categoria,data,pago,pago_em,forma,contato,obs,origem,chave_externa,criado_por,criado_ms,atualizado_ms,fora_conta) VALUES(?,'SAIDA',?,?,?,?,1,?,?,?,?,'central',?,?,?,?,1)`)
+        .bind(orgId, re(c.desc, 160) || "Conta", v, re(c.categoria, 60) || null, venc, dt(c.pagoEm) || venc, re(c.forma, 30) || null, re(c.fornecedor, 120) || null, "Pago fora da conta da empresa (não entra nos números).", `central:conta:${c.id}`, quem, agoraMs, agoraMs).run();
+      if (r0.meta?.changes) n.fora_da_conta++;
+      continue;
+    }
     if (await lancar({ tipo: "SAIDA", descricao: c.desc, valor_cent: v, categoria: c.categoria, data: venc, pago, pago_em: dt(c.pagoEm), forma: c.forma, contato: c.fornecedor, obs: c.obs, centro: centroDe(c), chave: `central:conta:${c.id}`, valor_pago_cent: pago && Number(c.valorPago) > 0 ? cents(c.valorPago) : undefined })) n.contas++;
   }
   for (const m of lista(dados.movimentos)) {
@@ -954,6 +1044,13 @@ export async function rotasAdmin(request, env, k, orgId, papel, resto) {
     }
   }
 
+  // Pontos a conferir escritos à mão (saem no relatório daquele mês).
+  if (area === "relatorio-notas" && metodo === "PUT") {
+    const { c, erro } = await corpo(); if (erro) return erro;
+    if (!mesValido(c.mes)) return json({ erro: "Escolha o mês." }, 400);
+    await env.DB.prepare("INSERT OR REPLACE INTO adm_rel_notas(org_id,mes,texto,ms) VALUES(?,?,?,?)").bind(orgId, c.mes, String(c.texto || "").slice(0, 3000), ms).run();
+    return json({ ok: true });
+  }
   // ----- Relatório do mês (ou de um período: trimestre, ano, datas escolhidas)
   if (area === "relatorio" || area === "relatorio.pdf" || area === "relatorio.xlsx") {
     const mes = mesValido(url.searchParams.get("mes")) ? url.searchParams.get("mes") : hoje.slice(0, 7);
@@ -973,7 +1070,7 @@ export async function rotasAdmin(request, env, k, orgId, papel, resto) {
     }
     if (area === "relatorio") return json({ ...r, moeda: await moeda() });
     const c = await config();
-    const pdf = pdfRelatorioMes(r, await empresa(), { moeda: await moeda(), assinaturas: String(c.assinaturas || "").split("|").map(s => s.trim()).filter(Boolean).slice(0, 3), cidade: c.cidade || "" });
+    const pdf = pdfRelatorioMes(r, await empresa(), { moeda: await moeda(), assinaturas: String(c.assinaturas || "").split("|").map(s => s.trim()).filter(Boolean).slice(0, 3), cidade: c.cidade || "", endereco: c.endereco || "", geradoEm: br(hoje) });
     return new Response(pdf, { headers: { "content-type": "application/pdf", "content-disposition": `inline; filename="relatorio-${de ? de + "_" + ate : mes}.pdf"`, "cache-control": "no-store" } });
   }
 
@@ -985,8 +1082,8 @@ export async function rotasAdmin(request, env, k, orgId, papel, resto) {
       const emails = String(c.emails || "").split(/[\s,;]+/).filter(emailOk).slice(0, 5).join(", ");
       const assin = (Array.isArray(c.assinaturas) ? c.assinaturas : String(c.assinaturas || "").split("|")).map(s => re(s, 60)).filter(Boolean).slice(0, 3).join("|");
       await config();
-      await env.DB.prepare("UPDATE adm_config SET perfil=?, resumo_diario=?, emails=?, hora_resumo=?, tp_no_fin=?, assinaturas=?, cidade=?, recibo_emissor=?, atualizado_ms=? WHERE org_id=?")
-        .bind(PERFIS[c.perfil] ? c.perfil : null, c.resumo_diario ? 1 : 0, emails, inteiro(c.hora_resumo, 5, 22, 8), c.tp_no_fin ? 1 : 0, assin || null, re(c.cidade, 60) || null, re(c.recibo_emissor, 160) || null, ms, orgId).run();
+      await env.DB.prepare("UPDATE adm_config SET perfil=?, resumo_diario=?, emails=?, hora_resumo=?, tp_no_fin=?, assinaturas=?, cidade=?, recibo_emissor=?, endereco=?, atualizado_ms=? WHERE org_id=?")
+        .bind(PERFIS[c.perfil] ? c.perfil : null, c.resumo_diario ? 1 : 0, emails, inteiro(c.hora_resumo, 5, 22, 8), c.tp_no_fin ? 1 : 0, assin || null, re(c.cidade, 60) || null, re(c.recibo_emissor, 160) || null, re(c.endereco, 160) || null, ms, orgId).run();
       if (c.tp_no_fin) await reservasNoFinanceiro(env, orgId, ms);
       return json({ ok: true, config: await config() });
     }

@@ -10,7 +10,7 @@ function winAnsi(t) {
   let s = "";
   for (const ch of String(t ?? "").normalize("NFC")) {
     const c = ch.codePointAt(0);
-    if (ch === "—" || ch === "–") s += "-";
+    if (ch === "—" || ch === "–" || ch === "−") s += ch === "—" ? "\x97" : "-";
     else if (ch === "“" || ch === "”") s += '"';
     else if (ch === "‘" || ch === "’") s += "'";
     else if (ch === "•") s += "\x95";
@@ -35,7 +35,8 @@ function quebrar(t, tam, largura) {
   return linhas;
 }
 
-export function gerarPdf({ titulo = "", subtitulo = "", rodape = "", corPrincipal = "#4f46e5", logo = null, blocos = [] }) {
+export function gerarPdf({ titulo = "", subtitulo = "", rodape = "", corPrincipal = "#4f46e5", logo = null, blocos = [], estilo = "faixa" }) {
+  const limpo = estilo === "limpo"; // título escuro no papel branco, sem faixa colorida (modelo de prestação de contas)
   const paginas = [];
   let ops = [], y = 0;
   const larguraUtil = A4.l - 2 * MARGEM;
@@ -44,6 +45,15 @@ export function gerarPdf({ titulo = "", subtitulo = "", rodape = "", corPrincipa
   const novaPagina = () => {
     if (ops.length) paginas.push(ops);
     ops = [];
+    if (limpo) {
+      const primeira = !paginas.length;
+      if (rodape) texto(MARGEM, 24, rodape, 7.5, false, "#9ca3af");
+      texto(A4.l - MARGEM - 34, 24, `Página ${paginas.length + 1}`, 7.5, false, "#9ca3af");
+      ret(MARGEM, 34, A4.l - 2 * MARGEM, 0.5, "#e5e7eb");
+      if (primeira) { texto(MARGEM, A4.a - 56, titulo, 20, true, "#111827"); if (subtitulo) texto(MARGEM, A4.a - 72, subtitulo, 8.5, false, "#6b7280"); y = A4.a - 92; }
+      else y = A4.a - 48;
+      return;
+    }
     ret(0, A4.a - 92, A4.l, 92, corPrincipal);
     let xTit = MARGEM;
     if (logo) { const a = 56, l = Math.min(140, a * logo.largura / logo.altura); ops.push(`q ${l.toFixed(1)} 0 0 ${a} ${MARGEM} ${A4.a - 74} cm /Logo Do Q`); xTit += l + 14; }
@@ -77,6 +87,7 @@ export function gerarPdf({ titulo = "", subtitulo = "", rodape = "", corPrincipa
       y = base - 24;
       continue;
     }
+    if (b.tipo === "titulo" && limpo) { caber(44); y -= 10; texto(MARGEM, y - 13, b.texto, 13, true, corPrincipal); y -= 24; continue; }
     if (b.tipo === "titulo") { caber(40); y -= 8; texto(MARGEM, y - 14, b.texto, 13, true, "#111827"); ret(MARGEM, y - 22, 40, 2.5, corPrincipal); y -= 34; continue; }
     if (b.tipo === "texto") {
       const tam = b.tamanho || 10;
@@ -108,6 +119,73 @@ export function gerarPdf({ titulo = "", subtitulo = "", rodape = "", corPrincipa
       }
       continue;
     }
+    if (b.tipo === "secao") { caber(44); y -= 10; texto(MARGEM, y - 13, b.texto, 13, true, b.cor || corPrincipal); y -= 24; continue; }
+    if (b.tipo === "subsecao") { caber(30); y -= 2; texto(MARGEM, y - 10, b.texto, 10, true, "#111827"); y -= 16; continue; }
+    // Caixas de números (Entrou / Saiu / Resultado / Saldo): rótulo pequeno em cima, valor grande colorido.
+    if (b.tipo === "caixas") {
+      const n = (b.itens || []).length || 1, gap = 6, l = (larguraUtil - gap * (n - 1)) / n, a = 50;
+      caber(a + 10);
+      b.itens.forEach((m, j) => {
+        const x = MARGEM + j * (l + gap);
+        ret(x, y - a, l, a, m.borda || "#d1d5db"); ret(x + 0.7, y - a + 0.7, l - 1.4, a - 1.4, m.fundo || "#ffffff");
+        texto(x + 8, y - 13, m.rotulo, 7, false, "#6b7280");
+        let v = String(m.valor); let tam = 14; while (tam > 9 && medir(v, tam) * 1.08 > l - 14) tam -= 0.5;
+        texto(x + 8, y - 36, v, tam, true, m.cor || "#111827");
+      });
+      y -= a + 10; continue;
+    }
+    // Parágrafo com trechos em negrito/cor (quebra por palavra mantendo o estilo de cada trecho).
+    if (b.tipo === "rico") {
+      const tam = b.tamanho || 9, alt = tam + 4.5, larg = larguraUtil;
+      const palavras = [];
+      for (const seg of b.partes || []) for (const [i, w] of String(seg.t).split(/(\s+)/).filter(Boolean).entries()) palavras.push({ w, neg: Boolean(seg.negrito), cor: seg.cor || "#374151", i });
+      let linha = [], larguraLinha = 0;
+      const soltar = () => { if (!linha.length) return; caber(alt); let x = MARGEM; for (const p0 of linha) { texto(x, y - tam, p0.w, tam, p0.neg, p0.cor); x += medir(p0.w, tam) * (p0.neg ? 1.06 : 1); } y -= alt; linha = []; larguraLinha = 0; };
+      for (const p0 of palavras) {
+        const lw = medir(p0.w, tam) * (p0.neg ? 1.06 : 1);
+        if (larguraLinha + lw > larg && !/^\s+$/.test(p0.w)) soltar();
+        if (!linha.length && /^\s+$/.test(p0.w)) continue;
+        linha.push(p0); larguraLinha += lw;
+      }
+      soltar(); y -= 4; continue;
+    }
+    // Tabela no modelo limpo: textos quebram em até 3 linhas, célula pode ter uma 2ª linha cinza e cor própria.
+    if (b.tipo === "tabela" && (limpo || b.quebrar)) {
+      const cols = b.colunas || [], pesos = b.larguras || cols.map(() => 1), soma = pesos.reduce((s0, v) => s0 + v, 0);
+      const ls = pesos.map(p0 => larguraUtil * p0 / soma), tam = b.fonte || 8.2, dir = b.alinharDireita || [], semCab = Boolean(b.semCabecalho);
+      const linhas = b.linhas || [], reserva = Number(b.reservaFim) || 0;
+      const cab = () => { if (semCab) return; caber(36); ret(MARGEM, y - 16, larguraUtil, 16, "#f3f4f6"); let x = MARGEM; cols.forEach((c, i) => { const w = medir(c, 7) * 1.06; texto(dir.includes(i) ? x + ls[i] - 5 - w : x + 5, y - 11, c, 7, true, "#6b7280"); x += ls[i]; }); y -= 16; };
+      const preparar = lin0 => {
+        const lin = Array.isArray(lin0) ? lin0 : lin0.celulas || [], neg = !Array.isArray(lin0) && Boolean(lin0.negrito);
+        const cel = lin.map((v, i) => {
+          const o = v && typeof v === "object" ? v : { t: v };
+          // Linha de total: o rótulo usa também a largura das colunas vazias ao lado (não quebra "TOTAL RECEBIDO").
+          let w = ls[i];
+          if (!Array.isArray(lin0) && String(o.t ?? "") && !dir.includes(i)) for (let j = i + 1; j < lin.length && (lin[j] === "" || lin[j] == null); j++) w += ls[j];
+          const principal = quebrar(String(o.t ?? ""), tam, w - 10).slice(0, 3), extra = o.cinza ? quebrar(String(o.cinza), tam - 1, w - 10).slice(0, 2) : [];
+          return { principal, extra, cor: o.cor, neg: neg || Boolean(o.negrito) };
+        });
+        const nl = Math.max(1, ...cel.map(c => c.principal.length + c.extra.length));
+        return { cel, alt: nl * (tam + 2.6) + 7, fundo: !Array.isArray(lin0) && lin0.fundo, borda: !Array.isArray(lin0) && lin0.borda };
+      };
+      const prontas = linhas.map(preparar);
+      cab();
+      prontas.forEach((r0, k) => {
+        const restante = prontas.slice(k, k + 2).reduce((a0, x) => a0 + x.alt, 0), precisa = reserva && prontas.length - k <= 2 ? restante + reserva : r0.alt;
+        if (y - precisa < 50) { novaPagina(); cab(); }
+        if (r0.fundo) ret(MARGEM, y - r0.alt, larguraUtil, r0.alt, r0.fundo);
+        let x = MARGEM;
+        r0.cel.forEach((c, i) => {
+          let yy = y - tam - 3.5;
+          for (const l0 of c.principal) { const w = medir(l0, tam) * (c.neg ? 1.06 : 1); texto(dir.includes(i) ? x + ls[i] - 5 - w : x + 5, yy, l0, tam, c.neg, c.cor || "#1f2937"); yy -= tam + 2.6; }
+          for (const l0 of c.extra) { const w = medir(l0, tam - 1); texto(dir.includes(i) ? x + ls[i] - 5 - w : x + 5, yy, l0, tam - 1, false, "#9ca3af"); yy -= tam + 2.6; }
+          x += ls[i];
+        });
+        y -= r0.alt;
+        ret(MARGEM, y, larguraUtil, r0.borda ? 0.9 : 0.4, r0.borda ? "#374151" : "#e5e7eb");
+      });
+      y -= 6; continue;
+    }
     if (b.tipo === "tabela") {
       const cols = b.colunas || [], pesos = b.larguras || cols.map(() => 1), soma = pesos.reduce((s, v) => s + v, 0);
       const ls = pesos.map(p => larguraUtil * p / soma), alt = 20;
@@ -131,6 +209,17 @@ export function gerarPdf({ titulo = "", subtitulo = "", rodape = "", corPrincipa
         y -= alt;
       });
       y -= 12; continue;
+    }
+    if (b.tipo === "assinatura" && b.declaracao) {
+      const nomes = (b.nomes && b.nomes.length ? b.nomes : ["Elaborado por (nome e assinatura)", "Administrador / responsável (de acordo)"]).slice(0, 3);
+      caber(112);
+      for (const l0 of quebrar(b.declaracao, 9, larguraUtil)) { texto(MARGEM, y - 9, l0, 9, false, "#374151"); y -= 13; }
+      y -= 40;
+      const gap = 40, l = (larguraUtil - gap * (nomes.length - 1)) / nomes.length;
+      nomes.forEach((n, i) => { const x = MARGEM + i * (l + gap); ret(x, y, l, 0.7, "#374151"); texto(x, y - 11, n, 8, false, "#6b7280"); });
+      y -= 30;
+      texto(MARGEM, y - 9, b.data || "Data: ____/____/________", 9, false, "#374151"); y -= 22;
+      continue;
     }
     if (b.tipo === "assinatura") {
       // Local e data + linhas de assinatura lado a lado (até 3).
