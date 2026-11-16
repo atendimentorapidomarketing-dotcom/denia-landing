@@ -12,6 +12,7 @@ const GRAPH = "https://graph.facebook.com/v21.0";
 import { registrarProblema, resolverProblema, quandoBR } from "./problemas.js";
 import { contarConversas, inicioDoDia } from "./relatorio.js";
 import { compromissoPorTexto, tarefaPorTexto, agendaEmTexto } from "./administracao.js";
+import { comandoEquipeZap, variantesTel, MODELO_LEMBRETE, MODELO_RESUMO } from "./agendaequipe.js";
 export const DDL_ZAP = [
   `CREATE TABLE IF NOT EXISTS plt_zap_contas (org_id INTEGER PRIMARY KEY, phone_number_id TEXT UNIQUE, waba_id TEXT, numero TEXT, nome_verificado TEXT, token_cifrado TEXT, segredo_cifrado TEXT, telegram_cifrado TEXT, ativo INTEGER NOT NULL DEFAULT 1, modo TEXT NOT NULL DEFAULT 'BOTOES', config TEXT, atualizado_ms INTEGER)`,
   `CREATE TABLE IF NOT EXISTS plt_zap_itens (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, pai_id INTEGER NOT NULL DEFAULT 0, tipo TEXT NOT NULL, titulo TEXT NOT NULL, descricao TEXT, texto TEXT, palavras TEXT, ordem INTEGER NOT NULL DEFAULT 0, ativo INTEGER NOT NULL DEFAULT 1)`,
@@ -780,6 +781,11 @@ async function receberMensagem(env, k, conta, msg, nome) {
   const enviadaMs = Number(msg.timestamp || 0) * 1000;
   if (enviadaMs && agora - enviadaMs > 30 * 60000) return; // mensagem velha (reenvio depois de queda): não responde fora de hora
   const c = ctt?.results?.[0] || {};
+  // Pessoa da equipe (número cadastrado na Administração): comandos da agenda — AGENDA, MARCAR, FEITO C12, PAGO P34…
+  if (e.texto && !e.acao) {
+    try { if (await comandoEquipeZap(env, k, z.org, tel, e.texto, t => enviarEmBlocos(z, t))) return; }
+    catch (err) { console.error("agenda pelo WhatsApp", err?.message); }
+  }
   // Descadastro de campanhas: "SAIR"/"PARAR" tira o contato das próximas campanhas (exigência da Meta e da LGPD).
   if (/^\s*(sair|parar|pare|cancelar inscri[cç][aã]o|descadastrar|stop|unsubscribe)\s*[.!]?\s*$/i.test(e.texto)) {
     await env.DB.prepare("UPDATE plt_zap_contatos SET optout=1 WHERE org_id=? AND telefone=?").bind(z.org, tel).run().catch(() => { });
@@ -1673,6 +1679,64 @@ export async function enviarModeloZap(env, k, orgId, telefone, modelo, idioma, v
     const d = await graphZap(token, "POST", `${encodeURIComponent(conta.phone_number_id)}/messages`, { messaging_product: "whatsapp", to: String(telefone).replace(/\D/g, ""), type: "template", template: { name: modelo, language: { code: idioma || "pt_BR" }, ...(params.length ? { components: [{ type: "body", parameters: params }] } : {}) } });
     return Boolean(d?.messages?.[0]?.id);
   } catch { return false; }
+}
+
+// Texto longo (agenda do dia) em blocos de até ~3.800 caracteres, quebrando entre parágrafos.
+function blocosDeTexto(t, max = 3800) {
+  const out = []; let atual = "";
+  for (const par of String(t || "").split(/\n(?=\n)/)) {
+    if ((atual + par).length > max && atual) { out.push(atual.trim()); atual = ""; }
+    atual += par;
+    while (atual.length > max) { const corte = atual.lastIndexOf("\n", max) > 200 ? atual.lastIndexOf("\n", max) : max; out.push(atual.slice(0, corte).trim()); atual = atual.slice(corte); }
+  }
+  if (atual.trim()) out.push(atual.trim());
+  return out.slice(0, 5);
+}
+async function enviarEmBlocos(z, texto) { let ok = false; for (const b of blocosDeTexto(texto)) ok = (await enviarTexto(z, b, "ROBO")) || ok; return ok; }
+
+// Agenda da equipe: manda para uma pessoa pelo número da empresa. Janela de 24h aberta (a pessoa escreveu
+// nas últimas 24h) = texto completo, sem custo; fechada = modelo aprovado pela Meta (curto, sem quebra de linha).
+export async function zapEquipe(env, k, contaOrg, telefone, texto, modelo = null) {
+  const conta = await env.DB.prepare("SELECT c.*, o.nome org_nome FROM plt_zap_contas c JOIN plt_organizacoes o ON o.id=c.org_id WHERE c.org_id=?").bind(contaOrg).first();
+  if (!conta?.phone_number_id || !conta?.token_cifrado || !conta.ativo) return "";
+  const tels = variantesTel(telefone); if (!tels.length) return "";
+  const agora = k.agora(env);
+  const ctt = await env.DB.prepare(`SELECT telefone, ultima_entrada_ms FROM plt_zap_contatos WHERE org_id=? AND telefone IN (${tels.map(() => "?").join(",")}) ORDER BY ultima_entrada_ms DESC LIMIT 1`).bind(contaOrg, ...tels).first();
+  if (ctt && agora - Number(ctt.ultima_entrada_ms || 0) < JANELA_24H - 5 * 60000) {
+    const z = { env, k, org: contaOrg, conta, tel: ctt.telefone, agora, enviadas: 0 };
+    if (await enviarEmBlocos(z, texto)) return "texto";
+  }
+  if (modelo?.nome) {
+    const params = (modelo.params || []).map(v => cortar(String(v ?? "-").replace(/[\r\n\t]+/g, " ").replace(/ {4,}/g, "   "), 900) || "-");
+    if (await enviarModeloZap(env, k, contaOrg, ctt?.telefone || digitos(telefone), modelo.nome, modelo.idioma || "pt_BR", params)) {
+      await env.DB.prepare("INSERT OR IGNORE INTO plt_zap_msgs(org_id,telefone,direcao,origem,texto,status,criado_ms) VALUES(?,?,'S','ROBO',?,'ENVIADA',?)").bind(contaOrg, ctt?.telefone || digitos(telefone), cortar(`[modelo ${modelo.nome}] ${params.join(" · ")}`, 4000), agora).run().catch(() => { });
+      return "modelo";
+    }
+  }
+  return "";
+}
+// Os dois modelos da agenda (categoria Utilidade). Criados uma vez na conta do WhatsApp; a Meta aprova em minutos ou horas.
+export const MODELOS_AGENDA = [
+  { nome: MODELO_LEMBRETE, texto: "Lembrete da sua agenda: {{1}}, {{2}}. Responda OK quando concluir ou AGENDA para ver o seu dia.", exemplos: ["Reunião com o contador", "hoje às 14:00"] },
+  { nome: MODELO_RESUMO, texto: "Resumo da agenda de {{1}}: {{2}}. Responda AGENDA para receber a lista completa por aqui.", exemplos: ["hoje, 16/11", "3 compromissos, 2 tarefas e 1 conta a pagar"] }
+];
+export async function modelosAgendaZap(env, k, contaOrg, criar = false) {
+  const conta = await contaDa(env, contaOrg);
+  if (!conta?.token_cifrado) return { erro: "Este número ainda não está conectado ao WhatsApp." };
+  if (!conta.waba_id) return { erro: "Falta o ID da conta do WhatsApp Business (WABA) na conexão do WhatsApp." };
+  const token = await k.decifrar(env, conta.token_cifrado);
+  const lista = (await graphZap(token, "GET", `${encodeURIComponent(conta.waba_id)}/message_templates?fields=name,status,language,rejected_reason&limit=250`)).data || [];
+  const out = [];
+  for (const m of MODELOS_AGENDA) {
+    const t = lista.find(x => x.name === m.nome && x.language === "pt_BR");
+    if (t) { out.push({ nome: m.nome, status: t.status, motivo: t.rejected_reason && t.rejected_reason !== "NONE" ? t.rejected_reason : null, texto: m.texto }); continue; }
+    if (!criar) { out.push({ nome: m.nome, status: "NAO_CRIADO", texto: m.texto }); continue; }
+    try {
+      const d = await graphZap(token, "POST", `${encodeURIComponent(conta.waba_id)}/message_templates`, { name: m.nome, category: "UTILITY", language: "pt_BR", components: [{ type: "BODY", text: m.texto, example: { body_text: [m.exemplos] } }] });
+      out.push({ nome: m.nome, status: d.status || "PENDING", texto: m.texto });
+    } catch (e) { out.push({ nome: m.nome, status: "ERRO", motivo: e.message, texto: m.texto }); }
+  }
+  return { modelos: out };
 }
 
 // ---------------------------------------------------------------------------

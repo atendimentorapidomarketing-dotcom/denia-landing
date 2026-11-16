@@ -4112,7 +4112,7 @@ test("Agenda executiva — escrever o compromisso, responsável, tarefas, Google
   assert.ok(cobrar.some(e => e.to.includes("mirella@adm.test")), "vai para o responsável");
   assert.equal(new Set(cobrar.map(e => e.to[0])).size, cobrar.length, "uma vez por pessoa");
   const resumo = p.emails.filter(e => /^DENIA — seu dia 20\/10\/2099/.test(e.subject));
-  assert.equal(resumo.length >= 1, true); assert.match(resumo[0].text, /Tarefas:/);
+  assert.equal(resumo.length >= 1, true); assert.match(resumo[0].text, /Sem horário \(tarefas e lembretes\)[\s\S]*Orçamento da pintura · Mirella \[T1\]/); assert.doesNotMatch(resumo[0].text, /\*/);
   delete p.env.__agora;
 });
 
@@ -4184,4 +4184,133 @@ test("Apresentação narrada — roteiro completo nos 3 idiomas, narração gera
   await p.req("/api/orgs/1/apresentacao/audio?idioma=pt-BR&cena=0", { quem: "admin" });
   assert.equal(gerou, 1, "a segunda vez vem do que foi guardado: sem custo");
   assert.equal((await p.req("/api/orgs/1/apresentacao/audio?idioma=pt-BR&cena=99", { quem: "admin" })).status, 400);
+});
+
+test("Agenda inteligente — prioridades, histórico de quem fez, comandos e agenda do dia pelo WhatsApp, contas confirmadas, iPhone e relatórios", async () => {
+  const { p, inf } = await duasEmpresasComChatbot();
+  const PN = "111111111111", EQ = "5521999990000", CLI = "5521955550000";
+  const ag = (cam, op = {}) => p.req(`/api/orgs/${inf}/adm/${cam}`, { quem: "admin", ...op });
+  p.env.__agora = () => Date.parse("2099-10-20T10:00:00Z"); // 07:00 em Brasília
+  await p.entrar("admin", ADMIN, SENHA_ADMIN); // sessão no relógio de teste
+  const eu = (await p.req("/api/eu", { quem: "admin" })).dados.usuario.id;
+  // Equipe no WhatsApp: o administrador (sem ser membro) aparece e cadastra o número.
+  const pes = await ag("pessoas");
+  assert.ok(pes.dados.pessoas.some(x => x.usuario_id === eu));
+  assert.equal((await ag("pessoas", { metodo: "PUT", corpo: { usuario_id: eu, telefone: "123" } })).status, 400);
+  const cad = await ag("pessoas", { metodo: "PUT", corpo: { usuario_id: eu, telefone: "(21) 99999-0000" } });
+  assert.equal(cad.dados.telefone, EQ);
+  // Itens: compromisso de extrema importância, tarefa, conta a pagar com responsável e prioridade.
+  const c1 = await ag("agenda", { metodo: "POST", corpo: { titulo: "Vistoria dos bombeiros", data: "2099-10-20", hora: "10:00", prioridade: "EXTREMA", aviso_min: 30, categoria: "Documentos", escopo: "PROFISSIONAL", responsavel_id: eu } });
+  assert.equal(c1.status, 201);
+  const t1 = await ag("tarefas", { metodo: "POST", corpo: { titulo: "Repor papel higiênico", prazo: "2099-10-20", categoria: "Estoque", prioridade: "BAIXA" } });
+  const conta = await p.req(`/api/orgs/${inf}/fin/lancamentos`, { metodo: "POST", quem: "admin", corpo: { tipo: "SAIDA", descricao: "Energia", valor: "450,00", data: "2099-10-20", responsavel_id: eu, prioridade: "ALTA", aviso_dias: 3 } });
+  assert.equal(conta.status, 201);
+  const pid = conta.dados.ids[0];
+  assert.equal(p.env.DB.q("SELECT prioridade, responsavel_id, aviso_dias FROM fin_lanc WHERE id=?", pid)[0].prioridade, "ALTA");
+  let lista = (await ag("agenda?de=2099-10-20&ate=2099-10-20")).dados.itens;
+  assert.equal(lista[0].prioridade, "EXTREMA"); assert.equal(lista[0].situacao_atual, "PENDENTE");
+
+  // Pelo WhatsApp (o mesmo número da empresa): agenda, marcar, comprar, concluir, pagar, adiar.
+  const zap = async t => { const n = p.engine.enviados.length; await webhookAssinado(p, { object: "whatsapp_business_account", entry: [{ changes: [{ field: "messages", value: { metadata: { phone_number_id: PN }, contacts: [{ wa_id: EQ, profile: { name: "Admin" } }], messages: [{ id: "wamid." + Math.random().toString(36).slice(2), timestamp: String(Math.floor(p.env.__agora() / 1000)), from: EQ, type: "text", text: { body: t } }] } }] }] }); return p.engine.enviados.slice(n).filter(e => e.to === EQ).map(e => e.texto).join("\n"); };
+  let r = await zap("agenda");
+  assert.match(r, /EXTREMA IMPORTÂNCIA[\s\S]*Vistoria dos bombeiros/);
+  assert.match(r, new RegExp(`Energia — R\\$\\s?450,00.*\\[P${pid}\\]`));
+  assert.match(r, /Repor papel higiênico/);
+  r = await zap("Marcar dentista amanhã às 15h urgente");
+  assert.match(r, /Anotado: Dentista — amanhã às 15:00.*\[C\d+\]/);
+  const den = p.env.DB.q("SELECT * FROM adm_agenda WHERE titulo='Dentista'")[0];
+  assert.equal(den.prioridade, "EXTREMA"); assert.equal(den.origem, "whatsapp"); assert.equal(den.responsavel_id, eu);
+  r = await zap("comprar café e açúcar");
+  assert.match(r, /Tarefa anotada: Comprar café e açúcar/);
+  assert.equal(p.env.DB.q("SELECT categoria FROM adm_tarefas WHERE titulo LIKE 'Comprar café%'")[0].categoria, "Compras");
+  r = await zap("lembrar de tomar o remédio todo dia às 8h");
+  assert.match(r, /Lembrete anotado: Tomar o remédio — hoje às 08:00, todo dia/);
+  r = await zap(`feito C${c1.dados.id}`);
+  assert.match(r, /Concluído: Vistoria dos bombeiros \(por /);
+  const v = p.env.DB.q("SELECT feito, feito_por_id, feito_ms FROM adm_agenda WHERE id=?", c1.dados.id)[0];
+  assert.equal(v.feito, 1); assert.equal(v.feito_por_id, eu); assert.ok(v.feito_ms);
+  r = await zap(`pago P${pid}`);
+  assert.match(r, /Pagamento confirmado: Energia/);
+  assert.ok(p.env.DB.q("SELECT confirmado_por FROM fin_lanc WHERE id=?", pid)[0].confirmado_por);
+  r = await zap(`adiar T${t1.dados.id} amanhã`);
+  assert.match(r, /Adiado: Repor papel higiênico para amanhã/);
+  assert.equal(p.env.DB.q("SELECT prazo, adiado_n FROM adm_tarefas WHERE id=?", t1.dados.id)[0].adiado_n, 1);
+  assert.match(await zap("ajuda"), /FEITO C12/);
+  // "ok" solto sem lembrete recente e um cliente qualquer seguem o atendimento normal.
+  const nCli = p.engine.enviados.length;
+  await webhookAssinado(p, { object: "whatsapp_business_account", entry: [{ changes: [{ field: "messages", value: { metadata: { phone_number_id: PN }, contacts: [{ wa_id: CLI, profile: { name: "Cli" } }], messages: [{ id: "wamid.cli1", timestamp: String(Math.floor(p.env.__agora() / 1000)), from: CLI, type: "text", text: { body: "agenda" } }] } }] }] });
+  assert.ok(!p.engine.enviados.slice(nCli).some(e => /Agenda de/.test(e.texto || "")), "cliente não vê a agenda");
+
+  // Histórico do item e geral.
+  const h = (await ag(`historico?tipo=AGENDA&id=${c1.dados.id}`)).dados.historico;
+  assert.deepEqual(h.map(x => [x.acao, x.canal]).reverse(), [["criou", "painel"], ["concluiu", "whatsapp"]]);
+  assert.ok((await ag("historico")).dados.historico.some(x => x.acao === "adiou" && x.canal === "whatsapp"));
+  // Edição pelo painel registra o que mudou.
+  await ag(`tarefas/${t1.dados.id}`, { metodo: "PUT", corpo: { titulo: "Repor papel higiênico", prioridade: "ALTA", situacao: "EM_ANDAMENTO" } });
+  assert.match((await ag(`historico?tipo=TAREFA&id=${t1.dados.id}`)).dados.historico[0].detalhe, /prioridade: BAIXA → ALTA/);
+
+  // Cron: lembrete com aviso por WhatsApp (janela aberta: texto completo), na hora, manhã, meio-dia e fim do dia.
+  const mod = await import("../src/worker.js");
+  const rodar = async () => { const pend = []; await mod.default.scheduled({}, p.env, { waitUntil: x => pend.push(x) }); await Promise.all(pend); };
+  await ag("agenda", { metodo: "POST", corpo: { titulo: "Reunião com o contador", data: "2099-10-20", hora: "09:00", aviso_min: 15, responsavel_id: eu } });
+  p.env.__agora = () => Date.parse("2099-10-20T11:00:00Z"); // 08:00
+  let n0 = p.engine.enviados.length; await rodar();
+  let novos = p.engine.enviados.slice(n0).filter(e => e.to === EQ).map(e => e.texto);
+  assert.ok(novos.some(t => /Agenda de hoje, 20\/10\/2099/.test(t) && /Reunião com o contador/.test(t)), "agenda da manhã: " + novos.join(" | "));
+  await rodar();
+  assert.equal(p.engine.enviados.slice(n0).filter(e => e.to === EQ && /Agenda de hoje/.test(e.texto)).length, 1, "uma vez por dia");
+  p.env.__agora = () => Date.parse("2099-10-20T11:46:00Z"); // 08:46: aviso 15 min antes
+  n0 = p.engine.enviados.length; await rodar();
+  assert.ok(p.engine.enviados.slice(n0).some(e => e.to === EQ && /Lembrete de compromisso\*: Reunião com o contador/.test(e.texto)));
+  assert.match(await zap("ok"), /Concluído: Reunião com o contador/, "OK depois do lembrete conclui o item lembrado");
+  p.env.__agora = () => Date.parse("2099-10-20T15:05:00Z"); // 12:05
+  n0 = p.engine.enviados.length; await rodar();
+  assert.ok(p.engine.enviados.slice(n0).some(e => e.to === EQ && /Pendências do meio-dia/.test(e.texto)));
+  p.env.__agora = () => Date.parse("2099-10-20T21:05:00Z"); // 18:05
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  assert.equal((await ag("tarefas", { metodo: "POST", corpo: { titulo: "Ligar para o síndico", prazo: "2099-10-20" } })).status, 201);
+  n0 = p.engine.enviados.length; await rodar();
+  const fim = p.engine.enviados.slice(n0).filter(e => e.to === EQ).map(e => e.texto).join("\n");
+  assert.match(fim, /Fechamento de 20\/10\/2099/);
+  assert.match(fim, /Concluídas[\s\S]*Vistoria dos bombeiros — .* às \d\d:\d\d/);
+  assert.match(fim, /Pagamentos e recebimentos confirmados[\s\S]*Pago: Energia/);
+  assert.match(fim, /Transferidas para amanhã[\s\S]*Ligar para o síndico/);
+  assert.equal(p.env.DB.q("SELECT prazo FROM adm_tarefas WHERE titulo='Ligar para o síndico'")[0].prazo, "2099-10-21");
+  // Lembrete diário: amanhã nasce a próxima ocorrência (uma só).
+  p.env.__agora = () => Date.parse("2099-10-21T03:10:00Z");
+  await rodar(); await rodar();
+  assert.equal(p.env.DB.q("SELECT COUNT(*) n FROM adm_agenda WHERE titulo='Tomar o remédio' AND data='2099-10-21'")[0].n, 1);
+  // Janela de 24h fechada: vai o modelo aprovado (curto).
+  p.env.DB.prepare("UPDATE plt_zap_contatos SET ultima_entrada_ms=0 WHERE telefone=?").bind(EQ).run();
+  p.env.__agora = () => Date.parse("2099-10-21T11:05:00Z");
+  n0 = p.engine.enviados.length; await rodar();
+  assert.ok(p.engine.enviados.slice(n0).some(e => e.to === EQ && e.texto === "denia_resumo_agenda"), "fora da janela: modelo");
+
+  // iPhone: calendário pessoal com alertas por prioridade e alarmes para o app Atalhos.
+  p.env.__agora = () => Date.parse("2099-10-21T10:00:00Z");
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  await ag("agenda", { metodo: "POST", corpo: { titulo: "Assinar contrato", data: "2099-10-21", hora: "14:30", prioridade: "EXTREMA", responsavel_id: eu } });
+  const cel = (await ag("celular", { metodo: "POST", corpo: { prio_min: "ALTA", antecedencia: 15 } })).dados;
+  assert.ok(cel.ativo);
+  const ics = await (await p.req(cel.ical)).r.text();
+  assert.match(ics, /SUMMARY:🚨 Assinar contrato/); assert.match(ics, /TRIGGER:-PT60M[\s\S]*TRIGGER:-PT15M[\s\S]*TRIGGER:PT0S/);
+  const al = JSON.parse(await (await p.req(cel.alarmes)).r.text());
+  assert.deepEqual(al.alarmes.map(x => [x.hora_alarme, x.prioridade]), [["14:00", "EXTREMA"], ["14:30", "EXTREMA"]], "contrato 14:30 e dentista 15:00 (marcado pelo WhatsApp), 30 min antes por serem extremas");
+  assert.equal(JSON.parse(await (await p.req(cel.alarmes)).r.text()).alarmes.length, 0, "com novos=1 não repete o mesmo alarme");
+  assert.equal((await p.req("/adm/alarmes/" + "x".repeat(30) + ".json")).status, 404);
+
+  // Relatório com filtros, Excel e PDF.
+  const rel = (await ag("relatorio-agenda?de=2099-10-19&ate=2099-10-22&prioridade=EXTREMA")).dados;
+  assert.ok(rel.linhas.every(l => l.prioridade === "EXTREMA") && rel.linhas.length >= 2);
+  const relC = (await ag(`relatorio-agenda?de=2099-10-19&ate=2099-10-22&colaborador=${eu}&situacao=CONCLUIDA`)).dados;
+  assert.ok(relC.linhas.some(l => l.titulo === "Vistoria dos bombeiros" && l.feito_por));
+  assert.ok(relC.linhas.some(l => l.cod === "P" + pid && l.feito_por), "conta confirmada entra no relatório");
+  const x = await ag("relatorio-agenda?de=2099-10-19&ate=2099-10-22&formato=xlsx");
+  assert.match(x.r.headers.get("content-type"), /spreadsheetml/);
+  const pdf = await ag("relatorio-agenda?de=2099-10-19&ate=2099-10-22&formato=pdf");
+  assert.equal((await pdf.r.text()).slice(0, 5), "%PDF-");
+  // WhatsApp da agenda: modelos e configuração.
+  const z = (await ag("zap")).dados;
+  assert.equal(z.conta_org, inf); assert.equal(z.config.hora_fim, 18);
+  delete p.env.__agora;
 });

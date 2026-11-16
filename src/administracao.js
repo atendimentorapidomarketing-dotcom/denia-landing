@@ -8,6 +8,7 @@ import { garantirFinanceiro, dinheiro, centavos, dataValida, mesValido, nomeMes,
 export { CATEGORIAS_PERFIL };
 import { gerarPdf } from "./pdf.js";
 import { gerarXlsx } from "./planilha.js";
+import { AREAS_EQUIPE, rotasAgendaEquipe, cronAgendaEquipe, registrarHistorico, concluirItem, prioridadeValida, escopoValido, categoriaValida, repeticaoValida, diferencas, avisarMudanca, avisarPessoasZap, itensDoDia, textoDoDiaEquipe, situacaoDe, PRIORIDADES, CATEGORIAS_AGENDA, confirmarConta } from "./agendaequipe.js";
 
 export const DDL_ADMIN = [
   `CREATE TABLE IF NOT EXISTS adm_config (org_id INTEGER PRIMARY KEY, perfil TEXT, ical_token TEXT, resumo_diario INTEGER NOT NULL DEFAULT 1,
@@ -55,7 +56,22 @@ const ALTERS_ADMIN = ["ALTER TABLE adm_locatarios ADD COLUMN periodicidade TEXT"
   // Reajustes aplicados aos aluguéis (histórico: índice, percentual, de quanto para quanto).
   "CREATE TABLE IF NOT EXISTS adm_reajustes (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, locatario_id INTEGER NOT NULL, indice TEXT, pct REAL, de_cent INTEGER, para_cent INTEGER, vale_de TEXT, por TEXT, ms INTEGER)",
   ...["responsavel_id INTEGER", "origem TEXT"].map(c => "ALTER TABLE adm_agenda ADD COLUMN " + c),
-  ...["gcal_url TEXT", "gcal_ms INTEGER", "gcal_erro TEXT", "gcal_n INTEGER", "aviso_telegram INTEGER NOT NULL DEFAULT 1", "aviso_email INTEGER NOT NULL DEFAULT 1", "zap_modelo TEXT", "zap_idioma TEXT", "zap_numeros TEXT"].map(c => "ALTER TABLE adm_config ADD COLUMN " + c)];
+  ...["gcal_url TEXT", "gcal_ms INTEGER", "gcal_erro TEXT", "gcal_n INTEGER", "aviso_telegram INTEGER NOT NULL DEFAULT 1", "aviso_email INTEGER NOT NULL DEFAULT 1", "zap_modelo TEXT", "zap_idioma TEXT", "zap_numeros TEXT"].map(c => "ALTER TABLE adm_config ADD COLUMN " + c),
+  // Agenda inteligente: tipo (compromisso/lembrete), categoria, pessoal/profissional, situação e quem fez o quê.
+  ...["tipo TEXT", "categoria TEXT", "escopo TEXT", "situacao TEXT", "criado_por TEXT", "criado_por_id INTEGER", "alterado_por TEXT", "alterado_ms INTEGER", "feito_por TEXT", "feito_por_id INTEGER", "feito_ms INTEGER", "avisado_hora_ms INTEGER", "gerou_prox INTEGER NOT NULL DEFAULT 0", "adiado_n INTEGER NOT NULL DEFAULT 0"].map(c => "ALTER TABLE adm_agenda ADD COLUMN " + c),
+  ...["categoria TEXT", "escopo TEXT", "situacao TEXT", "repetir TEXT", "criado_por_id INTEGER", "alterado_por TEXT", "alterado_ms INTEGER", "feito_por TEXT", "feito_por_id INTEGER", "feito_ms INTEGER", "gerou_prox INTEGER NOT NULL DEFAULT 0", "adiado_n INTEGER NOT NULL DEFAULT 0"].map(c => "ALTER TABLE adm_tarefas ADD COLUMN " + c),
+  ...["hora_meio INTEGER NOT NULL DEFAULT 12", "hora_fim INTEGER NOT NULL DEFAULT 18", "ultimo_meio TEXT", "ultimo_fim TEXT", "transferir INTEGER NOT NULL DEFAULT 1", "zap_org_id INTEGER", "aviso_fin_dias INTEGER NOT NULL DEFAULT 2", "relatorio_meio INTEGER NOT NULL DEFAULT 1", "relatorio_fim INTEGER NOT NULL DEFAULT 1"].map(c => "ALTER TABLE adm_config ADD COLUMN " + c),
+  "CREATE TABLE IF NOT EXISTS adm_historico (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, tipo TEXT NOT NULL, item_id INTEGER, acao TEXT NOT NULL, titulo TEXT, detalhe TEXT, por TEXT, por_id INTEGER, canal TEXT, ms INTEGER NOT NULL)",
+  "CREATE INDEX IF NOT EXISTS adm_historico_org ON adm_historico(org_id, ms)",
+  "CREATE INDEX IF NOT EXISTS adm_historico_item ON adm_historico(org_id, tipo, item_id)",
+  // Pessoas da equipe no WhatsApp (o número de cada uma e o que recebe).
+  `CREATE TABLE IF NOT EXISTS adm_pessoas (org_id INTEGER NOT NULL, usuario_id INTEGER NOT NULL, telefone TEXT, ativo INTEGER NOT NULL DEFAULT 1, zap_manha INTEGER NOT NULL DEFAULT 1, zap_lembretes INTEGER NOT NULL DEFAULT 1,
+    zap_relatorios INTEGER NOT NULL DEFAULT 1, so_minhas INTEGER NOT NULL DEFAULT 0, ultimo_manha TEXT, ultimo_meio TEXT, ultimo_fim TEXT, atualizado_ms INTEGER, PRIMARY KEY (org_id, usuario_id))`,
+  "CREATE INDEX IF NOT EXISTS adm_pessoas_tel ON adm_pessoas(telefone)",
+  "CREATE TABLE IF NOT EXISTS adm_zap_estado (conta_org INTEGER NOT NULL, telefone TEXT NOT NULL, org_atual INTEGER, ultimo_tipo TEXT, ultimo_id INTEGER, ultimo_org INTEGER, ultimo_ms INTEGER, PRIMARY KEY (conta_org, telefone))",
+  // Celular: link pessoal do calendário e dos alarmes (app Atalhos).
+  "CREATE TABLE IF NOT EXISTS adm_alarme_tokens (usuario_id INTEGER PRIMARY KEY, token TEXT NOT NULL UNIQUE, prio_min TEXT, antecedencia INTEGER, usado_ms INTEGER, ms INTEGER)",
+  "CREATE TABLE IF NOT EXISTS adm_alarmes_ok (usuario_id INTEGER NOT NULL, chave TEXT NOT NULL, ms INTEGER, PRIMARY KEY (usuario_id, chave))"];
 
 const prontos = new WeakSet();
 export async function garantirAdmin(env) {
@@ -741,8 +757,18 @@ export function interpretarCompromisso(texto, hoje) {
   const EXT = { uma: 1, um: 1, duas: 2, dois: 2, "três": 3, tres: 3, quatro: 4, cinco: 5, seis: 6, sete: 7, oito: 8, nove: 9, dez: 10, onze: 11, doze: 12 };
   t = t.replace(/\s(?:ao )?meio[- ]dia(?: e meia)?(?=[\s,.!?])/gi, m => /meia/i.test(m) ? " às 12:30" : " às 12h").replace(/\s(?:à |a )?meia[- ]noite(?=[\s,.!?])/gi, " às 0h")
     .replace(/\s(às|as)\s+(uma|um|duas|dois|três|tres|quatro|cinco|seis|sete|oito|nove|dez|onze|doze)(\s+e\s+meia)?(?=[\s,.!?])/gi, (_, a0, n0, meia) => ` ${a0} ${EXT[n0.toLowerCase()]}${meia ? ":30" : "h"}`);
-  let data = null, hora = null, m;
+  let data = null, hora = null, m, repetir = null, prioridade = null;
   const tira = re0 => { t = t.replace(re0, " "); };
+  const lembrete = /^\s*(?:me\s+)?lembr|^\s*lembrete/i.test(t);
+  // Repetição falada: "todo dia", "toda segunda", "todo dia 10", "todo mês", "todo ano".
+  if ((m = /\s(?:todo|todos os)\s+dias?\s+(\d{1,2})(?=[\s,.!?])/i.exec(t))) { repetir = "mensal"; t = t.replace(m[0], ` dia ${m[1]}`); }
+  else if ((m = /\s(todo dia|todos os dias|diariamente)(?=[\s,.!?])/i.exec(t))) { repetir = "diario"; tira(m[0]); }
+  else if ((m = /\s(?:toda|todas as|todo|todos os)\s+(segunda|ter[cç]a|quarta|quinta|sexta|s[aá]bado|domingo)s?(?:-feiras?)?(?=[\s,.!?])/i.exec(t))) { repetir = "semanal"; t = t.replace(m[0], ` ${m[1]}`); }
+  else if ((m = /\s(toda semana|semanalmente)(?=[\s,.!?])/i.exec(t))) { repetir = "semanal"; tira(m[0]); }
+  else if ((m = /\s(todo m[eê]s|mensalmente)(?=[\s,.!?])/i.exec(t))) { repetir = "mensal"; tira(m[0]); }
+  else if ((m = /\s(todo ano|anualmente)(?=[\s,.!?])/i.exec(t))) { repetir = "anual"; tira(m[0]); }
+  if ((m = /\s(urgente|urgent[ií]ssimo|extrema import[aâ]ncia|important[ií]ssimo)(?=[\s,.!?])/i.exec(t))) { prioridade = "EXTREMA"; tira(m[0]); }
+  else if ((m = /\s(prioridade alta|importante)(?=[\s,.!?])/i.exec(t))) { prioridade = "ALTA"; tira(m[0]); }
   // Hora: 14h, 14h30, 14:30, às 9, 9 da manhã, 3 da tarde
   m = [...t.matchAll(/\s(?:às|as|a partir das)?\s*(\d{1,2})(?:[:h](\d{2}))?\s*(?:h(?:oras?)?)?\s*(da manhã|da manha|da tarde|da noite)?(?=[\s,.!?])/gi)].find(x => /[:h]|às|as|da (manh|tarde|noite)/i.test(x[0]) && !/\//.test(x[0]));
   if (m) {
@@ -782,13 +808,14 @@ export function interpretarCompromisso(texto, hoje) {
   let titulo = t.replace(/^\s*(?:me\s+)?(?:lembr[ae](?:r)?\s+(?:de\s+)?|marc[ao]r?\s+(?:um[a]?\s+)?|agend[ae]r?\s+(?:um[a]?\s+)?|anot[ae]r?\s+(?:na agenda\s+)?|compromisso:?\s+|agenda:?\s+)/i, "").replace(/\s+([,.!?])/g, "$1").replace(/^[\s,.\-–—]+|[\s,.\-–—]+$/g, "").replace(/\s{2,}/g, " ");
   titulo = titulo.replace(/\s(?:às|as|para|pra|de|no|na|em)$/i, "").trim();
   if (!titulo) return { erro: "Não entendi o que é o compromisso." };
+  if (!data && repetir) data = hoje; // "todo dia às 9h": começa hoje
   if (!data) return { erro: "Diga também o dia (ex.: amanhã, terça, 15/11).", titulo: titulo.charAt(0).toUpperCase() + titulo.slice(1), hora };
-  return { titulo: titulo.charAt(0).toUpperCase() + titulo.slice(1), data, hora, local };
+  return { titulo: titulo.charAt(0).toUpperCase() + titulo.slice(1), data, hora, local, repetir, lembrete, prioridade };
 }
 
 async function criarCompromisso(env, orgId, v, origem, agoraMs) {
-  const r = await env.DB.prepare("INSERT INTO adm_agenda(org_id,titulo,data,hora,duracao_min,quem,local,prioridade,aviso_min,repetir,obs,criado_ms,responsavel_id,origem) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
-    .bind(orgId, v.titulo, v.data, v.hora || null, v.duracao_min || 60, v.quem || null, v.local || null, v.prioridade || "NORMAL", v.aviso_min ?? 60, v.repetir || null, v.obs || null, agoraMs, v.responsavel_id || null, origem || null).run();
+  const r = await env.DB.prepare("INSERT INTO adm_agenda(org_id,titulo,data,hora,duracao_min,quem,local,prioridade,aviso_min,repetir,obs,criado_ms,responsavel_id,origem,tipo) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+    .bind(orgId, v.titulo, v.data, v.hora || null, v.duracao_min || 60, v.quem || null, v.local || null, v.prioridade || "NORMAL", v.aviso_min ?? (v.lembrete ? 0 : 60), v.repetir || null, v.obs || null, agoraMs, v.responsavel_id || null, origem || null, v.tipo || (v.lembrete ? "LEMBRETE" : "COMPROMISSO")).run();
   return r.meta?.last_row_id;
 }
 // Para Telegram, voz e WhatsApp: cria a partir do texto e devolve uma frase de confirmação.
@@ -797,13 +824,14 @@ export async function compromissoPorTexto(env, orgId, texto, agoraMs, origem = "
   const hoje = hojeLocal(agoraMs), v = interpretarCompromisso(texto, hoje);
   if (v.erro) return { ok: false, erro: v.erro, parcial: v };
   const id = await criarCompromisso(env, orgId, v, origem, agoraMs);
-  return { ok: true, id, ...v, frase: `Anotado: ${v.titulo} — ${nomeDia(v.data, hoje)}${v.hora ? " às " + v.hora : ""}${v.local ? " (" + v.local + ")" : ""}.` };
+  const REP = { diario: "todo dia", semanal: "toda semana", mensal: "todo mês", anual: "todo ano" };
+  return { ok: true, id, ...v, frase: `Anotado: ${v.titulo} — ${nomeDia(v.data, hoje)}${v.hora ? " às " + v.hora : ""}${v.local ? " (" + v.local + ")" : ""}${v.repetir ? ", " + REP[v.repetir] : ""}${v.prioridade === "EXTREMA" ? " (extrema importância)" : v.prioridade === "ALTA" ? " (prioridade alta)" : ""}.` };
 }
 export async function tarefaPorTexto(env, orgId, texto, agoraMs, quem = null) {
   await garantirAdmin(env);
   const hoje = hojeLocal(agoraMs), v = interpretarCompromisso(texto, hoje);
   const titulo = re(v.titulo || texto, 200); if (!titulo) return { ok: false, erro: "Escreva a tarefa." };
-  const r = await env.DB.prepare("INSERT INTO adm_tarefas(org_id,titulo,prazo,criado_por,criado_ms) VALUES(?,?,?,?,?)").bind(orgId, titulo, v.data || null, quem, agoraMs).run();
+  const r = await env.DB.prepare("INSERT INTO adm_tarefas(org_id,titulo,prazo,criado_por,criado_ms,prioridade,repetir) VALUES(?,?,?,?,?,?,?)").bind(orgId, titulo, v.data || null, quem, agoraMs, v.prioridade || "NORMAL", v.repetir || null).run();
   return { ok: true, id: r.meta?.last_row_id, titulo, prazo: v.data || null, frase: `Tarefa anotada: ${titulo}${v.data ? " (prazo " + nomeDia(v.data, hoje) + ")" : ""}.` };
 }
 const NOMES_DIA = ["domingo", "segunda", "terça", "quarta", "quinta", "sexta", "sábado"];
@@ -934,8 +962,10 @@ export async function rotasAdmin(request, env, k, orgId, papel, resto) {
   // Agenda e manutenção a equipe pode ver e usar; dinheiro, contratos e configuração só o dono e os administradores.
   const area = partes[0];
   if (!equipe) return json({ erro: "Seu perfil é somente leitura." }, 403);
-  if (!["dia", "agenda", "rotinas", "servicos", "tarefas", "equipe"].includes(area) && !admin) return json({ erro: "Esta parte da administração é visível só para o dono e os administradores." }, 403);
+  if (!["dia", "agenda", "rotinas", "servicos", "tarefas", "equipe", ...AREAS_EQUIPE].includes(area) && !admin) return json({ erro: "Esta parte da administração é visível só para o dono e os administradores." }, 403);
   const quem = k.sessao?.usuario?.email || null;
+  const euP = { id: k.sessao?.usuario?.id || null, nome: k.sessao?.usuario?.nome || quem };
+  const hist = (tipo, id, acao, titulo, detalhe) => registrarHistorico(env, orgId, tipo, id, acao, titulo, detalhe, euP, ms, "painel");
   const config = async () => {
     let c = await env.DB.prepare("SELECT * FROM adm_config WHERE org_id=?").bind(orgId).first();
     if (!c) { await env.DB.prepare("INSERT OR IGNORE INTO adm_config(org_id, atualizado_ms) VALUES(?,?)").bind(orgId, ms).run(); c = await env.DB.prepare("SELECT * FROM adm_config WHERE org_id=?").bind(orgId).first(); }
@@ -953,9 +983,12 @@ export async function rotasAdmin(request, env, k, orgId, papel, resto) {
   }
 
   // Pessoas da equipe (para escolher o responsável de um compromisso ou tarefa).
-  const membros = async () => (await env.DB.prepare("SELECT u.id, COALESCE(NULLIF(u.nome,''), u.email) AS nome, u.email, m.papel FROM plt_membros m JOIN plt_usuarios u ON u.id=m.usuario_id WHERE m.org_id=? AND u.ativo=1 ORDER BY nome").bind(orgId).all().catch(() => null))?.results || [];
+  // Membros da empresa e o administrador geral (que cuida de todas sem ser membro).
+  const membros = async () => (await env.DB.prepare(`SELECT u.id, COALESCE(NULLIF(u.nome,''), u.email) AS nome, u.email, m.papel FROM plt_membros m JOIN plt_usuarios u ON u.id=m.usuario_id WHERE m.org_id=? AND u.ativo=1
+    UNION SELECT u.id, COALESCE(NULLIF(u.nome,''), u.email), u.email, 'OWNER' FROM plt_usuarios u WHERE u.super_admin=1 AND u.ativo=1 AND u.id NOT IN (SELECT usuario_id FROM plt_membros WHERE org_id=?) ORDER BY 2`).bind(orgId, orgId).all().catch(() => null))?.results || [];
   const responsavelValido = async idR => { const n = Number(idR) || 0; if (!n) return null; return (await membros()).some(x => x.id === n) ? n : null; };
-  if (area === "equipe" && metodo === "GET") return json({ equipe: await membros(), eu: k.sessao?.usuario?.id || null });
+  if (area === "equipe" && metodo === "GET") return json({ equipe: await membros(), eu: k.sessao?.usuario?.id || null, prioridades: PRIORIDADES, categorias: CATEGORIAS_AGENDA });
+  if (AREAS_EQUIPE.includes(area)) { const r = await rotasAgendaEquipe(request, env, k, orgId, papel, partes, { membros, config, empresa }); if (r) return r; }
 
   // ----- Tarefas (com ou sem prazo), checklist, responsável e "cobrar retorno em"
   if (area === "tarefas") {
@@ -965,42 +998,55 @@ export async function rotasAdmin(request, env, k, orgId, papel, resto) {
       if (v.prazo && !dataValida(v.prazo)) return "Prazo inválido.";
       if (v.acompanhar_em && !dataValida(v.acompanhar_em)) return "Data de acompanhamento inválida.";
       const lista = Array.isArray(v.checklist) ? v.checklist : (() => { try { return JSON.parse(v.checklist || "[]"); } catch { return []; } })();
-      return { titulo: re(v.titulo, 200), prazo: v.prazo || null, acompanhar_em: v.acompanhar_em || null, prioridade: v.prioridade === "ALTA" ? "ALTA" : "NORMAL", obs: re(v.obs, 1500) || null,
-        responsavel_id: await responsavelValido(v.responsavel_id), checklist: JSON.stringify(lista.slice(0, 40).map(x => ({ t: re(x.t ?? x, 160), ok: Boolean(x.ok) })).filter(x => x.t)) };
+      return { titulo: re(v.titulo, 200), prazo: v.prazo || null, acompanhar_em: v.acompanhar_em || null, prioridade: prioridadeValida(v.prioridade), obs: re(v.obs, 1500) || null,
+        responsavel_id: await responsavelValido(v.responsavel_id), checklist: JSON.stringify(lista.slice(0, 40).map(x => ({ t: re(x.t ?? x, 160), ok: Boolean(x.ok) })).filter(x => x.t)),
+        categoria: categoriaValida(v.categoria), escopo: escopoValido(v.escopo), repetir: repeticaoValida(v.repetir), situacao: v.situacao === "EM_ANDAMENTO" ? "EM_ANDAMENTO" : null };
     };
     if (metodo === "GET" && !id1) {
       const ver = url.searchParams.get("ver") || "abertas";
       const itens = (await env.DB.prepare(`SELECT t.*, COALESCE(NULLIF(u.nome,''), u.email) AS responsavel_nome FROM adm_tarefas t LEFT JOIN plt_usuarios u ON u.id=t.responsavel_id WHERE t.org_id=? ${ver === "feitas" ? "AND t.feito=1" : ver === "todas" ? "" : "AND t.feito=0"}
         ${url.searchParams.get("minhas") ? "AND t.responsavel_id=" + Number(k.sessao?.usuario?.id || 0) : ""} ORDER BY t.feito, CASE WHEN t.prazo IS NULL THEN 1 ELSE 0 END, t.prazo, t.id DESC LIMIT 500`).bind(orgId).all()).results || [];
-      return json({ hoje, tarefas: itens.map(x => ({ ...x, checklist: (() => { try { return JSON.parse(x.checklist || "[]"); } catch { return []; } })(), atrasada: !x.feito && x.prazo && x.prazo < hoje, cobrar: !x.feito && x.acompanhar_em && x.acompanhar_em <= hoje })) });
+      return json({ hoje, tarefas: itens.map(x => ({ ...x, prioridade: prioridadeValida(x.prioridade), situacao_atual: situacaoDe(x, hoje), checklist: (() => { try { return JSON.parse(x.checklist || "[]"); } catch { return []; } })(), atrasada: !x.feito && x.prazo && x.prazo < hoje, cobrar: !x.feito && x.acompanhar_em && x.acompanhar_em <= hoje })) });
     }
     if (metodo === "POST" && partes[1] === "texto") {
       const { c, erro } = await corpo(); if (erro) return erro;
-      const r = await tarefaPorTexto(env, orgId, c.texto, ms, quem);
-      return r.ok ? json(r, 201) : json({ erro: r.erro }, 400);
+      const r = await tarefaPorTexto(env, orgId, c.texto, ms, euP.nome);
+      if (!r.ok) return json({ erro: r.erro }, 400);
+      await env.DB.prepare("UPDATE adm_tarefas SET criado_por_id=?, responsavel_id=COALESCE(?, responsavel_id) WHERE id=?").bind(euP.id, await responsavelValido(c.responsavel_id), r.id).run();
+      await hist("TAREFA", r.id, "criou", r.titulo, r.prazo ? `prazo ${br(r.prazo)}` : "");
+      return json(r, 201);
     }
     if (metodo === "POST" && !id1) {
       const { c, erro } = await corpo(); if (erro) return erro;
       const v = await validar(c); if (typeof v === "string") return json({ erro: v }, 400);
-      const r = await env.DB.prepare("INSERT INTO adm_tarefas(org_id,titulo,responsavel_id,prazo,acompanhar_em,checklist,prioridade,obs,criado_por,criado_ms) VALUES(?,?,?,?,?,?,?,?,?,?)")
-        .bind(orgId, v.titulo, v.responsavel_id, v.prazo, v.acompanhar_em, v.checklist, v.prioridade, v.obs, quem, ms).run();
-      return json({ ok: true, id: r.meta?.last_row_id }, 201);
+      const r = await env.DB.prepare("INSERT INTO adm_tarefas(org_id,titulo,responsavel_id,prazo,acompanhar_em,checklist,prioridade,obs,criado_por,criado_ms,categoria,escopo,repetir,situacao,criado_por_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+        .bind(orgId, v.titulo, v.responsavel_id, v.prazo, v.acompanhar_em, v.checklist, v.prioridade, v.obs, euP.nome, ms, v.categoria, v.escopo, v.repetir, v.situacao, euP.id).run();
+      const id = r.meta?.last_row_id;
+      await hist("TAREFA", id, "criou", v.titulo, [v.prazo && `prazo ${br(v.prazo)}`, v.prioridade !== "NORMAL" && `prioridade ${v.prioridade.toLowerCase()}`].filter(Boolean).join("; "));
+      await avisarMudanca(env, k, orgId, { ...v, id }, "criada", euP, ms);
+      return json({ ok: true, id }, 201);
     }
     if (id1) {
       const atual = await env.DB.prepare("SELECT * FROM adm_tarefas WHERE id=? AND org_id=?").bind(id1, orgId).first();
       if (!atual) return json({ erro: "Tarefa não encontrada." }, 404);
       if (partes[2] === "feito" && metodo === "POST") {
         const { c } = await corpo();
-        await env.DB.prepare("UPDATE adm_tarefas SET feito=?, feito_em=? WHERE id=?").bind(c?.desfazer ? 0 : 1, c?.desfazer ? null : hoje, id1).run();
-        return json({ ok: true });
+        const r = await concluirItem(env, orgId, "TAREFA", id1, euP, ms, "painel", Boolean(c?.desfazer));
+        return r.erro ? json({ erro: r.erro }, 404) : json({ ok: true, proximo: r.proximo || null });
       }
       if (metodo === "PUT") {
         const { c, erro } = await corpo(); if (erro) return erro;
         const v = await validar(c, { ...atual, checklist: (() => { try { return JSON.parse(atual.checklist || "[]"); } catch { return []; } })() }); if (typeof v === "string") return json({ erro: v }, 400);
-        await env.DB.prepare("UPDATE adm_tarefas SET titulo=?,responsavel_id=?,prazo=?,acompanhar_em=?,checklist=?,prioridade=?,obs=?,avisado=NULL WHERE id=?").bind(v.titulo, v.responsavel_id, v.prazo, v.acompanhar_em, v.checklist, v.prioridade, v.obs, id1).run();
+        if (c.categoria === undefined) v.categoria = atual.categoria; if (c.escopo === undefined) v.escopo = atual.escopo; if (c.repetir === undefined) v.repetir = atual.repetir; if (c.situacao === undefined) v.situacao = atual.situacao;
+        await env.DB.prepare("UPDATE adm_tarefas SET titulo=?,responsavel_id=?,prazo=?,acompanhar_em=?,checklist=?,prioridade=?,obs=?,avisado=NULL,categoria=?,escopo=?,repetir=?,situacao=?,alterado_por=?,alterado_ms=?,adiado_n=adiado_n+? WHERE id=?")
+          .bind(v.titulo, v.responsavel_id, v.prazo, v.acompanhar_em, v.checklist, v.prioridade, v.obs, v.categoria, v.escopo, v.repetir, v.situacao, euP.nome, ms, atual.prazo && v.prazo && v.prazo > atual.prazo ? 1 : 0, id1).run();
+        const dif = diferencas(atual, v, ["titulo", "prazo", "acompanhar_em", "prioridade", "responsavel_id", "categoria", "escopo", "repetir", "situacao"]);
+        const soCheck = !dif && atual.checklist !== v.checklist;
+        if (dif || soCheck) await hist("TAREFA", id1, atual.prazo && v.prazo && v.prazo > atual.prazo ? "adiou" : v.situacao === "EM_ANDAMENTO" && atual.situacao !== "EM_ANDAMENTO" ? "iniciou" : "alterou", v.titulo, dif || "checklist atualizado");
+        if (dif) await avisarMudanca(env, k, orgId, { ...v, id: id1 }, "alterada", euP, ms);
         return json({ ok: true });
       }
-      if (metodo === "DELETE") { await env.DB.prepare("DELETE FROM adm_tarefas WHERE id=? AND org_id=?").bind(id1, orgId).run(); return json({ ok: true }); }
+      if (metodo === "DELETE") { await env.DB.prepare("DELETE FROM adm_tarefas WHERE id=? AND org_id=?").bind(id1, orgId).run(); await hist("TAREFA", id1, "excluiu", atual.titulo, atual.prazo ? `prazo era ${br(atual.prazo)}` : ""); await avisarMudanca(env, k, orgId, atual, "excluída", euP, ms); return json({ ok: true }); }
     }
   }
 
@@ -1012,8 +1058,9 @@ export async function rotasAdmin(request, env, k, orgId, papel, resto) {
       if (!dataValida(v.data)) return "Escolha a data.";
       if (v.hora && !horaValida(v.hora)) return "Hora inválida (use 14:30).";
       return { titulo: re(v.titulo, 160), data: v.data, hora: v.hora || null, duracao_min: inteiro(v.duracao_min, 5, 1440, 60), quem: re(v.quem, 60) || null, local: re(v.local, 120) || null,
-        prioridade: v.prioridade === "ALTA" ? "ALTA" : "NORMAL", aviso_min: inteiro(v.aviso_min, 0, 10080, 60), repetir: ["semanal", "mensal", "anual"].includes(v.repetir) ? v.repetir : null, obs: re(v.obs, 800) || null,
-        responsavel_id: v.responsavel_id === undefined ? atual.responsavel_id ?? null : Number(v.responsavel_id) || null };
+        prioridade: prioridadeValida(v.prioridade), aviso_min: inteiro(v.aviso_min, 0, 10080, 60), repetir: repeticaoValida(v.repetir), obs: re(v.obs, 800) || null,
+        responsavel_id: v.responsavel_id === undefined ? atual.responsavel_id ?? null : Number(v.responsavel_id) || null,
+        tipo: v.tipo === "LEMBRETE" ? "LEMBRETE" : "COMPROMISSO", categoria: categoriaValida(v.categoria), escopo: escopoValido(v.escopo), situacao: v.situacao === "EM_ANDAMENTO" ? "EM_ANDAMENTO" : null };
     };
     if (metodo === "GET" && !id1) {
       const de = dataValida(url.searchParams.get("de")) ? url.searchParams.get("de") : somarDias(hoje, -30), ate = dataValida(url.searchParams.get("ate")) ? url.searchParams.get("ate") : somarDias(hoje, 120);
@@ -1021,14 +1068,15 @@ export async function rotasAdmin(request, env, k, orgId, papel, resto) {
       const itens = (await env.DB.prepare(`SELECT a.*, COALESCE(NULLIF(u.nome,''), u.email) AS responsavel_nome FROM adm_agenda a LEFT JOIN plt_usuarios u ON u.id=a.responsavel_id WHERE a.org_id=? AND ((a.data BETWEEN ? AND ?) OR (a.feito=0 AND a.data < ?))${minha} ORDER BY a.data, COALESCE(a.hora,'99:99') LIMIT 1500`).bind(orgId, de, ate, hoje).all()).results || [];
       // Tarefas com prazo aparecem no calendário também.
       const tarefas = (await env.DB.prepare("SELECT id, titulo, prazo, feito FROM adm_tarefas WHERE org_id=? AND prazo BETWEEN ? AND ?").bind(orgId, de, ate).all()).results || [];
-      return json({ itens, tarefas, hoje });
+      return json({ itens: itens.map(a => ({ ...a, prioridade: prioridadeValida(a.prioridade), situacao_atual: situacaoDe(a, hoje) })), tarefas, hoje });
     }
     // Compromisso escrito do jeito que se fala: "vistoria do AVCB terça às 10h".
     if (metodo === "POST" && partes[1] === "texto") {
       const { c, erro } = await corpo(); if (erro) return erro;
       const r = await compromissoPorTexto(env, orgId, c.texto, ms, "texto");
       if (!r.ok) return json({ erro: r.erro, parcial: r.parcial }, 400);
-      if (c.responsavel_id) await env.DB.prepare("UPDATE adm_agenda SET responsavel_id=? WHERE id=?").bind(await responsavelValido(c.responsavel_id), r.id).run();
+      await env.DB.prepare("UPDATE adm_agenda SET responsavel_id=COALESCE(?, responsavel_id), criado_por=?, criado_por_id=?, tipo=? WHERE id=?").bind(await responsavelValido(c.responsavel_id), euP.nome, euP.id, r.lembrete ? "LEMBRETE" : "COMPROMISSO", r.id).run();
+      await hist("AGENDA", r.id, "criou", r.titulo, `${br(r.data)}${r.hora ? " " + r.hora : ""}`);
       return json(r, 201);
     }
     if (metodo === "POST" && !id1) {
@@ -1036,6 +1084,9 @@ export async function rotasAdmin(request, env, k, orgId, papel, resto) {
       const v = validar(c); if (typeof v === "string") return json({ erro: v }, 400);
       v.responsavel_id = await responsavelValido(v.responsavel_id);
       const id = await criarCompromisso(env, orgId, v, "painel", ms);
+      await env.DB.prepare("UPDATE adm_agenda SET tipo=?, categoria=?, escopo=?, situacao=?, criado_por=?, criado_por_id=? WHERE id=?").bind(v.tipo, v.categoria, v.escopo, v.situacao, euP.nome, euP.id, id).run();
+      await hist("AGENDA", id, "criou", v.titulo, `${br(v.data)}${v.hora ? " " + v.hora : ""}${v.prioridade !== "NORMAL" ? "; prioridade " + v.prioridade.toLowerCase() : ""}`);
+      await avisarMudanca(env, k, orgId, { ...v, id }, "marcado", euP, ms);
       return json({ ok: true, id }, 201);
     }
     if (id1) {
@@ -1043,25 +1094,24 @@ export async function rotasAdmin(request, env, k, orgId, papel, resto) {
       if (!atual) return json({ erro: "Compromisso não encontrado." }, 404);
       if (partes[2] === "feito" && metodo === "POST") {
         const { c } = await corpo();
-        if (c?.desfazer) { await env.DB.prepare("UPDATE adm_agenda SET feito=0, feito_em=NULL WHERE id=?").bind(id1).run(); return json({ ok: true }); }
-        await env.DB.prepare("UPDATE adm_agenda SET feito=1, feito_em=? WHERE id=?").bind(hoje, id1).run();
-        let proximo = null;
-        if (atual.repetir) {
-          const data = atual.repetir === "semanal" ? somarDias(atual.data, 7) : somarMesesData(atual.data, atual.repetir === "anual" ? 12 : 1);
-          proximo = { id: await criarCompromisso(env, orgId, { ...atual, data }, atual.origem || "painel", ms), data };
-        }
-        return json({ ok: true, proximo });
+        const r = await concluirItem(env, orgId, "AGENDA", id1, euP, ms, "painel", Boolean(c?.desfazer));
+        return r.erro ? json({ erro: r.erro }, 404) : json({ ok: true, proximo: r.proximo || null });
       }
       if (metodo === "PUT") {
         const { c, erro } = await corpo(); if (erro) return erro;
         if (atual.origem === "google") return json({ erro: "Este compromisso vem do Google Agenda: altere lá (a DENIA atualiza sozinha)." }, 409);
         const v = validar(c, atual); if (typeof v === "string") return json({ erro: v }, 400);
         v.responsavel_id = await responsavelValido(v.responsavel_id);
-        await env.DB.prepare("UPDATE adm_agenda SET titulo=?,data=?,hora=?,duracao_min=?,quem=?,local=?,prioridade=?,aviso_min=?,repetir=?,obs=?,responsavel_id=?,avisado_ms=NULL WHERE id=?")
-          .bind(v.titulo, v.data, v.hora, v.duracao_min, v.quem, v.local, v.prioridade, v.aviso_min, v.repetir, v.obs, v.responsavel_id, id1).run();
+        if (c.tipo === undefined) v.tipo = atual.tipo || "COMPROMISSO"; if (c.categoria === undefined) v.categoria = atual.categoria; if (c.escopo === undefined) v.escopo = atual.escopo; if (c.situacao === undefined) v.situacao = atual.situacao;
+        const adiou = v.data > atual.data || (v.data === atual.data && v.hora && atual.hora && v.hora > atual.hora);
+        const mudouHora = v.data !== atual.data || v.hora !== atual.hora || Number(v.aviso_min) !== Number(atual.aviso_min);
+        await env.DB.prepare(`UPDATE adm_agenda SET titulo=?,data=?,hora=?,duracao_min=?,quem=?,local=?,prioridade=?,aviso_min=?,repetir=?,obs=?,responsavel_id=?,tipo=?,categoria=?,escopo=?,situacao=?,alterado_por=?,alterado_ms=?,adiado_n=adiado_n+?${mudouHora ? ",avisado_ms=NULL,avisado_hora_ms=NULL" : ""} WHERE id=?`)
+          .bind(v.titulo, v.data, v.hora, v.duracao_min, v.quem, v.local, v.prioridade, v.aviso_min, v.repetir, v.obs, v.responsavel_id, v.tipo, v.categoria, v.escopo, v.situacao, euP.nome, ms, adiou ? 1 : 0, id1).run();
+        const dif = diferencas(atual, v, ["titulo", "data", "hora", "local", "prioridade", "responsavel_id", "aviso_min", "repetir", "tipo", "categoria", "escopo", "situacao"]);
+        if (dif) { await hist("AGENDA", id1, adiou ? "adiou" : v.situacao === "EM_ANDAMENTO" && atual.situacao !== "EM_ANDAMENTO" ? "iniciou" : "alterou", v.titulo, dif); await avisarMudanca(env, k, orgId, { ...v, id: id1 }, adiou ? "adiado" : "alterado", euP, ms); }
         return json({ ok: true });
       }
-      if (metodo === "DELETE") { await env.DB.prepare("DELETE FROM adm_agenda WHERE id=? AND org_id=?").bind(id1, orgId).run(); return json({ ok: true }); }
+      if (metodo === "DELETE") { await env.DB.prepare("DELETE FROM adm_agenda WHERE id=? AND org_id=?").bind(id1, orgId).run(); await hist("AGENDA", id1, "excluiu", atual.titulo, `era ${br(atual.data)}${atual.hora ? " " + atual.hora : ""}`); await avisarMudanca(env, k, orgId, atual, "cancelado", euP, ms); return json({ ok: true }); }
     }
   }
 
@@ -1452,7 +1502,7 @@ export async function adminDoCron(env, k) {
   const email = Boolean(k.emailConfigurado && k.emailConfigurado());
   const cfgDe = async orgId => (await env.DB.prepare("SELECT * FROM adm_config WHERE org_id=?").bind(orgId).first()) || {};
   // Para onde vai o aviso: o responsável (se houver) e os e-mails da administração; Telegram do grupo; WhatsApp por modelo aprovado.
-  const avisar = async (orgId, assunto, texto, responsavelId, params) => {
+  const avisar = async (orgId, assunto, texto, responsavelId, params, opc = {}) => {
     const c = await cfgDe(orgId); let n = 0;
     if (email && c.aviso_email !== 0) {
       const lista = String(c.emails || "").split(/,\s*/).filter(Boolean);
@@ -1461,7 +1511,8 @@ export async function adminDoCron(env, k) {
       for (const e of para) if (await k.enviarEmail(e, assunto, texto)) n++;
     }
     if (c.aviso_telegram !== 0 && k.avisarTelegram) { if (await k.avisarTelegram(orgId, `🔔 ${assunto}\n${texto}`).catch(() => false)) n++; }
-    if (c.zap_modelo && c.zap_numeros && k.enviarModeloZap) for (const tel of String(c.zap_numeros).split(",").filter(Boolean)) if (await k.enviarModeloZap(orgId, tel, c.zap_modelo, c.zap_idioma || "pt_BR", params).catch(() => false)) n++;
+    if (!opc.semZap && opc.zap && k.zapEquipe) n += await avisarPessoasZap(env, k, orgId, opc.zap.item, opc.zap.texto, params, ms).catch(() => 0);
+    if (!opc.semZap && c.zap_modelo && c.zap_numeros && k.enviarModeloZap) for (const tel of String(c.zap_numeros).split(",").filter(Boolean)) if (await k.enviarModeloZap(orgId, tel, c.zap_modelo, c.zap_idioma || "pt_BR", params).catch(() => false)) n++;
     return n;
   };
   // Compromisso com hora: aviso no horário escolhido (uma vez só). Dia todo: às 8h do dia.
@@ -1473,8 +1524,10 @@ export async function adminDoCron(env, k) {
     if (agoraMin < inicio - avisoMin * 60000 || agoraMin > inicio + 30 * 60000) continue;
     await env.DB.prepare("UPDATE adm_agenda SET avisado_ms=? WHERE id=?").bind(ms, a.id).run();
     const quando = `${br(a.data)}${a.hora ? " às " + a.hora : " (dia todo)"}`;
-    const texto = `${a.titulo}\n${quando}${a.local ? "\nLocal: " + a.local : ""}${a.quem ? "\nCom: " + a.quem : ""}${a.obs ? "\n\n" + a.obs : ""}${k.base ? `\n\nAgenda: ${k.base}/app#/admin/agenda` : ""}`;
-    out.avisos += await avisar(a.org_id, `Lembrete: ${a.titulo}${a.hora ? " às " + a.hora : ""}`, texto, a.responsavel_id, [a.titulo, quando]);
+    const prio = prioridadeValida(a.prioridade), selo = prio === "EXTREMA" ? "🚨 EXTREMA IMPORTÂNCIA — " : prio === "ALTA" ? "⚠️ Prioridade alta — " : "";
+    const texto = `${selo}${a.titulo}\n${quando}${a.local ? "\nLocal: " + a.local : ""}${a.quem ? "\nCom: " + a.quem : ""}${a.obs ? "\n\n" + a.obs : ""}${k.base ? `\n\nAgenda: ${k.base}/app#/admin/agenda` : ""}`;
+    const zapTxt = `🔔 ${selo ? "*" + selo.replace(/ — $/, "") + "*\n" : ""}*Lembrete${a.tipo === "LEMBRETE" ? "" : " de compromisso"}*: ${a.titulo}\n${quando}${a.local ? "\nLocal: " + a.local : ""}${a.obs ? "\n" + a.obs : ""}\n\nResponda OK quando concluir. [C${a.id}]`;
+    out.avisos += await avisar(a.org_id, `${selo ? selo.replace(/ — $/, ": ") : "Lembrete: "}${a.titulo}${a.hora ? " às " + a.hora : ""}`, texto, a.responsavel_id, [`${prio === "EXTREMA" ? "URGENTE: " : ""}${a.titulo}`, quando], { zap: { item: { tipo: "C", id: a.id, responsavel_id: a.responsavel_id }, texto: zapTxt } });
   }
   // Tarefas: no dia do prazo e no dia de cobrar retorno (uma vez por dia).
   if (hora >= 8) {
@@ -1482,7 +1535,9 @@ export async function adminDoCron(env, k) {
     for (const x of tf) {
       await env.DB.prepare("UPDATE adm_tarefas SET avisado=? WHERE id=?").bind(hoje, x.id).run();
       const motivo = x.acompanhar_em === hoje ? "Cobrar retorno hoje" : "Prazo hoje";
-      out.avisos += await avisar(x.org_id, `${motivo}: ${x.titulo}`, `${x.titulo}\n${motivo}.${x.obs ? "\n\n" + x.obs : ""}${k.base ? `\n\nTarefas: ${k.base}/app#/admin/tarefas` : ""}`, x.responsavel_id, [x.titulo, motivo]);
+      const p0 = prioridadeValida(x.prioridade), sel = p0 === "EXTREMA" ? "🚨 " : p0 === "ALTA" ? "⚠️ " : "";
+      out.avisos += await avisar(x.org_id, `${sel}${motivo}: ${x.titulo}`, `${x.titulo}\n${motivo}.${x.obs ? "\n\n" + x.obs : ""}${k.base ? `\n\nTarefas: ${k.base}/app#/admin/tarefas` : ""}`, x.responsavel_id, [x.titulo, motivo.toLowerCase()],
+        { zap: { item: { tipo: "T", id: x.id, responsavel_id: x.responsavel_id }, texto: `${sel}📝 *${motivo}*: ${x.titulo}${x.obs ? "\n" + x.obs : ""}\n\nResponda OK quando concluir ou ADIAR T${x.id} amanhã. [T${x.id}]` } });
     }
   }
   // Resumo do dia no horário escolhido (e-mail e Telegram).
@@ -1495,7 +1550,10 @@ export async function adminDoCron(env, k) {
       if (!tem) continue; // dia vazio: não manda aviso à toa
       const emp = (await env.DB.prepare("SELECT nome FROM plt_organizacoes WHERE id=?").bind(c.org_id).first().catch(() => null))?.nome || "";
       const moeda = (await env.DB.prepare("SELECT moeda FROM fin_config WHERE org_id=?").bind(c.org_id).first().catch(() => null))?.moeda || "BRL";
-      const texto = textoDoDia(d, emp, moeda) + (k.base ? `\n\nAbrir o painel: ${k.base}/app#/admin/hoje` : "");
+      // A mesma agenda organizada do WhatsApp (horários, sem horário, prioridades, responsáveis, contas) + o resto do dia.
+      const dz = await itensDoDia(env, c.org_id, hoje, hoje, { fin: true, finDias: c.aviso_fin_dias ?? 2 });
+      const extras = textoDoDia({ ...d, agenda: [], contas: [], tarefas: [] }, emp, moeda).split("\n").slice(2).join("\n").replace("Nada pendente para hoje. 🙂", "").trim();
+      const texto = textoDoDiaEquipe(dz, { empresa: emp, moeda, hoje, rodape: false }).replace(/\*/g, "") + (extras ? "\n\n" + extras : "") + (k.base ? `\n\nAbrir o painel: ${k.base}/app#/admin/hoje` : "");
       if (email && c.aviso_email !== 0) {
         const lista = String(c.emails || "").split(/,\s*/).filter(Boolean);
         for (const para of lista.length ? lista : await k.responsaveis(c.org_id)) if (await k.enviarEmail(para, `DENIA — seu dia ${br(hoje)}${emp ? " (" + emp + ")" : ""}`, texto)) out.resumos++;
@@ -1503,6 +1561,8 @@ export async function adminDoCron(env, k) {
       if (c.aviso_telegram !== 0 && k.avisarTelegram && await k.avisarTelegram(c.org_id, "☀️ " + texto).catch(() => false)) out.resumos++;
     } catch (e) { console.error("adm resumo", c.org_id, e?.message); }
   }
+  // Agenda da equipe pelo WhatsApp: lembrete na hora, contas, manhã, meio-dia, fim do dia e repetições.
+  try { Object.assign(out, await cronAgendaEquipe(env, k, avisar)); } catch (e) { console.error("agenda equipe", e?.message); }
   return out;
 }
 
