@@ -60,7 +60,7 @@ export async function acessoOrg(env, orgId, agora) {
 }
 // Qual recurso cada área do painel exige (null = livre para todas as empresas).
 export function recursoDaRota(resto, metodo) {
-  if (/^(plano|membros|auditoria)(\/|$)/.test(resto) || resto === "ia/chave" && metodo === "GET") return "LIVRE";
+  if (/^(plano|membros|auditoria|apresentacao)(\/|$)/.test(resto) || resto === "ia/chave" && metodo === "GET") return "LIVRE";
   if (resto.startsWith("engine/") || (resto === "integracao" && metodo === "POST")) return "ia_completa";
   if (resto === "zap" || resto.startsWith("zap/")) return "chatbot";
   if (resto.startsWith("mk/voz") || resto.startsWith("assistente/ao-vivo")) return "voz";

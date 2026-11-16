@@ -258,6 +258,7 @@
     relatorios: { titulo: "Relatórios", render: paginaRelatorios },
     financeiro: { titulo: "Financeiro", render: paginaFinanceiro },
     admin: { titulo: "Administração", render: paginaAdmin },
+    apresentacao: { titulo: "Apresentação da DENIA", render: paginaApresentacao },
     conversas: { titulo: "Conversas", render: paginaConversas },
     atendimentos: { titulo: "Pedidos de serviço", render: paginaAtendimentos },
     profissionais: { titulo: "Profissionais parceiros", render: paginaProfissionais },
@@ -3372,11 +3373,11 @@ Botão só com texto = resposta.` })),
 
   // ----- Plano e pagamento: teste grátis, planos (mensal/anual), assinatura (Pix, boleto, cartão) e histórico.
   const RECURSO_DA_ROTA = {
-    rotina: null, ajuda: null, financeiro: null, admin: null, conversas: "ia_completa", atendimentos: "ia_completa", profissionais: "ia_completa", treinamento: "ia_completa", aprendizados: "ia_completa", clientes: "ia_completa", whatsapp: "ia_completa", guia: "ia_completa",
+    rotina: null, ajuda: null, financeiro: null, admin: null, apresentacao: null, conversas: "ia_completa", atendimentos: "ia_completa", profissionais: "ia_completa", treinamento: "ia_completa", aprendizados: "ia_completa", clientes: "ia_completa", whatsapp: "ia_completa", guia: "ia_completa",
     chatbot: "chatbot", temporada: "temporada", estudio: "marketing", midias: "marketing", calendario: "marketing", aprovacoes: "marketing", marcas: "marketing", instagram: "marketing", facebook: "marketing", google: "marketing", social: "marketing", denia: "voz"
   };
   window.DENIA_RECURSOS = window.DENIA_RECURSOS || { chatbot: "Chatbot do WhatsApp com botões e listas", chatbot_ia: "IA no chatbot", ia_completa: "IA completa de atendimento (atende como uma pessoa, com memória)", marketing: "Instagram, Facebook e Google: posts, artes, comentários e avaliações", voz: "DENIA por voz, ao vivo", multiempresa: "Várias empresas, marcas e unidades", temporada: "Locação por temporada" };
-  const ROTAS_LIVRES = ["plano", "conta", "equipe", "auditoria", "empresas", "contatos", "painel", "integracoes", "consumo", "problemas", "relatorios", "rotina", "ajuda", "financeiro", "admin"];
+  const ROTAS_LIVRES = ["plano", "conta", "equipe", "auditoria", "empresas", "contatos", "painel", "integracoes", "consumo", "problemas", "relatorios", "rotina", "ajuda", "financeiro", "admin", "apresentacao"];
   const acessoAtual = () => (estado.org && estado.org.acesso) || { liberado: true, recursos: [], status: "?" };
   const temRecurso = r => !r || estado.eu.usuario.super_admin || (acessoAtual().liberado && (acessoAtual().recursos || []).includes(r));
   const NOME_STATUS_PLANO = { TESTE: "Teste grátis", ATIVO: "Ativo", ATRASADO: "Pagamento pendente", CANCELADO: "Cancelado (usa até o fim do período)", CORTESIA: "Cortesia — acesso total", BLOQUEADO: "Bloqueado", TESTE_ACABOU: "Teste encerrado" };
@@ -3607,16 +3608,18 @@ Botão só com texto = resposta.` })),
     if (!b) return;
     const nav = $("lateral-nav");
     const visiveis = [...nav.querySelectorAll("a")].filter(a => !a.classList.contains("fora") && !a.classList.contains("oculto") && !a.dataset.voltar);
-    const item = (a, rotulo) => { const x = h("a", { href: a.getAttribute("href"), class: "barra-app-item" + (a.classList.contains("ativo") ? " ativo" : "") }); const ic = a.querySelector("svg, .canal-ic"); x.append(ic ? ic.cloneNode(true) : svgIc(IC.lista), h("span", { text: rotulo || a.textContent.replace("›", "").trim().split(" (")[0] })); return x; };
+    // Nome do item sem o número de avisos nem a seta (senão vira "Google0").
+    const nomeDe = a => { const c = a.cloneNode(true); c.querySelectorAll(".contador, .seta, b, i").forEach(x => x.remove()); return c.textContent.trim(); };
+    const item = (a, rotulo) => { const x = h("a", { href: a.getAttribute("href"), class: "barra-app-item" + (a.classList.contains("ativo") ? " ativo" : "") }); const ic = a.querySelector("svg, .canal-ic"); x.append(ic ? ic.cloneNode(true) : svgIc(IC.lista), h("span", { text: rotulo || nomeDe(a).split(" (")[0] })); return x; };
     const botaoItem = (ic, rotulo, fn, ativo) => h("button", { type: "button", class: "barra-app-item" + (ativo ? " ativo" : ""), onclick: fn }, svgIc(ic), h("span", { text: rotulo }));
     if (modo) {
       const primeiros = visiveis.slice(0, 4), resto = visiveis.slice(4);
       const curto = { "Desempenho do atendimento": "Desempenho", "Pedidos de serviço": "Pedidos", "Profissionais parceiros": "Profissionais", "Entregas das mensagens": "Entregas", "Palavras-chave e posição": "Palavras", "Pré-análise de empresas": "Pré-análise", "Mapa de posição": "Mapa", "Avaliações ruins (triagem)": "Ruins", "Posts no perfil": "Posts", "Calendário e criação com IA": "Calendário", "Visão geral (todos os perfis)": "Visão", "Custos da Meta": "Custos", "Número, qualidade e custos": "Número", "Visão geral e evolução": "Visão", "Mensagens dos hóspedes": "Mensagens", "Calendário e preços": "Calendário", "Desempenho e cliques": "Desempenho", "Estúdio de criação": "Estúdio", "Calendário de posts": "Calendário", "Visão do chatbot": "Visão", "Métricas de atendimento": "Métricas", "Avaliações 1★ (triagem)": "1 estrela", "Imóveis (todos)": "Imóveis", "Conexões e idiomas": "Conexões", "Palavras-chave e buscas": "Palavras", "Relatório semanal": "Relatório", "Posicionamento no Google": "Posição", "Google orgânico (SEO)": "SEO", "Concorrentes no Maps": "Concorrentes", "Clientes e etiquetas": "Clientes", "Modelos de mensagem": "Modelos", "Saúde do número": "Saúde", "Respostas rápidas": "Rápidas", "Perfil comercial": "Perfil", "Melhores horários": "Horários", "Recomendações": "Avaliações", "Melhorias e manutenção": "Melhorias", "Inventário e checklist": "Inventário", "Avaliações dos hóspedes": "Avaliações", "Agenda e compromissos": "Agenda", "Banco e caixa": "Banco", "Aluguéis e locatários": "Aluguéis", "Manutenção e obrigações": "Manutenção", "Documentos e validades": "Documentos", "Relatório do mês": "Relatório", "Ajustes e importação": "Ajustes", "O dia": "Hoje", "Todas as empresas": "Empresas", "Agenda de todas as empresas": "Todas", "Locação por temporada": "Temporada" };
-      b.replaceChildren(...primeiros.map(a => { const t = a.textContent.replace("›", "").trim(); return item(a, curto[t] || t.split(" ")[0]); }), botaoItem(IC.mais, "Mais", () => maisDoModo(modo, resto), resto.some(a => a.classList.contains("ativo"))));
+      b.replaceChildren(...primeiros.map(a => { const t = nomeDe(a); return item(a, curto[t] || t.split(" ")[0]); }), botaoItem(IC.mais, "Mais", () => maisDoModo(modo, resto), resto.some(a => a.classList.contains("ativo"))));
     } else {
       const entra = m => nav.querySelector(`[data-entra="${m}"]`);
       const lista = [nav.querySelector('a[data-rota="painel"]'), entra("whatsapp"), temRecurso("temporada") ? entra("temporada") : entra("instagram"), entra("google")].filter(a => a && !a.classList.contains("oculto"));
-      b.replaceChildren(...lista.map(a => item(a, a.textContent.replace("›", "").replace("Locação por temporada", "Temporada").trim())), botaoItem(IC.menu, "Menu", () => abrirMenuLateral(), false));
+      b.replaceChildren(...lista.map(a => item(a, nomeDe(a).replace("Locação por temporada", "Temporada"))), botaoItem(IC.menu, "Menu", () => abrirMenuLateral(), false));
       // Número vermelho de Problemas também no botão Menu do celular.
       const cp = $("contador-problemas"), menuB = b.lastElementChild;
       if (cp && menuB) menuB.appendChild(h("b", { class: "contador contador-alerta barra-contador" + (cp.classList.contains("oculto") ? " oculto" : ""), id: "contador-barra", text: cp.textContent }));
@@ -7954,6 +7957,165 @@ Botão só com texto = resposta.` })),
         h("section", { class: "cartao vidro" }, h("h3", { style: "margin:0 0 6px", text: "Trazer da Central Administrativa" }),
           h("p", { class: "sub", text: "Importe o arquivo .json da Central: lojistas, cobranças, contas, recebimentos, movimentos, obrigações, serviços, agenda, documentos e o saldo do banco. Cada empresa da Central vira uma empresa na DENIA." }),
           arquivo, h("div", { class: "acoes" }, botao("Importar arquivo .json", () => arquivo.click(), "btn-primario")))));
+  }
+
+  // ---------------------------------------------------------------------------
+  // Apresentação da DENIA: vídeo narrado (cenas animadas + voz da IA + legendas), em português, inglês e espanhol.
+  // O roteiro e a narração vêm do servidor (gerada uma vez, guardada); sem a chave da OpenAI, passa com legendas.
+  // ---------------------------------------------------------------------------
+  const APR_UI = {
+    "pt-BR": { titulo: "Apresentação da DENIA", sub: "Um vídeo narrado de cerca de 4 minutos sobre tudo o que a DENIA faz pelas empresas. Ideal para mostrar a clientes e parceiros.", tocar: "Assistir", pausar: "Pausar", continuar: "Continuar", ant: "Cena anterior", prox: "Próxima cena", som: "Som", semSom: "Sem som", tela: "Tela cheia", denovo: "Assistir de novo", idioma: "Idioma", carregando: "Preparando a narração…", semVoz: "Narração indisponível agora: a apresentação segue com legendas.", exemplo: "Exemplo ilustrativo", legendas: "Legendas" },
+    en: { titulo: "DENIA presentation", sub: "A narrated video of about 4 minutes on everything DENIA does for companies. Ideal to show clients and partners.", tocar: "Watch", pausar: "Pause", continuar: "Resume", ant: "Previous scene", prox: "Next scene", som: "Sound", semSom: "Muted", tela: "Full screen", denovo: "Watch again", idioma: "Language", carregando: "Preparing the narration…", semVoz: "Narration unavailable right now: the presentation continues with captions.", exemplo: "Illustrative example", legendas: "Captions" },
+    es: { titulo: "Presentación de DENIA", sub: "Un video narrado de unos 4 minutos sobre todo lo que DENIA hace por las empresas. Ideal para mostrar a clientes y socios.", tocar: "Ver", pausar: "Pausar", continuar: "Continuar", ant: "Escena anterior", prox: "Escena siguiente", som: "Sonido", semSom: "Silencio", tela: "Pantalla completa", denovo: "Ver de nuevo", idioma: "Idioma", carregando: "Preparando la narración…", semVoz: "Narración no disponible ahora: la presentación sigue con subtítulos.", exemplo: "Ejemplo ilustrativo", legendas: "Subtítulos" }
+  };
+  const aprEstado = { idioma: null, audio: null };
+  window.addEventListener("hashchange", () => { if (aprEstado.audio && !/^#\/apresentacao/.test(location.hash)) { aprEstado.audio.pause(); aprEstado.audio = null; } });
+
+  // Desenho de cada cena (só HTML e CSS; as animações entram em sequência).
+  function cenaApr(c, t, idioma) {
+    const d = (ms, el) => { el.style.animationDelay = ms + "ms"; return el; };
+    const pontos = (lista, ini = 900, passo = 1400) => h("ul", { class: "apr-pontos" }, (lista || []).map((p0, i) => d(ini + i * passo, h("li", { class: "apr-entra" }, h("i", { class: "apr-check", text: "✓" }), h("span", { text: p0 })))));
+    const cab = (extra) => h("div", { class: "apr-cab" }, d(100, h("h2", { class: "apr-entra apr-h2", text: c.titulo })), c.subtitulo ? d(350, h("p", { class: "apr-entra apr-sub", text: c.subtitulo })) : null, extra || null);
+    const exemplo = h("span", { class: "apr-exemplo", text: t.exemplo });
+    const v = c.visual;
+    if (v === "abertura" || v === "final") {
+      const modulos = { "pt-BR": ["Atendimento", "Marketing", "Reputação", "Temporada", "Administração", "Finanças"], en: ["Customer service", "Marketing", "Reputation", "Short-term rentals", "Management", "Finance"], es: ["Atención", "Marketing", "Reputación", "Alquiler temporario", "Administración", "Finanzas"] }[idioma];
+      return h("div", { class: "apr-cena apr-centro" }, h("div", { class: "apr-orbe" }), d(200, h("div", { class: "apr-entra apr-logo", text: "DENIA" })), d(900, h("p", { class: "apr-entra apr-slogan", text: c.subtitulo })),
+        h("div", { class: "apr-modulos" }, modulos.map((m, i) => d((v === "final" ? 1600 : 3200) + i * 450, h("span", { class: "apr-entra apr-chip", text: m })))),
+        c.chamada ? d(2600, h("p", { class: "apr-entra apr-dominio", text: c.chamada })) : null);
+    }
+    const lado = h("div", { class: "apr-visual" });
+    if (v === "atendimento") {
+      const conv = { "pt-BR": [["c", "Oi! Vocês consertam notebook hoje?"], ["d", "Olá, Marina! Consertamos sim. Posso agendar a avaliação para hoje às 15h?"], ["c", "Pode, perfeito."], ["d", "Agendado para hoje às 15h. Te mando um lembrete 1 hora antes. 😊"]],
+        en: [["c", "Hi! Can you repair a laptop today?"], ["d", "Hello, Marina! Yes, we can. Shall I book the assessment for today at 3 p.m.?"], ["c", "Yes, perfect."], ["d", "Booked for today at 3 p.m. I'll send you a reminder 1 hour before. 😊"]],
+        es: [["c", "¡Hola! ¿Reparan notebooks hoy?"], ["d", "¡Hola, Marina! Sí. ¿Agendo la evaluación para hoy a las 15 h?"], ["c", "Sí, perfecto."], ["d", "Agendado para hoy a las 15 h. Te envío un recordatorio 1 hora antes. 😊"]] }[idioma];
+      lado.append(h("div", { class: "apr-celular" }, h("div", { class: "apr-cel-topo", text: "WhatsApp" }), ...conv.map(([q, txt], i) => d(1200 + i * 2200, h("div", { class: `apr-entra apr-bolha ${q === "d" ? "apr-bolha-denia" : ""}` }, txt, q === "d" ? h("small", { text: " ✓✓" }) : null)))));
+    } else if (v === "marketing") {
+      const dias = { "pt-BR": ["Seg", "Ter", "Qua", "Qui", "Sex"], en: ["Mon", "Tue", "Wed", "Thu", "Fri"], es: ["Lun", "Mar", "Mié", "Jue", "Vie"] }[idioma];
+      lado.append(h("div", { class: "apr-posts" }, [["#7c3aed", "#2563eb"], ["#db2777", "#f59e0b"], ["#0d9488", "#2563eb"]].map(([a0, b0], i) => d(800 + i * 700, h("div", { class: "apr-entra apr-post" }, h("div", { class: "apr-post-img", style: `background:linear-gradient(135deg,${a0},${b0})` }, h("b", { text: ["Instagram", "Facebook", "Google"][i] })), h("i"), h("i", { class: "curta" }))))),
+        h("div", { class: "apr-semana" }, dias.map((dd, i) => d(2600 + i * 300, h("span", { class: "apr-entra" }, h("b", { text: dd }), h("i", { class: "apr-ponto" }))))));
+    } else if (v === "google") {
+      const rev = { "pt-BR": ["Atendimento excelente, resolveram no mesmo dia!", "Obrigado pela confiança! Ficamos felizes em resolver tão rápido. Até a próxima!"], en: ["Excellent service, they fixed it the same day!", "Thank you for your trust! We're glad we could solve it so quickly. See you next time!"], es: ["¡Excelente atención, lo resolvieron el mismo día!", "¡Gracias por tu confianza! Nos alegra haberlo resuelto tan rápido. ¡Hasta la próxima!"] }[idioma];
+      lado.append(h("div", { class: "apr-nota" }, d(600, h("b", { class: "apr-entra", text: "4,9" })), d(900, h("span", { class: "apr-entra apr-estrelas", text: "★★★★★" }))),
+        d(1600, h("div", { class: "apr-entra apr-bolha" }, rev[0])), d(3400, h("div", { class: "apr-entra apr-bolha apr-bolha-denia" }, rev[1])),
+        h("div", { class: "apr-barras" }, Array.from({ length: 18 }, (_, i) => d(4200 + i * 90, h("i", { class: "apr-cresce", style: `height:${30 + Math.round(55 * Math.abs(Math.sin(i * 0.6 + 1)) + i * 1.2)}%` })))), exemplo);
+    } else if (v === "temporada") {
+      const canais = [["Airbnb", "#ff5a5f"], ["Booking.com", "#003b95"], ["Vrbo", "#1e64c8"]];
+      const imoveis = { "pt-BR": ["Apto Copacabana", "Casa Búzios", "Studio Ipanema"], en: ["Copacabana apt.", "Búzios house", "Ipanema studio"], es: ["Depto. Copacabana", "Casa Búzios", "Estudio Ipanema"] }[idioma];
+      const reservas = [[0, 1, 4], [0, 7, 11], [1, 0, 6], [1, 9, 13], [2, 3, 8], [2, 10, 13]];
+      lado.append(h("div", { class: "apr-cal" }, imoveis.map((im, r0) => h("div", { class: "apr-cal-linha" }, h("span", { text: im }), h("div", { class: "apr-cal-dias" },
+        ...reservas.filter(x => x[0] === r0).map(([, a0, b0], j) => { const cn = canais[(r0 + j) % 3]; return d(900 + (r0 * 2 + j) * 500, h("i", { class: "apr-entra apr-res", style: `left:${a0 / 14 * 100}%;width:${(b0 - a0) / 14 * 100}%;background:${cn[1]}`, title: cn[0] })); }))))),
+        h("div", { class: "apr-leg" }, canais.map(([n0, cor]) => h("span", {}, h("i", { style: `background:${cor}` }), n0))));
+    } else if (v === "admin") {
+      const frase = { "pt-BR": "vistoria terça às 10h", en: "inspection Tuesday at 10am", es: "inspección el martes a las 10 h" }[idioma];
+      const ok = { "pt-BR": ["Vistoria", "terça · 10:00", "Aviso para o responsável"], en: ["Inspection", "Tuesday · 10:00", "Alert sent to the person in charge"], es: ["Inspección", "martes · 10:00", "Aviso al responsable"] }[idioma];
+      const campo0 = h("div", { class: "apr-digita" }, h("span", { class: "apr-cursor" }));
+      lado.append(campo0, d(3600, h("div", { class: "apr-entra apr-evento" }, h("b", { text: ok[0] }), h("span", { text: ok[1] }), h("small", { text: "🔔 " + ok[2] }))),
+        h("div", { class: "apr-semana apr-semana-g" }, Array.from({ length: 7 }, (_, i) => d(4400 + i * 120, h("span", { class: "apr-entra" + (i === 1 ? " marcado" : "") })))));
+      let k0 = 0; const escrever = () => { if (!campo0.isConnected) return; if (k0 <= frase.length) { campo0.firstChild && campo0.firstChild.nodeType === 3 ? campo0.firstChild.textContent = frase.slice(0, k0) : campo0.prepend(document.createTextNode(frase.slice(0, k0))); k0++; setTimeout(escrever, 70); } };
+      setTimeout(escrever, 1200);
+    } else if (v === "financeiro") {
+      const rot = { "pt-BR": ["Entrou", "Saiu", "Resultado", "Saldo no banco"], en: ["In", "Out", "Result", "Bank balance"], es: ["Entró", "Salió", "Resultado", "Saldo en banco"] }[idioma];
+      const fmt = new Intl.NumberFormat(idioma === "en" ? "en-US" : idioma === "es" ? "es-ES" : "pt-BR", { style: "currency", currency: idioma === "en" ? "USD" : idioma === "es" ? "EUR" : "BRL", maximumFractionDigits: 0 });
+      const vals = [184300, 151750, 32550, 96420];
+      lado.append(h("div", { class: "apr-kpis" }, rot.map((r0, i) => d(800 + i * 500, h("div", { class: "apr-entra apr-kpi" }, h("small", { text: r0 }), h("b", { "data-alvo": vals[i], text: fmt.format(0) }))))),
+        h("div", { class: "apr-barras apr-barras-fin" }, Array.from({ length: 12 }, (_, i) => d(3000 + i * 120, h("i", { class: "apr-cresce", style: `height:${40 + Math.round(35 * Math.abs(Math.sin(i * 0.8)) + i * 2)}%` })))), exemplo);
+      setTimeout(() => lado.querySelectorAll("[data-alvo]").forEach(b0 => { const alvo = Number(b0.dataset.alvo), t0 = performance.now(); const passo = now => { if (!b0.isConnected) return; const f = Math.min(1, (now - t0) / 1800); b0.textContent = fmt.format(Math.round(alvo * (1 - Math.pow(1 - f, 3)))); if (f < 1) requestAnimationFrame(passo); }; requestAnimationFrame(passo); }), 1000);
+    } else if (v === "voz") {
+      const mic = h("div", { class: "apr-mic" }); mic.appendChild(svgIc('<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3M9 21h6"/>'));
+      lado.append(h("div", { class: "apr-voz" }, d(400, h("div", { class: "apr-entra" }, mic)), h("div", { class: "apr-onda" }, Array.from({ length: 28 }, (_, i) => h("i", { style: `animation-delay:${(i % 7) * 120}ms` })))));
+      const pedidos = { "pt-BR": ["“Crie os posts da semana.”", "“Como foi o atendimento de ontem?”", "“Marque uma reunião sexta às 14h.”"], en: ["“Create this week's posts.”", "“How did yesterday's customer service go?”", "“Book a meeting on Friday at 2 p.m.”"], es: ["“Crea las publicaciones de la semana.”", "“¿Cómo fue la atención de ayer?”", "“Agenda una reunión el viernes a las 14 h.”"] }[idioma];
+      return h("div", { class: "apr-cena apr-dupla" }, h("div", {}, cab(), h("div", { class: "apr-pedidos" }, pedidos.map((x, i) => d(2500 + i * 3200, h("div", { class: "apr-entra apr-bolha apr-bolha-voz", text: x }))))), lado);
+    } else if (v === "global") {
+      lado.append(h("div", { class: "apr-chips" }, ["Português", "English", "Español", "Deutsch", "Italiano", "Français", "日本語", "हिन्दी"].map((l0, i) => d(900 + i * 350, h("span", { class: "apr-entra apr-chip", text: l0 })))),
+        h("div", { class: "apr-chips" }, ["R$", "US$", "€", "£", "MX$", "¥"].map((m0, i) => d(4000 + i * 250, h("span", { class: "apr-entra apr-chip apr-chip-moeda", text: m0 })))),
+        h("div", { class: "apr-chips" }, ["UTC−3", "UTC−5", "UTC+0", "UTC+1", "UTC+9", "UTC+5:30"].map((z, i) => d(6000 + i * 250, h("span", { class: "apr-entra apr-chip", text: z })))));
+    } else if (v === "seguranca") {
+      const esc = h("div", { class: "apr-entra apr-escudo" }); esc.appendChild(svgIc('<path d="M12 2.5 4 5.5v6c0 5 3.4 8.9 8 10 4.6-1.1 8-5 8-10v-6z"/><path d="m8.5 12 2.4 2.4 4.6-4.8"/>'));
+      lado.append(d(500, esc));
+    }
+    return h("div", { class: "apr-cena apr-dupla" }, h("div", {}, cab(), pontos(c.pontos)), lado);
+  }
+
+  async function paginaApresentacao(el, _p, vivo) {
+    const idioma = aprEstado.idioma = aprEstado.idioma || (APR_UI[IDIOMA] ? IDIOMA : (IDIOMA === "pt-BR" ? "pt-BR" : "en"));
+    const t = APR_UI[idioma];
+    const r = await org(`apresentacao?idioma=${encodeURIComponent(idioma)}`);
+    if (!vivo()) return;
+    const cenas = r.cenas;
+    let atual = 0, tocando = false, mudo = false, semVoz = false, timer = null, inicioMs = 0, decorrido = 0, durTexto = 0;
+    const palco = h("div", { class: "apr-palco", tabindex: "0", role: "region", "aria-label": t.titulo });
+    const camada = h("div", { class: "apr-camada" });
+    const legenda = h("div", { class: "apr-legenda", "aria-live": "polite" });
+    const centro = h("button", { type: "button", class: "apr-play-grande", "aria-label": t.tocar }, "▶");
+    const barra = h("div", { class: "apr-progresso" }, cenas.map((c, i) => h("button", { type: "button", class: "apr-seg", title: c.titulo, "aria-label": c.titulo, onclick: () => irCena(i, true) }, h("i"))));
+    const bPlay = h("button", { type: "button", class: "apr-btn", "aria-label": t.tocar, onclick: () => tocando ? pausar() : tocar() }, "▶");
+    const bSom = h("button", { type: "button", class: "apr-btn", "aria-label": t.som, onclick: () => { mudo = !mudo; if (aprEstado.audio) aprEstado.audio.muted = mudo; bSom.textContent = mudo ? "🔇" : "🔊"; } }, "🔊");
+    const bLeg = h("button", { type: "button", class: "apr-btn ativo", "aria-label": t.legendas, onclick: () => { legenda.classList.toggle("oculto"); bLeg.classList.toggle("ativo"); } }, "CC");
+    const bTela = h("button", { type: "button", class: "apr-btn", "aria-label": t.tela, onclick: () => { const alvo = palco.parentElement; if (document.fullscreenElement) document.exitFullscreen(); else if (alvo.requestFullscreen) alvo.requestFullscreen().catch(() => { }); } }, "⛶");
+    const status = h("span", { class: "apr-status" });
+    const selIdioma = h("select", { class: "entrada", "aria-label": t.idioma, style: "max-width:170px" }, r.idiomas.map(i => h("option", { value: i, text: { "pt-BR": "Português", en: "English", es: "Español" }[i] })));
+    selIdioma.value = idioma;
+    selIdioma.addEventListener("change", () => { parar(); aprEstado.idioma = selIdioma.value; navegar(); });
+    const controles = h("div", { class: "apr-controles" }, h("button", { type: "button", class: "apr-btn", "aria-label": t.ant, onclick: () => irCena(Math.max(0, atual - 1), true) }, "⏮"), bPlay,
+      h("button", { type: "button", class: "apr-btn", "aria-label": t.prox, onclick: () => irCena(Math.min(cenas.length - 1, atual + 1), true) }, "⏭"), status, h("span", { style: "flex:1" }), bLeg, bSom, bTela);
+    const moldura = h("div", { class: "apr-moldura" }, palco, barra, controles);
+    palco.append(camada, legenda, centro);
+    centro.addEventListener("click", () => tocar());
+    palco.addEventListener("keydown", e => { if (e.key === " ") { e.preventDefault(); tocando ? pausar() : tocar(); } if (e.key === "ArrowRight") irCena(Math.min(cenas.length - 1, atual + 1), true); if (e.key === "ArrowLeft") irCena(Math.max(0, atual - 1), true); });
+    el.append(cabeca(t.titulo, t.sub, h("label", { class: "fin-check" }, t.idioma + " ", selIdioma)), moldura);
+
+    // Legenda: a frase da narração que está sendo dita (pela proporção do tempo).
+    const frases = c => (c.narracao.match(/[^.!?]+[.!?]+/g) || [c.narracao]).map(x => x.trim());
+    const mostrarLegenda = (c, fracao) => {
+      const fs = frases(c), total = fs.reduce((a, x) => a + x.length, 0);
+      let acum = 0, alvo = fs[0];
+      for (const f of fs) { acum += f.length; alvo = f; if (acum / total >= fracao) break; }
+      if (legenda.textContent !== alvo) legenda.textContent = alvo;
+    };
+    const urlAudio = n => `/api/orgs/${estado.org.id}/apresentacao/audio?idioma=${encodeURIComponent(idioma)}&cena=${n}`;
+    const preCarregar = n => { if (semVoz || !cenas[n]) return; const a0 = new Audio(); a0.preload = "auto"; a0.src = urlAudio(n); };
+    function desenhar(n) {
+      camada.replaceChildren(cenaApr(cenas[n], t, idioma));
+      barra.querySelectorAll(".apr-seg").forEach((s0, i) => { s0.classList.toggle("feito", i < n); s0.classList.toggle("atual", i === n); s0.firstChild.style.width = i < n ? "100%" : "0%"; });
+      legenda.textContent = "";
+    }
+    function parar() { tocando = false; clearInterval(timer); if (aprEstado.audio) { aprEstado.audio.pause(); aprEstado.audio = null; } }
+    function terminouCena() { if (atual < cenas.length - 1) irCena(atual + 1, true); else { parar(); bPlay.textContent = "↺"; bPlay.setAttribute("aria-label", t.denovo); centro.textContent = "↺"; centro.classList.remove("oculto"); centro.setAttribute("aria-label", t.denovo); atual = -1; } }
+    function progresso(fracao) { const seg = barra.children[atual]; if (seg) seg.firstChild.style.width = Math.min(100, fracao * 100) + "%"; mostrarLegenda(cenas[atual], fracao); }
+    function irCena(n, tocarAgora) {
+      parar();
+      atual = n; desenhar(n);
+      if (tocarAgora) tocar(true);
+    }
+    function tocar(nova) {
+      if (!vivo()) return;
+      if (atual < 0) { atual = 0; desenhar(0); nova = true; }
+      centro.classList.add("oculto");
+      tocando = true; bPlay.textContent = "❚❚"; bPlay.setAttribute("aria-label", t.pausar);
+      const c = cenas[atual];
+      if (!nova && aprEstado.audio) { aprEstado.audio.play().catch(() => { }); return; }
+      if (!nova && semVoz && durTexto) { inicioMs = performance.now() - decorrido; relogioTexto(); return; }
+      if (semVoz) return modoTexto(c);
+      status.textContent = t.carregando;
+      const a0 = new Audio(urlAudio(atual)); a0.muted = mudo; aprEstado.audio = a0;
+      const n0 = atual;
+      a0.addEventListener("timeupdate", () => { if (aprEstado.audio === a0 && a0.duration) progresso(a0.currentTime / a0.duration); });
+      a0.addEventListener("playing", () => { if (aprEstado.audio === a0) status.textContent = `${n0 + 1} / ${cenas.length}`; });
+      a0.addEventListener("ended", () => { if (aprEstado.audio === a0) { progresso(1); setTimeout(() => { if (aprEstado.audio === a0 && tocando) terminouCena(); }, 900); } });
+      a0.addEventListener("error", () => { if (aprEstado.audio !== a0) return; aprEstado.audio = null; semVoz = true; aviso(t.semVoz, "info"); if (tocando) modoTexto(c); });
+      a0.play().catch(() => { /* o navegador pede um toque: o botão grande continua */ if (aprEstado.audio === a0) { tocando = false; bPlay.textContent = "▶"; centro.classList.remove("oculto"); } });
+      preCarregar(atual + 1);
+    }
+    // Sem narração: a cena dura o tempo de leitura da legenda.
+    function modoTexto(c) { durTexto = Math.max(6000, c.narracao.split(/\s+/).length * 400 + 1500); decorrido = 0; inicioMs = performance.now(); relogioTexto(); status.textContent = `${atual + 1} / ${cenas.length}`; }
+    function relogioTexto() {
+      clearInterval(timer);
+      timer = setInterval(() => { if (!vivo() || !tocando) { clearInterval(timer); return; } decorrido = performance.now() - inicioMs; const f = decorrido / durTexto; progresso(f); if (f >= 1) { clearInterval(timer); terminouCena(); } }, 120);
+    }
+    function pausar() { tocando = false; bPlay.textContent = "▶"; bPlay.setAttribute("aria-label", t.continuar); clearInterval(timer); if (aprEstado.audio) aprEstado.audio.pause(); }
+    desenhar(0);
+    preCarregar(0);
   }
 
   function graficoLinha(pontos, comparacao, nomeAtual, nomeComp) {

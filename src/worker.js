@@ -27,13 +27,14 @@ import { comOrgUso, comRecurso, descarregarUso } from "./uso.js";
 import { DDL_TEMPORADA, ALTERS_TEMPORADA, rotasTemporada, icalPublico, webhookChannex, sincronizarTemporada, desligarInadimplentes, lembrarEstoque, limpezaPublica, avaliacoesDoCron } from "./temporada.js";
 import { openaiBruto } from "./marketing.js";
 import { rotasFinanceiro, financeiroDoCron } from "./financeiro.js";
+import { rotasApresentacao } from "./apresentacao.js";
 import { rotasAdmin, adminDoCron, icalAdmin, consolidadoAdmin, agendaGeral, agendaEmTexto } from "./administracao.js";
 import { DDL_PROBLEMAS, rotasProblemas, registrarProblema, resolverProblema, limparProblemas } from "./problemas.js";
 import { DDL_ZAP, webhookZap, rotasZap, webhookTelegram, segredoTelegram, tokenTelegramPlataforma, processarCampanhas, posVendaChatbot, lembrarAgenda, brutoRelatorioZap, avisarTelegramDaEmpresa , enviarModeloZap } from "./zap.js";
 import { montarRelatorio, planilhaRelatorio, textoRelatorio, base64, ultimos7Dias, lerConfigRelatorio, horaDeEnviar, diaBR, dataBR, DIAS_SEMANA, inicioDoDia as inicioDoDiaBR } from "./relatorio.js";
 import { lerPlanos, acessoDa, recursoDaRota, planoMinimo, rotasPlano, webhookAsaas, lembretesDePlano, TESTE_DIAS, STATUS as STATUS_PLANO, PLANOS_PADRAO, RECURSOS } from "./planos.js";
 
-const VERSAO = "3.39.0";
+const VERSAO = "3.40.0";
 // Versão dos Termos de uso e da Política de privacidade aceitas no cadastro.
 const VERSAO_TERMOS = "2026-10-16";
 // WhatsApp da Central de Atendimento (botão flutuante do site).
@@ -1066,6 +1067,7 @@ async function apiOrg(request, env, sessao, orgId, resto, ctx) {
   if (resto.startsWith("engine/")) return proxyEngine(request, env, sessao, orgId, papel, resto.slice(7));
   const kit = { ...kitBase(env), sessao, emSegundoPlano: tarefa => { const t = Promise.resolve().then(tarefa).catch(e => console.error("segundo plano", e?.message)); if (ctx && ctx.waitUntil) ctx.waitUntil(t); return t; } };
   if (resto === "tp" || resto.startsWith("tp/")) return rotasTemporada(request, env, { ...(await kitZap(env, new URL(request.url).origin)), sessao, superAdmin: Boolean(sessao.usuario.super_admin), openai: openaiBruto, acesso: sessao.usuario.super_admin ? { ...acesso, limites: { ...acesso.limites, imoveis: 0 } } : acesso, avisar: async (o, texto) => { for (const para of await responsaveisDa(env, o)) await enviarEmail(env, para, "DENIA — hóspede precisa de você", texto); } }, orgId, papel, resto);
+  if (resto === "apresentacao" || resto.startsWith("apresentacao/")) return (await rotasApresentacao(request, env, { ...kitBase(env), comIA, openai: openaiBruto }, orgId, resto)) || json({ erro: "Rota não encontrada." }, 404);
   if (resto === "adm" || resto.startsWith("adm/")) return rotasAdmin(request, env, { ...kitBase(env), sessao, enviarEmail: (para, assunto, texto, anexos) => enviarEmail(env, para, assunto, texto, anexos), emailConfigurado: () => emailConfigurado(env) }, orgId, papel, resto);
   if (resto === "fin" || resto.startsWith("fin/")) return rotasFinanceiro(request, env, { ...kitBase(env), sessao, comIA, openai: openaiBruto }, orgId, papel, resto);
   if (resto === "problemas" || resto.startsWith("problemas/")) {
