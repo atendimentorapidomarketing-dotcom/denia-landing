@@ -53,7 +53,7 @@ export async function garantirFinanceiro(env) {
   if (prontos.has(env.DB)) return;
   for (const s of DDL_FINANCEIRO) await env.DB.prepare(s).run();
   // Colunas da Administração: conta (banco/caixa), locatário, competência, valor efetivamente pago e centro de custo.
-  for (const c of ["conta_id INTEGER", "locatario_id INTEGER", "competencia TEXT", "valor_pago_cent INTEGER", "centro TEXT", "fora_conta INTEGER"]) await env.DB.prepare("ALTER TABLE fin_lanc ADD COLUMN " + c).run().catch(() => { });
+  for (const c of ["conta_id INTEGER", "locatario_id INTEGER", "competencia TEXT", "valor_pago_cent INTEGER", "centro TEXT", "fora_conta INTEGER", "responsavel_id INTEGER", "prioridade TEXT", "aviso_dias INTEGER", "confirmado_por TEXT", "confirmado_ms INTEGER", "avisado_antes TEXT", "avisado_dia TEXT"]) await env.DB.prepare("ALTER TABLE fin_lanc ADD COLUMN " + c).run().catch(() => { });
   for (const c of ["freq TEXT", "inicio_mes TEXT", "dia_semana INTEGER", "ate_mes TEXT", "forma TEXT", "contato TEXT", "centro TEXT", "conta_id INTEGER"]) await env.DB.prepare("ALTER TABLE fin_recorrente ADD COLUMN " + c).run().catch(() => { });
   for (const s of DDL_FIN_EXTRA) await env.DB.prepare(s).run();
   prontos.add(env.DB);
@@ -323,6 +323,21 @@ export async function rotasFinanceiro(request, env, k, orgId, papel, resto) {
   };
 
   const quem = k.sessao?.usuario?.email || null;
+  const quemNome = k.sessao?.usuario?.nome || quem;
+  // Controle: responsável, prioridade (baixa, normal, alta, extrema) e dias de aviso antes do vencimento.
+  const PRIOS = ["BAIXA", "NORMAL", "ALTA", "EXTREMA"];
+  const gravarControle = async (ids, c) => {
+    if (c.responsavel_id === undefined && c.prioridade === undefined && c.aviso_dias === undefined) return;
+    let resp = c.responsavel_id === undefined ? undefined : Number(c.responsavel_id) || null;
+    if (resp) { const ok = await env.DB.prepare("SELECT 1 FROM plt_membros WHERE org_id=? AND usuario_id=? UNION SELECT 1 FROM plt_usuarios WHERE id=? AND super_admin=1").bind(orgId, resp, resp).first(); if (!ok) resp = null; }
+    const prio = c.prioridade === undefined ? undefined : PRIOS.includes(String(c.prioridade).toUpperCase()) ? String(c.prioridade).toUpperCase() : "NORMAL";
+    const aviso = c.aviso_dias === undefined ? undefined : c.aviso_dias === null || c.aviso_dias === "" ? null : Math.max(0, Math.min(60, Math.round(Number(c.aviso_dias)) || 0));
+    for (const id of ids) {
+      if (resp !== undefined) await env.DB.prepare("UPDATE fin_lanc SET responsavel_id=? WHERE id=? AND org_id=?").bind(resp, id, orgId).run();
+      if (prio !== undefined) await env.DB.prepare("UPDATE fin_lanc SET prioridade=? WHERE id=? AND org_id=?").bind(prio, id, orgId).run();
+      if (aviso !== undefined) await env.DB.prepare("UPDATE fin_lanc SET aviso_dias=?, avisado_antes=NULL WHERE id=? AND org_id=?").bind(aviso, id, orgId).run();
+    }
+  };
   // Histórico: quem fez o quê, quando (não dá para apagar pela tela).
   const registrar = (acao, lancId, detalhe) => env.DB.prepare("INSERT INTO fin_log(org_id,lanc_id,acao,detalhe,por,ms) VALUES(?,?,?,?,?,?)").bind(orgId, lancId || null, acao, re(typeof detalhe === "string" ? detalhe : JSON.stringify(detalhe), 1500), quem, ms).run().catch(() => { });
   // Mês fechado: ninguém altera lançamentos daquele mês até reabrir (com motivo).
@@ -428,6 +443,8 @@ export async function rotasFinanceiro(request, env, k, orgId, papel, resto) {
         await env.DB.prepare("UPDATE fin_lanc SET recorrente_id=?, chave_externa=? WHERE id=?").bind(prim.id, chaveRec(prim, v.data), ids[0]).run().catch(() => { });
         if (freq === "semanal") await gerarRecorrentes(env, orgId, mesDe(v.data), ms);
       }
+      await gravarControle(ids, corpo);
+      if (v.pago) await env.DB.prepare("UPDATE fin_lanc SET confirmado_por=?, confirmado_ms=? WHERE id=?").bind(quemNome, ms, ids[0]).run();
       await registrar("criou", ids[0], { tipo: v.tipo, descricao: v.descricao, valor: v.valor_cent, data: v.data, pago: v.pago, parcelas, freq });
       return json({ ok: true, ids }, 201);
     }
@@ -448,6 +465,7 @@ export async function rotasFinanceiro(request, env, k, orgId, papel, resto) {
       await env.DB.prepare("UPDATE fin_lanc SET pago=?, pago_em=?, forma=COALESCE(?,forma), valor_pago_cent=?, conta_id=COALESCE(?, conta_id), atualizado_ms=? WHERE id=? AND org_id=?")
         .bind(pago, quando, forma, vp !== null && vp > 0 && vp !== atual.valor_cent ? Math.abs(vp) : null, pago && Number(corpo?.conta_id) > 0 ? Number(corpo.conta_id) : !multi && ps && ps[0]?.conta_id ? ps[0].conta_id : null, ms, id, orgId).run();
       await gravarPartes(id, multi ? ps : null);
+      await env.DB.prepare("UPDATE fin_lanc SET confirmado_por=?, confirmado_ms=? WHERE id=?").bind(pago ? quemNome : null, pago ? ms : null, id).run();
       await registrar(pago ? (atual.tipo === "ENTRADA" ? "recebeu" : "pagou") : "desfez pagamento", id, { descricao: atual.descricao, data: quando, forma, valor: vp ?? atual.valor_cent });
       return json({ ok: true });
     }
@@ -460,6 +478,9 @@ export async function rotasFinanceiro(request, env, k, orgId, papel, resto) {
       await env.DB.prepare("UPDATE fin_lanc SET tipo=?,descricao=?,valor_cent=?,categoria=?,data=?,pago=?,pago_em=?,forma=?,contato=?,obs=?,conta_id=?,centro=?,fora_conta=?,atualizado_ms=? WHERE id=? AND org_id=?")
         .bind(v.tipo, v.descricao, v.valor_cent, v.categoria, v.data, v.pago, v.pago_em, v.forma, v.contato, v.obs, v.conta_id, v.centro, v.fora_conta, ms, id, orgId).run();
       if (!v.pago) await gravarPartes(id, null);
+      await gravarControle([id], corpo);
+      if (v.pago && !atual.pago) await env.DB.prepare("UPDATE fin_lanc SET confirmado_por=?, confirmado_ms=? WHERE id=?").bind(quemNome, ms, id).run();
+      else if (!v.pago && atual.pago) await env.DB.prepare("UPDATE fin_lanc SET confirmado_por=NULL, confirmado_ms=NULL WHERE id=?").bind(id).run();
       const mudou = Object.fromEntries(["descricao", "valor_cent", "categoria", "data", "pago", "pago_em", "forma", "contato"].filter(c => String(atual[c] ?? "") !== String(v[c] ?? "")).map(c => [c, [atual[c], v[c]]]));
       await registrar("editou", id, mudou);
       return json({ ok: true });

@@ -1261,3 +1261,13 @@ video.post-arte-img { width:100%; max-height:520px; border-radius:12px; backgrou
 @media (prefers-reduced-motion: reduce) { .apr-entra, .apr-cresce, .apr-cena { animation-duration: .01ms !important; } .apr-onda i, .apr-orbe, .apr-mic { animation: none; } }
 .apr-moldura { margin-bottom: 96px; }
 @media (max-width: 720px) { .apr-moldura { margin-bottom: 120px; } }
+
+/* Agenda inteligente: prioridade (extrema, alta, baixa) */
+.adm-ev.alta { box-shadow: inset 3px 0 0 #d97706; }
+.adm-ev.extrema { box-shadow: inset 3px 0 0 #dc2626; background: rgba(220, 38, 38, .16); font-weight: 600; }
+.selo-prio { display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: .02em; padding: 2px 7px; border-radius: 999px; vertical-align: 2px; white-space: nowrap; }
+.selo-prio.extrema { background: #dc2626; color: #fff; }
+.selo-prio.alta { background: rgba(217, 119, 6, .22); color: #fbbf24; }
+.selo-prio.baixa { background: rgba(100, 116, 139, .16); color: var(--texto-2, #64748b); }
+.prb-item.prio-extrema { border-color: rgba(220, 38, 38, .7); background: rgba(220, 38, 38, .07); }
+.prb-item.prio-alta { border-color: rgba(217, 119, 6, .55); }
