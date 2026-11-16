@@ -737,6 +737,10 @@ const MESES_N = { janeiro: 1, fevereiro: 2, "março": 3, marco: 3, abril: 4, mai
 export function interpretarCompromisso(texto, hoje) {
   let t = ` ${String(texto || "").replace(/\s+/g, " ").trim()} `;
   if (!t.trim()) return { erro: "Escreva o compromisso." };
+  // Horas por extenso ("às dez", "às duas da tarde", "meio-dia") viram números.
+  const EXT = { uma: 1, um: 1, duas: 2, dois: 2, "três": 3, tres: 3, quatro: 4, cinco: 5, seis: 6, sete: 7, oito: 8, nove: 9, dez: 10, onze: 11, doze: 12 };
+  t = t.replace(/\s(?:ao )?meio[- ]dia(?: e meia)?(?=[\s,.!?])/gi, m => /meia/i.test(m) ? " às 12:30" : " às 12h").replace(/\s(?:à |a )?meia[- ]noite(?=[\s,.!?])/gi, " às 0h")
+    .replace(/\s(às|as)\s+(uma|um|duas|dois|três|tres|quatro|cinco|seis|sete|oito|nove|dez|onze|doze)(\s+e\s+meia)?(?=[\s,.!?])/gi, (_, a0, n0, meia) => ` ${a0} ${EXT[n0.toLowerCase()]}${meia ? ":30" : "h"}`);
   let data = null, hora = null, m;
   const tira = re0 => { t = t.replace(re0, " "); };
   // Hora: 14h, 14h30, 14:30, às 9, 9 da manhã, 3 da tarde

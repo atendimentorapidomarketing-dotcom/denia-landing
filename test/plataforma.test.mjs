@@ -4162,3 +4162,26 @@ test("Financeiro — fluxo de caixa de 12 meses, reajuste pelo índice do Banco 
   assert.equal((await ok(F + "/importar-itens", { metodo: "POST", corpo: { itens: lido.itens.filter(x => !x.ja_lancado) } })).novos, 0, "não duplica");
   delete p.env.__agora;
 });
+
+test("Apresentação narrada — roteiro completo nos 3 idiomas, narração gerada uma vez e guardada", async () => {
+  const { CENAS, IDIOMAS_APRESENTACAO } = await import("../src/apresentacao.js");
+  for (const c of CENAS) for (const i of Object.keys(IDIOMAS_APRESENTACAO)) {
+    assert.ok(c[i] && c[i].titulo && c[i].narracao.length > 60, `${c.id} ${i}`);
+    assert.equal((c[i].pontos || []).length, (c["pt-BR"].pontos || []).length, `mesmos pontos em ${c.id} ${i}`);
+    assert.ok(!/\s{2,}|\.\.|\s[,.]/.test(c[i].narracao), `pontuação limpa em ${c.id} ${i}`);
+  }
+  const p = await criarPlataforma();
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  const r = await p.req("/api/orgs/1/apresentacao?idioma=en", { quem: "admin" });
+  assert.equal(r.dados.idioma, "en"); assert.equal(r.dados.cenas.length, CENAS.length); assert.deepEqual(r.dados.idiomas, ["pt-BR", "en", "es"]);
+  const sem = await p.req("/api/orgs/1/apresentacao/audio?idioma=pt-BR&cena=0", { quem: "admin" });
+  assert.equal(sem.status, 503, "sem chave: segue com legendas"); assert.equal(sem.dados.codigo, "SEM_CHAVE");
+  p.env.OPENAI_API_KEY = "sk-teste";
+  let gerou = 0;
+  p.openai = (url, corpo) => { if (url.endsWith("audio/speech")) { gerou++; assert.equal(corpo.voice, "marin"); assert.match(corpo.instructions, /DENIA/); return new Response(new Uint8Array(4000).fill(7), { headers: { "content-type": "audio/mpeg" } }); } return {}; };
+  const a1 = await p.req("/api/orgs/1/apresentacao/audio?idioma=pt-BR&cena=0", { quem: "admin" });
+  assert.equal(a1.r.headers.get("content-type"), "audio/mpeg"); assert.equal((await a1.r.arrayBuffer()).byteLength, 4000);
+  await p.req("/api/orgs/1/apresentacao/audio?idioma=pt-BR&cena=0", { quem: "admin" });
+  assert.equal(gerou, 1, "a segunda vez vem do que foi guardado: sem custo");
+  assert.equal((await p.req("/api/orgs/1/apresentacao/audio?idioma=pt-BR&cena=99", { quem: "admin" })).status, 400);
+});
