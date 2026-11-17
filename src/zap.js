@@ -1674,7 +1674,7 @@ export async function enviarModeloZap(env, k, orgId, telefone, modelo, idioma, v
   const conta = await contaDa(env, orgId);
   if (!conta?.phone_number_id || !conta?.token_cifrado) return false;
   const token = await k.decifrar(env, conta.token_cifrado);
-  const params = variaveis.slice(0, 10).map(v => ({ type: "text", text: cortar(String(v ?? "-"), 200) || "-" }));
+  const params = variaveis.slice(0, 10).map(v => ({ type: "text", text: cortar(String(v ?? "-").replace(/[\r\n\t]+/g, " ").replace(/ {4,}/g, "   "), 700) || "-" }));
   try {
     const d = await graphZap(token, "POST", `${encodeURIComponent(conta.phone_number_id)}/messages`, { messaging_product: "whatsapp", to: String(telefone).replace(/\D/g, ""), type: "template", template: { name: modelo, language: { code: idioma || "pt_BR" }, ...(params.length ? { components: [{ type: "body", parameters: params }] } : {}) } });
     return Boolean(d?.messages?.[0]?.id);

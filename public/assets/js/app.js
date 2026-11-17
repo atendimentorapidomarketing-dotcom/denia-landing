@@ -7523,24 +7523,60 @@ Botão só com texto = resposta.` })),
     return h("div", { class: "compor adm-escrever" }, ent, botao(tarefa ? "Anotar" : "Marcar", ir, "btn-primario"));
   }
 
+  // Quem recebe no WhatsApp: alguém da equipe (com login) ou um contato só com nome e número (sem login).
+  // "+ Novo número" mostra nome e WhatsApp ali mesmo; o cadastro é feito ao salvar.
+  function quemRecebe(eq, respId, contatoId) {
+    const sel = h("select", { class: "entrada" }, h("option", { value: "", text: "Ninguém (só aparece na agenda)" }),
+      (eq.contatos || []).length ? h("optgroup", { label: "Recebem pelo WhatsApp" }, eq.contatos.map(c0 => h("option", { value: "c:" + c0.id, text: `${c0.nome} — final ${String(c0.telefone).slice(-4)}` }))) : null,
+      (eq.equipe || []).length ? h("optgroup", { label: "Equipe (com login)" }, eq.equipe.map(p0 => h("option", { value: "u:" + p0.id, text: p0.nome + (p0.whatsapp ? " — WhatsApp" : "") }))) : null,
+      h("option", { value: "novo", text: "+ Cadastrar um WhatsApp…" }));
+    sel.value = contatoId ? "c:" + contatoId : respId ? "u:" + respId : "";
+    if (!sel.value && (contatoId || respId)) sel.value = "";
+    const nome = entradaTxt("", "Nome (ex.: João mecânico)"), tel = h("input", { class: "entrada", type: "tel", placeholder: "WhatsApp com DDD (ex.: 21 99999-9162)" });
+    const novo = h("div", { class: "fin-duas oculto" }, campo("Nome", nome), campo("WhatsApp", tel));
+    const aviso1 = h("p", { class: "sub oculto", text: "" });
+    const mostrar = () => {
+      novo.classList.toggle("oculto", sel.value !== "novo");
+      const u = sel.value.startsWith("u:") ? (eq.equipe || []).find(p0 => "u:" + p0.id === sel.value) : null;
+      aviso1.textContent = u && !u.whatsapp ? `${u.nome} ainda não cadastrou o WhatsApp: os avisos vão por e-mail. Cadastre em WhatsApp e celular.` : "";
+      aviso1.classList.toggle("oculto", !aviso1.textContent);
+    };
+    sel.addEventListener("change", mostrar); mostrar();
+    const ler = async () => {
+      if (sel.value === "novo") {
+        if (!nome.value.trim() || !tel.value.trim()) throw new Error("Escreva o nome e o WhatsApp de quem vai receber.");
+        let r;
+        try { r = await adm("contatos", { metodo: "POST", corpo: { nome: nome.value.trim(), telefone: tel.value.trim() } }); }
+        catch (e) { if (e.dados && e.dados.existente) r = { id: e.dados.existente }; else throw e; }
+        equipeCache = null;
+        return { responsavel_id: null, contato_id: r.id };
+      }
+      return { responsavel_id: sel.value.startsWith("u:") ? Number(sel.value.slice(2)) : null, contato_id: sel.value.startsWith("c:") ? Number(sel.value.slice(2)) : null };
+    };
+    return { el: h("div", { class: "fin-form" }, campo("Quem recebe no WhatsApp", sel, "Recebe a lista do dia de manhã e o lembrete antes do horário."), novo, aviso1), ler };
+  }
+
   async function novoCompromisso(a, dataPadrao, rascunho) {
     const editando = a && a.id && !rascunho;
     if (editando && a.origem === "google") return aviso("Este compromisso vem do Google Agenda: altere lá. A DENIA atualiza sozinha.", "erro");
-    const { equipe } = await equipeAdm();
-    const titulo = entradaTxt(a && a.titulo, "Ex.: Vistoria do AVCB, reunião com o contador"), data = entradaData(a && a.data ? a.data : dataPadrao || hojeUi()), hora = h("input", { class: "entrada", type: "time", value: (a && a.hora) || "" });
-    const quem = entradaTxt(a && a.quem, "Com quem (opcional)"), local = entradaTxt(a && a.local, "Onde (opcional)"), obs = h("textarea", { class: "entrada", rows: "2", placeholder: "Observações" }, (a && a.obs) || "");
+    const eq = await equipeAdm();
+    const titulo = entradaTxt(a && a.titulo, "Ex.: Troca de óleo do Gol, reunião com o contador"), data = entradaData(a && a.data ? a.data : dataPadrao || hojeUi()), hora = h("input", { class: "entrada", type: "time", value: (a && a.hora) || "" });
+    const quem = entradaTxt(a && a.quem, "Cliente ou com quem (opcional)"), local = entradaTxt(a && a.local, "Onde (opcional)"), obs = h("textarea", { class: "entrada", rows: "2", placeholder: "Observações" }, (a && a.obs) || "");
     const aviso0 = h("select", { class: "entrada" }, [[0, "Na hora"], [5, "5 minutos antes"], [15, "15 minutos antes"], [30, "30 minutos antes"], [60, "1 hora antes"], [180, "3 horas antes"], [1440, "1 dia antes"], [2880, "2 dias antes"], [10080, "1 semana antes"]].map(([v, n]) => h("option", { value: v, text: n })));
     aviso0.value = String(a && a.aviso_min != null ? a.aviso_min : 60);
     const repetir = selectRepetir(a && a.repetir);
-    const resp = selectResponsavel(equipe, a && a.responsavel_id);
+    const rec = quemRecebe(eq, a && a.responsavel_id, a && a.contato_id);
     const prio = selectPrio(a && a.prioridade), cat = entradaCategoria(a && a.categoria), escopo = selectEscopo(a && a.escopo);
     const tipo = h("select", { class: "entrada" }, h("option", { value: "COMPROMISSO", text: "Compromisso" }), h("option", { value: "LEMBRETE", text: "Lembrete" })); tipo.value = (a && a.tipo) || "COMPROMISSO";
     const andamento = h("input", { type: "checkbox", checked: Boolean(a && a.situacao === "EM_ANDAMENTO") });
-    await formulario(editando ? "Editar compromisso" : "Novo compromisso ou lembrete", [h("div", { class: "fin-duas" }, campo("Tipo", tipo), campo("Prioridade", prio, "Extrema: aviso extra na hora e destaque em tudo.")), campo("O que é", titulo), h("div", { class: "fin-duas" }, campo("Data", data), campo("Hora", hora, "Vazio = o dia todo")),
-      h("div", { class: "fin-duas" }, campo("Avisar", aviso0, "Pelo WhatsApp, e-mail e Telegram; com hora, avisa de novo na hora."), campo("Repetir", repetir)), h("div", { class: "fin-duas" }, campo("Responsável (recebe o aviso)", resp), campo("Com quem", quem)),
-      h("div", { class: "fin-duas" }, campo("Categoria", cat), campo("Pessoal ou profissional", escopo)), campo("Local", local), campo("Observações", obs), editando ? h("label", { class: "fin-check" }, andamento, " Em andamento") : null,
+    const temMais = a && (a.repetir || a.local || a.quem || a.obs || a.categoria || a.escopo || a.tipo === "LEMBRETE" || (a.aviso_min != null && a.aviso_min !== 60) || (a.prioridade && a.prioridade !== "NORMAL"));
+    const mais = h("details", { class: "adm-mais-opcoes", ...(temMais ? { open: "" } : {}) }, h("summary", { text: "Mais opções (aviso, repetir, prioridade, local…)" }), h("div", { class: "fin-form", style: "margin-top:10px" },
+      h("div", { class: "fin-duas" }, campo("Avisar", aviso0), campo("Repetir", repetir)), h("div", { class: "fin-duas" }, campo("Prioridade", prio), campo("Tipo", tipo)),
+      h("div", { class: "fin-duas" }, campo("Com quem", quem), campo("Local", local)), h("div", { class: "fin-duas" }, campo("Categoria", cat), campo("Pessoal ou profissional", escopo)), campo("Observações", obs),
+      editando ? h("label", { class: "fin-check" }, andamento, " Em andamento") : null));
+    await formulario(editando ? "Editar compromisso" : "Novo compromisso", [campo("O que é", titulo), h("div", { class: "fin-duas" }, campo("Data", data), campo("Hora", hora, "Vazio = o dia todo")), rec.el, mais,
       editando ? h("p", { class: "sub", text: [a.criado_por && `Criado por ${a.criado_por}${a.criado_ms ? " em " + horaMs(a.criado_ms) : ""}`, a.alterado_por && `alterado por ${a.alterado_por} em ${horaMs(a.alterado_ms)}`, a.feito_por && `concluído por ${a.feito_por} em ${horaMs(a.feito_ms)}`, a.adiado_n ? `adiado ${a.adiado_n}×` : ""].filter(Boolean).join(" · ") }) : null].filter(Boolean), "Salvar",
-      async () => { await adm(editando ? `agenda/${a.id}` : "agenda", { metodo: editando ? "PUT" : "POST", corpo: { titulo: titulo.value, data: data.value, hora: hora.value || null, quem: quem.value, local: local.value, obs: obs.value, aviso_min: Number(aviso0.value), repetir: repetir.value, prioridade: prio.value, responsavel_id: resp.value || null, tipo: tipo.value, categoria: cat.value, escopo: escopo.value, situacao: andamento.checked ? "EM_ANDAMENTO" : "" } }); aviso("Salvo.", "ok"); recarregarAdm(); });
+      async () => { const q0 = await rec.ler(); await adm(editando ? `agenda/${a.id}` : "agenda", { metodo: editando ? "PUT" : "POST", corpo: { titulo: titulo.value, data: data.value, hora: hora.value || null, quem: quem.value, local: local.value, obs: obs.value, aviso_min: Number(aviso0.value), repetir: repetir.value, prioridade: prio.value, ...q0, tipo: tipo.value, categoria: cat.value, escopo: escopo.value, situacao: andamento.checked ? "EM_ANDAMENTO" : "" } }); aviso("Salvo.", "ok"); recarregarAdm(); });
   }
 
   // Agenda: lista, semana ou mês (grade), só os meus, e o campo para escrever o compromisso.
@@ -7560,7 +7596,7 @@ Botão só com texto = resposta.` })),
     const feito = async (a, desfazer) => { try { const x = await adm(`agenda/${a.id}/feito`, { metodo: "POST", corpo: desfazer ? { desfazer: true } : {} }); aviso(x.proximo ? `Feito. Próxima vez: ${dataCurtaFin(x.proximo.data)}.` : desfazer ? "Voltou para pendente." : "Feito.", "ok"); recarregarAdm(); } catch (e) { aviso(e.message, "erro"); } };
     const apagar = async a => { if (!(await modal({ titulo: "Apagar compromisso?", conteudo: a.origem === "google" ? `${a.titulo}. Ele vem do Google Agenda: se continuar lá, volta na próxima sincronização.` : a.titulo, confirmar: "Apagar", perigo: true }))) return; try { await adm(`agenda/${a.id}`, { metodo: "DELETE" }); aviso("Apagado.", "ok"); recarregarAdm(); } catch (e) { aviso(e.message, "erro"); } };
     const fmtDia = new Intl.DateTimeFormat(LOCALE, { weekday: "long", day: "2-digit", month: "long", timeZone: "UTC" });
-    const meta = a => [a.tipo === "LEMBRETE" && "lembrete", a.local, a.quem && "com " + a.quem, a.responsavel_nome && "responsável: " + a.responsavel_nome, a.categoria, a.escopo === "PESSOAL" && "pessoal", a.repetir && { diario: "todo dia", semanal: "toda semana", mensal: "todo mês", anual: "todo ano" }[a.repetir], a.origem === "google" && "Google Agenda", a.origem === "telegram" && "pelo Telegram", a.origem === "whatsapp" && "pelo WhatsApp",
+    const meta = a => [a.tipo === "LEMBRETE" && "lembrete", a.local, a.quem && "com " + a.quem, a.responsavel_nome && "responsável: " + a.responsavel_nome, a.contato_nome && "WhatsApp: " + a.contato_nome, a.categoria, a.escopo === "PESSOAL" && "pessoal", a.repetir && { diario: "todo dia", semanal: "toda semana", mensal: "todo mês", anual: "todo ano" }[a.repetir], a.origem === "google" && "Google Agenda", a.origem === "telegram" && "pelo Telegram", a.origem === "whatsapp" && "pelo WhatsApp",
       a.situacao_atual && a.situacao_atual !== "PENDENTE" && a.situacao_atual !== "CONCLUIDA" && SIT_UI[a.situacao_atual], a.feito && a.feito_por && `concluído por ${a.feito_por}${a.feito_ms ? " " + horaMs(a.feito_ms) : ""}`, a.adiado_n ? `adiado ${a.adiado_n}×` : "", `C${a.id}`, a.obs].filter(Boolean).join(" · ");
     const andar = n => { admEstado.refAgenda = vis === "semana" ? somarDiasUi(ref, 7 * n) : `${somarMesUi(mesRef, n)}-01`; navegar(); };
     const titulo = vis === "semana" ? `${dataCurtaFin(de).slice(0, 5)} a ${dataCurtaFin(ate)}` : nomeMesUi(mesRef);
@@ -7605,7 +7641,7 @@ Botão só com texto = resposta.` })),
           a.origem === "google" || a.feito ? null : botao("Adiar", () => adiarItem("AGENDA", a), "btn-secundario"),
           a.origem === "google" ? null : botao("Editar", () => { fecharGaveta && fecharGaveta(); novoCompromisso(a); }, "btn-secundario"), botao("Histórico", () => historicoItem("AGENDA", a.id, a.titulo), "btn-secundario"), botao("Apagar", () => apagar(a), "btn-secundario"))]);
     }
-    trocar(el, cabeca("Agenda e compromissos", "Escreva do jeito que fala (\"lembrar de pagar o DAS todo dia 20 às 9h\"), pela voz, pelo Telegram ou pelo WhatsApp. Avisos no WhatsApp, e-mail, Telegram e alarmes no celular; o Google Agenda entra sozinho.",
+    trocar(el, cabeca("Agenda e compromissos", "Marque aqui, por voz ou pelo WhatsApp. Quem você escolher em “Quem recebe no WhatsApp” ganha a lista do dia de manhã e o lembrete antes do horário.",
       botao("+ Compromisso", () => novoCompromisso(null, ref < r.hoje ? r.hoje : ref), "btn-primario"), h("a", { class: "btn btn-secundario", href: "#/admin/tarefas" }, "Tarefas"),
       (estado.eu.organizacoes || []).length > 1 ? h("a", { class: "btn btn-secundario", href: "#/admin/geral" }, "Todas as empresas") : null),
       escreverCompromisso(() => recarregarAdm()), barra, corpo);
@@ -7615,18 +7651,18 @@ Botão só com texto = resposta.` })),
   async function editarTarefa(t) {
     const { equipe } = await equipeAdm();
     const titulo = entradaTxt(t && t.titulo, "Ex.: Pedir 3 orçamentos da pintura"), prazo = entradaData(t && t.prazo), acompanhar = entradaData(t && t.acompanhar_em);
-    const resp = selectResponsavel(equipe, t && t.responsavel_id), obs = h("textarea", { class: "entrada", rows: "2", placeholder: "Detalhes" }, (t && t.obs) || "");
+    const rec = quemRecebe(await equipeAdm(), t && t.responsavel_id, t && t.contato_id), obs = h("textarea", { class: "entrada", rows: "2", placeholder: "Detalhes" }, (t && t.obs) || "");
     const lista = h("textarea", { class: "entrada", rows: "4", placeholder: "Um item por linha (opcional)" }, ((t && t.checklist) || []).map(x => x.t).join("\n"));
     const prio = selectPrio(t && t.prioridade), cat = entradaCategoria(t && t.categoria), escopo = selectEscopo(t && t.escopo), repetir = selectRepetir(t && t.repetir);
     const sit = h("select", { class: "entrada" }, h("option", { value: "", text: "Pendente" }), h("option", { value: "EM_ANDAMENTO", text: "Em andamento" })); sit.value = t && t.situacao === "EM_ANDAMENTO" ? "EM_ANDAMENTO" : "";
     await formulario(t ? "Editar tarefa" : "Nova tarefa", [campo("Tarefa", titulo), h("div", { class: "fin-duas" }, campo("Prazo (opcional)", prazo, "Sem prazo = tarefa sem data."), campo("Cobrar retorno em (opcional)", acompanhar, "A DENIA lembra nesse dia.")),
-      h("div", { class: "fin-duas" }, campo("Prioridade", prio), campo("Situação", sit)), h("div", { class: "fin-duas" }, campo("Responsável", resp), campo("Repetir", repetir, "Nasce a próxima ao concluir ou quando o prazo passar.")),
+      h("div", { class: "fin-duas" }, campo("Prioridade", prio), campo("Situação", sit)), h("div", { class: "fin-duas" }, campo("Repetir", repetir, "Nasce a próxima ao concluir ou quando o prazo passar."), h("span")), rec.el,
       h("div", { class: "fin-duas" }, campo("Categoria", cat, "Compras, alimentação, suprimentos, estoque…"), campo("Pessoal ou profissional", escopo)), campo("Checklist", lista), campo("Observações", obs),
       t ? h("p", { class: "sub", text: [t.criado_por && `Criada por ${t.criado_por}${t.criado_ms ? " em " + horaMs(t.criado_ms) : ""}`, t.alterado_por && `alterada por ${t.alterado_por} em ${horaMs(t.alterado_ms)}`, t.feito_por && `concluída por ${t.feito_por} em ${horaMs(t.feito_ms)}`, t.adiado_n ? `adiada ${t.adiado_n}×` : ""].filter(Boolean).join(" · ") }) : null].filter(Boolean), "Salvar",
       async () => {
         const antigos = new Map(((t && t.checklist) || []).map(x => [x.t, x.ok]));
         const checklist = lista.value.split("\n").map(x => x.trim()).filter(Boolean).map(x => ({ t: x, ok: Boolean(antigos.get(x)) }));
-        await adm(t ? `tarefas/${t.id}` : "tarefas", { metodo: t ? "PUT" : "POST", corpo: { titulo: titulo.value, prazo: prazo.value, acompanhar_em: acompanhar.value, responsavel_id: resp.value || null, obs: obs.value, checklist, prioridade: prio.value, categoria: cat.value, escopo: escopo.value, repetir: repetir.value, situacao: sit.value } });
+        await adm(t ? `tarefas/${t.id}` : "tarefas", { metodo: t ? "PUT" : "POST", corpo: { titulo: titulo.value, prazo: prazo.value, acompanhar_em: acompanhar.value, ...(await rec.ler()), obs: obs.value, checklist, prioridade: prio.value, categoria: cat.value, escopo: escopo.value, repetir: repetir.value, situacao: sit.value } });
         aviso("Tarefa salva.", "ok"); recarregarAdm();
       });
   }
@@ -7643,7 +7679,7 @@ Botão só com texto = resposta.` })),
         h("label", { class: "fin-check" }, h("input", { type: "checkbox", checked: Boolean(admEstado.tarefasMinhas), onchange: e => { admEstado.tarefasMinhas = e.target.checked; navegar(); } }), " Só as minhas")),
       h("section", { class: "cartao vidro" }, r.tarefas.length ? h("ul", { class: "prb-lista" }, r.tarefas.map(t => h("li", { class: "prb-item" + (t.prioridade === "EXTREMA" && !t.feito ? " prio-extrema" : t.prioridade === "ALTA" && !t.feito ? " prio-alta" : ""), style: (t.prioridade === "EXTREMA" || t.prioridade === "ALTA") && !t.feito ? "" : "border-color:var(--borda)" }, h("div", {},
         h("strong", {}, seloPrio(t.prioridade), " ", `${t.feito ? "✓ " : ""}${t.titulo}`),
-        h("p", { class: "prb-meta", text: [t.prazo && `${t.atrasada ? "ATRASADA · " : ""}prazo ${dataCurtaFin(t.prazo)}`, !t.feito && t.situacao === "EM_ANDAMENTO" && "em andamento", t.cobrar ? "cobrar retorno hoje" : t.acompanhar_em && `cobrar retorno em ${dataCurtaFin(t.acompanhar_em)}`, t.responsavel_nome && "responsável: " + t.responsavel_nome, t.categoria, t.escopo === "PESSOAL" && "pessoal", t.repetir && { diario: "todo dia", semanal: "toda semana", mensal: "todo mês", anual: "todo ano" }[t.repetir],
+        h("p", { class: "prb-meta", text: [t.prazo && `${t.atrasada ? "ATRASADA · " : ""}prazo ${dataCurtaFin(t.prazo)}`, !t.feito && t.situacao === "EM_ANDAMENTO" && "em andamento", t.cobrar ? "cobrar retorno hoje" : t.acompanhar_em && `cobrar retorno em ${dataCurtaFin(t.acompanhar_em)}`, t.responsavel_nome && "responsável: " + t.responsavel_nome, t.contato_nome && "WhatsApp: " + t.contato_nome, t.categoria, t.escopo === "PESSOAL" && "pessoal", t.repetir && { diario: "todo dia", semanal: "toda semana", mensal: "todo mês", anual: "todo ano" }[t.repetir],
           t.feito && t.feito_por && `concluída por ${t.feito_por}${t.feito_ms ? " " + horaMs(t.feito_ms) : ""}`, t.adiado_n ? `adiada ${t.adiado_n}×` : "", `T${t.id}`, t.obs].filter(Boolean).join(" · ") }),
         t.checklist.length ? h("div", { class: "adm-check" }, t.checklist.map((x, i) => h("label", { class: "fin-check" }, h("input", { type: "checkbox", checked: x.ok, onchange: () => marcarItem(t, i) }), " ", x.t))) : null,
         h("div", { class: "acoes" }, t.feito ? botao("Reabrir", () => marcar(t, true), "btn-secundario btn-pequeno") : botao("Concluir", () => marcar(t), "btn-primario btn-pequeno"), t.feito ? null : botao("Adiar", () => adiarItem("TAREFA", t), "btn-secundario btn-pequeno"), botao("Editar", () => editarTarefa(t), "btn-secundario btn-pequeno"), botao("Histórico", () => historicoItem("TAREFA", t.id, t.titulo), "btn-secundario btn-pequeno"),
@@ -7679,10 +7715,28 @@ Botão só com texto = resposta.` })),
   // ----- WhatsApp e celular: agenda do dia, lembretes e comandos pelo WhatsApp da empresa; alarmes no iPhone.
   async function admAvisos(el, vivo) {
     const admin = pode("ADMIN");
-    const [pes, cel, zap] = await Promise.all([adm("pessoas"), adm("celular"), admin ? adm("zap").catch(e => ({ erro: e.message })) : Promise.resolve(null)]);
+    const [pes, cel, zap, cts] = await Promise.all([adm("pessoas"), adm("celular"), admin ? adm("zap").catch(e => ({ erro: e.message })) : Promise.resolve(null), adm("contatos").catch(() => ({ contatos: [] }))]);
     if (!vivo()) return;
     const base = location.origin;
-    const blocos = [cabeca("WhatsApp e celular", "A agenda do dia, os lembretes e as pendências chegam pelo WhatsApp que a empresa já usa — e pelo mesmo número a equipe consulta, marca e conclui. No iPhone, alarmes de verdade pelo app Atalhos.")];
+    const numeroEnvia = zap && !zap.erro && zap.conta_org ? (zap.opcoes.find(o => o.org_id === zap.conta_org) || {}).numero : null;
+    const blocos = [cabeca("WhatsApp e celular", "A lista do dia, os lembretes e as pendências chegam pelo WhatsApp que a empresa já usa — e pelo mesmo número quem recebe consulta e conclui. No iPhone, alarmes de verdade pelo app Atalhos.")];
+    // Quem recebe (sem login): nome e WhatsApp. Depois é só escolher a pessoa no compromisso.
+    const nomeN = entradaTxt("", "Nome (ex.: João mecânico)"), telN = h("input", { class: "entrada", type: "tel", placeholder: "WhatsApp com DDD (ex.: 21 99999-9162)" });
+    const ck = (v, rot) => h("label", { class: "fin-check" }, h("input", { type: "checkbox", checked: Boolean(v) }), " ", rot);
+    const linhasC = cts.contatos.map(c0 => {
+      const opc = [ck(c0.zap_manha, "Lista do dia (manhã)"), ck(c0.zap_lembretes, "Lembretes"), ck(c0.zap_relatorios, "Meio-dia e fim do dia"), ck(c0.so_minhas, "Só os compromissos dele")];
+      const val = i => opc[i].querySelector("input").checked;
+      return h("li", { class: "prb-item", style: "border-color:var(--borda)" }, h("div", {}, h("strong", { text: `${c0.nome}${c0.ativo ? "" : " (pausado)"}` }), h("p", { class: "prb-meta", text: `WhatsApp ${String(c0.telefone).replace(/^55(\d{2})(\d{4,5})(\d{4})$/, "($1) $2-$3")}` }),
+        h("div", { class: "fin-mes", style: "flex-wrap:wrap;gap:8px" }, ...opc),
+        h("div", { class: "acoes" }, botao("Salvar", async () => { try { await adm(`contatos/${c0.id}`, { metodo: "PUT", corpo: { zap_manha: val(0), zap_lembretes: val(1), zap_relatorios: val(2), so_minhas: val(3) } }); aviso("Salvo.", "ok"); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario btn-pequeno"),
+          botao("Enviar a lista de hoje", async () => { try { const r = await adm(`contatos/${c0.id}/testar`, { metodo: "POST", corpo: {} }); aviso(r.via === "texto" ? "Enviada pelo WhatsApp." : "Enviada (modelo aprovado, com a lista do dia).", "ok"); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno"),
+          botao("Remover", async () => { if (!(await modal({ titulo: "Remover?", conteudo: `${c0.nome} deixa de receber. Os compromissos continuam na agenda.`, confirmar: "Remover", perigo: true }))) return; try { await adm(`contatos/${c0.id}`, { metodo: "DELETE" }); equipeCache = null; recarregarAdm(); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno"))));
+    });
+    blocos.push(h("section", { class: "cartao vidro", style: "margin-top:12px" }, h("h3", { text: "Quem recebe no WhatsApp" }),
+      h("p", { class: "sub", text: `${numeroEnvia ? `As mensagens saem do WhatsApp da empresa (${numeroEnvia}). ` : ""}Cadastre o nome e o WhatsApp de quem precisa receber — não precisa de login. Depois, no compromisso, escolha a pessoa em “Quem recebe no WhatsApp”: ela recebe de manhã a lista do dia e um lembrete antes do horário, e pode responder OK quando terminar.` }),
+      linhasC.length ? h("ul", { class: "prb-lista" }, linhasC) : null,
+      h("div", { class: "fin-duas", style: "margin-top:10px" }, campo("Nome", nomeN), campo("WhatsApp", telN)),
+      h("div", { class: "acoes" }, botao("+ Cadastrar", async () => { try { await adm("contatos", { metodo: "POST", corpo: { nome: nomeN.value, telefone: telN.value } }); equipeCache = null; aviso("Cadastrado. Agora escolha a pessoa no compromisso.", "ok"); recarregarAdm(); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario"))));
     // Equipe no WhatsApp
     const linhas = pes.pessoas.map(x => {
       const tel = h("input", { class: "entrada", type: "tel", value: x.telefone || "", placeholder: "21 99999-0000", style: "min-width:150px" });
@@ -7696,7 +7750,7 @@ Botão só com texto = resposta.` })),
       return h("li", { class: "prb-item", style: "border-color:var(--borda)" }, h("div", {}, h("strong", { text: `${x.nome}${x.usuario_id === pes.eu ? " (você)" : ""}` }), h("p", { class: "prb-meta", text: x.email }),
         h("div", { class: "fin-mes", style: "flex-wrap:wrap;gap:8px" }, tel, ...ops, botao("Salvar", salvar, "btn-primario btn-pequeno"))));
     });
-    blocos.push(h("section", { class: "cartao vidro", style: "margin-top:12px" }, h("h3", { text: admin ? "Equipe no WhatsApp" : "Meu WhatsApp" }),
+    blocos.push(h("section", { class: "cartao vidro", style: "margin-top:12px" }, h("h3", { text: admin ? "Equipe com login no WhatsApp" : "Meu WhatsApp" }),
       h("p", { class: "sub", text: "Com o número cadastrado, a pessoa recebe a agenda e os avisos e pode mandar comandos para o número da empresa: AGENDA, AMANHÃ, PENDÊNCIAS, MARCAR reunião terça às 10h, LEMBRAR de ligar amanhã às 9h, TAREFA…, COMPRAR café, FEITO C12, ADIAR T5 amanhã, PAGO P34, AJUDA. Mensagens de clientes continuam indo para o atendimento normal." }),
       h("ul", { class: "prb-lista" }, linhas)));
     // Número e horários (dono e administradores)
