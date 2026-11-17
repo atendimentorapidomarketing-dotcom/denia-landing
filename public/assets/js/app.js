@@ -8100,9 +8100,9 @@ Botão só com texto = resposta.` })),
   // O roteiro e a narração vêm do servidor (gerada uma vez, guardada); sem a chave da OpenAI, passa com legendas.
   // ---------------------------------------------------------------------------
   const APR_UI = {
-    "pt-BR": { titulo: "Apresentação da DENIA", sub: "Um vídeo narrado de cerca de 4 minutos sobre tudo o que a DENIA faz pelas empresas. Ideal para mostrar a clientes e parceiros.", tocar: "Assistir", pausar: "Pausar", continuar: "Continuar", ant: "Cena anterior", prox: "Próxima cena", som: "Som", semSom: "Sem som", tela: "Tela cheia", denovo: "Assistir de novo", idioma: "Idioma", carregando: "Preparando a narração…", semVoz: "Narração indisponível agora: a apresentação segue com legendas.", exemplo: "Exemplo ilustrativo", legendas: "Legendas" },
-    en: { titulo: "DENIA presentation", sub: "A narrated video of about 4 minutes on everything DENIA does for companies. Ideal to show clients and partners.", tocar: "Watch", pausar: "Pause", continuar: "Resume", ant: "Previous scene", prox: "Next scene", som: "Sound", semSom: "Muted", tela: "Full screen", denovo: "Watch again", idioma: "Language", carregando: "Preparing the narration…", semVoz: "Narration unavailable right now: the presentation continues with captions.", exemplo: "Illustrative example", legendas: "Captions" },
-    es: { titulo: "Presentación de DENIA", sub: "Un video narrado de unos 4 minutos sobre todo lo que DENIA hace por las empresas. Ideal para mostrar a clientes y socios.", tocar: "Ver", pausar: "Pausar", continuar: "Continuar", ant: "Escena anterior", prox: "Escena siguiente", som: "Sonido", semSom: "Silencio", tela: "Pantalla completa", denovo: "Ver de nuevo", idioma: "Idioma", carregando: "Preparando la narración…", semVoz: "Narración no disponible ahora: la presentación sigue con subtítulos.", exemplo: "Ejemplo ilustrativo", legendas: "Subtítulos" }
+    "pt-BR": { titulo: "Apresentação da DENIA", sub: "Um vídeo narrado de cerca de 4 minutos sobre tudo o que a DENIA faz pelas empresas. Ideal para mostrar a clientes e parceiros.", tocar: "Assistir", pausar: "Pausar", continuar: "Continuar", ant: "Cena anterior", prox: "Próxima cena", som: "Som", semSom: "Sem som", tela: "Tela cheia", sair: "Sair da tela cheia", denovo: "Assistir de novo", idioma: "Idioma", carregando: "Preparando a narração…", semVoz: "Narração indisponível agora: a apresentação segue com legendas.", exemplo: "Exemplo ilustrativo", legendas: "Legendas" },
+    en: { titulo: "DENIA presentation", sub: "A narrated video of about 4 minutes on everything DENIA does for companies. Ideal to show clients and partners.", tocar: "Watch", pausar: "Pause", continuar: "Resume", ant: "Previous scene", prox: "Next scene", som: "Sound", semSom: "Muted", tela: "Full screen", sair: "Exit full screen", denovo: "Watch again", idioma: "Language", carregando: "Preparing the narration…", semVoz: "Narration unavailable right now: the presentation continues with captions.", exemplo: "Illustrative example", legendas: "Captions" },
+    es: { titulo: "Presentación de DENIA", sub: "Un video narrado de unos 4 minutos sobre todo lo que DENIA hace por las empresas. Ideal para mostrar a clientes y socios.", tocar: "Ver", pausar: "Pausar", continuar: "Continuar", ant: "Escena anterior", prox: "Escena siguiente", som: "Sonido", semSom: "Silencio", tela: "Pantalla completa", sair: "Salir de pantalla completa", denovo: "Ver de nuevo", idioma: "Idioma", carregando: "Preparando la narración…", semVoz: "Narración no disponible ahora: la presentación sigue con subtítulos.", exemplo: "Ejemplo ilustrativo", legendas: "Subtítulos" }
   };
   const aprEstado = { idioma: null, audio: null };
   window.addEventListener("hashchange", () => { if (aprEstado.audio && !/^#\/apresentacao/.test(location.hash)) { aprEstado.audio.pause(); aprEstado.audio = null; } });
@@ -8188,16 +8188,45 @@ Botão só com texto = resposta.` })),
     const bPlay = h("button", { type: "button", class: "apr-btn", "aria-label": t.tocar, onclick: () => tocando ? pausar() : tocar() }, "▶");
     const bSom = h("button", { type: "button", class: "apr-btn", "aria-label": t.som, onclick: () => { mudo = !mudo; if (aprEstado.audio) aprEstado.audio.muted = mudo; bSom.textContent = mudo ? "🔇" : "🔊"; } }, "🔊");
     const bLeg = h("button", { type: "button", class: "apr-btn ativo", "aria-label": t.legendas, onclick: () => { legenda.classList.toggle("oculto"); bLeg.classList.toggle("ativo"); } }, "CC");
-    const bTela = h("button", { type: "button", class: "apr-btn", "aria-label": t.tela, onclick: () => { const alvo = palco.parentElement; if (document.fullscreenElement) document.exitFullscreen(); else if (alvo.requestFullscreen) alvo.requestFullscreen().catch(() => { }); } }, "⛶");
+    // Tela cheia que funciona em qualquer aparelho: usa a tela cheia do navegador quando existe (computador, Android)
+    // e, no iPhone (que não deixa), ocupa a tela inteira; com o celular em pé, o vídeo deita sozinho.
+    let cheia = false, lugar = null;
+    const nativa = () => document.fullscreenElement || document.webkitFullscreenElement;
+    const entrarCheia = async () => {
+      if (cheia) return;
+      cheia = true; lugar = h("div", { class: "apr-lugar" }); moldura.replaceWith(lugar); document.body.append(moldura);
+      moldura.classList.add("apr-tela-cheia"); document.documentElement.classList.add("apr-cheia-ativa");
+      bTela.textContent = "✕"; bTela.setAttribute("aria-label", t.sair); bTela.title = t.sair;
+      try { if (moldura.requestFullscreen) await moldura.requestFullscreen({ navigationUI: "hide" }); else if (moldura.webkitRequestFullscreen) moldura.webkitRequestFullscreen(); } catch { /* iPhone: fica a tela cheia da própria página */ }
+      try { if (nativa() && screen.orientation && screen.orientation.lock) await screen.orientation.lock("landscape"); } catch { /* aparelho não deixa travar: o vídeo gira pela página */ }
+      palco.focus({ preventScroll: true });
+    };
+    const sairCheia = () => {
+      if (!cheia) return;
+      cheia = false;
+      try { if (screen.orientation && screen.orientation.unlock) screen.orientation.unlock(); } catch { }
+      if (nativa()) { try { (document.exitFullscreen || document.webkitExitFullscreen).call(document); } catch { } }
+      moldura.classList.remove("apr-tela-cheia"); document.documentElement.classList.remove("apr-cheia-ativa");
+      if (lugar && lugar.isConnected) lugar.replaceWith(moldura); else moldura.remove();
+      lugar = null; bTela.textContent = "⛶"; bTela.setAttribute("aria-label", t.tela); bTela.title = t.tela;
+    };
+    const aoMudarNativa = () => { if (cheia && !nativa()) sairCheia(); };
+    document.addEventListener("fullscreenchange", aoMudarNativa); document.addEventListener("webkitfullscreenchange", aoMudarNativa);
+    const aoTeclar = e => { if (e.key === "Escape" && cheia && !nativa()) sairCheia(); };
+    document.addEventListener("keydown", aoTeclar);
+    const aoSairDaPagina = () => { sairCheia(); if (!vivo()) { document.removeEventListener("fullscreenchange", aoMudarNativa); document.removeEventListener("webkitfullscreenchange", aoMudarNativa); document.removeEventListener("keydown", aoTeclar); window.removeEventListener("hashchange", aoSairDaPagina); } };
+    window.addEventListener("hashchange", aoSairDaPagina);
+    const bTela = h("button", { type: "button", class: "apr-btn", "aria-label": t.tela, title: t.tela, onclick: () => cheia ? sairCheia() : entrarCheia() }, "⛶");
     const status = h("span", { class: "apr-status" });
     const selIdioma = h("select", { class: "entrada", "aria-label": t.idioma, style: "max-width:170px" }, r.idiomas.map(i => h("option", { value: i, text: { "pt-BR": "Português", en: "English", es: "Español" }[i] })));
     selIdioma.value = idioma;
     selIdioma.addEventListener("change", () => { parar(); aprEstado.idioma = selIdioma.value; navegar(); });
     const controles = h("div", { class: "apr-controles" }, h("button", { type: "button", class: "apr-btn", "aria-label": t.ant, onclick: () => irCena(Math.max(0, atual - 1), true) }, "⏮"), bPlay,
       h("button", { type: "button", class: "apr-btn", "aria-label": t.prox, onclick: () => irCena(Math.min(cenas.length - 1, atual + 1), true) }, "⏭"), status, h("span", { style: "flex:1" }), bLeg, bSom, bTela);
-    const moldura = h("div", { class: "apr-moldura" }, palco, barra, controles);
+    const moldura = h("div", { class: "apr-moldura" }, h("div", { class: "apr-giro" }, palco, barra, controles));
     palco.append(camada, legenda, centro);
     centro.addEventListener("click", () => tocar());
+    palco.addEventListener("dblclick", e => { if (e.target === centro) return; cheia ? sairCheia() : entrarCheia(); });
     palco.addEventListener("keydown", e => { if (e.key === " ") { e.preventDefault(); tocando ? pausar() : tocar(); } if (e.key === "ArrowRight") irCena(Math.min(cenas.length - 1, atual + 1), true); if (e.key === "ArrowLeft") irCena(Math.max(0, atual - 1), true); });
     el.append(cabeca(t.titulo, t.sub, h("label", { class: "fin-check" }, t.idioma + " ", selIdioma)), moldura);
 
