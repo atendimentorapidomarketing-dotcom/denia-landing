@@ -86,7 +86,7 @@ export async function registrarHistorico(env, orgId, tipo, itemId, acao, titulo,
 }
 // Diferença legível entre o antes e o depois ("data: 15/11 → 16/11").
 export function diferencas(antes, depois, campos) {
-  const fmt = (c, v) => v === null || v === undefined || v === "" ? "—" : /data|prazo|acompanhar/.test(c) ? br(v) : c === "responsavel_id" ? `#${v}` : String(v);
+  const fmt = (c, v) => v === null || v === undefined || v === "" ? "—" : /data|prazo|acompanhar/.test(c) ? br(v) : c.endsWith("_id") ? `#${v}` : String(v);
   return campos.filter(c => depois[c] !== undefined && String(antes[c] ?? "") !== String(depois[c] ?? "")).map(c => `${c.replace("_id", "").replace("_", " ")}: ${fmt(c, antes[c])} → ${fmt(c, depois[c])}`).join("; ");
 }
 
@@ -151,15 +151,17 @@ export async function confirmarConta(env, orgId, id, por, ms, canal = "painel") 
 // ---------------------------------------------------------------------------
 // O dia de uma empresa, organizado: com horário, sem horário, tarefas, contas, atrasados e avisos antecipados.
 // ---------------------------------------------------------------------------
-export async function itensDoDia(env, orgId, data, hoje, { pessoaId = null, soMinhas = false, fin = true, finDias = 0 } = {}) {
+export async function itensDoDia(env, orgId, data, hoje, { pessoaId = null, contatoId = null, soMinhas = false, fin = true, finDias = 0 } = {}) {
   await garantirAdmin(env);
   const q = async (sql, ...a) => (await env.DB.prepare(sql).bind(...a).all()).results || [];
-  const meu = soMinhas && pessoaId ? " AND (x.responsavel_id=? OR x.responsavel_id IS NULL)" : "";
-  const argMeu = soMinhas && pessoaId ? [pessoaId] : [];
+  // Só o que é da pessoa: da equipe = o que é dela ou sem responsável; contato de fora = só o que foi marcado para ele.
+  const meu = soMinhas && contatoId ? " AND x.contato_id=?" : soMinhas && pessoaId ? " AND (x.responsavel_id=? OR x.responsavel_id IS NULL)" : "";
+  const argMeu = soMinhas && contatoId ? [contatoId] : soMinhas && pessoaId ? [pessoaId] : [];
+  if (contatoId) fin = false;
   const comAtrasos = data === hoje;
-  const ag = await q(`SELECT x.*, COALESCE(NULLIF(u.nome,''), u.email) AS responsavel_nome FROM adm_agenda x LEFT JOIN plt_usuarios u ON u.id=x.responsavel_id
+  const ag = await q(`SELECT x.*, COALESCE(NULLIF(u.nome,''), u.email, ct.nome) AS responsavel_nome FROM adm_agenda x LEFT JOIN plt_usuarios u ON u.id=x.responsavel_id LEFT JOIN adm_contatos ct ON ct.id=x.contato_id
     WHERE x.org_id=? AND (x.data=? ${comAtrasos ? "OR (x.feito=0 AND x.data<? AND x.data>=?)" : ""})${meu} ORDER BY x.data, COALESCE(x.hora,'99:99') LIMIT 200`, orgId, data, ...(comAtrasos ? [data, somarDias(data, -45)] : []), ...argMeu);
-  const tf = await q(`SELECT x.*, COALESCE(NULLIF(u.nome,''), u.email) AS responsavel_nome FROM adm_tarefas x LEFT JOIN plt_usuarios u ON u.id=x.responsavel_id
+  const tf = await q(`SELECT x.*, COALESCE(NULLIF(u.nome,''), u.email, ct.nome) AS responsavel_nome FROM adm_tarefas x LEFT JOIN plt_usuarios u ON u.id=x.responsavel_id LEFT JOIN adm_contatos ct ON ct.id=x.contato_id
     WHERE x.org_id=? AND ((x.feito=0 AND ((x.prazo IS NOT NULL AND x.prazo <= ? ${comAtrasos ? "" : "AND x.prazo >= ?"}) OR (x.prazo IS NULL AND (x.prioridade IN ('ALTA','EXTREMA') OR x.situacao='EM_ANDAMENTO' OR x.acompanhar_em <= ?)))) OR (x.feito=1 AND x.prazo=?))${meu}
     ORDER BY COALESCE(x.prazo, '9999'), x.id LIMIT 120`, orgId, data, ...(comAtrasos ? [] : [data]), data, data, ...argMeu);
   let contas = [];
@@ -209,6 +211,16 @@ export function textoDoDiaEquipe(d, { empresa = "", moeda = "BRL", hoje, titulo 
   else if (rodape) L.push("", "Responda: FEITO C12 · PAGO P34 · ADIAR T5 amanhã · AJUDA");
   return L.join("\n");
 }
+// A lista do dia numa linha só (vai dentro do modelo aprovado, que não aceita quebra de linha): a pessoa recebe
+// os compromissos mesmo sem ter escrito para o número nas últimas 24 horas.
+export function listaCurta(d, max = 650) {
+  const itens = [...d.comHora, ...d.semHora, ...d.pagar, ...d.receber].filter(x => !x.feito).map(x => `${x.prioridade === "EXTREMA" ? "URGENTE " : ""}${x.hora ? x.hora + " " : ""}${x.titulo}`)
+    .concat(d.atrasados.map(x => `atrasado: ${x.titulo}`));
+  if (!itens.length) return "nada marcado";
+  let out = "";
+  for (let i = 0; i < itens.length; i++) { const prox = (out ? out + "; " : "") + itens[i]; if (prox.length > max) return `${out}; e mais ${itens.length - i}`; out = prox; }
+  return out;
+}
 // Contagem curta (vai no modelo aprovado, que não aceita quebra de linha).
 export function contagem(d) {
   const p = [];
@@ -228,14 +240,18 @@ async function contaZapDaOrg(env, orgId) {
   return Number(c?.zap_org_id) || orgId;
 }
 // Quem recebe um aviso: o responsável (se estiver cadastrado no WhatsApp) ou, sem responsável, quem recebe tudo.
-async function pessoasParaAviso(env, orgId, responsavelId, campo = "zap_lembretes") {
+// Contato de fora (quem recebe no WhatsApp sem login): recebe o que foi marcado para ele.
+async function pessoasParaAviso(env, orgId, responsavelId, campo = "zap_lembretes", contatoId = null) {
   const q = async (sql, ...a) => (await env.DB.prepare(sql).bind(...a).all()).results || [];
-  if (responsavelId) {
-    const r = await q(`SELECT * FROM adm_pessoas WHERE org_id=? AND usuario_id=? AND ativo=1 AND telefone IS NOT NULL AND ${campo}=1`, orgId, responsavelId);
-    if (r.length) return r;
-  }
-  return q(`SELECT * FROM adm_pessoas WHERE org_id=? AND ativo=1 AND telefone IS NOT NULL AND ${campo}=1 AND so_minhas=0`, orgId);
+  const out = [];
+  if (contatoId) out.push(...(await q(`SELECT *, id AS contato_id FROM adm_contatos WHERE org_id=? AND id=? AND ativo=1 AND ${campo}=1`, orgId, contatoId)));
+  if (responsavelId) out.push(...(await q(`SELECT * FROM adm_pessoas WHERE org_id=? AND usuario_id=? AND ativo=1 AND telefone IS NOT NULL AND ${campo}=1`, orgId, responsavelId)));
+  if (out.length) return dedupTel(out);
+  if (contatoId) return []; // marcado para um contato que não recebe lembretes: não manda para os outros
+  return dedupTel([...(await q(`SELECT * FROM adm_pessoas WHERE org_id=? AND ativo=1 AND telefone IS NOT NULL AND ${campo}=1 AND so_minhas=0`, orgId)),
+    ...(await q(`SELECT *, id AS contato_id FROM adm_contatos WHERE org_id=? AND ativo=1 AND ${campo}=1 AND so_minhas=0`, orgId))]);
 }
+const dedupTel = lista => { const vistos = new Set(); return lista.filter(p => { const k0 = variantesTel(p.telefone)[0]; if (!k0 || vistos.has(k0)) return false; vistos.add(k0); return true; }); };
 async function lembrarUltimo(env, contaOrg, tel, tipo, id, orgId, ms) {
   await env.DB.prepare("INSERT INTO adm_zap_estado(conta_org,telefone,ultimo_tipo,ultimo_id,ultimo_org,ultimo_ms) VALUES(?,?,?,?,?,?) ON CONFLICT(conta_org,telefone) DO UPDATE SET ultimo_tipo=excluded.ultimo_tipo, ultimo_id=excluded.ultimo_id, ultimo_org=excluded.ultimo_org, ultimo_ms=excluded.ultimo_ms")
     .bind(contaOrg, tel, tipo, id, orgId, ms).run().catch(() => { });
@@ -249,7 +265,7 @@ async function enviarPessoa(env, k, pessoa, texto, modelo) {
 // Aviso de um item (lembrete antes, na hora, mudança) para as pessoas certas. Devolve quantas receberam.
 export async function avisarPessoasZap(env, k, orgId, item, texto, params, ms) {
   let n = 0;
-  for (const p of await pessoasParaAviso(env, orgId, item.responsavel_id)) {
+  for (const p of await pessoasParaAviso(env, orgId, item.responsavel_id, "zap_lembretes", item.contato_id || null)) {
     const via = await enviarPessoa(env, k, p, texto, { nome: MODELO_LEMBRETE, idioma: "pt_BR", params });
     if (via) { n++; if (item.tipo && item.id) await lembrarUltimo(env, await contaZapDaOrg(env, orgId), p.telefone, item.tipo, item.id, orgId, ms); }
   }
@@ -258,12 +274,13 @@ export async function avisarPessoasZap(env, k, orgId, item, texto, params, ms) {
 // Mudança num item de hoje ou amanhã feita por outra pessoa: o responsável fica sabendo na hora.
 export async function avisarMudanca(env, k, orgId, item, acao, por, ms) {
   try {
-    if (!k.zapEquipe || !item?.responsavel_id) return;
+    if (!k.zapEquipe || (!item?.responsavel_id && !item?.contato_id)) return;
     const hoje = hojeLocal(ms), d = item.data || item.prazo;
     if (!d || d < hoje || d > somarDias(hoje, 1)) return;
-    if (por?.id && Number(por.id) === Number(item.responsavel_id)) return; // a própria pessoa mexeu
-    const ps = await pessoasParaAviso(env, orgId, item.responsavel_id);
-    const alvo = ps.filter(p => Number(p.usuario_id) === Number(item.responsavel_id));
+    const resp = item.responsavel_id && !(por?.id && Number(por.id) === Number(item.responsavel_id)) ? item.responsavel_id : null; // a própria pessoa mexeu: não avisa ela
+    if (!resp && !item.contato_id) return;
+    const ps = await pessoasParaAviso(env, orgId, resp, "zap_lembretes", item.contato_id || null);
+    const alvo = ps.filter(p => (p.contato_id && Number(p.contato_id) === Number(item.contato_id)) || (resp && Number(p.usuario_id) === Number(resp)));
     const txt = `🔄 *Agenda atualizada*: ${item.titulo} — ${acao} por ${por?.nome || "alguém da equipe"} (${nomeDia(d, hoje)}${item.hora ? " às " + item.hora : ""}).`;
     for (const p of alvo) await enviarPessoa(env, k, p, txt, { nome: MODELO_RESUMO, idioma: "pt_BR", params: [`${nomeDia(d, hoje)}`, `${item.titulo} foi ${acao} por ${por?.nome || "alguém da equipe"}`] });
   } catch (e) { console.error("aviso de mudança", e?.message); }
@@ -295,12 +312,17 @@ export async function comandoEquipeZap(env, k, contaOrg, tel, texto, responder) 
   const pessoas = (await env.DB.prepare(`SELECT p.*, COALESCE(NULLIF(u.nome,''), u.email) AS nome, u.email, u.super_admin, o.nome AS org_nome, m.papel
     FROM adm_pessoas p JOIN plt_usuarios u ON u.id=p.usuario_id JOIN plt_organizacoes o ON o.id=p.org_id LEFT JOIN plt_membros m ON m.org_id=p.org_id AND m.usuario_id=p.usuario_id LEFT JOIN adm_config c ON c.org_id=p.org_id
     WHERE p.telefone IN (${tels.map(() => "?").join(",")}) AND p.ativo=1 AND u.ativo=1 AND o.status='ATIVA' AND COALESCE(c.zap_org_id, p.org_id)=? ORDER BY p.org_id`).bind(...tels, contaOrg).all().catch(() => null))?.results || [];
+  // Contatos de fora da equipe (sem login) também consultam a própria agenda e concluem pelo WhatsApp.
+  const contatos = (await env.DB.prepare(`SELECT p.*, p.id AS contato_id, NULL AS usuario_id, o.nome AS org_nome FROM adm_contatos p JOIN plt_organizacoes o ON o.id=p.org_id LEFT JOIN adm_config c ON c.org_id=p.org_id
+    WHERE p.telefone IN (${tels.map(() => "?").join(",")}) AND p.ativo=1 AND o.status='ATIVA' AND COALESCE(c.zap_org_id, p.org_id)=? ORDER BY p.org_id`).bind(...tels, contaOrg).all().catch(() => null))?.results || [];
+  for (const c0 of contatos) if (!pessoas.some(p => p.org_id === c0.org_id)) pessoas.push(c0);
   if (!pessoas.length) return false;
   const t = semAcento(bruto).toLowerCase().replace(/\s+/g, " ").replace(/^[/!]/, "").trim();
   const ms = k.agora(env), hoje = hojeLocal(ms);
   const estado = await env.DB.prepare("SELECT * FROM adm_zap_estado WHERE conta_org=? AND telefone IN (" + tels.map(() => "?").join(",") + ") ORDER BY ultimo_ms DESC LIMIT 1").bind(contaOrg, ...tels).first().catch(() => null);
   const atual = pessoas.find(p => p.org_id === Number(estado?.org_atual)) || pessoas[0];
-  const quem = p => ({ id: p.usuario_id, nome: p.nome });
+  const quem = p => ({ id: p.usuario_id || null, nome: p.nome });
+  const filtroDe = (p, a = "a") => p.contato_id ? (p.so_minhas ? [` AND ${a}.contato_id=?`, [p.contato_id]] : ["", []]) : p.so_minhas ? [` AND (${a}.responsavel_id=? OR ${a}.responsavel_id IS NULL)`, [p.usuario_id]] : ["", []];
   const admin = p => p.super_admin || ["OWNER", "ADMIN"].includes(p.papel);
   const moedaDe = async org => (await env.DB.prepare("SELECT moeda FROM fin_config WHERE org_id=?").bind(org).first().catch(() => null))?.moeda || "BRL";
   const pessoaDoCodigo = async (letra, id) => {
@@ -312,7 +334,7 @@ export async function comandoEquipeZap(env, k, contaOrg, tel, texto, responder) 
     const partes = [];
     for (const p of pessoas) {
       if (!p.zap_manha && pessoas.length > 1 && data !== hoje) continue;
-      const d = await itensDoDia(env, p.org_id, data, hoje, { pessoaId: p.usuario_id, soMinhas: Boolean(p.so_minhas), fin: admin(p), finDias: data === hoje ? 0 : 0 });
+      const d = await itensDoDia(env, p.org_id, data, hoje, { pessoaId: p.usuario_id, contatoId: p.contato_id || null, soMinhas: Boolean(p.so_minhas), fin: admin(p) });
       partes.push(textoDoDiaEquipe(d, { empresa: pessoas.length > 1 ? p.org_nome : "", moeda: await moedaDe(p.org_id), hoje, titulo: titulo ? `${titulo}${pessoas.length > 1 ? " — " + p.org_nome : ""}` : null, rodape: false }));
     }
     return partes.join("\n\n———\n\n") + "\n\nResponda: FEITO C12 · ADIAR T5 amanhã · AJUDA";
@@ -324,9 +346,9 @@ export async function comandoEquipeZap(env, k, contaOrg, tel, texto, responder) 
   if (/^(semana|proximos dias|agenda da semana)$/.test(t)) {
     const L = ["📅 *Próximos 7 dias*"];
     for (const p of pessoas) {
-      const meu = p.so_minhas ? " AND (a.responsavel_id=? OR a.responsavel_id IS NULL)" : "";
-      const ag = (await env.DB.prepare(`SELECT a.* FROM adm_agenda a WHERE a.org_id=? AND a.feito=0 AND a.data BETWEEN ? AND ?${meu} ORDER BY a.data, COALESCE(a.hora,'99:99') LIMIT 60`).bind(p.org_id, hoje, somarDias(hoje, 7), ...(p.so_minhas ? [p.usuario_id] : [])).all()).results || [];
-      const tf = (await env.DB.prepare(`SELECT a.* FROM adm_tarefas a WHERE a.org_id=? AND a.feito=0 AND a.prazo BETWEEN ? AND ?${meu} ORDER BY a.prazo LIMIT 40`).bind(p.org_id, hoje, somarDias(hoje, 7), ...(p.so_minhas ? [p.usuario_id] : [])).all()).results || [];
+      const [meu, am] = filtroDe(p);
+      const ag = (await env.DB.prepare(`SELECT a.* FROM adm_agenda a WHERE a.org_id=? AND a.feito=0 AND a.data BETWEEN ? AND ?${meu} ORDER BY a.data, COALESCE(a.hora,'99:99') LIMIT 60`).bind(p.org_id, hoje, somarDias(hoje, 7), ...am).all()).results || [];
+      const tf = (await env.DB.prepare(`SELECT a.* FROM adm_tarefas a WHERE a.org_id=? AND a.feito=0 AND a.prazo BETWEEN ? AND ?${meu} ORDER BY a.prazo LIMIT 40`).bind(p.org_id, hoje, somarDias(hoje, 7), ...am).all()).results || [];
       if (pessoas.length > 1) L.push("", `*${p.org_nome}*`);
       for (const a of ag) L.push(`• ${marca(prioridadeValida(a.prioridade))}${nomeDia(a.data, hoje)}${a.hora ? " " + a.hora : ""} — ${a.titulo} [C${a.id}]`);
       for (const x of tf) L.push(`• ${marca(prioridadeValida(x.prioridade))}${nomeDia(x.prazo, hoje)} — tarefa: ${x.titulo} [T${x.id}]`);
@@ -359,7 +381,7 @@ export async function comandoEquipeZap(env, k, contaOrg, tel, texto, responder) 
     const r = await compromissoPorTexto(env, atual.org_id, (lembrete ? "lembrar de " : "") + corpo, ms, "whatsapp");
     if (!r.ok) { await responder(`${r.erro} Ex.: MARCAR reunião com o contador terça às 10h`); return true; }
     const prio = /urgente|extrema|importantissim/i.test(semAcento(corpo)) ? "EXTREMA" : null;
-    await env.DB.prepare("UPDATE adm_agenda SET responsavel_id=?, criado_por=?, criado_por_id=?, tipo=?, prioridade=COALESCE(?, prioridade) WHERE id=?").bind(atual.usuario_id, atual.nome, atual.usuario_id, lembrete ? "LEMBRETE" : "COMPROMISSO", prio, r.id).run();
+    await env.DB.prepare("UPDATE adm_agenda SET responsavel_id=?, contato_id=?, criado_por=?, criado_por_id=?, tipo=?, prioridade=COALESCE(?, prioridade) WHERE id=?").bind(atual.usuario_id || null, atual.contato_id || null, atual.nome, atual.usuario_id || null, lembrete ? "LEMBRETE" : "COMPROMISSO", prio, r.id).run();
     await registrarHistorico(env, atual.org_id, "AGENDA", r.id, "criou", r.titulo, `${br(r.data)}${r.hora ? " " + r.hora : ""}`, quem(atual), ms, "whatsapp");
     await responder(`✅ ${r.frase.replace(/^Anotado: /, lembrete ? "Lembrete anotado: " : "Anotado: ")} [C${r.id}]${pessoas.length > 1 ? ` (${atual.org_nome})` : ""}`); return true;
   }
@@ -369,7 +391,7 @@ export async function comandoEquipeZap(env, k, contaOrg, tel, texto, responder) 
     const r = await tarefaPorTexto(env, atual.org_id, compra ? "Comprar " + corpo : estoque ? "Repor " + corpo : corpo, ms, atual.nome);
     if (!r.ok) { await responder(r.erro); return true; }
     const prio = /urgente|extrema|importantissim/i.test(semAcento(corpo)) ? "EXTREMA" : null;
-    await env.DB.prepare("UPDATE adm_tarefas SET responsavel_id=?, criado_por_id=?, categoria=?, prioridade=COALESCE(?, prioridade) WHERE id=?").bind(atual.usuario_id, atual.usuario_id, compra ? "Compras" : estoque ? "Estoque" : null, prio, r.id).run();
+    await env.DB.prepare("UPDATE adm_tarefas SET responsavel_id=?, contato_id=?, criado_por_id=?, categoria=?, prioridade=COALESCE(?, prioridade) WHERE id=?").bind(atual.usuario_id || null, atual.contato_id || null, atual.usuario_id || null, compra ? "Compras" : estoque ? "Estoque" : null, prio, r.id).run();
     await registrarHistorico(env, atual.org_id, "TAREFA", r.id, "criou", r.titulo, r.prazo ? `prazo ${br(r.prazo)}` : "", quem(atual), ms, "whatsapp");
     await responder(`✅ ${r.frase} [T${r.id}]${pessoas.length > 1 ? ` (${atual.org_nome})` : ""}`); return true;
   }
@@ -418,7 +440,7 @@ export async function comandoEquipeZap(env, k, contaOrg, tel, texto, responder) 
 async function textoPendencias(env, pessoas, hoje, admin, moedaDe, titulo = "📌 *Pendências*") {
   const partes = [];
   for (const p of pessoas) {
-    const d = await itensDoDia(env, p.org_id, hoje, hoje, { pessoaId: p.usuario_id, soMinhas: Boolean(p.so_minhas), fin: admin(p) });
+    const d = await itensDoDia(env, p.org_id, hoje, hoje, { pessoaId: p.usuario_id, contatoId: p.contato_id || null, soMinhas: Boolean(p.so_minhas), fin: admin(p) });
     const moeda = await moedaDe(p.org_id);
     const abertos = [...d.comHora, ...d.semHora, ...d.pagar, ...d.receber].filter(x => !x.feito);
     if (!abertos.length && !d.atrasados.length) continue;
@@ -462,7 +484,7 @@ export async function cronAgendaEquipe(env, k, avisar) {
     await env.DB.prepare("UPDATE adm_agenda SET avisado_hora_ms=? WHERE id=?").bind(ms, a.id).run();
     const p = prioridadeValida(a.prioridade);
     const txt = `${p === "EXTREMA" ? "🚨 *EXTREMA IMPORTÂNCIA* — " : p === "ALTA" ? "⚠️ " : "⏰ "}*Agora (${a.hora})*: ${a.titulo}${a.local ? "\nLocal: " + a.local : ""}\n\nResponda OK quando concluir. [C${a.id}]`;
-    out.na_hora += await avisarPessoasZap(env, k, a.org_id, { tipo: "C", id: a.id, responsavel_id: a.responsavel_id }, txt, [`${p === "EXTREMA" ? "URGENTE: " : ""}${a.titulo}`, `agora, ${a.hora}`], ms);
+    out.na_hora += await avisarPessoasZap(env, k, a.org_id, { tipo: "C", id: a.id, responsavel_id: a.responsavel_id, contato_id: a.contato_id }, txt, [`${p === "EXTREMA" ? "URGENTE: " : ""}${a.titulo}`, `agora, ${a.hora}`], ms);
     if (p === "EXTREMA" && avisar) await avisar(a.org_id, `🚨 Agora: ${a.titulo}`, `${a.titulo}\nAgora, ${a.hora}${a.local ? "\nLocal: " + a.local : ""}`, a.responsavel_id, null, { semZap: true }).catch(() => 0);
   }
   // 3) Contas com aviso antecipado ou de extrema/alta importância: aviso individual ao responsável, uma vez.
@@ -503,11 +525,16 @@ export async function cronAgendaEquipe(env, k, avisar) {
       COALESCE(c.hora_resumo, 8) AS h_manha, COALESCE(c.hora_meio, 12) AS h_meio, COALESCE(c.hora_fim, 18) AS h_fim, COALESCE(c.relatorio_meio, 1) AS r_meio, COALESCE(c.relatorio_fim, 1) AS r_fim, COALESCE(c.aviso_fin_dias, 2) AS fin_dias
     FROM adm_pessoas p JOIN plt_usuarios u ON u.id=p.usuario_id JOIN plt_organizacoes o ON o.id=p.org_id LEFT JOIN plt_membros m ON m.org_id=p.org_id AND m.usuario_id=p.usuario_id LEFT JOIN adm_config c ON c.org_id=p.org_id
     WHERE p.ativo=1 AND p.telefone IS NOT NULL AND u.ativo=1 AND o.status='ATIVA' AND (COALESCE(p.ultimo_manha,'') < ? OR COALESCE(p.ultimo_meio,'') < ? OR COALESCE(p.ultimo_fim,'') < ?) LIMIT 500`, hoje, hoje, hoje).catch(() => []);
+  // Contatos sem login (ex.: o mecânico da oficina) recebem a lista do dia com os compromissos marcados para eles.
+  pessoas.push(...(await q(`SELECT p.*, p.id AS contato_id, NULL AS usuario_id, o.nome AS org_nome, COALESCE(c.zap_org_id, p.org_id) AS conta_org,
+      COALESCE(c.hora_resumo, 8) AS h_manha, COALESCE(c.hora_meio, 12) AS h_meio, COALESCE(c.hora_fim, 18) AS h_fim, COALESCE(c.relatorio_meio, 1) AS r_meio, COALESCE(c.relatorio_fim, 1) AS r_fim, 0 AS fin_dias
+    FROM adm_contatos p JOIN plt_organizacoes o ON o.id=p.org_id LEFT JOIN adm_config c ON c.org_id=p.org_id
+    WHERE p.ativo=1 AND o.status='ATIVA' AND (COALESCE(p.ultimo_manha,'') < ? OR COALESCE(p.ultimo_meio,'') < ? OR COALESCE(p.ultimo_fim,'') < ?) LIMIT 500`, hoje, hoje, hoje).catch(() => [])));
   const admin = p => p.super_admin || ["OWNER", "ADMIN"].includes(p.papel);
   const moedas = new Map(), moedaDe = async org => { if (!moedas.has(org)) moedas.set(org, (await env.DB.prepare("SELECT moeda FROM fin_config WHERE org_id=?").bind(org).first().catch(() => null))?.moeda || "BRL"); return moedas.get(org); };
   const grupos = new Map();
   for (const p of pessoas) { const ch = `${p.conta_org}:${variantesTel(p.telefone)[0]}`; if (!grupos.has(ch)) grupos.set(ch, []); grupos.get(ch).push(p); }
-  const marcar = async (lista, col) => { for (const p of lista) await env.DB.prepare(`UPDATE adm_pessoas SET ${col}=? WHERE org_id=? AND usuario_id=?`).bind(hoje, p.org_id, p.usuario_id).run(); };
+  const marcar = async (lista, col) => { for (const p of lista) await (p.contato_id ? env.DB.prepare(`UPDATE adm_contatos SET ${col}=? WHERE id=?`).bind(hoje, p.contato_id) : env.DB.prepare(`UPDATE adm_pessoas SET ${col}=? WHERE org_id=? AND usuario_id=?`).bind(hoje, p.org_id, p.usuario_id)).run(); };
   for (const lista of grupos.values()) {
     const p0 = lista[0];
     try {
@@ -517,10 +544,10 @@ export async function cronAgendaEquipe(env, k, avisar) {
         await marcar(manha, "ultimo_manha");
         const partes = [], cont = [];
         for (const p of manha) {
-          const d = await itensDoDia(env, p.org_id, hoje, hoje, { pessoaId: p.usuario_id, soMinhas: Boolean(p.so_minhas), fin: admin(p), finDias: p.fin_dias });
-          if (!d.todos.length) continue;
+          const d = await itensDoDia(env, p.org_id, hoje, hoje, { pessoaId: p.usuario_id, contatoId: p.contato_id || null, soMinhas: Boolean(p.so_minhas), fin: admin(p), finDias: p.fin_dias });
+          if (!d.todos.filter(x => !x.feito).length) continue;
           partes.push(textoDoDiaEquipe(d, { empresa: manha.length > 1 || lista.length > 1 ? p.org_nome : "", moeda: await moedaDe(p.org_id), hoje, rodape: false }));
-          cont.push((manha.length > 1 ? p.org_nome + ": " : "") + contagem(d));
+          cont.push((manha.length > 1 ? p.org_nome + ": " : "") + listaCurta(d, Math.floor(650 / manha.length)));
         }
         if (partes.length) {
           const via = await enviarPessoa(env, k, p0, partes.join("\n\n———\n\n") + "\n\nResponda: FEITO C12 · PAGO P34 · ADIAR T5 amanhã · AJUDA", { nome: MODELO_RESUMO, idioma: "pt_BR", params: [`hoje, ${br(hoje)}`, cont.join("; ").slice(0, 900)] });
@@ -540,7 +567,7 @@ export async function cronAgendaEquipe(env, k, avisar) {
         await marcar(fim, "ultimo_fim");
         const partes = [], cont = [];
         for (const p of fim) {
-          const r = await fechamentoDoDia(env, p.org_id, hoje, admin(p), await moedaDe(p.org_id), p.so_minhas ? p.usuario_id : null);
+          const r = await fechamentoDoDia(env, p.org_id, hoje, admin(p), await moedaDe(p.org_id), p.so_minhas && !p.contato_id ? p.usuario_id : null, p.contato_id && p.so_minhas ? p.contato_id : null);
           if (!r.vazio) { partes.push(`🌙 *Fechamento de ${br(hoje)}*${fim.length > 1 || lista.length > 1 ? " — " + p.org_nome : ""}\n${r.texto}`); cont.push(r.resumo); }
         }
         if (partes.length && await enviarPessoa(env, k, p0, partes.join("\n\n———\n\n"), { nome: MODELO_RESUMO, idioma: "pt_BR", params: [`hoje, ${br(hoje)}`, cont.join("; ").slice(0, 900)] })) out.fim++;
@@ -550,15 +577,15 @@ export async function cronAgendaEquipe(env, k, avisar) {
   return out;
 }
 
-export async function fechamentoDoDia(env, orgId, hoje, comFin, moeda, soDe = null) {
+export async function fechamentoDoDia(env, orgId, hoje, comFin, moeda, soDe = null, soContato = null) {
   const q = async (sql, ...a) => (await env.DB.prepare(sql).bind(...a).all()).results || [];
   const ini = inicioDoDia(hoje), fimMs = ini + 86400000;
-  const meu = soDe ? " AND (responsavel_id=? OR responsavel_id IS NULL OR feito_por_id=?)" : "", am = soDe ? [soDe, soDe] : [];
+  const meu = soContato ? " AND contato_id=?" : soDe ? " AND (responsavel_id=? OR responsavel_id IS NULL OR feito_por_id=?)" : "", am = soContato ? [soContato] : soDe ? [soDe, soDe] : [];
   const feitos = [...(await q(`SELECT 'C' t, id, titulo, feito_por, feito_ms, responsavel_id FROM adm_agenda WHERE org_id=? AND feito=1 AND (feito_ms BETWEEN ? AND ? OR (feito_ms IS NULL AND feito_em=?))${meu}`, orgId, ini, fimMs, hoje, ...am)),
     ...(await q(`SELECT 'T' t, id, titulo, feito_por, feito_ms, responsavel_id FROM adm_tarefas WHERE org_id=? AND feito=1 AND (feito_ms BETWEEN ? AND ? OR (feito_ms IS NULL AND feito_em=?))${meu}`, orgId, ini, fimMs, hoje, ...am))].sort((a, b) => (a.feito_ms || 0) - (b.feito_ms || 0));
   const contas = comFin ? await q("SELECT id, tipo, descricao, valor_cent, confirmado_por, confirmado_ms FROM fin_lanc WHERE org_id=? AND pago=1 AND (confirmado_ms BETWEEN ? AND ? OR (confirmado_ms IS NULL AND pago_em=? AND atualizado_ms BETWEEN ? AND ?)) ORDER BY confirmado_ms", orgId, ini, fimMs, hoje, ini, fimMs).catch(() => []) : [];
   const transf = await q("SELECT tipo, item_id, titulo FROM adm_historico WHERE org_id=? AND acao='transferiu' AND ms BETWEEN ? AND ?", orgId, ini, fimMs);
-  const d = await itensDoDia(env, orgId, hoje, hoje, { pessoaId: soDe, soMinhas: Boolean(soDe), fin: comFin });
+  const d = await itensDoDia(env, orgId, hoje, hoje, { pessoaId: soDe, contatoId: soContato, soMinhas: Boolean(soDe || soContato), fin: comFin });
   const naoFeitos = [...d.comHora.filter(x => !x.feito), ...d.semHora.filter(x => !x.feito && x.data === hoje), ...d.atrasados, ...(comFin ? [...d.pagar, ...d.receber].filter(x => !x.feito) : [])];
   const L = [];
   if (feitos.length) L.push("", `✅ *Concluídas (${feitos.length})*`, ...feitos.map(x => `• ${x.titulo}${x.feito_por ? ` — ${x.feito_por}` : ""}${x.feito_ms ? ` às ${horaLocal(x.feito_ms)}` : ""} [${x.t}${x.id}]`));
@@ -737,7 +764,7 @@ export function pdfRelatorioAgenda(r, empresa, moeda = "BRL", geradoEm = "") {
 // ---------------------------------------------------------------------------
 // Rotas: /api/orgs/:id/adm/{pessoas, historico, relatorio-agenda, zap, celular}
 // ---------------------------------------------------------------------------
-export const AREAS_EQUIPE = ["pessoas", "historico", "relatorio-agenda", "zap", "celular", "adiar"];
+export const AREAS_EQUIPE = ["contatos", "pessoas", "historico", "relatorio-agenda", "zap", "celular", "adiar"];
 export async function rotasAgendaEquipe(request, env, k, orgId, papel, partes, ajudas) {
   const { json, lerCorpo, pode, agora } = k;
   const url = new URL(request.url), metodo = request.method, ms = agora(env), hoje = hojeLocal(ms);
@@ -746,6 +773,56 @@ export async function rotasAgendaEquipe(request, env, k, orgId, papel, partes, a
   const corpo = async () => { const { corpo: c, erro } = await lerCorpo(request); return erro ? { erro } : { c: c || {} }; };
   const area = partes[0];
   const q = async (sql, ...a) => (await env.DB.prepare(sql).bind(...a).all()).results || [];
+
+  // Os modelos aprovados da Meta são criados sozinhos na primeira vez que alguém é cadastrado para receber.
+  const garantirModelos = async () => { try { const cfg = await ajudas.config(); if (k.modelosAgendaZap) await k.modelosAgendaZap(Number(cfg.zap_org_id) || orgId, true); } catch { /* sem WhatsApp conectado ainda */ } };
+
+  // Quem recebe no WhatsApp sem precisar de login (ex.: o mecânico, a secretária, o cliente da oficina).
+  if (area === "contatos") {
+    const id = /^\d+$/.test(partes[1] || "") ? Number(partes[1]) : null;
+    if (metodo === "GET" && !id) return json({ contatos: await q("SELECT * FROM adm_contatos WHERE org_id=? ORDER BY ativo DESC, nome", orgId) });
+    const ler = async atual => {
+      const { c, erro } = await corpo(); if (erro) return { erro };
+      const nome = re(c.nome ?? atual?.nome, 80);
+      if (!nome) return { msg: "Escreva o nome de quem vai receber." };
+      const tel = telefoneValido(c.telefone ?? atual?.telefone);
+      if (!tel) return { msg: "WhatsApp inválido. Use DDD + número (ex.: 21 99999-9162)." };
+      const dono = await env.DB.prepare(`SELECT id FROM adm_contatos WHERE org_id=? AND telefone IN (${variantesTel(tel).map(() => "?").join(",")}) AND id<>?`).bind(orgId, ...variantesTel(tel), atual?.id || 0).first();
+      if (dono) return { msg: "Este WhatsApp já está cadastrado.", existente: dono.id };
+      const b = (v, padrao) => v === undefined ? padrao : v === false || v === 0 || v === "0" ? 0 : 1;
+      return { v: { nome, telefone: tel, ativo: b(c.ativo, atual?.ativo ?? 1), zap_manha: b(c.zap_manha, atual?.zap_manha ?? 1), zap_lembretes: b(c.zap_lembretes, atual?.zap_lembretes ?? 1), zap_relatorios: b(c.zap_relatorios, atual?.zap_relatorios ?? 0), so_minhas: b(c.so_minhas, atual?.so_minhas ?? 1) } };
+    };
+    if (metodo === "POST" && !id) {
+      const r = await ler(null); if (r.erro) return r.erro; if (r.msg) return json({ erro: r.msg, existente: r.existente || null }, r.existente ? 409 : 400);
+      const v = r.v;
+      const ins = await env.DB.prepare("INSERT INTO adm_contatos(org_id,nome,telefone,ativo,zap_manha,zap_lembretes,zap_relatorios,so_minhas,criado_ms) VALUES(?,?,?,?,?,?,?,?,?)").bind(orgId, v.nome, v.telefone, v.ativo, v.zap_manha, v.zap_lembretes, v.zap_relatorios, v.so_minhas, ms).run();
+      await garantirModelos();
+      return json({ ok: true, id: ins.meta?.last_row_id, ...v }, 201);
+    }
+    if (id) {
+      const atual = await env.DB.prepare("SELECT * FROM adm_contatos WHERE id=? AND org_id=?").bind(id, orgId).first();
+      if (!atual) return json({ erro: "Contato não encontrado." }, 404);
+      if (metodo === "PUT") {
+        const r = await ler(atual); if (r.erro) return r.erro; if (r.msg) return json({ erro: r.msg }, 400);
+        const v = r.v;
+        await env.DB.prepare("UPDATE adm_contatos SET nome=?, telefone=?, ativo=?, zap_manha=?, zap_lembretes=?, zap_relatorios=?, so_minhas=? WHERE id=?").bind(v.nome, v.telefone, v.ativo, v.zap_manha, v.zap_lembretes, v.zap_relatorios, v.so_minhas, id).run();
+        return json({ ok: true, ...v });
+      }
+      if (metodo === "DELETE") {
+        await env.DB.prepare("UPDATE adm_agenda SET contato_id=NULL WHERE org_id=? AND contato_id=?").bind(orgId, id).run();
+        await env.DB.prepare("UPDATE adm_tarefas SET contato_id=NULL WHERE org_id=? AND contato_id=?").bind(orgId, id).run();
+        await env.DB.prepare("DELETE FROM adm_contatos WHERE id=? AND org_id=?").bind(id, orgId).run();
+        return json({ ok: true });
+      }
+      if (partes[2] === "testar" && metodo === "POST") {
+        const cfg = await ajudas.config();
+        const d = await itensDoDia(env, orgId, hoje, hoje, { contatoId: id, soMinhas: Boolean(atual.so_minhas), fin: false });
+        const via = k.zapEquipe ? await k.zapEquipe(Number(cfg.zap_org_id) || orgId, atual.telefone, textoDoDiaEquipe(d, { hoje }), { nome: MODELO_RESUMO, idioma: "pt_BR", params: [`hoje, ${br(hoje)}`, listaCurta(d)] }).catch(() => "") : "";
+        if (!via) return json({ erro: "Não consegui enviar. Confira se o WhatsApp da empresa está conectado e se os modelos já foram aprovados pela Meta (WhatsApp e celular). Se a pessoa mandar um “oi” para o número da empresa, a lista chega na hora." }, 502);
+        return json({ ok: true, via });
+      }
+    }
+  }
 
   // Equipe no WhatsApp: telefone e o que cada pessoa recebe.
   if (area === "pessoas") {
@@ -770,6 +847,7 @@ export async function rotasAgendaEquipe(request, env, k, orgId, papel, partes, a
       await env.DB.prepare(`INSERT INTO adm_pessoas(org_id,usuario_id,telefone,ativo,zap_manha,zap_lembretes,zap_relatorios,so_minhas,atualizado_ms) VALUES(?,?,?,?,?,?,?,?,?)
         ON CONFLICT(org_id,usuario_id) DO UPDATE SET telefone=excluded.telefone, ativo=excluded.ativo, zap_manha=excluded.zap_manha, zap_lembretes=excluded.zap_lembretes, zap_relatorios=excluded.zap_relatorios, so_minhas=excluded.so_minhas, atualizado_ms=excluded.atualizado_ms`)
         .bind(orgId, uid, tel, b(c.ativo), b(c.zap_manha), b(c.zap_lembretes), b(c.zap_relatorios), c.so_minhas ? 1 : 0, ms).run();
+      if (tel) await garantirModelos();
       return json({ ok: true, telefone: tel });
     }
   }
@@ -839,7 +917,7 @@ export async function rotasAgendaEquipe(request, env, k, orgId, papel, partes, a
       if (!p) return json({ erro: "Cadastre primeiro o seu WhatsApp na lista da equipe." }, 400);
       const d = await itensDoDia(env, orgId, hoje, hoje, { pessoaId: eu.id, soMinhas: Boolean(p.so_minhas), fin: admin, finDias: Number(cfg.aviso_fin_dias ?? 2) });
       const moeda = (await env.DB.prepare("SELECT moeda FROM fin_config WHERE org_id=?").bind(orgId).first().catch(() => null))?.moeda || "BRL";
-      const via = k.zapEquipe ? await k.zapEquipe(contaOrg, p.telefone, textoDoDiaEquipe(d, { moeda, hoje }), { nome: MODELO_RESUMO, idioma: "pt_BR", params: [`hoje, ${br(hoje)}`, contagem(d)] }).catch(() => "") : "";
+      const via = k.zapEquipe ? await k.zapEquipe(contaOrg, p.telefone, textoDoDiaEquipe(d, { moeda, hoje }), { nome: MODELO_RESUMO, idioma: "pt_BR", params: [`hoje, ${br(hoje)}`, listaCurta(d)] }).catch(() => "") : "";
       if (!via) return json({ erro: "Não consegui enviar. Se você nunca escreveu para este número, mande um “oi” para ele pelo WhatsApp (abre a janela de 24 horas) ou aguarde a Meta aprovar os modelos." }, 502);
       return json({ ok: true, via });
     }

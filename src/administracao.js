@@ -71,6 +71,10 @@ const ALTERS_ADMIN = ["ALTER TABLE adm_locatarios ADD COLUMN periodicidade TEXT"
   "CREATE TABLE IF NOT EXISTS adm_zap_estado (conta_org INTEGER NOT NULL, telefone TEXT NOT NULL, org_atual INTEGER, ultimo_tipo TEXT, ultimo_id INTEGER, ultimo_org INTEGER, ultimo_ms INTEGER, PRIMARY KEY (conta_org, telefone))",
   // Celular: link pessoal do calendário e dos alarmes (app Atalhos).
   "CREATE TABLE IF NOT EXISTS adm_alarme_tokens (usuario_id INTEGER PRIMARY KEY, token TEXT NOT NULL UNIQUE, prio_min TEXT, antecedencia INTEGER, usado_ms INTEGER, ms INTEGER)",
+  `CREATE TABLE IF NOT EXISTS adm_contatos (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, nome TEXT NOT NULL, telefone TEXT NOT NULL, ativo INTEGER NOT NULL DEFAULT 1, zap_manha INTEGER NOT NULL DEFAULT 1,
+    zap_lembretes INTEGER NOT NULL DEFAULT 1, zap_relatorios INTEGER NOT NULL DEFAULT 0, so_minhas INTEGER NOT NULL DEFAULT 1, ultimo_manha TEXT, ultimo_meio TEXT, ultimo_fim TEXT, criado_ms INTEGER)`,
+  "CREATE INDEX IF NOT EXISTS adm_contatos_org ON adm_contatos(org_id)",
+  "ALTER TABLE adm_agenda ADD COLUMN contato_id INTEGER", "ALTER TABLE adm_tarefas ADD COLUMN contato_id INTEGER",
   "CREATE TABLE IF NOT EXISTS adm_alarmes_ok (usuario_id INTEGER NOT NULL, chave TEXT NOT NULL, ms INTEGER, PRIMARY KEY (usuario_id, chave))"];
 
 const prontos = new WeakSet();
@@ -987,7 +991,12 @@ export async function rotasAdmin(request, env, k, orgId, papel, resto) {
   const membros = async () => (await env.DB.prepare(`SELECT u.id, COALESCE(NULLIF(u.nome,''), u.email) AS nome, u.email, m.papel FROM plt_membros m JOIN plt_usuarios u ON u.id=m.usuario_id WHERE m.org_id=? AND u.ativo=1
     UNION SELECT u.id, COALESCE(NULLIF(u.nome,''), u.email), u.email, 'OWNER' FROM plt_usuarios u WHERE u.super_admin=1 AND u.ativo=1 AND u.id NOT IN (SELECT usuario_id FROM plt_membros WHERE org_id=?) ORDER BY 2`).bind(orgId, orgId).all().catch(() => null))?.results || [];
   const responsavelValido = async idR => { const n = Number(idR) || 0; if (!n) return null; return (await membros()).some(x => x.id === n) ? n : null; };
-  if (area === "equipe" && metodo === "GET") return json({ equipe: await membros(), eu: k.sessao?.usuario?.id || null, prioridades: PRIORIDADES, categorias: CATEGORIAS_AGENDA });
+  const contatosZap = async () => (await env.DB.prepare("SELECT id, nome, telefone FROM adm_contatos WHERE org_id=? AND ativo=1 ORDER BY nome").bind(orgId).all().catch(() => null))?.results || [];
+  const contatoValido = async idC => { const n = Number(idC) || 0; if (!n) return null; return (await env.DB.prepare("SELECT id FROM adm_contatos WHERE id=? AND org_id=?").bind(n, orgId).first()) ? n : null; };
+  if (area === "equipe" && metodo === "GET") {
+    const regs = new Set(((await env.DB.prepare("SELECT usuario_id FROM adm_pessoas WHERE org_id=? AND telefone IS NOT NULL AND ativo=1").bind(orgId).all().catch(() => null))?.results || []).map(x => x.usuario_id));
+    return json({ equipe: (await membros()).map(m0 => ({ ...m0, whatsapp: regs.has(m0.id) })), contatos: await contatosZap(), eu: k.sessao?.usuario?.id || null, prioridades: PRIORIDADES, categorias: CATEGORIAS_AGENDA });
+  }
   if (AREAS_EQUIPE.includes(area)) { const r = await rotasAgendaEquipe(request, env, k, orgId, papel, partes, { membros, config, empresa }); if (r) return r; }
 
   // ----- Tarefas (com ou sem prazo), checklist, responsável e "cobrar retorno em"
@@ -1000,11 +1009,12 @@ export async function rotasAdmin(request, env, k, orgId, papel, resto) {
       const lista = Array.isArray(v.checklist) ? v.checklist : (() => { try { return JSON.parse(v.checklist || "[]"); } catch { return []; } })();
       return { titulo: re(v.titulo, 200), prazo: v.prazo || null, acompanhar_em: v.acompanhar_em || null, prioridade: prioridadeValida(v.prioridade), obs: re(v.obs, 1500) || null,
         responsavel_id: await responsavelValido(v.responsavel_id), checklist: JSON.stringify(lista.slice(0, 40).map(x => ({ t: re(x.t ?? x, 160), ok: Boolean(x.ok) })).filter(x => x.t)),
-        categoria: categoriaValida(v.categoria), escopo: escopoValido(v.escopo), repetir: repeticaoValida(v.repetir), situacao: v.situacao === "EM_ANDAMENTO" ? "EM_ANDAMENTO" : null };
+        categoria: categoriaValida(v.categoria), escopo: escopoValido(v.escopo), repetir: repeticaoValida(v.repetir), situacao: v.situacao === "EM_ANDAMENTO" ? "EM_ANDAMENTO" : null,
+        contato_id: c.contato_id === undefined ? atual.contato_id ?? null : await contatoValido(c.contato_id) };
     };
     if (metodo === "GET" && !id1) {
       const ver = url.searchParams.get("ver") || "abertas";
-      const itens = (await env.DB.prepare(`SELECT t.*, COALESCE(NULLIF(u.nome,''), u.email) AS responsavel_nome FROM adm_tarefas t LEFT JOIN plt_usuarios u ON u.id=t.responsavel_id WHERE t.org_id=? ${ver === "feitas" ? "AND t.feito=1" : ver === "todas" ? "" : "AND t.feito=0"}
+      const itens = (await env.DB.prepare(`SELECT t.*, COALESCE(NULLIF(u.nome,''), u.email) AS responsavel_nome, ct.nome AS contato_nome FROM adm_tarefas t LEFT JOIN plt_usuarios u ON u.id=t.responsavel_id LEFT JOIN adm_contatos ct ON ct.id=t.contato_id WHERE t.org_id=? ${ver === "feitas" ? "AND t.feito=1" : ver === "todas" ? "" : "AND t.feito=0"}
         ${url.searchParams.get("minhas") ? "AND t.responsavel_id=" + Number(k.sessao?.usuario?.id || 0) : ""} ORDER BY t.feito, CASE WHEN t.prazo IS NULL THEN 1 ELSE 0 END, t.prazo, t.id DESC LIMIT 500`).bind(orgId).all()).results || [];
       return json({ hoje, tarefas: itens.map(x => ({ ...x, prioridade: prioridadeValida(x.prioridade), situacao_atual: situacaoDe(x, hoje), checklist: (() => { try { return JSON.parse(x.checklist || "[]"); } catch { return []; } })(), atrasada: !x.feito && x.prazo && x.prazo < hoje, cobrar: !x.feito && x.acompanhar_em && x.acompanhar_em <= hoje })) });
     }
@@ -1012,7 +1022,7 @@ export async function rotasAdmin(request, env, k, orgId, papel, resto) {
       const { c, erro } = await corpo(); if (erro) return erro;
       const r = await tarefaPorTexto(env, orgId, c.texto, ms, euP.nome);
       if (!r.ok) return json({ erro: r.erro }, 400);
-      await env.DB.prepare("UPDATE adm_tarefas SET criado_por_id=?, responsavel_id=COALESCE(?, responsavel_id) WHERE id=?").bind(euP.id, await responsavelValido(c.responsavel_id), r.id).run();
+      await env.DB.prepare("UPDATE adm_tarefas SET criado_por_id=?, responsavel_id=COALESCE(?, responsavel_id), contato_id=? WHERE id=?").bind(euP.id, await responsavelValido(c.responsavel_id), await contatoValido(c.contato_id), r.id).run();
       await hist("TAREFA", r.id, "criou", r.titulo, r.prazo ? `prazo ${br(r.prazo)}` : "");
       return json(r, 201);
     }
@@ -1022,6 +1032,7 @@ export async function rotasAdmin(request, env, k, orgId, papel, resto) {
       const r = await env.DB.prepare("INSERT INTO adm_tarefas(org_id,titulo,responsavel_id,prazo,acompanhar_em,checklist,prioridade,obs,criado_por,criado_ms,categoria,escopo,repetir,situacao,criado_por_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
         .bind(orgId, v.titulo, v.responsavel_id, v.prazo, v.acompanhar_em, v.checklist, v.prioridade, v.obs, euP.nome, ms, v.categoria, v.escopo, v.repetir, v.situacao, euP.id).run();
       const id = r.meta?.last_row_id;
+      if (v.contato_id) await env.DB.prepare("UPDATE adm_tarefas SET contato_id=? WHERE id=?").bind(v.contato_id, id).run();
       await hist("TAREFA", id, "criou", v.titulo, [v.prazo && `prazo ${br(v.prazo)}`, v.prioridade !== "NORMAL" && `prioridade ${v.prioridade.toLowerCase()}`].filter(Boolean).join("; "));
       await avisarMudanca(env, k, orgId, { ...v, id }, "criada", euP, ms);
       return json({ ok: true, id }, 201);
@@ -1038,9 +1049,9 @@ export async function rotasAdmin(request, env, k, orgId, papel, resto) {
         const { c, erro } = await corpo(); if (erro) return erro;
         const v = await validar(c, { ...atual, checklist: (() => { try { return JSON.parse(atual.checklist || "[]"); } catch { return []; } })() }); if (typeof v === "string") return json({ erro: v }, 400);
         if (c.categoria === undefined) v.categoria = atual.categoria; if (c.escopo === undefined) v.escopo = atual.escopo; if (c.repetir === undefined) v.repetir = atual.repetir; if (c.situacao === undefined) v.situacao = atual.situacao;
-        await env.DB.prepare("UPDATE adm_tarefas SET titulo=?,responsavel_id=?,prazo=?,acompanhar_em=?,checklist=?,prioridade=?,obs=?,avisado=NULL,categoria=?,escopo=?,repetir=?,situacao=?,alterado_por=?,alterado_ms=?,adiado_n=adiado_n+? WHERE id=?")
-          .bind(v.titulo, v.responsavel_id, v.prazo, v.acompanhar_em, v.checklist, v.prioridade, v.obs, v.categoria, v.escopo, v.repetir, v.situacao, euP.nome, ms, atual.prazo && v.prazo && v.prazo > atual.prazo ? 1 : 0, id1).run();
-        const dif = diferencas(atual, v, ["titulo", "prazo", "acompanhar_em", "prioridade", "responsavel_id", "categoria", "escopo", "repetir", "situacao"]);
+        await env.DB.prepare("UPDATE adm_tarefas SET titulo=?,responsavel_id=?,prazo=?,acompanhar_em=?,checklist=?,prioridade=?,obs=?,avisado=NULL,categoria=?,escopo=?,repetir=?,situacao=?,alterado_por=?,alterado_ms=?,adiado_n=adiado_n+?,contato_id=? WHERE id=?")
+          .bind(v.titulo, v.responsavel_id, v.prazo, v.acompanhar_em, v.checklist, v.prioridade, v.obs, v.categoria, v.escopo, v.repetir, v.situacao, euP.nome, ms, atual.prazo && v.prazo && v.prazo > atual.prazo ? 1 : 0, v.contato_id, id1).run();
+        const dif = diferencas(atual, v, ["titulo", "prazo", "acompanhar_em", "prioridade", "responsavel_id", "contato_id", "categoria", "escopo", "repetir", "situacao"]);
         const soCheck = !dif && atual.checklist !== v.checklist;
         if (dif || soCheck) await hist("TAREFA", id1, atual.prazo && v.prazo && v.prazo > atual.prazo ? "adiou" : v.situacao === "EM_ANDAMENTO" && atual.situacao !== "EM_ANDAMENTO" ? "iniciou" : "alterou", v.titulo, dif || "checklist atualizado");
         if (dif) await avisarMudanca(env, k, orgId, { ...v, id: id1 }, "alterada", euP, ms);
@@ -1060,12 +1071,13 @@ export async function rotasAdmin(request, env, k, orgId, papel, resto) {
       return { titulo: re(v.titulo, 160), data: v.data, hora: v.hora || null, duracao_min: inteiro(v.duracao_min, 5, 1440, 60), quem: re(v.quem, 60) || null, local: re(v.local, 120) || null,
         prioridade: prioridadeValida(v.prioridade), aviso_min: inteiro(v.aviso_min, 0, 10080, 60), repetir: repeticaoValida(v.repetir), obs: re(v.obs, 800) || null,
         responsavel_id: v.responsavel_id === undefined ? atual.responsavel_id ?? null : Number(v.responsavel_id) || null,
-        tipo: v.tipo === "LEMBRETE" ? "LEMBRETE" : "COMPROMISSO", categoria: categoriaValida(v.categoria), escopo: escopoValido(v.escopo), situacao: v.situacao === "EM_ANDAMENTO" ? "EM_ANDAMENTO" : null };
+        tipo: v.tipo === "LEMBRETE" ? "LEMBRETE" : "COMPROMISSO", categoria: categoriaValida(v.categoria), escopo: escopoValido(v.escopo), situacao: v.situacao === "EM_ANDAMENTO" ? "EM_ANDAMENTO" : null,
+        contato_id: c.contato_id === undefined ? atual.contato_id ?? null : Number(c.contato_id) || null };
     };
     if (metodo === "GET" && !id1) {
       const de = dataValida(url.searchParams.get("de")) ? url.searchParams.get("de") : somarDias(hoje, -30), ate = dataValida(url.searchParams.get("ate")) ? url.searchParams.get("ate") : somarDias(hoje, 120);
       const minha = url.searchParams.get("minha") ? " AND a.responsavel_id=" + Number(k.sessao?.usuario?.id || 0) : "";
-      const itens = (await env.DB.prepare(`SELECT a.*, COALESCE(NULLIF(u.nome,''), u.email) AS responsavel_nome FROM adm_agenda a LEFT JOIN plt_usuarios u ON u.id=a.responsavel_id WHERE a.org_id=? AND ((a.data BETWEEN ? AND ?) OR (a.feito=0 AND a.data < ?))${minha} ORDER BY a.data, COALESCE(a.hora,'99:99') LIMIT 1500`).bind(orgId, de, ate, hoje).all()).results || [];
+      const itens = (await env.DB.prepare(`SELECT a.*, COALESCE(NULLIF(u.nome,''), u.email) AS responsavel_nome, ct.nome AS contato_nome FROM adm_agenda a LEFT JOIN plt_usuarios u ON u.id=a.responsavel_id LEFT JOIN adm_contatos ct ON ct.id=a.contato_id WHERE a.org_id=? AND ((a.data BETWEEN ? AND ?) OR (a.feito=0 AND a.data < ?))${minha} ORDER BY a.data, COALESCE(a.hora,'99:99') LIMIT 1500`).bind(orgId, de, ate, hoje).all()).results || [];
       // Tarefas com prazo aparecem no calendário também.
       const tarefas = (await env.DB.prepare("SELECT id, titulo, prazo, feito FROM adm_tarefas WHERE org_id=? AND prazo BETWEEN ? AND ?").bind(orgId, de, ate).all()).results || [];
       return json({ itens: itens.map(a => ({ ...a, prioridade: prioridadeValida(a.prioridade), situacao_atual: situacaoDe(a, hoje) })), tarefas, hoje });
@@ -1075,16 +1087,16 @@ export async function rotasAdmin(request, env, k, orgId, papel, resto) {
       const { c, erro } = await corpo(); if (erro) return erro;
       const r = await compromissoPorTexto(env, orgId, c.texto, ms, "texto");
       if (!r.ok) return json({ erro: r.erro, parcial: r.parcial }, 400);
-      await env.DB.prepare("UPDATE adm_agenda SET responsavel_id=COALESCE(?, responsavel_id), criado_por=?, criado_por_id=?, tipo=? WHERE id=?").bind(await responsavelValido(c.responsavel_id), euP.nome, euP.id, r.lembrete ? "LEMBRETE" : "COMPROMISSO", r.id).run();
+      await env.DB.prepare("UPDATE adm_agenda SET responsavel_id=COALESCE(?, responsavel_id), contato_id=?, criado_por=?, criado_por_id=?, tipo=? WHERE id=?").bind(await responsavelValido(c.responsavel_id), await contatoValido(c.contato_id), euP.nome, euP.id, r.lembrete ? "LEMBRETE" : "COMPROMISSO", r.id).run();
       await hist("AGENDA", r.id, "criou", r.titulo, `${br(r.data)}${r.hora ? " " + r.hora : ""}`);
       return json(r, 201);
     }
     if (metodo === "POST" && !id1) {
       const { c, erro } = await corpo(); if (erro) return erro;
       const v = validar(c); if (typeof v === "string") return json({ erro: v }, 400);
-      v.responsavel_id = await responsavelValido(v.responsavel_id);
+      v.responsavel_id = await responsavelValido(v.responsavel_id); v.contato_id = await contatoValido(v.contato_id);
       const id = await criarCompromisso(env, orgId, v, "painel", ms);
-      await env.DB.prepare("UPDATE adm_agenda SET tipo=?, categoria=?, escopo=?, situacao=?, criado_por=?, criado_por_id=? WHERE id=?").bind(v.tipo, v.categoria, v.escopo, v.situacao, euP.nome, euP.id, id).run();
+      await env.DB.prepare("UPDATE adm_agenda SET tipo=?, categoria=?, escopo=?, situacao=?, criado_por=?, criado_por_id=?, contato_id=? WHERE id=?").bind(v.tipo, v.categoria, v.escopo, v.situacao, euP.nome, euP.id, v.contato_id, id).run();
       await hist("AGENDA", id, "criou", v.titulo, `${br(v.data)}${v.hora ? " " + v.hora : ""}${v.prioridade !== "NORMAL" ? "; prioridade " + v.prioridade.toLowerCase() : ""}`);
       await avisarMudanca(env, k, orgId, { ...v, id }, "marcado", euP, ms);
       return json({ ok: true, id }, 201);
@@ -1101,13 +1113,13 @@ export async function rotasAdmin(request, env, k, orgId, papel, resto) {
         const { c, erro } = await corpo(); if (erro) return erro;
         if (atual.origem === "google") return json({ erro: "Este compromisso vem do Google Agenda: altere lá (a DENIA atualiza sozinha)." }, 409);
         const v = validar(c, atual); if (typeof v === "string") return json({ erro: v }, 400);
-        v.responsavel_id = await responsavelValido(v.responsavel_id);
+        v.responsavel_id = await responsavelValido(v.responsavel_id); v.contato_id = c.contato_id === undefined ? atual.contato_id ?? null : await contatoValido(c.contato_id);
         if (c.tipo === undefined) v.tipo = atual.tipo || "COMPROMISSO"; if (c.categoria === undefined) v.categoria = atual.categoria; if (c.escopo === undefined) v.escopo = atual.escopo; if (c.situacao === undefined) v.situacao = atual.situacao;
         const adiou = v.data > atual.data || (v.data === atual.data && v.hora && atual.hora && v.hora > atual.hora);
         const mudouHora = v.data !== atual.data || v.hora !== atual.hora || Number(v.aviso_min) !== Number(atual.aviso_min);
-        await env.DB.prepare(`UPDATE adm_agenda SET titulo=?,data=?,hora=?,duracao_min=?,quem=?,local=?,prioridade=?,aviso_min=?,repetir=?,obs=?,responsavel_id=?,tipo=?,categoria=?,escopo=?,situacao=?,alterado_por=?,alterado_ms=?,adiado_n=adiado_n+?${mudouHora ? ",avisado_ms=NULL,avisado_hora_ms=NULL" : ""} WHERE id=?`)
-          .bind(v.titulo, v.data, v.hora, v.duracao_min, v.quem, v.local, v.prioridade, v.aviso_min, v.repetir, v.obs, v.responsavel_id, v.tipo, v.categoria, v.escopo, v.situacao, euP.nome, ms, adiou ? 1 : 0, id1).run();
-        const dif = diferencas(atual, v, ["titulo", "data", "hora", "local", "prioridade", "responsavel_id", "aviso_min", "repetir", "tipo", "categoria", "escopo", "situacao"]);
+        await env.DB.prepare(`UPDATE adm_agenda SET titulo=?,data=?,hora=?,duracao_min=?,quem=?,local=?,prioridade=?,aviso_min=?,repetir=?,obs=?,responsavel_id=?,tipo=?,categoria=?,escopo=?,situacao=?,alterado_por=?,alterado_ms=?,adiado_n=adiado_n+?,contato_id=?${mudouHora ? ",avisado_ms=NULL,avisado_hora_ms=NULL" : ""} WHERE id=?`)
+          .bind(v.titulo, v.data, v.hora, v.duracao_min, v.quem, v.local, v.prioridade, v.aviso_min, v.repetir, v.obs, v.responsavel_id, v.tipo, v.categoria, v.escopo, v.situacao, euP.nome, ms, adiou ? 1 : 0, v.contato_id, id1).run();
+        const dif = diferencas(atual, v, ["titulo", "data", "hora", "local", "prioridade", "responsavel_id", "contato_id", "aviso_min", "repetir", "tipo", "categoria", "escopo", "situacao"]);
         if (dif) { await hist("AGENDA", id1, adiou ? "adiou" : v.situacao === "EM_ANDAMENTO" && atual.situacao !== "EM_ANDAMENTO" ? "iniciou" : "alterou", v.titulo, dif); await avisarMudanca(env, k, orgId, { ...v, id: id1 }, adiou ? "adiado" : "alterado", euP, ms); }
         return json({ ok: true });
       }
@@ -1527,7 +1539,7 @@ export async function adminDoCron(env, k) {
     const prio = prioridadeValida(a.prioridade), selo = prio === "EXTREMA" ? "🚨 EXTREMA IMPORTÂNCIA — " : prio === "ALTA" ? "⚠️ Prioridade alta — " : "";
     const texto = `${selo}${a.titulo}\n${quando}${a.local ? "\nLocal: " + a.local : ""}${a.quem ? "\nCom: " + a.quem : ""}${a.obs ? "\n\n" + a.obs : ""}${k.base ? `\n\nAgenda: ${k.base}/app#/admin/agenda` : ""}`;
     const zapTxt = `🔔 ${selo ? "*" + selo.replace(/ — $/, "") + "*\n" : ""}*Lembrete${a.tipo === "LEMBRETE" ? "" : " de compromisso"}*: ${a.titulo}\n${quando}${a.local ? "\nLocal: " + a.local : ""}${a.obs ? "\n" + a.obs : ""}\n\nResponda OK quando concluir. [C${a.id}]`;
-    out.avisos += await avisar(a.org_id, `${selo ? selo.replace(/ — $/, ": ") : "Lembrete: "}${a.titulo}${a.hora ? " às " + a.hora : ""}`, texto, a.responsavel_id, [`${prio === "EXTREMA" ? "URGENTE: " : ""}${a.titulo}`, quando], { zap: { item: { tipo: "C", id: a.id, responsavel_id: a.responsavel_id }, texto: zapTxt } });
+    out.avisos += await avisar(a.org_id, `${selo ? selo.replace(/ — $/, ": ") : "Lembrete: "}${a.titulo}${a.hora ? " às " + a.hora : ""}`, texto, a.responsavel_id, [`${prio === "EXTREMA" ? "URGENTE: " : ""}${a.titulo}`, quando], { zap: { item: { tipo: "C", id: a.id, responsavel_id: a.responsavel_id, contato_id: a.contato_id }, texto: zapTxt } });
   }
   // Tarefas: no dia do prazo e no dia de cobrar retorno (uma vez por dia).
   if (hora >= 8) {
@@ -1537,7 +1549,7 @@ export async function adminDoCron(env, k) {
       const motivo = x.acompanhar_em === hoje ? "Cobrar retorno hoje" : "Prazo hoje";
       const p0 = prioridadeValida(x.prioridade), sel = p0 === "EXTREMA" ? "🚨 " : p0 === "ALTA" ? "⚠️ " : "";
       out.avisos += await avisar(x.org_id, `${sel}${motivo}: ${x.titulo}`, `${x.titulo}\n${motivo}.${x.obs ? "\n\n" + x.obs : ""}${k.base ? `\n\nTarefas: ${k.base}/app#/admin/tarefas` : ""}`, x.responsavel_id, [x.titulo, motivo.toLowerCase()],
-        { zap: { item: { tipo: "T", id: x.id, responsavel_id: x.responsavel_id }, texto: `${sel}📝 *${motivo}*: ${x.titulo}${x.obs ? "\n" + x.obs : ""}\n\nResponda OK quando concluir ou ADIAR T${x.id} amanhã. [T${x.id}]` } });
+        { zap: { item: { tipo: "T", id: x.id, responsavel_id: x.responsavel_id, contato_id: x.contato_id }, texto: `${sel}📝 *${motivo}*: ${x.titulo}${x.obs ? "\n" + x.obs : ""}\n\nResponda OK quando concluir ou ADIAR T${x.id} amanhã. [T${x.id}]` } });
     }
   }
   // Resumo do dia no horário escolhido (e-mail e Telegram).

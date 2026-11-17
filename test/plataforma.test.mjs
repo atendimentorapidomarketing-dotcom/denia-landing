@@ -4314,3 +4314,48 @@ test("Agenda inteligente — prioridades, histórico de quem fez, comandos e age
   assert.equal(z.conta_org, inf); assert.equal(z.config.hora_fim, 18);
   delete p.env.__agora;
 });
+
+test("Agenda — quem recebe no WhatsApp sem login: lista do dia (mesmo fora das 24h, dentro do modelo), lembrete e OK pelo WhatsApp", async () => {
+  const { p, inf } = await duasEmpresasComChatbot();
+  const PN = "111111111111", MEC = "5521999999162";
+  const ag = (cam, op = {}) => p.req(`/api/orgs/${inf}/adm/${cam}`, { quem: "admin", ...op });
+  p.env.__agora = () => Date.parse("2099-10-20T10:00:00Z");
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  assert.equal((await ag("contatos", { metodo: "POST", corpo: { nome: "João mecânico", telefone: "123" } })).status, 400);
+  const c = await ag("contatos", { metodo: "POST", corpo: { nome: "João mecânico", telefone: "(21) 99999-9162" } });
+  assert.equal(c.status, 201); assert.equal(c.dados.telefone, MEC);
+  assert.equal((await ag("contatos", { metodo: "POST", corpo: { nome: "Outro", telefone: "21 99999-9162" } })).status, 409, "o mesmo número não entra duas vezes");
+  const eq = (await ag("equipe")).dados;
+  assert.deepEqual(eq.contatos.map(x => x.nome), ["João mecânico"]);
+  // Compromissos marcados para ele e um que não é dele.
+  await ag("agenda", { metodo: "POST", corpo: { titulo: "Troca de óleo do Gol", data: "2099-10-20", hora: "09:00", aviso_min: 30, contato_id: c.dados.id } });
+  await ag("agenda", { metodo: "POST", corpo: { titulo: "Revisão do Corolla", data: "2099-10-20", hora: "14:00", contato_id: c.dados.id } });
+  await ag("agenda", { metodo: "POST", corpo: { titulo: "Reunião com o contador", data: "2099-10-20", hora: "10:00" } });
+  const lista = (await ag("agenda?de=2099-10-20&ate=2099-10-20")).dados.itens;
+  assert.equal(lista.find(x => x.titulo === "Troca de óleo do Gol").contato_nome, "João mecânico");
+  // Ele nunca escreveu para o número: a lista do dia vai dentro do modelo aprovado.
+  const mod = await import("../src/worker.js");
+  const rodar = async () => { const pend = []; await mod.default.scheduled({}, p.env, { waitUntil: x => pend.push(x) }); await Promise.all(pend); };
+  p.env.__agora = () => Date.parse("2099-10-20T11:00:00Z"); // 08:00
+  let n0 = p.engine.enviados.length; await rodar();
+  let paraEle = p.engine.enviados.slice(n0).filter(e => e.to === MEC);
+  assert.equal(paraEle.length, 1, "uma mensagem de manhã");
+  assert.equal(paraEle[0].texto, "denia_resumo_agenda");
+  const vars = paraEle[0].corpo.template.components[0].parameters.map(x => x.text);
+  assert.equal(vars[1], "09:00 Troca de óleo do Gol; 14:00 Revisão do Corolla", "a lista do dia, só o que é dele");
+  // Ele responde AGENDA: recebe a lista completa (janela aberta).
+  const zap = async t => { const n = p.engine.enviados.length; await webhookAssinado(p, { object: "whatsapp_business_account", entry: [{ changes: [{ field: "messages", value: { metadata: { phone_number_id: PN }, contacts: [{ wa_id: MEC, profile: { name: "João" } }], messages: [{ id: "wamid." + Math.random().toString(36).slice(2), timestamp: String(Math.floor(p.env.__agora() / 1000)), from: MEC, type: "text", text: { body: t } }] } }] }] }); return p.engine.enviados.slice(n).filter(e => e.to === MEC).map(e => e.texto).join("\n"); };
+  const r = await zap("agenda");
+  assert.match(r, /09:00 Troca de óleo do Gol/); assert.doesNotMatch(r, /contador/, "não vê o que não é dele");
+  // Lembrete 30 min antes, e o OK conclui.
+  p.env.__agora = () => Date.parse("2099-10-20T11:31:00Z"); // 08:31
+  n0 = p.engine.enviados.length; await rodar();
+  assert.ok(p.engine.enviados.slice(n0).some(e => e.to === MEC && /Lembrete de compromisso\*: Troca de óleo do Gol/.test(e.texto)));
+  assert.match(await zap("ok"), /Concluído: Troca de óleo do Gol \(por João mecânico/);
+  assert.equal(p.env.DB.q("SELECT feito_por FROM adm_agenda WHERE titulo='Troca de óleo do Gol'")[0].feito_por, "João mecânico");
+  // Teste pelo painel e exclusão.
+  assert.equal((await ag(`contatos/${c.dados.id}/testar`, { metodo: "POST", corpo: {} })).dados.via, "texto");
+  assert.equal((await ag(`contatos/${c.dados.id}`, { metodo: "DELETE" })).status, 200);
+  assert.equal(p.env.DB.q("SELECT COUNT(*) n FROM adm_agenda WHERE contato_id IS NOT NULL")[0].n, 0);
+  delete p.env.__agora;
+});
