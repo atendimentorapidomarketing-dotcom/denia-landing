@@ -1164,7 +1164,6 @@ video.post-arte-img { width:100%; max-height:520px; border-radius:12px; backgrou
 
 /* Apresentação da DENIA (vídeo narrado) */
 .apr-moldura { border-radius: 18px; overflow: hidden; border: 1px solid var(--borda); background: #05070f; box-shadow: 0 30px 80px rgba(0, 0, 0, .45); }
-.apr-moldura:fullscreen { border-radius: 0; display: flex; flex-direction: column; justify-content: center; }
 .apr-palco { position: relative; aspect-ratio: 16 / 9; container-type: inline-size; overflow: hidden; color: #f5f7ff; outline: none;
   background: radial-gradient(120% 90% at 85% 10%, rgba(99, 102, 241, .35), transparent 55%), radial-gradient(90% 80% at 0% 100%, rgba(14, 165, 233, .28), transparent 60%), linear-gradient(160deg, #070a18, #0b1026 60%, #060814); }
 .apr-palco::before { content: ""; position: absolute; inset: 0; background-image: linear-gradient(rgba(255,255,255,.035) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.035) 1px, transparent 1px); background-size: 4cqw 4cqw; mask-image: radial-gradient(80% 80% at 50% 50%, #000, transparent); pointer-events: none; }
@@ -1271,3 +1270,15 @@ video.post-arte-img { width:100%; max-height:520px; border-radius:12px; backgrou
 .selo-prio.baixa { background: rgba(100, 116, 139, .16); color: var(--texto-2, #64748b); }
 .prb-item.prio-extrema { border-color: rgba(220, 38, 38, .7); background: rgba(220, 38, 38, .07); }
 .prb-item.prio-alta { border-color: rgba(217, 119, 6, .55); }
+
+/* Apresentação em tela cheia (inclusive iPhone): ocupa a tela toda e, com o celular em pé, o vídeo deita. */
+.apr-moldura.apr-tela-cheia { position: fixed; inset: 0; z-index: 2147483000; margin: 0; border: 0; border-radius: 0; box-shadow: none; background: #000; width: 100vw; height: 100vh; height: 100dvh; overflow: hidden; }
+.apr-tela-cheia .apr-giro { position: absolute; top: 50%; left: 50%; width: 100vw; height: 100vh; height: 100dvh; transform: translate(-50%, -50%); display: flex; flex-direction: column; justify-content: center; align-items: center; }
+.apr-tela-cheia .apr-palco, .apr-tela-cheia .apr-progresso, .apr-tela-cheia .apr-controles { width: min(100vw, calc((100vh - 62px) * 16 / 9)); width: min(100vw, calc((100dvh - 62px) * 16 / 9)); box-sizing: border-box; flex: none; }
+.apr-tela-cheia .apr-controles { padding-bottom: max(10px, env(safe-area-inset-bottom)); }
+@media (orientation: portrait) {
+  .apr-tela-cheia .apr-giro { width: 100vh; width: 100dvh; height: 100vw; transform: translate(-50%, -50%) rotate(90deg); }
+  .apr-tela-cheia .apr-palco, .apr-tela-cheia .apr-progresso, .apr-tela-cheia .apr-controles { width: min(100vh, calc((100vw - 62px) * 16 / 9)); width: min(100dvh, calc((100vw - 62px) * 16 / 9)); }
+}
+html.apr-cheia-ativa, html.apr-cheia-ativa body { overflow: hidden; }
+.apr-lugar { aspect-ratio: 16 / 9; margin-bottom: 96px; border-radius: 18px; background: #05070f; }
