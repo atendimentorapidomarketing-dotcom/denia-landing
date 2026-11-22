@@ -37,7 +37,7 @@
 // ============================================================================
 
 const VERSAO = "34.14.0";
-const SCHEMA_VERSAO = "33.4.0"; // mude sempre que acrescentar tabela ou índice (senão o banco de produção não recebe)
+const SCHEMA_VERSAO = "33.5.0"; // mude sempre que acrescentar tabela ou índice (senão o banco de produção não recebe)
 const EMPRESA_ID = 1;
 const PHONE_ID_PADRAO = "473474732510163";
 const GRAPH = "v25.0";
@@ -525,7 +525,9 @@ const SQL_INDICES_LEGADO = [
   `CREATE INDEX IF NOT EXISTS d30_idx_atend_pessoa ON atendentes(empresa_id, pessoa_id)`,
   `CREATE INDEX IF NOT EXISTS d30_idx_tec_pessoa ON tecnicos(empresa_id, pessoa_id)`,
   `CREATE INDEX IF NOT EXISTS d30_idx_msg_origem ON mensagens(origem, id)`,
-  `CREATE INDEX IF NOT EXISTS d30_idx_msg_caso ON mensagens(caso_id, id)`
+  `CREATE INDEX IF NOT EXISTS d30_idx_msg_caso ON mensagens(caso_id, id)`,
+  // Mensagem guardada (fora da janela de 24 h) sabe de qual atendimento é: só sai se ainda fizer sentido.
+  `ALTER TABLE d30_guardadas ADD COLUMN caso_id INTEGER`
 ];
 
 let schemaPronto = false;
@@ -1385,7 +1387,7 @@ async function processarStatus(c, st) {
     const textoMsg = msg && String(msg.tipo_conteudo || "TEXTO").toUpperCase() === "TEXTO" ? msg.conteudo : "";
     if (ERROS_DA_CONTA.has(cod)) await anotarBloqueio(c, cod, st.detalhe || st.erro);
     // Janela de 24 h: guarda e entrega quando a pessoa responder (sem tentar de novo nem avisar a cada mensagem).
-    else if (cod === 131047 || cod === 470) await marcarForaDaJanela(c, st.para, { codigo: cod, texto: textoMsg, nome: msg?.nome, tipo: msg?.tipo });
+    else if (cod === 131047 || cod === 470) await marcarForaDaJanela(c, st.para, { codigo: cod, texto: textoMsg, nome: msg?.nome, tipo: msg?.tipo, casoId: msg?.caso_id || null });
     else if (cod === 131026) {
       await c.db.prepare("INSERT OR REPLACE INTO d30_destinos(telefone,motivo,codigo,desde_ms,ate_ms) VALUES(?, 'INVALIDO', ?, ?, ?)").bind(digitos(st.para), cod, agora, agora + 7 * 86400000).run().catch(() => { });
       await alertarEquipe(c, `⚠️ Mensagem NÃO entregue para ${msg?.nome || st.para} (${papelLegivel("", msg?.tipo)}, ${st.para}): ${motivo} A DENIA não vai tentar de novo nesse número por 7 dias (ou até a pessoa escrever). Confira o número com ela por outro meio.`, `invalido:${st.para}:${Math.floor(agora / (7 * 86400000))}`, msg?.caso_id);
@@ -1505,11 +1507,13 @@ async function destinoBloqueado(c, to) {
   if (!r || (r.ate_ms && r.ate_ms < c.agora())) return null;
   return r;
 }
-async function guardarParaDepois(c, to, texto, papel) {
+async function guardarParaDepois(c, to, texto, papel, casoId = null) {
   const tel = digitos(to), t = String(texto || "").trim();
   if (!t) return;
   const igual = await c.db.prepare("SELECT 1 ok FROM d30_guardadas WHERE telefone=? AND status='GUARDADA' AND texto=? LIMIT 1").bind(tel, t).first().catch(() => null);
-  if (!igual) await c.db.prepare("INSERT INTO d30_guardadas(telefone,texto,papel,criado_ms) VALUES(?,?,?,?)").bind(tel, t.slice(0, 4000), papel || null, c.agora()).run().catch(() => { });
+  if (igual) return;
+  try { await c.db.prepare("INSERT INTO d30_guardadas(telefone,texto,papel,criado_ms,caso_id) VALUES(?,?,?,?,?)").bind(tel, t.slice(0, 4000), papel || null, c.agora(), casoId || null).run(); }
+  catch { await c.db.prepare("INSERT INTO d30_guardadas(telefone,texto,papel,criado_ms) VALUES(?,?,?,?)").bind(tel, t.slice(0, 4000), papel || null, c.agora()).run().catch(() => { }); }
 }
 function papelLegivel(papel, tipo) {
   const p = String(papel || tipo || "").toUpperCase();
@@ -1517,10 +1521,10 @@ function papelLegivel(papel, tipo) {
 }
 // A Meta recusou por causa da janela de 24 h: marca, guarda o texto, tenta o modelo de retomada (se houver)
 // e avisa a equipe UMA vez por dia por pessoa.
-async function marcarForaDaJanela(c, to, { codigo = 131047, texto = "", papel = "", nome = "", tipo = "", semAviso = false } = {}) {
+async function marcarForaDaJanela(c, to, { codigo = 131047, texto = "", papel = "", nome = "", tipo = "", semAviso = false, casoId = null } = {}) {
   const tel = digitos(to), agora = c.agora();
   await c.db.prepare("INSERT INTO d30_destinos(telefone,motivo,codigo,desde_ms,ate_ms) VALUES(?, 'JANELA', ?, ?, NULL) ON CONFLICT(telefone) DO UPDATE SET motivo='JANELA', codigo=excluded.codigo, desde_ms=excluded.desde_ms, ate_ms=NULL").bind(tel, codigo, agora).run().catch(() => { });
-  if (texto) await guardarParaDepois(c, tel, texto, papel);
+  if (texto) await guardarParaDepois(c, tel, texto, papel, casoId);
   if (!nome) { const p = await buscarPessoa(c, tel).catch(() => null); nome = p?.nome || ""; tipo = tipo || p?.tipo || ""; }
   const modelo = String(c.env.WHATSAPP_TEMPLATE_RETOMAR || "").trim();
   let retomou = false;
@@ -1532,20 +1536,71 @@ async function marcarForaDaJanela(c, to, { codigo = 131047, texto = "", papel = 
   if (semAviso) return;
   await alertarEquipe(c, `📵 ${nome || tel} (${papelLegivel(papel, tipo)}, ${tel}) não escreve há mais de 24 h, e o WhatsApp só deixa mandar modelo aprovado. ${texto ? "A mensagem ficou guardada e sai sozinha assim que a pessoa responder. " : ""}${retomou ? `Mandei o modelo "${modelo}" pedindo para responder.` : "Para falar agora, ligue ou escreva pelo celular da empresa."} A DENIA não vai tentar de novo nem repetir este aviso hoje.`, `janela:${tel}:${dataSP(agora)}`);
 }
-// A pessoa escreveu: a conversa abriu de novo. Libera o número e entrega o que ficou guardado (até 72 h).
-async function liberarDestino(c, tel) {
-  if (c.sim || c.contingencia) return;
+// A pessoa escreveu: a conversa abriu de novo. Libera o número (a resposta à mensagem nova já pode sair).
+async function abrirJanela(c, tel) {
+  if (c.sim || c.contingencia) return false;
   const t = digitos(tel);
   const d = await c.db.prepare("SELECT motivo FROM d30_destinos WHERE telefone=?").bind(t).first().catch(() => null);
-  if (!d) return;
+  if (!d) return false;
   await c.db.prepare("DELETE FROM d30_destinos WHERE telefone=?").bind(t).run().catch(() => { });
-  const lista = (await c.db.prepare("SELECT * FROM d30_guardadas WHERE telefone=? AND status='GUARDADA' ORDER BY id LIMIT 6").bind(t).all().catch(() => null))?.results || [];
-  const pessoa = lista.length ? await buscarPessoa(c, t).catch(() => null) : null;
+  return true;
+}
+// O que ficou guardado sai DEPOIS de a DENIA ler a mensagem nova (para não responder a mensagem nova como se fosse
+// resposta à antiga), só se ainda fizer sentido e com a data, para a pessoa saber que é uma mensagem anterior:
+// - a equipe já falou com a pessoa depois que a mensagem foi guardada → não sai (o assunto pode ter mudado);
+// - o atendimento foi encerrado ou a consulta ao profissional já foi respondida/cancelada → não sai;
+// - mais de 72 h → expira.
+const CABECALHO_GUARDADA = 2 * 3600000;
+async function entregarGuardadas(c, tel, { soDescartar = false } = {}) {
+  if (c.sim || c.contingencia) return 0;
+  const t = digitos(tel), vs = variantesTel(t);
+  const lista = (await c.db.prepare(`SELECT * FROM d30_guardadas WHERE telefone IN (${vs.map(() => "?").join(",")}) AND status='GUARDADA' ORDER BY id LIMIT 6`).bind(...vs).all().catch(() => null))?.results || [];
+  if (!lista.length) return 0;
+  const pessoa = await buscarPessoa(c, t).catch(() => null);
+  const ultimaHumana = pessoa ? await c.db.prepare("SELECT MAX(criado_em) em FROM mensagens WHERE empresa_id=? AND pessoa_id=? AND UPPER(direcao)='SAIDA' AND UPPER(COALESCE(origem,''))='HUMANO'").bind(EMPRESA_ID, pessoa.id).first().catch(() => null) : null;
+  const humanaMs = ultimaHumana?.em ? Date.parse(String(ultimaHumana.em).replace(" ", "T") + "Z") : 0;
+  let n = 0;
   for (const g of lista) {
-    if (c.agora() - g.criado_ms > 72 * 3600000) { await c.db.prepare("UPDATE d30_guardadas SET status='EXPIRADA' WHERE id=?").bind(g.id).run(); continue; }
-    const r = await c.saida.texto(t, g.texto, { papel: g.papel || "" });
+    const marcar = (st, motivo) => c.db.prepare("UPDATE d30_guardadas SET status=?, enviado_ms=? WHERE id=?").bind(st, c.agora(), g.id).run().then(() => motivo ? evento(c, g.caso_id || null, "GUARDADA_DESCARTADA", `Para ${t}: ${motivo} — "${txt(g.texto, 160)}"`) : null);
+    if (c.agora() - g.criado_ms > 72 * 3600000) { await marcar("EXPIRADA", "mais de 72 h"); continue; }
+    if (humanaMs > g.criado_ms) { await marcar("DESCARTADA", "a equipe já falou com a pessoa depois"); continue; }
+    if (g.caso_id) {
+      const caso = await carregarCasoPorId(c, g.caso_id).catch(() => null);
+      if (caso && ETAPAS_ENCERRADAS.has(caso.etapa)) { await marcar("DESCARTADA", `atendimento #${g.caso_id} já encerrado`); continue; }
+      if (String(g.papel || "").toUpperCase() === "PRESTADOR") {
+        const k = await c.db.prepare("SELECT status FROM d30_consultas WHERE caso_id=? AND prestador_tel IN (" + vs.map(() => "?").join(",") + ") ORDER BY id DESC LIMIT 1").bind(g.caso_id, ...vs).first().catch(() => null);
+        if (k && !["ENVIADA", "AGUARDANDO_COMPOSICAO", "AGUARDANDO_CONFIRMACAO"].includes(k.status)) { await marcar("DESCARTADA", `consulta do caso #${g.caso_id} já está ${String(k.status).toLowerCase()}`); continue; }
+      }
+    }
+    if (soDescartar) continue; // conversa pausada (a equipe está atendendo): sai depois, pelo relógio
+    const velha = c.agora() - g.criado_ms > CABECALHO_GUARDADA;
+    const quando = new Date(g.criado_ms - 3 * 3600000).toISOString();
+    const texto = velha ? `📌 Mensagem anterior, de ${quando.slice(8, 10)}/${quando.slice(5, 7)} às ${quando.slice(11, 16)} (o WhatsApp só libera depois que você escreve):\n\n${g.texto}` : g.texto;
+    const r = await c.saida.texto(t, texto, { papel: g.papel || "", casoId: g.caso_id || null });
     await c.db.prepare("UPDATE d30_guardadas SET status=?, enviado_ms=? WHERE id=?").bind(r.ok ? "ENVIADA" : "FALHA", c.agora(), g.id).run();
-    if (r.ok) { await registrarMensagem(c, { pessoaId: pessoa?.id, wamid: r.id, direcao: "SAIDA", origem: "SISTEMA", conteudo: g.texto }); await evento(c, null, "GUARDADA_ENTREGUE", `Para ${t}: ${txt(g.texto, 200)}`); }
+    if (r.ok) { n++; await registrarMensagem(c, { pessoaId: pessoa?.id, casoId: g.caso_id || null, wamid: r.id, direcao: "SAIDA", origem: "SISTEMA", conteudo: texto }); await evento(c, g.caso_id || null, "GUARDADA_ENTREGUE", `Para ${t}: ${txt(g.texto, 200)}`); }
+  }
+  return n;
+}
+// Compatível com quem chamava antes: abre e entrega na hora.
+async function liberarDestino(c, tel) { if (await abrirJanela(c, tel)) await entregarGuardadas(c, tel); }
+
+// Guardadas que não saíram na hora (conversa com a equipe em andamento, pausa): saem quando a conversa fica quieta.
+async function entregarGuardadasPendentes(c) {
+  const agora = c.agora();
+  const tels = (await c.db.prepare("SELECT DISTINCT telefone FROM d30_guardadas WHERE status='GUARDADA' AND criado_ms > ? LIMIT 20").bind(agora - 72 * 3600000).all().catch(() => null))?.results || [];
+  for (const { telefone } of tels) {
+    if (await destinoBloqueado(c, telefone)) continue; // janela ainda fechada: espera a pessoa escrever
+    if (await estaPausado(c, telefone)) continue;
+    const pessoa = await buscarPessoa(c, telefone).catch(() => null);
+    if (!pessoa) continue;
+    const ult = await c.db.prepare("SELECT direcao, origem, criado_em FROM mensagens WHERE empresa_id=? AND pessoa_id=? ORDER BY id DESC LIMIT 1").bind(EMPRESA_ID, pessoa.id).first().catch(() => null);
+    const em = ult ? Date.parse(String(ult.criado_em || "").replace(" ", "T") + "Z") : 0;
+    const entrada = await c.db.prepare("SELECT MAX(criado_em) em FROM mensagens WHERE empresa_id=? AND pessoa_id=? AND UPPER(direcao)='ENTRADA'").bind(EMPRESA_ID, pessoa.id).first().catch(() => null);
+    const entradaMs = entrada?.em ? Date.parse(String(entrada.em).replace(" ", "T") + "Z") : 0;
+    if (!entradaMs || agora - entradaMs > 23 * 3600000) continue; // janela fechada de novo
+    if (agora - em < (String(ult?.origem).toUpperCase() === "HUMANO" ? 60 * 60000 : 10 * 60000)) continue; // ainda conversando
+    await entregarGuardadas(c, telefone).catch(e => console.warn("guardadas pendentes", e?.message));
   }
 }
 
@@ -1594,12 +1649,12 @@ function criarSaida(c) {
       if (d?.motivo === "INVALIDO") return { ok: false, evitado: true, erro: "este número não recebe WhatsApp (a Meta já recusou antes)" };
       if (d?.motivo === "JANELA") {
         if (info.inicialComTemplate) return { ok: false, codigo: 131047, erro: "fora da janela de 24h" }; // a consulta sai pelo modelo aprovado
-        await guardarParaDepois(c, to, t, info.papel);
+        await guardarParaDepois(c, to, t, info.papel, info.casoId || null);
         return { ok: false, guardada: true, codigo: 131047, erro: ERRO_GUARDADA };
       }
       const r = await controlado(to, corpoTexto(to, t));
       if (!r.ok && foraDaJanela(r) && !info.inicialComTemplate) {
-        await marcarForaDaJanela(c, to, { codigo: r.codigo || 131047, texto: t, papel: info.papel, semAviso: info.inicial });
+        await marcarForaDaJanela(c, to, { codigo: r.codigo || 131047, texto: t, papel: info.papel, semAviso: info.inicial, casoId: info.casoId || null });
         return { ...r, guardada: true, erro: ERRO_GUARDADA };
       }
       return r;
@@ -3021,18 +3076,25 @@ async function processarPrestador(c, tel, id, msgs, { apenasRegistrar, chaveLote
   }
   const num = textoTodo.match(/(?:caso|#)\s*#?\s*(\d{1,9})\b/i);
   if (!consulta && num) consulta = abertas.find(x => String(x.caso_id) === num[1]) || null;
-  if (!consulta && abertas.length === 1) consulta = abertas[0];
+  // Pergunta que ainda está guardada (fora da janela de 24 h) ele NÃO viu: a mensagem dele não pode ser resposta a ela.
+  // Só liga a esse atendimento se ele citar a mensagem, disser o número do caso ou falar do cliente (nome, bairro…).
+  const vsTel = variantesTel(tel);
+  const naoVistas = new Set(((await c.db.prepare(`SELECT DISTINCT caso_id FROM d30_guardadas WHERE telefone IN (${vsTel.map(() => "?").join(",")}) AND status='GUARDADA' AND caso_id IS NOT NULL`).bind(...vsTel).all().catch(() => null))?.results || []).map(x => x.caso_id));
+  const vistas = abertas.filter(x => !naoVistas.has(x.caso_id));
+  if (!consulta && abertas.length === 1 && vistas.length === 1) consulta = abertas[0];
   // Várias abertas: descobre pelo contexto — a mensagem que ele respondeu (inclusive as da equipe,
   // como "Serviço agendado: nome, endereço…"), o nome do cliente, o bairro, o endereço e o serviço.
   if (!consulta && abertas.length > 1) consulta = await consultaPeloContexto(c, abertas, msgs, textoTodo, pessoa);
   // Conversa em andamento: sem outra pista, ele continua falando do atendimento da última mensagem trocada com ele.
-  if (!consulta && abertas.length > 1) consulta = await consultaDaConversa(c, abertas, pessoa);
+  if (!consulta && vistas.length > 1) consulta = await consultaDaConversa(c, vistas, pessoa);
   // Ainda sem saber: a IA lê como uma pessoa leria (nomes, bairro, serviço, valores, datas, o comprovante) e escolhe.
   if (!consulta && abertas.length > 1 && !msgs.every(m => !m.mediaId && ehMensagemSocial(m.conteudo))) consulta = await identificarCasoComIA(c, abertas, msgs, textoTodo, pessoa, anexos);
 
   for (const m of msgs) await registrarMensagem(c, { pessoaId: pessoa?.id, casoId: consulta?.caso_id, wamid: m.wamid, direcao: "ENTRADA", origem: "WHATSAPP", tipo: String(m.tipo || "text").toUpperCase(), conteudo: m.conteudo });
   if (apenasRegistrar || await estaPausado(c, tel)) return;
   if (!abertas.length) return responderProfissionalSemCaso(c, tel, pessoa, prest, msgs, textoTodo, chaveLote);
+  // Ele ainda não viu a pergunta da DENIA (estava guardada): não responde agora; a pergunta sai em seguida, com a data.
+  if (!consulta && !vistas.length) { await evento(c, null, "AGUARDA_PERGUNTA_GUARDADA", `${tel} escreveu antes de ver a pergunta guardada: só registrado.`).catch(() => { }); return; }
 
   if (!consulta && abertas.length > 1) {
     // Confirmação simples ("ok", "fechado", "obrigado") não precisa de pergunta: fica registrada para a equipe.
@@ -3057,6 +3119,12 @@ async function processarPrestador(c, tel, id, msgs, { apenasRegistrar, chaveLote
 
   const caso = await carregarCasoPorId(c, consulta.caso_id);
   if (!caso) return;
+  // O técnico avisou que saiu para o cliente ("a caminho", "saindo agora", "chego em 20 min"): o cliente fica sabendo na hora.
+  if (["AGENDADO", "EM_ANDAMENTO"].includes(caso.etapa) && RE_A_CAMINHO.test(textoTodo) && !msgs.some(m => m.mediaId)) {
+    const prev = (textoTodo.match(/chego em (\d+\s*(?:min(?:utos)?|h(?:ora)?s?))/i) || [])[1] || "";
+    const r = await avisarTecnicoACaminho(c, caso.casoId, { previsao: prev ? `cerca de ${prev}` : "", autor: "profissional pelo WhatsApp" });
+    if (r.ok) { await enviarAgoraAoPrestador(c, { consulta, texto: "Combinado! Já avisei o cliente que você está a caminho. 👍", chave: "acaminho-ok:" + chaveLote }); return; }
+  }
   // "ok", "beleza", "obrigado" sem anexo: não gasta IA. Aguardando confirmação → vale como confirmação; senão só registra.
   if (msgs.every(m => !m.mediaId && ehMensagemSocial(m.conteudo))) {
     if (caso.etapa === "AGUARDANDO_CONFIRMACAO_PRESTADOR" && /\b(ok+|okay|blz|beleza|certo|combinado|fechado|perfeito|show|tranquilo|joia|pode deixar)\b/i.test(norm(textoTodo)))
@@ -3104,6 +3172,27 @@ Responda em JSON.`, anexos, 700);
   }
   await tratarRespostaPrestador(c, { caso, consulta, d, textoTodo, chaveLote, histCaso, msgs });
 }
+
+// "O técnico está a caminho": mensagem ao cliente (uma vez por atendimento a cada 3 h), como as grandes empresas fazem.
+async function avisarTecnicoACaminho(c, casoId, { previsao = "", autor = "" } = {}) {
+  const caso = casoId ? await carregarCasoPorId(c, casoId) : null;
+  if (!caso) return { ok: false, erro: "Atendimento não encontrado." };
+  if (ETAPAS_ENCERRADAS.has(caso.etapa)) return { ok: false, erro: "Este atendimento já foi encerrado." };
+  const cons = await c.db.prepare("SELECT * FROM d30_consultas WHERE caso_id=? ORDER BY CASE WHEN status='CONFIRMADA' THEN 0 ELSE 1 END, id DESC LIMIT 1").bind(casoId).first().catch(() => null);
+  const cliente = await c.db.prepare("SELECT * FROM pessoas WHERE id=?").bind(caso.clienteId).first().catch(() => null);
+  const tel = digitos(cliente?.telefone || caso.telefone || "");
+  if (!tel) return { ok: false, erro: "O cliente não tem telefone." };
+  if (!(await reservarChave(c, `acaminho:${casoId}:${Math.floor(c.agora() / (3 * 3600000))}`))) return { ok: false, erro: "O cliente já foi avisado há pouco." };
+  const nome = primeiroNome(cliente?.nome || ""), quem = primeiroNome(cons?.prestador_nome || "") || "O técnico";
+  const servico = caso.fatos.problema || caso.fatos.servico || "o atendimento";
+  const texto = `${nome ? `Oi, ${nome}! ` : "Oi! "}🚗 ${quem === "O técnico" ? "O técnico" : `${quem}, o técnico,`} já está a caminho${caso.fatos.endereco || caso.fatos.bairro ? ` (${caso.fatos.endereco || caso.fatos.bairro})` : ""} para ${txt(servico, 80)}.${previsao ? ` Previsão de chegada: ${previsao}.` : ""} Qualquer coisa, é só responder aqui.`;
+  const r = await c.saida.texto(tel, texto, { papel: "CLIENTE", casoId });
+  if (!r.ok) return { ok: false, erro: r.guardada ? "O cliente não escreve há mais de 24 h: o WhatsApp não deixa mandar agora. A mensagem sai assim que ele responder." : txt(r.erro || "Falha no envio.", 200) };
+  await registrarMensagem(c, { pessoaId: cliente?.id, casoId, wamid: r.id, direcao: "SAIDA", origem: "SISTEMA", conteudo: texto });
+  await evento(c, casoId, "A_CAMINHO", `Cliente avisado que o técnico está a caminho (${autor || "sistema"})`, { previsao });
+  return { ok: true, texto };
+}
+const RE_A_CAMINHO = /\b(a caminho|to a caminho|tô a caminho|estou a caminho|saindo agora|sa[ií] agora|j[aá] sa[ií]|indo pra[ia]? (?:l[aá]|cliente|casa)|estou indo|t[oô] indo|chego em \d+|chegando)\b/i;
 
 // Profissional escreveu e não há atendimento aberto com ele: a DENIA responde como alguém da equipe
 // (ela é sempre a última a falar). Se ele quer algo que só a equipe resolve, a equipe é avisada.
@@ -3473,9 +3562,14 @@ async function processarLote(c, tel, itens) {
       if (!respondida) c.atrasadasSemResposta = (c.atrasadasSemResposta || 0) + 1;
     }
   }
-  // A pessoa escreveu: se estava fora da janela de 24 h, entrega primeiro o que ficou guardado para ela.
-  if (!opts.apenasRegistrar) await liberarDestino(c, tel).catch(e => console.warn("guardadas", e?.message));
+  // A pessoa escreveu: a janela de 24 h abriu. A DENIA lê a mensagem NOVA primeiro; o que ficou guardado
+  // para ela sai depois (com a data), e só se ainda fizer sentido.
+  if (!opts.apenasRegistrar) await abrirJanela(c, tel).catch(e => console.warn("janela", e?.message));
   const id = await identificar(c, tel);
+  try { return await processarLoteIdentificado(c, tel, id, msgs, opts); }
+  finally { if (!opts.apenasRegistrar) await entregarGuardadas(c, tel, { soDescartar: await estaPausado(c, tel).catch(() => true) }).catch(e => console.warn("guardadas", e?.message)); }
+}
+async function processarLoteIdentificado(c, tel, id, msgs, opts) {
   if (modoGuia(c.env)) return processarGuia(c, tel, id, msgs, opts); // guia de lojas (shopping): botões sem IA
   if (id.papel === "PRESTADOR") return processarPrestador(c, tel, id, msgs, opts);
   if (id.papel === "ATENDENTE") {
@@ -3725,6 +3819,7 @@ async function cron(c) {
   if (sobram(c) > 25) await relatorioDiario(c).catch(e => console.error("relatório", e));
   if (sobram(c) > 25) await revisarCasosParados(c).catch(e => console.error("revisão de casos", e));
   if (sobram(c) > 10) await vigiarEntregas(c).catch(e => console.error("entregas", e));
+  if (sobram(c) > 15) await entregarGuardadasPendentes(c).catch(e => console.error("guardadas pendentes", e?.message));
   if (sobram(c) > 30) await prepararMemorias(c, 1).catch(e => console.error("memórias", e));
   if (sobram(c) > 30) await estudoDiario(c).catch(e => console.error("estudo", e?.message));
   if (sobram(c) > 30 && horaSP(agora) >= 22) await pesquisaSemanal(c).catch(e => console.error("estudo na internet", e?.message));
@@ -4464,6 +4559,53 @@ async function platformApi(request, env, caminho, metodo) {
     }
     try { const m = await metaBaixarMidia(c.env, x.media_id); return json({ sucesso: true, mime: m.mime, base64: base64(m.buffer) }); }
     catch (e) { return json({ sucesso: false, erro: "O WhatsApp não liberou mais esta foto (fotos ficam disponíveis por cerca de 30 dias)." }, 410); }
+  }
+  // Ordens de serviço para o financeiro da plataforma: atendimento, cliente, profissional, valores, comprovantes.
+  if (caminho === "/platform/os" && metodo === "GET") {
+    const q = new URL(request.url).searchParams;
+    const desde = Math.max(0, Number(q.get("desde_ms")) || 0), limite = Math.min(500, Math.max(1, Number(q.get("limite")) || 300));
+    const casos = (await c.db.prepare(`SELECT k.*, p.nome AS cliente_nome, p.telefone AS cliente_tel FROM d30_casos k LEFT JOIN pessoas p ON p.id=k.cliente_id
+      WHERE k.atualizado_ms > ? OR k.caso_id IN (SELECT caso_id FROM d30_consultas WHERE atualizado_ms > ?) OR k.caso_id IN (SELECT caso_id FROM d30_midias WHERE criado_ms > ? AND caso_id IS NOT NULL)
+      ORDER BY k.atualizado_ms LIMIT ?`).bind(desde, desde, desde, limite).all())?.results || [];
+    const ids = casos.map(x => x.caso_id);
+    const lista = ids.length ? `(${ids.map(() => "?").join(",")})` : "(NULL)";
+    const consultas = ids.length ? (await c.db.prepare(`SELECT * FROM d30_consultas WHERE caso_id IN ${lista} ORDER BY id`).bind(...ids).all())?.results || [] : [];
+    const midias = ids.length ? (await c.db.prepare(`SELECT id, caso_id, telefone, tipo, mime, legenda, comprovante, enviado_para, criado_ms FROM d30_midias WHERE caso_id IN ${lista} ORDER BY id`).bind(...ids).all())?.results || [] : [];
+    const caminhos = ids.length ? (await c.db.prepare(`SELECT caso_id, MAX(criado_ms) ms FROM d30_eventos WHERE tipo='A_CAMINHO' AND caso_id IN ${lista} GROUP BY caso_id`).bind(...ids).all().catch(() => null))?.results || [] : [];
+    const prest = new Map(((await c.db.prepare("SELECT id, nome, telefone, area FROM d30_prestadores").all().catch(() => null))?.results || []).map(x => [x.id, x]));
+    const os = casos.map(k => {
+      let fatos = {}; try { fatos = JSON.parse(k.fatos_json || "{}") || {}; } catch { fatos = {}; }
+      const cs = consultas.filter(x => x.caso_id === k.caso_id);
+      const conf = [...cs].reverse().find(x => x.status === "CONFIRMADA") || cs[cs.length - 1] || null;
+      const pr = conf ? prest.get(conf.prestador_id) : null;
+      const telCli = digitos(k.cliente_tel || k.telefone || "");
+      return {
+        caso_id: k.caso_id, etapa: k.etapa, criado_ms: k.criado_ms, atualizado_ms: Math.max(k.atualizado_ms || 0, ...cs.map(x => x.atualizado_ms || 0), ...midias.filter(m => m.caso_id === k.caso_id).map(m => m.criado_ms || 0)), resumo: txt(k.resumo, 600),
+        cliente: { id: k.cliente_id, nome: txt(k.cliente_nome || fatos.nome || "", 120), telefone: telCli, bairro: txt(fatos.bairro, 80), cidade: txt(fatos.cidade, 80), endereco: txt(fatos.endereco, 200) },
+        servico: txt(CATEGORIAS[fatos.categoria]?.rotulo?.split(" (")[0] || fatos.servico || "", 120), problema: txt(fatos.problema, 300), marca: txt(fatos.marca, 60), modelo: txt(fatos.modelo, 60),
+        profissional: conf ? { id: conf.prestador_id || null, nome: txt(conf.prestador_nome || pr?.nome || "", 120), telefone: digitos(conf.prestador_tel || pr?.telefone || ""), area: conf.area || pr?.area || "" } : null,
+        consulta: conf ? { status: conf.status, valor_prestador: conf.valor_prestador ?? null, valor_cliente: conf.valor_cliente ?? null, valor_final: conf.valor_final || null, disponibilidade: txt(conf.disponibilidade, 200), atualizado_ms: conf.atualizado_ms } : null,
+        midias: midias.filter(m => m.caso_id === k.caso_id).map(m => ({ id: m.id, tipo: m.tipo, mime: m.mime, legenda: txt(m.legenda, 200), comprovante: Boolean(m.comprovante), enviado_para: m.enviado_para || "", de: digitos(m.telefone) === telCli ? "CLIENTE" : "PROFISSIONAL", criado_ms: m.criado_ms })),
+        a_caminho_ms: caminhos.find(x => x.caso_id === k.caso_id)?.ms || null
+      };
+    });
+    return json({ sucesso: true, os, proximo_ms: os.length ? Math.max(...os.map(x => x.atualizado_ms || 0)) : desde, mais: casos.length === limite });
+  }
+  if ((m = caminho.match(/^\/platform\/os\/midia\/(\d+)$/)) && metodo === "GET") {
+    const md = await c.db.prepare("SELECT * FROM d30_midias WHERE id=?").bind(Number(m[1])).first();
+    if (!md) return json({ sucesso: false, erro: "Mídia não encontrada." }, 404);
+    if (c.sim || !env.WHATSAPP_TOKEN) return json({ sucesso: false, erro: "Sem acesso ao WhatsApp para baixar a mídia." }, 503);
+    try {
+      const { buffer, mime } = await metaBaixarMidia(env, md.media_id);
+      if (buffer.byteLength > 4 * 1024 * 1024) return json({ sucesso: false, erro: "Arquivo maior que 4 MB." }, 413);
+      let bin = ""; const u8 = new Uint8Array(buffer); for (let i = 0; i < u8.length; i += 0x8000) bin += String.fromCharCode(...u8.subarray(i, i + 0x8000));
+      return json({ sucesso: true, mime, base64: btoa(bin), nome: `${md.tipo || "arquivo"}-${md.id}` });
+    } catch (e) { return json({ sucesso: false, erro: txt(e?.message, 200) }, 502); }
+  }
+  // "Técnico a caminho": a equipe avisa o cliente pelo painel (o profissional também pode avisar escrevendo "a caminho").
+  if (caminho === "/platform/os/a-caminho" && metodo === "POST") {
+    const r = await avisarTecnicoACaminho(c, Number(corpo?.caso_id), { previsao: txt(corpo?.previsao, 60), autor: txt(corpo?.autor, 120) || "painel" });
+    return json({ sucesso: r.ok, ...r }, r.ok ? 200 : 400);
   }
   if (caminho === "/platform/cases" && metodo === "GET") {
     const r = await c.db.prepare("SELECT * FROM d30_casos ORDER BY atualizado_ms DESC LIMIT 1000").all();

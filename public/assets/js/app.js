@@ -233,6 +233,9 @@
   // Revisor de aprendizados: só a tela de Aprendizados (e a própria conta).
   const ehRevisor = () => estado.papel === "REVISOR";
   const ROTAS_REVISOR = ["aprendizados", "conta"];
+  // Contador: só o financeiro, as ordens de serviço e a DRE (consulta e relatórios).
+  const ehContador = () => estado.papel === "CONTADOR";
+  const ROTAS_CONTADOR = ["financeiro", "os", "dre", "conta"];
 
   const ETAPAS = [
     ["COLETANDO", "Coletando informações"],
@@ -248,7 +251,7 @@
   ];
   const NOME_ETAPA = Object.fromEntries(ETAPAS);
   const ETAPAS_MANUAIS = ["COLETANDO", "EQUIPE", "AGENDADO", "EM_ANDAMENTO", "CONCLUIDO", "CANCELADO"];
-  const PAPEIS = [["OWNER", "Proprietário"], ["ADMIN", "Administrador"], ["AGENTE", "Atendente"], ["VISUALIZADOR", "Somente leitura"], ["REVISOR", "Revisor de aprendizados"]];
+  const PAPEIS = [["OWNER", "Proprietário"], ["ADMIN", "Administrador"], ["AGENTE", "Atendente"], ["VISUALIZADOR", "Somente leitura"], ["REVISOR", "Revisor de aprendizados"], ["CONTADOR", "Contador (financeiro, só leitura)"]];
   const NOME_PAPEL = Object.fromEntries(PAPEIS);
 
   const ROTAS = {
@@ -257,6 +260,8 @@
     problemas: { titulo: "Problemas", render: paginaProblemas },
     relatorios: { titulo: "Relatórios", render: paginaRelatorios },
     financeiro: { titulo: "Financeiro", render: paginaFinanceiro },
+    os: { titulo: "Ordens de serviço", render: paginaOS },
+    dre: { titulo: "DRE e contabilidade", render: paginaDre },
     admin: { titulo: "Administração", render: paginaAdmin },
     apresentacao: { titulo: "Apresentação da DENIA", render: paginaApresentacao },
     conversas: { titulo: "Conversas", render: paginaConversas },
@@ -300,6 +305,7 @@
     let { nome, param } = rotaAtual();
     if (estado.eu.usuario.trocar_senha) nome = "conta";
     else if (ehRevisor() && !ROTAS_REVISOR.includes(nome)) nome = "aprendizados";
+    else if (ehContador() && !ROTAS_CONTADOR.includes(nome)) nome = "financeiro";
     const rota = ROTAS[nome];
     // Dentro de Conversas, abrir outra conversa não recarrega a página inteira.
     const viva = estado.paginaViva;
@@ -433,7 +439,8 @@
     document.querySelectorAll("#lateral-nav a[data-minimo]").forEach(a => a.classList.toggle("oculto", !pode(a.dataset.minimo)));
     document.querySelectorAll("#lateral-nav a[data-varias]").forEach(a => { if ((estado.eu.organizacoes || []).filter(o => ["OWNER", "ADMIN"].includes(o.papel)).length < 2) a.classList.add("oculto"); });
     document.querySelectorAll("#lateral-nav a[data-super]").forEach(a => a.classList.toggle("oculto", !estado.eu.usuario.super_admin));
-    document.querySelectorAll("#lateral-nav a[data-rota]:not([data-minimo]):not([data-super])").forEach(a => a.classList.toggle("oculto", ehRevisor() && !ROTAS_REVISOR.includes(a.dataset.rota)));
+    document.querySelectorAll("#lateral-nav a[data-rota]:not([data-minimo]):not([data-super])").forEach(a => a.classList.toggle("oculto", (ehRevisor() && !ROTAS_REVISOR.includes(a.dataset.rota)) || (ehContador() && !ROTAS_CONTADOR.includes(a.dataset.rota))));
+    if (ehContador()) document.querySelectorAll('#lateral-nav a[data-rota="financeiro"], #lateral-nav a[data-rota="dre"]').forEach(a => a.classList.remove("oculto"));
     aplicarModo();
     aplicarPlano();
     // Título de grupo do menu some quando todos os links do grupo estão ocultos.
@@ -3377,7 +3384,7 @@ Botão só com texto = resposta.` })),
     chatbot: "chatbot", temporada: "temporada", estudio: "marketing", midias: "marketing", calendario: "marketing", aprovacoes: "marketing", marcas: "marketing", instagram: "marketing", facebook: "marketing", google: "marketing", social: "marketing", denia: "voz"
   };
   window.DENIA_RECURSOS = window.DENIA_RECURSOS || { chatbot: "Chatbot do WhatsApp com botões e listas", chatbot_ia: "IA no chatbot", ia_completa: "IA completa de atendimento (atende como uma pessoa, com memória)", marketing: "Instagram, Facebook e Google: posts, artes, comentários e avaliações", voz: "DENIA por voz, ao vivo", multiempresa: "Várias empresas, marcas e unidades", temporada: "Locação por temporada" };
-  const ROTAS_LIVRES = ["plano", "conta", "equipe", "auditoria", "empresas", "contatos", "painel", "integracoes", "consumo", "problemas", "relatorios", "rotina", "ajuda", "financeiro", "admin", "apresentacao"];
+  const ROTAS_LIVRES = ["plano", "conta", "equipe", "auditoria", "empresas", "contatos", "painel", "integracoes", "consumo", "problemas", "relatorios", "rotina", "ajuda", "financeiro", "admin", "apresentacao", "os", "dre"];
   const acessoAtual = () => (estado.org && estado.org.acesso) || { liberado: true, recursos: [], status: "?" };
   const temRecurso = r => !r || estado.eu.usuario.super_admin || (acessoAtual().liberado && (acessoAtual().recursos || []).includes(r));
   const NOME_STATUS_PLANO = { TESTE: "Teste grátis", ATIVO: "Ativo", ATRASADO: "Pagamento pendente", CANCELADO: "Cancelado (usa até o fim do período)", CORTESIA: "Cortesia — acesso total", BLOQUEADO: "Bloqueado", TESTE_ACABOU: "Teste encerrado" };
@@ -3585,7 +3592,7 @@ Botão só com texto = resposta.` })),
   const svgIc = d => { const s = document.createElementNS(SVG_NS, "svg"); s.setAttribute("viewBox", "0 0 24 24"); s.setAttribute("aria-hidden", "true"); s.innerHTML = d; return s; };
   // Cada canal tem o seu menu: ao entrar no WhatsApp, Instagram, Facebook, Google, Temporada, Marketing ou IA,
   // o menu lateral (e a barra de baixo, no celular) mostra só o que é daquele canal, com volta ao menu principal.
-  const ROTA_MODO = { whatsapp: "whatsapp", conversas: "whatsapp", atendimentos: "whatsapp", profissionais: "whatsapp", chatbot: "whatsapp", guia: "whatsapp", instagram: "instagram", facebook: "facebook", social: "instagram", google: "google", temporada: "temporada", estudio: "marketing", calendario: "marketing", aprovacoes: "marketing", marcas: "marketing", treinamento: "ia", aprendizados: "ia", clientes: "ia", admin: "admin", financeiro: "admin" };
+  const ROTA_MODO = { whatsapp: "whatsapp", conversas: "whatsapp", atendimentos: "whatsapp", profissionais: "whatsapp", chatbot: "whatsapp", guia: "whatsapp", instagram: "instagram", facebook: "facebook", social: "instagram", google: "google", temporada: "temporada", estudio: "marketing", calendario: "marketing", aprovacoes: "marketing", marcas: "marketing", treinamento: "ia", aprendizados: "ia", clientes: "ia", admin: "admin", financeiro: "admin", os: "admin", dre: "admin" };
   const NOME_MODO = { whatsapp: "WhatsApp", instagram: "Instagram", facebook: "Facebook", google: "Google", temporada: "Locação por temporada", marketing: "Marketing e conteúdo", ia: "Inteligência da DENIA", admin: "Administração" };
   const ABA_PADRAO = { whatsapp: "visao", instagram: "visao", facebook: "visao", google: "desempenho", chatbot: "visao", temporada: "visao", admin: "hoje" };
   function aplicarMenu(nome, param) {
@@ -5858,7 +5865,8 @@ Botão só com texto = resposta.` })),
     el.appendChild(cabeca("Google Meu Negócio", "Reputação, posição nas buscas e desempenho de cada perfil, acompanhados semana a semana."));
     if (!lista.length) { semMarcas(el); return; }
     const abas = [["visao", "Visão geral"], ["pre", "Pré-análise"], ["mapa", "Mapa de posição"], ["buscas", "Buscas no Google"], ["checagem", "Checagem do perfil"], ["editar", "Editar perfil"], ["publicacoes", "Posts e imagens"], ["avaliacoes", "Avaliações"], ["pedir", "Pedir avaliações"], ["triagem", "Triagem 1★"], ["relatorio", "Relatório"], ["palavras", "Palavras-chave"], ["desempenho", "Desempenho"], ["conexao", "Conexão"]];
-    abas.push(["seo", "Google orgânico"], ["ads", "Google Ads"], ["concorrentes", "Concorrentes"]);
+    abas.splice(1, 0, ["graficos", "Gráficos"]);
+    abas.push(["empresas", "Buscar empresas"], ["seo", "Google orgânico"], ["ads", "Google Ads"], ["concorrentes", "Concorrentes"], ["guia", "Guia do Maps"]);
     const atual = abas.some(a => a[0] === aba) ? aba : "visao";
     const sel = seletorMarca(lista, estado.marcaGoogle || lista[0].id);
     sel.addEventListener("change", () => { estado.marcaGoogle = sel.value; navegar(); });
@@ -5882,6 +5890,9 @@ Botão só com texto = resposta.` })),
       else if (atual === "seo") await abaGoogleSeo(area, lista.find(m => String(m.id) === String(marcaId)));
       else if (atual === "ads") await abaGoogleAds(area, lista.find(m => String(m.id) === String(marcaId)));
       else if (atual === "concorrentes") await abaConcorrentesGoogle(area, lista.find(m => String(m.id) === String(marcaId)));
+      else if (atual === "graficos") await abaGraficosGoogle(area, lista.find(m => String(m.id) === String(marcaId)));
+      else if (atual === "empresas") await abaBuscarEmpresas(area);
+      else if (atual === "guia") await abaGuiaMaps(area, marcaId);
       else if (atual === "publicacoes") {
         const [posts, cfg] = await Promise.all([mk(`posts?canal=google&marca=${marcaId}`).then(r => r.posts || []), mk("config").catch(() => null)]);
         estado.marcaCriador = marcaId;
@@ -6492,14 +6503,155 @@ Botão só com texto = resposta.` })),
         h("p", { class: "sub", text: `${quando(g.criado_ms)} · posição média ${g.media != null ? String(g.media).replace(".", ",") : "—"} · no top 3 em ${g.top3}% dos pontos. O ponto com borda branca é o endereço do perfil; cada círculo é a posição para quem procura dali.` }), grade,
         h("p", { class: "fx-nota", text: "Verde: 1º a 3º (aparece no mapa sem rolar) · amarelo: 4º a 10º · vermelho: 11º a 20º · vinho: fora dos 20 primeiros. Medido pela busca oficial do Google Maps; o resultado no celular de cada pessoa pode variar um pouco." }));
     };
-    const historico = h("div", { class: "grade" }, ...(d.grades || []).slice(0, 4).map(desenhar));
+    // Quem domina o mapa (fatia do top 3 e posição média de cada empresa nos pontos medidos).
+    const rankingConc = g => (g.dados.concorrentes || []).length ? h("div", { class: "tabela-rolagem", style: "margin-top:10px" }, h("table", { class: "tabela" },
+      h("thead", {}, h("tr", {}, ["Empresa", "No top 3", "Aparece", "Posição média", "Nota", "Avaliações"].map(t => h("th", { text: t })))),
+      h("tbody", {}, g.dados.concorrentes.map(c => h("tr", { style: c.voce ? "font-weight:700" : "" }, h("td", { text: c.nome + (c.voce ? " (você)" : "") }), h("td", { text: c.top3_pct + "%" }), h("td", { text: c.aparece_pct + "% dos pontos" }), h("td", { text: String(c.posicao_media).replace(".", ",") + "º" }), h("td", { text: c.nota != null ? String(c.nota).replace(".", ",") + " ★" : "—" }), h("td", { text: numero(c.avaliacoes || 0) }))))))
+      : h("p", { class: "sub", text: "Meça de novo para ver o ranking dos concorrentes neste mapa." });
+    const historico = h("div", { class: "grade" }, ...(d.grades || []).slice(0, 4).map((g, i) => { const c0 = desenhar(g); if (i === 0) c0.append(h("h4", { style: "margin:14px 0 0", text: "Quem domina este mapa" }), rankingConc(g)); return c0; }));
+    // Repetir sozinho (a evolução aparece em Gráficos).
+    const ag = await mk(`google/geogrid/agenda?marca=${marca.id}`, { fresco: true }).catch(() => ({ agendas: [] }));
+    const freq = h("select", { class: "entrada" }, [["7", "Toda semana"], ["15", "A cada 15 dias"], ["30", "Todo mês"]].map(([v, n]) => h("option", { value: v, text: n })));
+    const agenda = h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Medir sozinho" }),
+      h("p", { class: "sub", text: "A DENIA repete o mapa na frequência escolhida, com a busca, o raio e os pontos acima. A evolução da posição aparece em Gráficos." }),
+      (ag.agendas || []).length ? h("ul", { class: "prb-lista" }, ag.agendas.map(a => item(`"${a.palavra}" — ${a.dias === 7 ? "toda semana" : a.dias === 15 ? "a cada 15 dias" : "todo mês"}`, `${String(a.raio_km).replace(".", ",")} km · ${a.tamanho}×${a.tamanho} · próxima: ${quando(a.proxima_ms)}${a.erro ? " · erro: " + a.erro : ""}`,
+        pode("ADMIN") ? botao("Parar", async () => { try { await mk("google/geogrid/agenda", { metodo: "POST", corpo: { marca_id: marca.id, remover: a.id } }); navegar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno") : null))) : null,
+      pode("ADMIN") ? h("div", { class: "linha-form", style: "align-items:end" }, campo("Frequência", freq), botao("Agendar com a busca acima", async () => { try { await mk("google/geogrid/agenda", { metodo: "POST", corpo: { marca_id: marca.id, palavra: palavra.value, raio_km: raio.value, tamanho: tam.value, dias: freq.value } }); aviso("Agendado.", "ok"); navegar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario")) : null);
     trocar(area, h("section", { class: "cartao vidro formulario" }, h("h3", { style: "margin:0", text: "Mapa de posição no Google Maps" }),
       h("p", { class: "dica", text: "Mostra em que lugar o perfil aparece quando alguém procura o serviço em diferentes pontos do bairro e da cidade. É assim que os especialistas descobrem onde a empresa é forte e onde é invisível." }),
       d.places_configurado ? null : h("p", { class: "nota nota-alerta", text: "Falta a variável GOOGLE_PLACES_API_KEY na Hostinger (Google Cloud → Credenciais → Criar chave de API, com a Places API (New) ativada)." }),
       h("div", { class: "linha-form", style: "align-items:end" }, campo("Busca", palavra), campo("Raio", raio), campo("Pontos", tam),
         botao("Medir agora", async (_e, b) => { b.disabled = true; b.textContent = "Medindo os pontos…"; try { const g = await mk("google/geogrid", { metodo: "POST", corpo: { marca_id: marca.id, palavra: palavra.value, raio_km: raio.value, tamanho: tam.value } }); historico.prepend(desenhar(g)); aviso(`Pronto: posição média ${g.media != null ? String(g.media).replace(".", ",") : "—"}, top 3 em ${g.top3}% dos pontos.`, "ok"); } catch (e) { aviso(e.message, "erro"); } b.disabled = false; b.textContent = "Medir agora"; }, "btn-primario")),
       h("p", { class: "sub", text: "Cada ponto é uma busca no Google Maps (alguns centavos cada): 5 × 5 = 25 buscas." })),
-      historico.children.length ? historico : h("section", { class: "cartao vidro" }, vazio("Nenhum mapa medido ainda", "Escolha a busca e o raio e toque em Medir agora.")));
+      agenda, historico.children.length ? historico : h("section", { class: "cartao vidro" }, vazio("Nenhum mapa medido ainda", "Escolha a busca e o raio e toque em Medir agora.")));
+  }
+
+  // Colunas (uma série, eixo a partir do zero) com a dica ao passar o dedo/mouse.
+  function graficoColunas(itens, { formato = numero, nome = "" } = {}) {
+    const disponivel = Math.round(Math.max(280, Math.min(1500, ((document.getElementById("conteudo") || {}).clientWidth || window.innerWidth) - 96)));
+    const L = disponivel, A = 220, m = { e: 48, d: 8, t: 12, b: 28 }, larg = L - m.e - m.d, alt = A - m.t - m.b;
+    const max = Math.max(1, ...itens.map(x => x.valor || 0));
+    const passo = (() => { const bruto = max / 4, ordem = Math.pow(10, Math.floor(Math.log10(bruto))); return [1, 2, 2.5, 5, 10].find(x => x * ordem >= bruto) * ordem; })();
+    const topo = passo * Math.ceil(max / passo), y = v => m.t + alt - (v / topo) * alt, slot = larg / Math.max(1, itens.length), bw = Math.max(3, Math.min(38, slot * 0.66));
+    const svg = document.createElementNS(SVG_NS, "svg"), el = (tag, at) => { const n0 = document.createElementNS(SVG_NS, tag); for (const [k0, v] of Object.entries(at)) n0.setAttribute(k0, v); return n0; };
+    svg.setAttribute("viewBox", `0 0 ${L} ${A}`); svg.setAttribute("class", "grafico-svg"); svg.setAttribute("role", "img"); svg.setAttribute("aria-label", `${nome}: ${itens.length} colunas`);
+    for (let v = 0; v <= topo + 1e-9; v += passo) { svg.appendChild(el("line", { x1: m.e, x2: L - m.d, y1: y(v), y2: y(v), class: "grafico-grade" })); const t0 = el("text", { x: m.e - 8, y: y(v) + 4, class: "grafico-eixo", "text-anchor": "end" }); t0.textContent = formato(v); svg.appendChild(t0); }
+    const cada = Math.max(1, Math.ceil(itens.length / Math.max(3, Math.floor(L / 70))));
+    const dica = h("div", { class: "grafico-dica oculto", role: "status" });
+    itens.forEach((x, i) => {
+      const cx = m.e + slot * i + slot / 2, hgt = Math.max(0, alt - (y(x.valor || 0) - m.t));
+      svg.appendChild(el("rect", { x: cx - bw / 2, y: y(x.valor || 0), width: bw, height: hgt, rx: Math.min(4, bw / 2), class: "grafico-coluna" + (x.destaque ? " destaque" : "") }));
+      if (i % cada === 0 || i === itens.length - 1) { const t0 = el("text", { x: cx, y: A - 8, class: "grafico-eixo", "text-anchor": "middle" }); t0.textContent = x.curto || x.rotulo; svg.appendChild(t0); }
+      const alvo = el("rect", { x: m.e + slot * i, y: m.t, width: slot, height: alt, fill: "transparent" });
+      alvo.addEventListener("pointerenter", () => { dica.replaceChildren(h("strong", { text: x.rotulo }), h("span", { text: `${nome ? nome + ": " : ""}${formato(x.valor || 0)}` }), x.extra ? h("span", { class: "grafico-dica-comp", text: x.extra }) : null); dica.style.left = `${(cx / L) * 100}%`; dica.classList.remove("oculto"); });
+      alvo.addEventListener("pointerleave", () => dica.classList.add("oculto"));
+      svg.appendChild(alvo);
+    });
+    return h("div", { class: "grafico" }, svg, dica);
+  }
+  const mesCurtoG = m => { const [a, mm] = m.split("-"); return `${["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"][Number(mm) - 1]}/${a.slice(2)}`; };
+
+  // ----- Gráficos do perfil: 18 meses de desempenho, avaliações, respostas, posts e mapa de posição.
+  async function abaGraficosGoogle(area, marca) {
+    const d = await mk(`google/graficos?marca=${marca.id}`, { fresco: true });
+    if (!d.conectada) { trocar(area, h("section", { class: "cartao vidro" }, vazio("Conecte o Google deste perfil", "Os gráficos usam os números oficiais do perfil."))); return; }
+    const cartao = (titulo, sub, ...filhos) => h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: titulo }), sub ? h("p", { class: "sub", text: sub }) : null, ...filhos);
+    const blocos = [];
+    const des = d.desempenho;
+    if (des && des.meses && des.meses.length) {
+      const meses = des.meses, ult = meses[meses.length - 1];
+      const parcial = ult && ult.dias < 28;
+      const serie = (campo, f = x => x[campo]) => meses.map(x => ({ rotulo: `${nomeMesUi(x.mes)}${x.dias < 28 ? ` (${x.dias} dias)` : ""}`, curto: mesCurtoG(x.mes), valor: f(x) }));
+      const t = des.totais || {};
+      blocos.push(h("section", { class: "grade grade-4" }, metrica("Visualizações (18 meses)", numero(t.visualizacoes || 0), `Pesquisa ${numero(t.buscas || 0)} · Maps ${numero(t.maps || 0)}`),
+        metrica("Interações", numero(t.interacoes || 0), `Ligações ${numero(t.ligacoes || 0)} · Rotas ${numero(t.rotas || 0)}`), metrica("Cliques no site", numero(t.cliques_site || 0), `Mensagens ${numero(t.mensagens || 0)}`),
+        metrica("Conversão", t.visualizacoes ? `${(t.interacoes / t.visualizacoes * 100).toFixed(1).replace(".", ",")}%` : "—", "interações ÷ visualizações")));
+      blocos.push(cartao("Visualizações por mês", `De ${dataCurtaFin(des.de)} a ${dataCurtaFin(des.ate)}, números oficiais do Google (consolidados com 2 dias de atraso).${parcial ? " O último mês ainda está em andamento." : ""}`, graficoColunas(serie("visualizacoes"), { nome: "Visualizações" })));
+      blocos.push(h("div", { class: "grade grade-2" },
+        cartao("Pesquisa × Maps", "Onde as pessoas viram o perfil (por mês).", h("p", { class: "grafico-legenda", text: "Linha cheia: Pesquisa do Google · tracejada: Google Maps" }), graficoLinha(serie("buscas").map(x => ({ ...x, chave: x.curto })), serie("maps").map(x => ({ ...x, chave: x.curto })), "Pesquisa", "Maps")),
+        cartao("Celular × computador", "Visualizações pelo celular e pelo computador.", h("p", { class: "grafico-legenda", text: "Linha cheia: celular · tracejada: computador" }), graficoLinha(serie("celular", x => x.maps_celular + x.pesquisa_celular).map(x => ({ ...x, chave: x.curto })), serie("computador", x => x.maps_computador + x.pesquisa_computador).map(x => ({ ...x, chave: x.curto })), "Celular", "Computador"))));
+      blocos.push(h("div", { class: "grade grade-2" }, cartao("Ligações por mês", "", graficoColunas(serie("ligacoes"), { nome: "Ligações" })), cartao("Pedidos de rota por mês", "", graficoColunas(serie("rotas"), { nome: "Rotas" }))));
+      blocos.push(h("div", { class: "grade grade-2" }, cartao("Cliques no site por mês", "", graficoColunas(serie("cliques_site"), { nome: "Cliques" })),
+        cartao("Taxa de conversão por mês", "Interações ÷ visualizações, em %.", graficoColunas(serie("conv", x => x.visualizacoes ? Math.round(x.interacoes / x.visualizacoes * 1000) / 10 : 0), { nome: "Conversão", formato: v => `${String(v).replace(".", ",")}%` }))));
+    } else blocos.push(cartao("Desempenho", "", h("p", { class: "nota nota-alerta", text: d.erro_desempenho ? `O Google não devolveu os números agora: ${d.erro_desempenho}` : "Sem números de desempenho ainda." })));
+    const av = d.avaliacoes;
+    blocos.push(h("section", { class: "grade grade-4" }, metrica("Nota no Google", av.media_google != null ? String(av.media_google).replace(".", ",") + " ★" : "—", `${numero(av.total_google ?? av.total)} avaliações`),
+      metrica("Respondidas", av.taxa_resposta != null ? av.taxa_resposta + "%" : "—", "das avaliações do perfil"),
+      metrica("Tempo de resposta", av.tempo_resposta_h ? (av.tempo_resposta_h.mediana < 48 ? `${String(av.tempo_resposta_h.mediana).replace(".", ",")} h` : `${Math.round(av.tempo_resposta_h.mediana / 24)} dias`) : "—", av.tempo_resposta_h ? `mediana · ${av.tempo_resposta_h.ate_24h_pct}% em até 24 h (${av.tempo_resposta_h.amostra} respostas, 12 meses)` : "aparece depois da próxima leitura completa"),
+      metrica("Notas 1–2 ★", numero(av.distribuicao.filter(x => x.nota <= 2).reduce((s0, x) => s0 + x.n, 0)), "no total")));
+    blocos.push(h("div", { class: "grade grade-2" },
+      cartao("Distribuição das notas", "Todas as avaliações lidas do Google.", barras(av.distribuicao.map(x => ({ rotulo: `${x.nota} ★`, valor: x.n })))),
+      cartao("Avaliações por mês", "Novas avaliações recebidas (últimos 24 meses).", av.por_mes.length ? graficoColunas(av.por_mes.map(x => ({ rotulo: nomeMesUi(x.mes), curto: mesCurtoG(x.mes), valor: x.n, extra: `nota média ${String(x.media).replace(".", ",")} · ${x.respondidas} respondidas${x.negativas ? ` · ${x.negativas} com nota 1–2` : ""}` })), { nome: "Avaliações" }) : vazio("Sem avaliações no período", ""))));
+    if (av.por_mes.length > 1) blocos.push(cartao("Nota média por mês", "Média das avaliações recebidas em cada mês.", graficoLinha(av.por_mes.map(x => ({ chave: x.mes, rotulo: nomeMesUi(x.mes), curto: mesCurtoG(x.mes), valor: x.media })), null, "Nota média", "")));
+    blocos.push(cartao("Posts publicados no Google por mês", "Publicados pela DENIA. Perfis com post toda semana aparecem mais.", (d.posts || []).length ? graficoColunas(d.posts.map(x => ({ rotulo: nomeMesUi(x.mes), curto: mesCurtoG(x.mes), valor: x.n })), { nome: "Posts" }) : vazio("Nenhum post publicado pela DENIA ainda", "")));
+    for (const mp of (d.mapa || []).filter(x => x.serie.length > 1)) blocos.push(cartao(`Mapa de posição: "${mp.palavra}"`, "Posição média nos pontos do mapa a cada medição (quanto menor, melhor).", graficoLinha(mp.serie.map(x => ({ chave: String(x.ms), rotulo: `${quando(x.ms)} · no top 3 em ${x.top3}% dos pontos`, curto: new Date(x.ms).toLocaleDateString(LOCALE, { day: "2-digit", month: "2-digit" }), valor: x.media || 0 })), null, "Posição média", "")));
+    trocar(area, h("div", { class: "acoes", style: "margin-bottom:8px" }, botao("Atualizar com o Google agora", async (_e, b) => { b.disabled = true; try { await mk(`google/graficos?marca=${marca.id}&novo=1`, { fresco: true }); navegar(); } catch (e) { aviso(e.message, "erro"); b.disabled = false; } }, "btn-secundario btn-pequeno")), ...blocos);
+  }
+
+  // ----- Buscar empresas: qualquer ramo, qualquer região — lista, mapa de calor, segmento e planilha.
+  async function abaBuscarEmpresas(area) {
+    const hist = await mk("google/empresas", { fresco: true });
+    const busca = h("input", { class: "entrada", placeholder: "Ex.: assistência técnica de celular em Botafogo, Rio de Janeiro" });
+    const resultado = h("div", { class: "grade" });
+    const mostrar = r => {
+      const emp = r.empresas || [], sg = r.segmento || {};
+      const comLoc = emp.filter(e => e.lat != null && e.lng != null);
+      // Mapa de calor: grade de 12×12 sobre a área das empresas encontradas (mais forte = mais empresas do ramo ali).
+      let calor = null;
+      if (comLoc.length >= 3) {
+        const N = 12, lats = comLoc.map(e => e.lat), lngs = comLoc.map(e => e.lng);
+        const la0 = Math.min(...lats), la1 = Math.max(...lats), lo0 = Math.min(...lngs), lo1 = Math.max(...lngs);
+        const cel = Array.from({ length: N }, () => Array(N).fill(0));
+        for (const e of comLoc) { const i = Math.min(N - 1, Math.floor((la1 - e.lat) / Math.max(1e-9, la1 - la0) * N)), j = Math.min(N - 1, Math.floor((e.lng - lo0) / Math.max(1e-9, lo1 - lo0) * N)); cel[i][j]++; }
+        const mx = Math.max(1, ...cel.flat());
+        calor = h("div", {}, h("div", { class: "calor-grade", style: `grid-template-columns:repeat(${N},1fr)` }, cel.flat().map(v => h("div", { class: "calor-cel", title: `${v} empresa(s)`, style: `background:${v ? `rgba(220,38,38,${0.15 + 0.85 * v / mx})` : "rgba(34,197,94,.10)"}` }))),
+          h("p", { class: "fx-nota", text: "Cada quadrado é um pedaço da região (norte em cima). Vermelho forte = muita empresa do ramo concentrada ali; verde = pouca concorrência (oportunidade para abrir unidade ou anunciar)." }));
+      }
+      const csv = () => { const linhas = [["Posição", "Empresa", "Nota", "Avaliações", "Categoria", "Telefone", "Site", "Endereço", "Fotos", "Horário", "Situação", "Google Maps"], ...emp.map(e => [e.posicao, e.nome, e.nota ?? "", e.avaliacoes, e.categoria, e.telefone, e.site, e.endereco, e.fotos, e.horario ? "sim" : "não", e.situacao, e.mapa])]; baixarCsv(`empresas-${(r.busca || "busca").replace(/[^\w]+/g, "-").slice(0, 40)}.csv`, linhas); };
+      trocar(resultado,
+        h("section", { class: "grade grade-4" }, metrica("Empresas encontradas", numero(sg.total || 0), r.busca), metrica("Nota média do segmento", sg.nota_media != null ? String(sg.nota_media).replace(".", ",") + " ★" : "—", ""), metrica("Avaliações (média)", numero(sg.avaliacoes_media || 0), `mediana ${numero(sg.avaliacoes_mediana || 0)}`), metrica("Oportunidades", numero((sg.sem_site || 0)), `sem site · ${sg.sem_telefone || 0} sem telefone · ${sg.poucas_fotos || 0} com menos de 5 fotos`)),
+        h("div", { class: "grade grade-2" }, h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Mapa de calor da concorrência" }), calor || vazio("Poucas empresas com localização", "")),
+          h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "As 10 mais avaliadas" }), barras((sg.mais_avaliadas || []).map(x => ({ rotulo: `${x.nome}${x.nota != null ? ` (${String(x.nota).replace(".", ",")}★)` : ""}`, valor: x.avaliacoes }))))),
+        h("div", { class: "grade grade-2" }, h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Notas no segmento" }), barras((sg.notas || []).map(x => ({ rotulo: x.faixa, valor: x.n })))),
+          h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Categorias mais usadas" }), h("p", { class: "sub", text: "A categoria principal que cada empresa escolheu no Google. Use para conferir se a sua está certa." }), barras((sg.categorias || []).map(x => ({ rotulo: x.nome, valor: x.n }))))),
+        h("section", { class: "cartao vidro" }, h("div", { class: "acoes", style: "justify-content:space-between" }, h("h3", { style: "margin:0", text: `Lista (${emp.length})` }), botao("Baixar planilha (CSV)", csv, "btn-secundario btn-pequeno")),
+          h("div", { class: "tabela-rolagem" }, h("table", { class: "tabela" }, h("thead", {}, h("tr", {}, ["#", "Empresa", "Nota", "Avaliações", "Categoria", "Telefone", "Site", "Fotos", ""].map(t => h("th", { text: t })))),
+            h("tbody", {}, emp.map(e => h("tr", {}, h("td", { text: String(e.posicao) }), h("td", {}, h("strong", { text: e.nome }), h("div", { class: "prb-meta", text: e.endereco })), h("td", { text: e.nota != null ? String(e.nota).replace(".", ",") : "—" }), h("td", { text: numero(e.avaliacoes) }), h("td", { text: e.categoria || "—" }),
+              h("td", { text: e.telefone || "—" }), h("td", {}, e.site ? h("a", { href: e.site, target: "_blank", rel: "noopener", text: "abrir" }) : "—"), h("td", { text: String(e.fotos) + (e.fotos >= 10 ? "+" : "") }), h("td", {}, e.mapa ? h("a", { href: e.mapa, target: "_blank", rel: "noopener", text: "Maps" }) : ""))))))),
+        h("p", { class: "fx-nota", text: `Dados públicos do Google Maps (Places API) no momento da busca${r.criado_ms ? ", " + quando(r.criado_ms) : ""}. Fotos: o Google informa no máximo 10 por empresa.` }));
+    };
+    trocar(area, h("section", { class: "cartao vidro formulario" }, h("h3", { style: "margin:0", text: "Buscar empresas no Google Maps" }),
+      h("p", { class: "dica", text: "Para prospectar clientes e estudar o mercado: digite o ramo e a região. A DENIA traz até 60 empresas com nota, avaliações, telefone, site e fotos, monta o mapa de calor da concorrência e as estatísticas do segmento." }),
+      hist.places_configurado ? null : h("p", { class: "nota nota-alerta", text: "Falta a variável GOOGLE_PLACES_API_KEY na Hostinger (Places API (New) ativada)." }),
+      h("div", { class: "linha-form", style: "align-items:end" }, campo("Ramo e região", busca), botao("Buscar", async (_e, b) => { b.disabled = true; b.textContent = "Buscando…"; try { mostrar(await mk("google/empresas", { metodo: "POST", corpo: { busca: busca.value } })); } catch (e) { aviso(e.message, "erro"); } finally { b.disabled = false; b.textContent = "Buscar"; } }, "btn-primario")),
+      h("p", { class: "sub", text: "Cada busca usa até 3 consultas ao Google Maps (alguns centavos de dólar, na conta Google Cloud da empresa)." }),
+      (hist.buscas || []).length ? h("div", { class: "acoes", style: "flex-wrap:wrap" }, h("span", { class: "sub", text: "Buscas anteriores:" }), hist.buscas.slice(0, 8).map(x => botao(`${x.busca} (${x.total})`, async () => { try { mostrar(await mk(`google/empresas?id=${x.id}`)); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno"))) : null), resultado);
+  }
+
+  // ----- Guia: como montar (e manter) o perfil no Google Maps, com a situação real do perfil ao lado.
+  async function abaGuiaMaps(area, marcaId) {
+    const ch = await mk(`google/checagem?marca=${marcaId}`, { fresco: true }).catch(() => null);
+    const itens = (ch && (ch.itens || ch.checagem?.itens)) || [];
+    const sit = chave => { const x = itens.find(i => i.chave === chave); return x ? (x.ok === "ok" ? "✓ feito" : x.ok === "parcial" ? "◐ em parte" : "✗ falta") : ""; };
+    const passos = [
+      ["Criar ou reivindicar o perfil", "Entre em business.google.com com a conta Google da empresa → Adicionar empresa. Se a empresa já aparece no Maps, use “Reivindicar esta empresa”. Nunca crie um segundo perfil para o mesmo endereço (o Google pode suspender os dois).", ""],
+      ["Nome exatamente como na fachada", "Sem palavras-chave, cidade ou slogan no nome: é a causa mais comum de suspensão.", "nome"],
+      ["Categoria principal certa", "É o fator que mais pesa para aparecer. Escolha a mais específica (ex.: “Serviço de reparo de celular”, não “Loja”). Use Buscar empresas para ver as categorias dos líderes do seu ramo; acrescente até 9 secundárias.", "categoria"],
+      ["Endereço ou área de atendimento", "Com loja aberta ao público: endereço completo. Atende na casa do cliente: esconda o endereço e marque os bairros/cidades atendidos.", "endereco"],
+      ["Verificação", "O Google pede vídeo, ligação, SMS, e-mail ou carta. Sem verificar, o perfil não aparece nem pode ser editado pela DENIA.", ""],
+      ["Telefone, site e WhatsApp", "Telefone que atende de verdade; site ou link do WhatsApp/Instagram.", "telefone"],
+      ["Horários e feriados", "Horário normal e horários especiais de feriado (a DENIA lembra antes de cada feriado).", "horario"],
+      ["Descrição de até 750 caracteres", "O que faz, para quem, onde e diferenciais — sem link nem telefone.", "descricao"],
+      ["Serviços ou produtos", "Cadastre cada serviço com descrição: eles viram palavras que levam o perfil às buscas.", "servicos"],
+      ["Fotos e vídeo", "Logo, capa, fachada, equipe, trabalhos feitos. No mínimo 10 fotos e uma nova por semana.", "fotos"],
+      ["Avaliações", "Peça avaliação depois de cada atendimento (cartões com QR code em Pedir avaliações) e responda todas — a DENIA sugere e publica a resposta.", "avaliacoes"],
+      ["Posts toda semana", "Novidades, ofertas e trabalhos feitos. A DENIA cria e publica.", "posts"],
+      ["Acompanhar", "Gráficos (18 meses), Mapa de posição (agende toda semana), Buscas no Google e o relatório em PDF todo mês.", ""]
+    ];
+    trocar(area, h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Como montar o perfil no Google Maps (e deixá-lo no topo)" }),
+      h("p", { class: "sub", text: ch ? `Situação real deste perfil ao lado de cada passo (checagem: nota ${ch.nota ?? ch.checagem?.nota ?? "—"}/100).` : "Conecte o perfil para ver a situação de cada passo." }),
+      h("ol", { class: "guia-maps" }, passos.map(([t0, d0, chave]) => h("li", {}, h("strong", { text: t0 }), chave && sit(chave) ? h("span", { class: "guia-sit", text: sit(chave) }) : null, h("p", { text: d0 })))),
+      h("div", { class: "acoes" }, h("a", { class: "btn btn-primario", href: "#/google/checagem" }, "Ver a checagem completa"), h("a", { class: "btn btn-secundario", href: "https://business.google.com/", target: "_blank", rel: "noopener" }, "Abrir o Perfil da Empresa no Google"))));
   }
 
   // ----- Google: visão geral de todos os perfis (como uma agência acompanha a carteira)
@@ -7159,7 +7311,7 @@ Botão só com texto = resposta.` })),
 
   const arquivoBase64 = f => new Promise((ok, erro) => { const r = new FileReader(); r.onload = () => ok(String(r.result).replace(/^data:[^,]+,/, "")); r.onerror = () => erro(new Error("Não consegui ler o arquivo.")); r.readAsDataURL(f); });
   async function paginaFinanceiro(el, _p, vivo) {
-    if (!pode("ADMIN")) { el.append(cabeca("Financeiro", ""), h("div", { class: "cartao vidro" }, vazio("Só o dono e os administradores veem o financeiro", "Peça acesso de administrador ao responsável pela empresa.", ICONES.caixa))); return; }
+    if (!pode("ADMIN") && !ehContador()) { el.append(cabeca("Financeiro", ""), h("div", { class: "cartao vidro" }, vazio("Só o dono e os administradores veem o financeiro", "Peça acesso de administrador ao responsável pela empresa.", ICONES.caixa))); return; }
     const mes = finEstado.mes = finEstado.mes || mesAtualLocal();
     let op;
     try { op = await fin("opcoes"); } catch (e) { if (vivo()) falha(el, e); return; }
@@ -8225,6 +8377,171 @@ Botão só com texto = resposta.` })),
       lado.append(d(500, esc));
     }
     return h("div", { class: "apr-cena apr-dupla" }, h("div", {}, cab(), pontos(c.pontos)), lado);
+  }
+
+  // ----- Ordens de serviço (do atendimento no WhatsApp), clientes e profissionais.
+  const osApi = (caminho, op) => api(`/api/orgs/${estado.org.id}/os/${caminho}`, op);
+  const osEstado = {};
+  const STATUS_OS_UI = { ABERTA: "Orçamento", AGENDADA: "Agendada", A_CAMINHO: "Técnico a caminho", EM_EXECUCAO: "Em execução", CONCLUIDA: "Concluída", CANCELADA: "Cancelada" };
+  const PAGTO_UI = { PENDENTE: "Pendente", A_CONFERIR: "Comprovante recebido — conferir", PAGO: "Pago", NAO_SE_APLICA: "Não se aplica" };
+  const NF_UI = { PENDENTE: "A emitir", EMITIDA: "Emitida", NAO_SE_APLICA: "Não se aplica" };
+  const reais = c => c == null ? "—" : dinheiroFin(c, "BRL");
+  async function paginaOS(el, aba, vivo) {
+    if (!pode("AGENTE") && !ehContador()) { el.append(cabeca("Ordens de serviço", ""), h("div", { class: "cartao vidro" }, vazio("Acesso restrito", ""))); return; }
+    aba = ["ordens", "clientes", "profissionais"].includes(aba) ? aba : "ordens";
+    const est = await osApi("estado").catch(() => ({ conectado: false }));
+    if (!vivo()) return;
+    const abas = h("div", { class: "abas", role: "tablist" }, [["ordens", "Ordens de serviço"], ["clientes", "Clientes"], ["profissionais", "Profissionais"]].map(([k0, n0]) => h("a", { class: "aba" + (k0 === aba ? " ativo" : ""), href: "#/os/" + k0, role: "tab" }, n0)));
+    const sinc = est.sync ? `Última leitura do atendimento: ${quando(est.sync.ultimo_ms)}${est.sync.erro ? " · erro: " + est.sync.erro : ""}` : "";
+    el.append(cabeca("Ordens de serviço", "Cada atendimento do WhatsApp com profissional confirmado vira uma OS: cliente, endereço, profissional, valores, pagamento, comprovante e nota fiscal — e o financeiro é preenchido sozinho, mês a mês.",
+      !ehContador() && est.conectado ? botao("Ler o atendimento agora", async (_e, b) => { b.disabled = true; b.textContent = "Lendo…"; try { const r = await osApi("sincronizar", { metodo: "POST", corpo: {} }); aviso(`${r.novas} OS nova(s), ${r.atualizadas} atualizada(s), ${r.anexos} comprovante(s).`, "ok"); navegar(); } catch (e) { aviso(e.message, "erro"); b.disabled = false; } }, "btn-secundario") : null,
+      !ehContador() ? botao("+ OS manual", () => editarOS(null), "btn-primario") : null), h("div", { class: "pagina-cabeca" }, abas), sinc ? h("p", { class: "sub", text: sinc }) : null,
+      est.conectado ? null : h("p", { class: "nota", text: "O atendimento com IA desta empresa não está conectado (Integrações). Dá para lançar OS à mão; com a IA ligada, elas entram sozinhas." }));
+    const corpo = h("div", {}, carregando()); el.append(corpo);
+    try { if (aba === "ordens") await osOrdens(corpo, vivo); else if (aba === "clientes") await osClientes(corpo, vivo); else await osProfissionais(corpo, vivo); } catch (e) { if (vivo()) falha(corpo, e); }
+  }
+  async function osOrdens(el, vivo) {
+    const mes = osEstado.mes = osEstado.mes || mesAtualLocal();
+    const filtro = osEstado.filtro || "";
+    const [r, rs] = await Promise.all([osApi(`ordens?mes=${mes}${filtro ? "&financeiro=" + filtro : ""}${osEstado.q ? "&q=" + encodeURIComponent(osEstado.q) : ""}`), osApi(`resumo?mes=${mes}`)]);
+    if (!vivo()) return;
+    const t = rs.totais;
+    const andar = n0 => { osEstado.mes = somarMesUi(mes, n0); navegar(); };
+    const chip = (v, n0) => h("button", { type: "button", class: "aba" + (filtro === v ? " ativo" : ""), onclick: () => { osEstado.filtro = v; navegar(); } }, n0);
+    const busca = h("input", { class: "entrada", placeholder: "Buscar cliente, telefone, profissional, bairro ou nº", value: osEstado.q || "", style: "max-width:320px" });
+    busca.addEventListener("keydown", e => { if (e.key === "Enter") { osEstado.q = busca.value.trim(); navegar(); } });
+    const selo = (txt0, cor) => h("span", { class: "selo-os " + cor, text: txt0 });
+    const corPag = v => v === "PAGO" ? "ok" : v === "A_CONFERIR" ? "atencao" : v === "NAO_SE_APLICA" ? "neutro" : "pendente";
+    trocar(el,
+      h("div", { class: "fin-mes" }, botao("‹", () => andar(-1), "btn-secundario btn-pequeno", { "aria-label": "Mês anterior" }), h("strong", { text: nomeMesUi(mes) }), botao("›", () => andar(1), "btn-secundario btn-pequeno", { "aria-label": "Próximo mês" }),
+        h("span", { style: "flex:1" }), busca, botao("Planilha do mês", async () => { try { await baixarDaApi(`os/exportar?mes=${mes}`, `ordens-de-servico-${mes}.xlsx`); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno")),
+      h("section", { class: "grade grade-4" }, metrica("OS concluídas", String(t.concluidas), `${t.os} no mês · ${t.em_aberto} em aberto · ${t.canceladas} canceladas`), metrica("Faturado (clientes)", reais(t.faturado_cent), `ticket médio ${reais(t.ticket_medio_cent)}`),
+        metrica("Receita da Central", reais(t.receita_central_cent), `aos profissionais: ${reais(t.pago_profissionais_cent)}`), metrica("A receber", reais(t.comissoes_a_receber_cent), `${t.clientes_pendentes} cliente(s) sem pagamento confirmado · ${t.nf_a_emitir} NF a emitir`)),
+      (rs.doze_meses || []).length > 1 ? h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Receita da Central — 12 meses" }), graficoColunas(rs.doze_meses.map(x => ({ rotulo: nomeMesUi(x.mes), curto: mesCurtoG(x.mes), valor: x.receita / 100, extra: `${x.concluidas} OS concluídas · faturado ${reais(x.faturado)}` })), { nome: "Receita", formato: v => dinheiroFin(Math.round(v * 100), "BRL").replace(/,00$/, "") })) : null,
+      h("div", { class: "abas abas-chips", role: "group", style: "margin:10px 0" }, chip("", "Todas"), chip("conferir", "Comprovante a conferir"), chip("cliente_pendente", "Cliente não pagou"), chip("comissao_pendente", "Acerto pendente"), chip("nf_pendente", "NF a emitir")),
+      h("section", { class: "cartao vidro" }, r.ordens.length ? h("div", { class: "tabela-rolagem" }, h("table", { class: "tabela fin-tabela" },
+        h("thead", {}, h("tr", {}, ["OS", "Cliente", "Serviço", "Profissional", "Situação", "Cliente paga", "Central recebe", "Pagamento", "Acerto", "NF", ""].map(x => h("th", { text: x })))),
+        h("tbody", {}, r.ordens.map(o => h("tr", {}, h("td", { text: String(o.caso_id || "M" + o.id) }), h("td", {}, h("strong", { text: o.cliente_nome || "—" }), h("div", { class: "prb-meta", text: [o.bairro, o.concluida_em && "concluída " + dataCurtaFin(o.concluida_em)].filter(Boolean).join(" · ") })),
+          h("td", { text: o.servico || "—" }), h("td", { text: o.prof_nome || "—" }), h("td", {}, selo(STATUS_OS_UI[o.status] || o.status, o.status === "CONCLUIDA" ? "ok" : o.status === "CANCELADA" ? "neutro" : "info")),
+          h("td", { text: reais(o.valor_cliente_cent) }), h("td", { text: reais(o.quem_recebe === "CENTRAL" ? (o.valor_cliente_cent || 0) - (o.valor_prof_cent || 0) : o.comissao_cent) }),
+          h("td", {}, selo(PAGTO_UI[o.cliente_pagto], corPag(o.cliente_pagto))), h("td", {}, selo(PAGTO_UI[o.prof_repasse], corPag(o.prof_repasse))), h("td", {}, selo(NF_UI[o.nf_status] + (o.nf_numero ? " nº " + o.nf_numero : ""), o.nf_status === "EMITIDA" ? "ok" : o.nf_status === "NAO_SE_APLICA" ? "neutro" : "pendente")),
+          h("td", {}, botao("Abrir", () => abrirOS(o.id), "btn-secundario btn-pequeno"), o.anexos ? h("span", { class: "prb-meta", text: ` 📎${o.anexos}` }) : null)))))) : vazio("Nenhuma OS neste mês", "As OS entram sozinhas quando um atendimento do WhatsApp tem profissional confirmado.")),
+      h("div", { class: "grade grade-2" }, h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Por profissional" }), barras((rs.por_profissional || []).slice(0, 10).map(x => ({ rotulo: `${x.nome} (${x.os})`, valor: x.faturado })), v => reais(v))),
+        h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Por serviço" }), barras((rs.por_servico || []).slice(0, 10).map(x => ({ rotulo: `${x.nome} (${x.os})`, valor: x.faturado })), v => reais(v)))));
+  }
+  async function abrirOS(id) {
+    let d;
+    try { d = await osApi(`ordens/${id}`); } catch (e) { return aviso(e.message, "erro"); }
+    const o = d.ordem;
+    const linhaInfo = (rot, val) => val ? h("p", { style: "margin:4px 0" }, h("strong", { text: rot + ": " }), String(val)) : null;
+    const quemTxt = o.quem_recebe === "CENTRAL" ? "O cliente paga a Central; a Central repassa ao profissional." : "O cliente paga o profissional; o profissional acerta a comissão com a Central.";
+    gaveta(`OS ${o.caso_id || "M" + o.id} — ${o.servico || "serviço"}`, [
+      h("p", { class: "sub", text: `${STATUS_OS_UI[o.status] || o.status}${o.origem === "whatsapp" ? " · do atendimento no WhatsApp" : " · lançada à mão"}${o.a_caminho_ms ? " · cliente avisado que o técnico estava a caminho em " + quando(o.a_caminho_ms) : ""}` }),
+      linhaInfo("Cliente", [o.cliente_nome, o.cliente_tel].filter(Boolean).join(" · ")), linhaInfo("Endereço", [o.endereco || o.cliente_endereco, o.bairro || o.cliente_bairro].filter(Boolean).join(" — ")),
+      linhaInfo("Profissional", [o.prof_nome, o.prof_tel].filter(Boolean).join(" · ")), linhaInfo("O que foi pedido", o.descricao), linhaInfo("Agendado", o.agendado_txt), linhaInfo("Resumo do atendimento", o.resumo),
+      h("div", { class: "grade grade-2", style: "margin-top:8px" }, metrica("Cliente paga", reais(o.valor_cliente_cent), PAGTO_UI[o.cliente_pagto] + (o.cliente_pago_em ? " · " + dataCurtaFin(o.cliente_pago_em) : "")), metrica("Profissional recebe", reais(o.valor_prof_cent), quemTxt)),
+      h("div", { class: "grade grade-2" }, metrica(o.quem_recebe === "CENTRAL" ? "Margem da Central" : "Comissão da Central", reais(o.quem_recebe === "CENTRAL" ? (o.valor_cliente_cent || 0) - (o.valor_prof_cent || 0) : o.comissao_cent), (o.quem_recebe === "CENTRAL" ? "repasse: " : "acerto: ") + PAGTO_UI[o.prof_repasse]), metrica("Nota fiscal", NF_UI[o.nf_status], [o.nf_numero && "nº " + o.nf_numero, o.nf_data && dataCurtaFin(o.nf_data)].filter(Boolean).join(" · "))),
+      (o.manual || []).length ? h("p", { class: "fx-nota", text: "Corrigido à mão (a leitura do WhatsApp não muda): " + o.manual.join(", ").replace(/_cent/g, "").replace(/_/g, " ") } ) : null,
+      h("h4", { text: "Comprovantes, notas e fotos" }), d.anexos.length ? h("ul", { class: "prb-lista" }, d.anexos.map(a => item(`${{ COMPROVANTE_CLIENTE: "Comprovante do cliente", COMPROVANTE_PROFISSIONAL: "Comprovante do profissional", NOTA_FISCAL: "Nota fiscal", FOTO_SERVICO: "Foto do serviço / do profissional", OUTRO: "Arquivo" }[a.tipo] || a.tipo}`, `${quando(a.ms)} · ${a.por || a.origem}${a.erro ? " · " + a.erro : ""}`,
+        a.tem ? botao("Ver", async () => { try { const r0 = await fetch(`/api/orgs/${estado.org.id}/os/anexos/${a.id}`, { credentials: "same-origin", headers: { "x-denia": "1" } }); if (!r0.ok) throw new Error("Não foi possível abrir."); window.open(URL.createObjectURL(await r0.blob()), "_blank", "noopener"); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno") : null))) : h("p", { class: "sub", text: "Nenhum anexo. Comprovantes que o cliente manda no WhatsApp entram sozinhos." }),
+      d.lancamentos.length ? h("div", {}, h("h4", { text: "No financeiro" }), h("ul", { class: "prb-lista" }, d.lancamentos.map(l => item(`${l.tipo === "ENTRADA" ? "+" : "−"} ${reais(l.valor_cent)} · ${l.descricao}`, `${dataCurtaFin(l.data)} · ${l.pago ? (l.tipo === "ENTRADA" ? "recebido" : "pago") + (l.pago_em ? " em " + dataCurtaFin(l.pago_em) : "") : "em aberto"}`)))) : null,
+      !ehContador() ? h("div", { class: "acoes" }, botao("Editar / acertar", () => { fecharGaveta && fecharGaveta(); editarOS(o); }, "btn-primario"),
+        o.caso_id && !["CONCLUIDA", "CANCELADA"].includes(o.status) ? botao("Avisar: técnico a caminho", async () => { const prev = await modal({ titulo: "Avisar o cliente pelo WhatsApp", conteudo: [h("p", { text: "A DENIA manda: “O técnico já está a caminho…”. Previsão de chegada (opcional):" }), h("input", { class: "entrada", id: "prev-chegada", placeholder: "Ex.: 20 minutos" })], confirmar: "Avisar" }); if (!prev) return; try { await osApi(`ordens/${o.id}/a-caminho`, { metodo: "POST", corpo: { previsao: (document.getElementById("prev-chegada") || {}).value || "" } }); aviso("Cliente avisado.", "ok"); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario") : null,
+        botao("Anexar arquivo", async () => { const inp = h("input", { type: "file", accept: "image/*,application/pdf" }); inp.onchange = async () => { const f = inp.files[0]; if (!f) return; if (f.size > 4_000_000) return aviso("Máximo 4 MB.", "erro"); const tipo = await escolherTipoAnexo(); if (!tipo) return; try { await osApi(`ordens/${o.id}/anexos`, { metodo: "POST", corpo: { tipo, nome: f.name, mime: f.type, base64: await arquivoBase64(f) } }); aviso("Anexado.", "ok"); abrirOS(o.id); } catch (e) { aviso(e.message, "erro"); } }; inp.click(); }, "btn-secundario")) : null,
+      d.historico.length ? h("details", {}, h("summary", { text: `Histórico (${d.historico.length})` }), h("ul", { class: "prb-lista" }, d.historico.map(x => item(`${quando(x.ms)} · ${x.por || "—"} ${x.acao}`, x.detalhe || "")))) : null
+    ].filter(Boolean));
+  }
+  async function escolherTipoAnexo() {
+    const s0 = h("select", { class: "entrada" }, [["COMPROVANTE_CLIENTE", "Comprovante do cliente"], ["COMPROVANTE_PROFISSIONAL", "Comprovante do profissional (acerto)"], ["NOTA_FISCAL", "Nota fiscal"], ["FOTO_SERVICO", "Foto do serviço"], ["OUTRO", "Outro"]].map(([v, n0]) => h("option", { value: v, text: n0 })));
+    return (await modal({ titulo: "Que arquivo é este?", conteudo: [s0], confirmar: "Anexar" })) ? s0.value : null;
+  }
+  async function editarOS(o) {
+    const nova = !o;
+    const [cl, pr] = await Promise.all([osApi("clientes").catch(() => ({ clientes: [] })), osApi("profissionais").catch(() => ({ profissionais: [] }))]);
+    const selC = h("select", { class: "entrada" }, h("option", { value: "", text: "—" }), cl.clientes.slice(0, 1500).map(c0 => h("option", { value: c0.id, text: `${c0.nome || "(sem nome)"}${c0.telefone ? " · " + c0.telefone.slice(-4) : ""}` }))); selC.value = o && o.cliente_id ? String(o.cliente_id) : "";
+    const selP = h("select", { class: "entrada" }, h("option", { value: "", text: "—" }), pr.profissionais.map(p0 => h("option", { value: p0.id, text: p0.nome || p0.telefone || "?" }))); selP.value = o && o.profissional_id ? String(o.profissional_id) : "";
+    const tx = (v, ph) => entradaTxt(v || "", ph), val = c => c == null ? "" : (c / 100).toFixed(2).replace(".", ",");
+    const servico = tx(o && o.servico, "Ex.: Troca de resistência do chuveiro"), bairro = tx(o && o.bairro, "Bairro"), endereco = tx(o && o.endereco, "Endereço");
+    const st = h("select", { class: "entrada" }, Object.entries(STATUS_OS_UI).map(([v, n0]) => h("option", { value: v, text: n0 }))); st.value = (o && o.status) || "ABERTA";
+    const vCli = tx(val(o && o.valor_cliente_cent), "0,00"), vProf = tx(val(o && o.valor_prof_cent), "0,00");
+    const quem = h("select", { class: "entrada" }, h("option", { value: "PROFISSIONAL", text: "O cliente paga o profissional (a Central cobra a comissão)" }), h("option", { value: "CENTRAL", text: "O cliente paga a Central (a Central repassa ao profissional)" })); quem.value = (o && o.quem_recebe) || "PROFISSIONAL";
+    const sel = (obj, atual) => { const s1 = h("select", { class: "entrada" }, Object.entries(obj).map(([v, n0]) => h("option", { value: v, text: n0 }))); s1.value = atual; return s1; };
+    const cPag = sel(PAGTO_UI, (o && o.cliente_pagto) || "PENDENTE"), cPagEm = entradaData(o && o.cliente_pago_em), forma = tx(o && o.cliente_forma, "Pix, cartão…");
+    const rPag = sel(PAGTO_UI, (o && o.prof_repasse) || "PENDENTE"), rPagEm = entradaData(o && o.prof_pago_em);
+    const nf = sel(NF_UI, (o && o.nf_status) || "PENDENTE"), nfN = tx(o && o.nf_numero, "Nº"), nfD = entradaData(o && o.nf_data), obs = h("textarea", { class: "entrada", rows: "2" }, (o && o.obs) || "");
+    const admin = pode("ADMIN");
+    await formulario(nova ? "Nova OS" : `Editar OS ${o.caso_id || "M" + o.id}`, [h("div", { class: "fin-duas" }, campo("Cliente", selC), campo("Profissional", selP)), campo("Serviço", servico), h("div", { class: "fin-duas" }, campo("Endereço", endereco), campo("Bairro", bairro)), campo("Situação", st),
+      admin ? h("div", { class: "fin-duas" }, campo("Valor que o cliente paga", vCli), campo("Valor do profissional", vProf, "A comissão é a diferença.")) : null, admin ? campo("Quem recebe do cliente", quem) : null,
+      admin ? h("div", { class: "fin-duas" }, campo("Pagamento do cliente", cPag), campo("Pago em", cPagEm)) : null, admin ? campo("Forma", forma) : null,
+      admin ? h("div", { class: "fin-duas" }, campo("Acerto com o profissional", rPag, "Comissão paga pelo profissional, ou repasse pago a ele."), campo("Acertado em", rPagEm)) : null,
+      admin ? h("div", { class: "fin-duas" }, campo("Nota fiscal", nf), campo("Número", nfN)) : null, admin ? campo("Data da NF", nfD) : null, campo("Observações", obs)].filter(Boolean), "Salvar",
+      async () => {
+        const corpo = { cliente_id: selC.value || null, profissional_id: selP.value || null, servico: servico.value, endereco: endereco.value, bairro: bairro.value, status: st.value, obs: obs.value };
+        if (admin) Object.assign(corpo, { valor_cliente: vCli.value, valor_prof: vProf.value, quem_recebe: quem.value, cliente_pagto: cPag.value, cliente_pago_em: cPagEm.value || null, cliente_forma: forma.value, prof_repasse: rPag.value, prof_pago_em: rPagEm.value || null, nf_status: nf.value, nf_numero: nfN.value, nf_data: nfD.value || null });
+        if (!nova) { for (const k0 of Object.keys(corpo)) { const atual = { valor_cliente: val(o.valor_cliente_cent), valor_prof: val(o.valor_prof_cent), cliente_id: o.cliente_id ? String(o.cliente_id) : null, profissional_id: o.profissional_id ? String(o.profissional_id) : null }[k0] ?? (o[k0] == null ? (k0.endsWith("_em") || k0 === "nf_data" ? null : "") : String(o[k0])); if (String(corpo[k0] ?? "") === String(atual ?? "")) delete corpo[k0]; } }
+        await osApi(nova ? "ordens" : `ordens/${o.id}`, { metodo: nova ? "POST" : "PUT", corpo }); aviso("OS salva. O financeiro foi atualizado.", "ok"); navegar();
+      });
+  }
+  async function osClientes(el, vivo) {
+    const r = await osApi(`clientes${osEstado.qc ? "?q=" + encodeURIComponent(osEstado.qc) : ""}`);
+    if (!vivo()) return;
+    const busca = h("input", { class: "entrada", placeholder: "Buscar por nome, telefone, bairro ou endereço", value: osEstado.qc || "", style: "max-width:360px" });
+    busca.addEventListener("keydown", e => { if (e.key === "Enter") { osEstado.qc = busca.value.trim(); navegar(); } });
+    const editar = async c0 => {
+      const f = Object.fromEntries(["nome", "telefone", "bairro", "cidade", "endereco", "documento", "email"].map(k0 => [k0, entradaTxt(c0 ? c0[k0] : "", "")]));
+      const obs = h("textarea", { class: "entrada", rows: "2" }, (c0 && c0.obs) || "");
+      await formulario(c0 ? "Editar cliente" : "Novo cliente", [campo("Nome", f.nome), h("div", { class: "fin-duas" }, campo("WhatsApp", f.telefone), campo("CPF/CNPJ", f.documento)), campo("Endereço", f.endereco), h("div", { class: "fin-duas" }, campo("Bairro", f.bairro), campo("Cidade", f.cidade)), campo("E-mail", f.email), campo("Observações", obs)], "Salvar",
+        async () => { await osApi(c0 ? `clientes/${c0.id}` : "clientes", { metodo: c0 ? "PUT" : "POST", corpo: { ...Object.fromEntries(Object.entries(f).map(([k0, i]) => [k0, i.value])), obs: obs.value } }); aviso("Cliente salvo. O que você corrigiu não é trocado pela leitura do WhatsApp.", "ok"); navegar(); });
+    };
+    trocar(el, h("div", { class: "fin-mes" }, busca, h("span", { style: "flex:1" }), h("span", { class: "sub", text: `${numero(r.total)} cliente(s) na base` }), !ehContador() ? botao("+ Cliente", () => editar(null), "btn-primario btn-pequeno") : null),
+      h("section", { class: "cartao vidro" }, r.clientes.length ? h("div", { class: "tabela-rolagem" }, h("table", { class: "tabela fin-tabela" }, h("thead", {}, h("tr", {}, ["Cliente", "WhatsApp", "Bairro", "Endereço", "OS", "Total em serviços", "Último contato", ""].map(x => h("th", { text: x })))),
+        h("tbody", {}, r.clientes.map(c0 => h("tr", {}, h("td", { text: c0.nome || "—" }), h("td", { text: c0.telefone || "—" }), h("td", { text: c0.bairro || "—" }), h("td", { text: c0.endereco || "—" }), h("td", { text: String(c0.ordens) }), h("td", { text: reais(c0.total_cent) }),
+          h("td", { text: c0.ultimo_ms ? quando(c0.ultimo_ms) : "—" }), h("td", {}, !ehContador() ? botao("Editar", () => editar(c0), "btn-secundario btn-pequeno") : null)))))) : vazio("Nenhum cliente ainda", "Todo mundo que fala com a empresa no WhatsApp entra aqui sozinho.")));
+  }
+  async function osProfissionais(el, vivo) {
+    const r = await osApi(`profissionais?mes=${osEstado.mes || mesAtualLocal()}`);
+    if (!vivo()) return;
+    const editar = async p0 => {
+      const f = Object.fromEntries(["nome", "telefone", "area", "documento", "pix", "email"].map(k0 => [k0, entradaTxt(p0[k0], "")]));
+      await formulario("Editar profissional", [campo("Nome", f.nome), h("div", { class: "fin-duas" }, campo("WhatsApp", f.telefone), campo("Área", f.area)), h("div", { class: "fin-duas" }, campo("CPF/CNPJ (para a nota fiscal)", f.documento), campo("Chave Pix", f.pix)), campo("E-mail", f.email)], "Salvar",
+        async () => { await osApi(`profissionais/${p0.id}`, { metodo: "PUT", corpo: Object.fromEntries(Object.entries(f).map(([k0, i]) => [k0, i.value])) }); aviso("Salvo.", "ok"); navegar(); });
+    };
+    trocar(el, h("section", { class: "cartao vidro" }, r.profissionais.length ? h("div", { class: "tabela-rolagem" }, h("table", { class: "tabela fin-tabela" }, h("thead", {}, h("tr", {}, ["Profissional", "WhatsApp", "Área", "CPF/CNPJ", "OS concluídas", "Faturado no mês", "Comissão a receber", ""].map(x => h("th", { text: x })))),
+      h("tbody", {}, r.profissionais.map(p0 => h("tr", {}, h("td", { text: p0.nome || "—" }), h("td", { text: p0.telefone || "—" }), h("td", { text: p0.area || "—" }), h("td", { text: p0.documento || "—" }), h("td", { text: String(p0.concluidas) }), h("td", { text: reais(p0.faturado_mes_cent) }),
+        h("td", { text: reais(p0.comissao_pendente_cent) }), h("td", {}, pode("ADMIN") ? botao("Editar", () => editar(p0), "btn-secundario btn-pequeno") : null)))))) : vazio("Nenhum profissional ainda", "Entram sozinhos quando atendem uma OS.")));
+  }
+
+  // ----- DRE mês a mês (competência ou caixa) e o pacote para o contador.
+  async function paginaDre(el, _p, vivo) {
+    if (!pode("ADMIN") && !ehContador()) { el.append(cabeca("DRE e contabilidade", ""), h("div", { class: "cartao vidro" }, vazio("Acesso restrito", ""))); return; }
+    const est = finEstado.dre = finEstado.dre || { ate: mesAtualLocal(), meses: 6, regime: "competencia" };
+    const de = somarMesUi(est.ate, -(est.meses - 1));
+    const r = await fin(`dre?de=${de}&ate=${est.ate}&regime=${est.regime}`);
+    if (!vivo()) return;
+    const din = c => dinheiroFin(c, r.moeda || "BRL");
+    const seg = (v, n0, chave) => h("button", { type: "button", class: "aba" + (est[chave] === v ? " ativo" : ""), onclick: () => { est[chave] = v; navegar(); } }, n0);
+    const abertas = new Set(finEstado.dreAbertas || []);
+    const linhas = [];
+    for (const l of r.estrutura) {
+      const temContas = (l.contas || []).length;
+      linhas.push(h("tr", { class: l.resultado ? "dre-resultado" + (l.final ? " dre-final" : "") : l.grupo ? "dre-grupo" : "" }, h("td", { class: "dre-rotulo" }, temContas ? h("button", { type: "button", class: "dre-abrir", "aria-expanded": abertas.has(l.chave) ? "true" : "false", onclick: () => { abertas.has(l.chave) ? abertas.delete(l.chave) : abertas.add(l.chave); finEstado.dreAbertas = [...abertas]; navegar(); } }, (abertas.has(l.chave) ? "▾ " : "▸ ") + l.nome) : l.nome),
+        ...r.meses.map(m => h("td", { class: (l.meses[m] || 0) < 0 ? "neg" : "", text: l.meses[m] ? din(l.meses[m]) : "—" })), h("td", { class: "dre-total" + ((l.total || 0) < 0 ? " neg" : ""), text: din(l.total || 0) })));
+      if (abertas.has(l.chave)) for (const c0 of l.contas) linhas.push(h("tr", { class: "dre-conta" }, h("td", {}, h("span", { text: c0.categoria }), pode("ADMIN") ? h("button", { type: "button", class: "dre-mover", title: "Mudar o grupo desta categoria na DRE", onclick: () => moverGrupo(c0) }, "mudar grupo") : null, c0.ajustado ? h("span", { class: "prb-meta", text: " (ajustado)" }) : null),
+        ...r.meses.map(m => h("td", { text: c0.meses[m] ? din(c0.meses[m]) : "—" })), h("td", { text: din(c0.total) })));
+    }
+    async function moverGrupo(c0) {
+      const s0 = h("select", { class: "entrada" }, Object.entries(r.grupos).map(([k0, n0]) => h("option", { value: k0, text: n0 }))); s0.value = c0.grupo;
+      if (!(await modal({ titulo: `Grupo de "${c0.categoria}" na DRE`, conteudo: [s0], confirmar: "Salvar" }))) return;
+      try { await fin("dre/grupo", { metodo: "PUT", corpo: { tipo: c0.tipo, categoria: c0.categoria, grupo: s0.value } }); navegar(); } catch (e) { aviso(e.message, "erro"); }
+    }
+    const pctTxt = v => v == null ? "—" : `${String(v).replace(".", ",")}%`;
+    el.append(cabeca("DRE e contabilidade", "Demonstração do resultado mês a mês, por competência (quando aconteceu) ou por caixa (quando o dinheiro entrou ou saiu), com os grupos que o contador usa. Toque num grupo para ver as categorias.",
+      botao("Pacote do contador (Excel)", async () => { try { await baixarDaApi(`fin/contador?de=${de}&ate=${est.ate}`, `contabilidade-${de}_${est.ate}.xlsx`); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario")),
+      h("div", { class: "fin-mes" }, botao("‹", () => { est.ate = somarMesUi(est.ate, -1); navegar(); }, "btn-secundario btn-pequeno"), h("strong", { text: `${nomeMesUi(de)} a ${nomeMesUi(est.ate)}` }), botao("›", () => { est.ate = somarMesUi(est.ate, 1); navegar(); }, "btn-secundario btn-pequeno"),
+        h("span", { style: "flex:1" }), h("div", { class: "abas abas-chips", role: "group" }, seg("competencia", "Competência", "regime"), seg("caixa", "Caixa", "regime")), h("div", { class: "abas abas-chips", role: "group" }, seg(3, "3 meses", "meses"), seg(6, "6 meses", "meses"), seg(12, "12 meses", "meses"))),
+      h("section", { class: "grade grade-4" }, metrica("Resultado do período", din(r.estrutura.find(l => l.chave === "LIQUIDO").total), est.regime === "caixa" ? "regime de caixa" : "regime de competência"), metrica("Margem bruta", pctTxt(r.margens.bruta), "lucro bruto ÷ receita líquida"), metrica("Margem operacional", pctTxt(r.margens.operacional), ""), metrica("Margem líquida", pctTxt(r.margens.liquida), "")),
+      h("section", { class: "cartao vidro" }, h("div", { class: "tabela-rolagem" }, h("table", { class: "tabela fin-tabela dre" }, h("thead", {}, h("tr", {}, h("th", { text: "Conta" }), ...r.meses.map(m => h("th", { text: mesCurtoG(m) })), h("th", { text: "Total" }))), h("tbody", {}, linhas)))),
+      h("p", { class: "fx-nota", text: "Os grupos são sugeridos pela categoria de cada lançamento; o contador ou o dono ajusta em “mudar grupo”, e vale para todos os meses. Lançamentos “pagos fora da conta” ficam fora. O pacote do contador traz a DRE nos dois regimes, todos os lançamentos com grupo, conta, anexos e quem lançou, e o que está em aberto." }));
   }
 
   async function paginaApresentacao(el, _p, vivo) {

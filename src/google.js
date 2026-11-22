@@ -29,13 +29,17 @@ const IDIOMA_GOOGLE = { "pt-BR": "pt-BR", en: "en", es: "es", de: "de", it: "it"
 
 const DDL = [
   `CREATE TABLE IF NOT EXISTS plt_mk_geogrid (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, marca_id INTEGER NOT NULL, palavra TEXT NOT NULL, raio_km REAL, tamanho INTEGER, media REAL, top3 INTEGER, dados TEXT, criado_ms INTEGER NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS plt_mk_geogrid_agenda (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, marca_id INTEGER NOT NULL, palavra TEXT NOT NULL, raio_km REAL, tamanho INTEGER, dias INTEGER NOT NULL DEFAULT 7, proxima_ms INTEGER NOT NULL, ultima_ms INTEGER, erro TEXT, criado_ms INTEGER NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS plt_mk_google_cache (org_id INTEGER NOT NULL, marca_id INTEGER NOT NULL, chave TEXT NOT NULL, dados TEXT NOT NULL, ms INTEGER NOT NULL, PRIMARY KEY (org_id, marca_id, chave))`,
+  `CREATE TABLE IF NOT EXISTS plt_mk_leads (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, busca TEXT NOT NULL, total INTEGER, dados TEXT NOT NULL, criado_ms INTEGER NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS plt_mk_concorrencia (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, marca_id INTEGER NOT NULL, busca TEXT NOT NULL, dia TEXT NOT NULL, posicao INTEGER, total INTEGER, dados TEXT, criado_ms INTEGER NOT NULL, UNIQUE(org_id, marca_id, busca, dia))`,
   `CREATE TABLE IF NOT EXISTS plt_mk_google (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, marca_id INTEGER NOT NULL, conta_nome TEXT NOT NULL, local_nome TEXT NOT NULL, local_titulo TEXT, token_cifrado TEXT NOT NULL, criado_por TEXT, criado_ms INTEGER NOT NULL, atualizado_ms INTEGER NOT NULL, sincronizado_ms INTEGER, UNIQUE(org_id, marca_id))`
 ];
 const ALTERS = ["ALTER TABLE plt_mk_google ADD COLUMN review_uri TEXT", "ALTER TABLE plt_mk_google ADD COLUMN desempenho_ms INTEGER", "ALTER TABLE plt_mk_google ADD COLUMN erro TEXT", "ALTER TABLE plt_mk_google ADD COLUMN maps_uri TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN removida_ms INTEGER",
   "ALTER TABLE plt_mk_avaliacoes ADD COLUMN visto_ms INTEGER", "ALTER TABLE plt_mk_google ADD COLUMN sync_token TEXT", "ALTER TABLE plt_mk_google ADD COLUMN sync_inicio_ms INTEGER",
   "ALTER TABLE plt_mk_google ADD COLUMN total_google INTEGER", "ALTER TABLE plt_mk_google ADD COLUMN media_google REAL", "ALTER TABLE plt_mk_google ADD COLUMN completo_ms INTEGER",
-  "ALTER TABLE plt_mk_google ADD COLUMN escopos TEXT", "ALTER TABLE plt_mk_google ADD COLUMN sc_site TEXT", "ALTER TABLE plt_mk_google ADD COLUMN ads_cliente TEXT", "ALTER TABLE plt_mk_google ADD COLUMN ads_gerente TEXT", "ALTER TABLE plt_mk_google ADD COLUMN ads_nome TEXT", "ALTER TABLE plt_mk_google ADD COLUMN ads_moeda TEXT"];
+  "ALTER TABLE plt_mk_google ADD COLUMN escopos TEXT", "ALTER TABLE plt_mk_google ADD COLUMN sc_site TEXT", "ALTER TABLE plt_mk_google ADD COLUMN ads_cliente TEXT", "ALTER TABLE plt_mk_google ADD COLUMN ads_gerente TEXT", "ALTER TABLE plt_mk_google ADD COLUMN ads_nome TEXT", "ALTER TABLE plt_mk_google ADD COLUMN ads_moeda TEXT",
+  "ALTER TABLE plt_mk_avaliacoes ADD COLUMN resposta_em TEXT", "ALTER TABLE plt_mk_avaliacoes ADD COLUMN criado_google TEXT"];
 const prontos = new WeakSet();
 async function garantir(env) {
   if (prontos.has(env.DB)) return;
@@ -410,7 +414,8 @@ async function sincronizarAvaliacoes(env, k, conta, token, { paginas = 20, conti
     if (d.totalReviewCount != null) info = { total: Number(d.totalReviewCount), media: d.averageRating != null ? Number(d.averageRating) : null };
     for (const r of d.reviews || []) doGoogle.push({
       id: String(r.reviewId), autor: String(r.reviewer?.displayName || "Cliente").slice(0, 120), nota: ESTRELAS[r.starRating] || 0,
-      texto: String(r.comment || "").slice(0, 3000), data: String(r.createTime || "").slice(0, 10) || null, r: r.reviewReply?.comment ? String(r.reviewReply.comment).slice(0, 4000) : null
+      texto: String(r.comment || "").slice(0, 3000), data: String(r.createTime || "").slice(0, 10) || null, r: r.reviewReply?.comment ? String(r.reviewReply.comment).slice(0, 4000) : null,
+      rt: r.reviewReply?.updateTime ? String(r.reviewReply.updateTime).slice(0, 19) : null, ct: r.createTime ? String(r.createTime).slice(0, 19) : null
     });
     pagina = d.nextPageToken || "";
     if (!pagina) { completo = true; break; }
@@ -442,6 +447,11 @@ async function sincronizarAvaliacoes(env, k, conta, token, { paginas = 20, conti
       texto=(SELECT json_extract(value,'$.texto') FROM json_each(?1) WHERE json_extract(value,'$.id')=plt_mk_avaliacoes.google_id),
       analise=NULL, triagem=NULL
       WHERE org_id=?2 AND marca_id=?3 AND google_id IN (SELECT json_extract(value,'$.id') FROM json_each(?1))`).bind(JSON.stringify(editadas.slice(i, i + 150).map(r => ({ id: r.id, nota: r.nota, texto: r.texto }))), conta.org_id, conta.marca_id));
+  // Quando foi respondida e a data/hora exata da avaliação (para o tempo médio de resposta nos gráficos).
+  for (let i = 0; i < doGoogle.length; i += 150) st.push(env.DB.prepare(`UPDATE plt_mk_avaliacoes SET
+      resposta_em=(SELECT json_extract(value,'$.rt') FROM json_each(?1) WHERE json_extract(value,'$.id')=plt_mk_avaliacoes.google_id),
+      criado_google=(SELECT json_extract(value,'$.ct') FROM json_each(?1) WHERE json_extract(value,'$.id')=plt_mk_avaliacoes.google_id)
+      WHERE org_id=?2 AND marca_id=?3 AND google_id IN (SELECT json_extract(value,'$.id') FROM json_each(?1))`).bind(JSON.stringify(doGoogle.slice(i, i + 150).map(r => ({ id: r.id, rt: r.rt, ct: r.ct }))), conta.org_id, conta.marca_id));
   // Vistas agora no Google: não estão removidas.
   for (let i = 0; i < ids.length; i += 400) st.push(env.DB.prepare("UPDATE plt_mk_avaliacoes SET visto_ms=?, removida_ms=NULL WHERE org_id=? AND marca_id=? AND google_id IN (SELECT value FROM json_each(?))").bind(agoraMs, conta.org_id, conta.marca_id, JSON.stringify(ids.slice(i, i + 400))));
   if (!rapida) st.push(env.DB.prepare("UPDATE plt_mk_google SET sync_token=?, sync_inicio_ms=?, completo_ms=COALESCE(?, completo_ms) WHERE id=?").bind(completo ? null : pagina, completo ? null : inicioPassada, completo ? agoraMs : null, conta.id));
@@ -1098,6 +1108,136 @@ export function pontosDaGrade(lat, lng, raioKm, tamanho) {
   return { n, passo, pts };
 }
 
+// Mapa de posição: a mesma busca feita de cada ponto da grade. Guarda, em cada ponto, os 5 primeiros (para o
+// ranking dos concorrentes: quem aparece mais vezes e em que posição média).
+async function rodarGeogrid(env, k, orgId, conta, palavra, raioKm, tamanho) {
+  const raio = Math.min(15, Math.max(0.5, Number(raioKm) || 3));
+  const token = await tokenDa(env, k, conta);
+  const info = await chamar("GET", `${API_INFO}/${conta.local_nome}?readMask=latlng,metadata,title`, token);
+  const placeId = info.metadata?.placeId, ll = info.latlng;
+  if (!placeId || !ll?.latitude) throw Object.assign(new Error("O Google não informou a localização deste perfil (perfis só com área de atendimento, sem endereço, não têm ponto no mapa)."), { status: 409 });
+  const { n, pts } = pontosDaGrade(ll.latitude, ll.longitude, raio, tamanho);
+  const raioBusca = Math.round(Math.max(500, Math.min(3000, raio * 1000 / Math.max(1, (n - 1) / 2))));
+  const res = [];
+  for (let i = 0; i < pts.length; i += 5) res.push(...await Promise.all(pts.slice(i, i + 5).map(async pt => {
+    const d = await chamarPlaces(env, orgId, "POST", "places:searchText", { textQuery: palavra, languageCode: "pt-BR", regionCode: "BR", pageSize: 20, locationBias: { circle: { center: { latitude: pt.lat, longitude: pt.lng }, radius: raioBusca } } }, "places.id,places.displayName,places.rating,places.userRatingCount").catch(() => null);
+    if (!d) return { ...pt, posicao: null, primeiro: "" };
+    const l = d.places || [], idx = l.findIndex(x => x.id === placeId);
+    return { ...pt, posicao: idx >= 0 ? idx + 1 : 0, primeiro: l[0]?.displayName?.text || "", top: l.slice(0, 5).map(x => ({ id: x.id, n: x.displayName?.text || "", r: x.rating ?? null, c: x.userRatingCount || 0 })) };
+  })));
+  const medidos = res.filter(x => x.posicao != null);
+  const media = medidos.length ? Math.round(medidos.reduce((t, x) => t + (x.posicao || 21), 0) / medidos.length * 10) / 10 : null;
+  const top3 = medidos.length ? Math.round(medidos.filter(x => x.posicao && x.posicao <= 3).length / medidos.length * 100) : 0;
+  const dados = { n, centro: { lat: ll.latitude, lng: ll.longitude }, pontos: res, concorrentes: rankingDaGrade(res, placeId) };
+  const ins = await env.DB.prepare("INSERT INTO plt_mk_geogrid(org_id,marca_id,palavra,raio_km,tamanho,media,top3,dados,criado_ms) VALUES(?,?,?,?,?,?,?,?,?) RETURNING id").bind(orgId, conta.marca_id, palavra, raio, n, media, top3, JSON.stringify(dados), k.agora(env)).first();
+  return { id: ins.id, palavra, raio_km: raio, tamanho: n, media, top3, dados, criado_ms: k.agora(env) };
+}
+// Quem domina o mapa: em quantos pontos cada empresa aparece no top 3 (fatia do mapa) e a posição média onde aparece.
+export function rankingDaGrade(pontos, meuId) {
+  const m = new Map(), medidos = pontos.filter(p => Array.isArray(p.top));
+  for (const p of medidos) p.top.forEach((x, i) => {
+    if (!m.has(x.id)) m.set(x.id, { id: x.id, nome: x.n, nota: x.r, avaliacoes: x.c, pontos: 0, top3: 0, soma: 0, voce: x.id === meuId });
+    const e = m.get(x.id); e.pontos++; e.soma += i + 1; if (i < 3) e.top3++;
+  });
+  return [...m.values()].map(e => ({ id: e.id, nome: e.nome, nota: e.nota, avaliacoes: e.avaliacoes, voce: e.voce, aparece_pct: medidos.length ? Math.round(e.pontos / medidos.length * 100) : 0, top3_pct: medidos.length ? Math.round(e.top3 / medidos.length * 100) : 0, posicao_media: Math.round(e.soma / e.pontos * 10) / 10 }))
+    .sort((a, b) => b.top3_pct - a.top3_pct || a.posicao_media - b.posicao_media).slice(0, 15);
+}
+// Cron: roda os mapas agendados que venceram (um por vez, para não gastar a cota de uma só vez).
+export async function geogridAgendados(env, k) {
+  if (!chavePlaces(env)) return 0;
+  await garantir(env);
+  const ag = (await env.DB.prepare("SELECT * FROM plt_mk_geogrid_agenda WHERE proxima_ms <= ? ORDER BY proxima_ms LIMIT 2").bind(k.agora(env)).all()).results || [];
+  let n = 0;
+  for (const a of ag) {
+    await env.DB.prepare("UPDATE plt_mk_geogrid_agenda SET proxima_ms=?, ultima_ms=? WHERE id=?").bind(k.agora(env) + a.dias * DIA_MS, k.agora(env), a.id).run();
+    try {
+      const conta = await contaGoogleDe(env, a.org_id, a.marca_id);
+      if (!conta) throw new Error("perfil desconectado");
+      await rodarGeogrid(env, k, a.org_id, conta, a.palavra, a.raio_km, a.tamanho); n++;
+      await env.DB.prepare("UPDATE plt_mk_geogrid_agenda SET erro=NULL WHERE id=?").bind(a.id).run();
+    } catch (e) { await env.DB.prepare("UPDATE plt_mk_geogrid_agenda SET erro=? WHERE id=?").bind(String(e?.message || e).slice(0, 300), a.id).run(); }
+  }
+  return n;
+}
+// Buscar empresas de um ramo numa região (até 60, como o Google Maps mostra), com o que cada uma tem no perfil:
+// estatísticas do segmento, as 10 mais avaliadas, categorias mais usadas e os pontos para o mapa de calor.
+async function buscarEmpresas(env, orgId, busca, paginas = 3) {
+  const lista = [];
+  let token = "";
+  for (let i = 0; i < paginas; i++) {
+    const d = await chamarPlaces(env, orgId, "POST", "places:searchText", { textQuery: busca, languageCode: "pt-BR", regionCode: "BR", pageSize: 20, ...(token ? { pageToken: token } : {}) },
+      "places.id,places.displayName,places.formattedAddress,places.location,places.rating,places.userRatingCount,places.primaryTypeDisplayName,places.websiteUri,places.nationalPhoneNumber,places.internationalPhoneNumber,places.googleMapsUri,places.businessStatus,places.photos,places.regularOpeningHours,nextPageToken");
+    lista.push(...(d.places || []));
+    token = d.nextPageToken || "";
+    if (!token) break;
+  }
+  const empresas = lista.map((p, i) => ({ posicao: i + 1, id: p.id, nome: p.displayName?.text || "", endereco: p.formattedAddress || "", lat: p.location?.latitude ?? null, lng: p.location?.longitude ?? null,
+    nota: p.rating ?? null, avaliacoes: p.userRatingCount || 0, categoria: p.primaryTypeDisplayName?.text || "", site: p.websiteUri || "", telefone: p.nationalPhoneNumber || "", telefone_int: p.internationalPhoneNumber || "",
+    mapa: p.googleMapsUri || "", situacao: p.businessStatus || "", fotos: (p.photos || []).length, horario: Boolean(p.regularOpeningHours?.periods?.length) }));
+  const comNota = empresas.filter(e => e.nota != null);
+  const ordenadas = [...empresas.map(e => e.avaliacoes)].sort((a, b) => a - b);
+  const mediana = ordenadas.length ? ordenadas[Math.floor(ordenadas.length / 2)] : 0;
+  const cats = new Map(); for (const e of empresas) if (e.categoria) cats.set(e.categoria, (cats.get(e.categoria) || 0) + 1);
+  const faixa = n => empresas.filter(e => e.nota != null && e.nota >= n && e.nota < n + 0.5).length;
+  return {
+    busca, empresas,
+    segmento: {
+      total: empresas.length, nota_media: comNota.length ? Math.round(comNota.reduce((t, e) => t + e.nota, 0) / comNota.length * 10) / 10 : null,
+      avaliacoes_media: empresas.length ? Math.round(empresas.reduce((t, e) => t + e.avaliacoes, 0) / empresas.length) : 0, avaliacoes_mediana: mediana,
+      sem_site: empresas.filter(e => !e.site).length, sem_telefone: empresas.filter(e => !e.telefone).length, sem_horario: empresas.filter(e => !e.horario).length,
+      poucas_fotos: empresas.filter(e => e.fotos < 5).length, fechadas: empresas.filter(e => e.situacao && e.situacao !== "OPERATIONAL").length,
+      notas: [{ faixa: "4,5 a 5", n: empresas.filter(e => e.nota != null && e.nota >= 4.5).length }, { faixa: "4 a 4,4", n: faixa(4) }, { faixa: "3,5 a 3,9", n: faixa(3.5) }, { faixa: "abaixo de 3,5", n: empresas.filter(e => e.nota != null && e.nota < 3.5).length }, { faixa: "sem nota", n: empresas.filter(e => e.nota == null).length }],
+      categorias: [...cats.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12).map(([nome, n]) => ({ nome, n })),
+      mais_avaliadas: [...empresas].sort((a, b) => b.avaliacoes - a.avaliacoes).slice(0, 10).map(e => ({ nome: e.nome, avaliacoes: e.avaliacoes, nota: e.nota }))
+    }
+  };
+}
+// Gráficos do perfil. O desempenho vem do Google (até 18 meses, guardado por 6 horas para não gastar a cota);
+// avaliações, respostas e posts vêm do que a DENIA já sincronizou; o mapa de posição, das grades feitas.
+async function graficosDoPerfil(env, k, conta, forcar = false) {
+  const agora = k.agora(env);
+  const cache = !forcar ? await env.DB.prepare("SELECT dados, ms FROM plt_mk_google_cache WHERE org_id=? AND marca_id=? AND chave='desempenho18'").bind(conta.org_id, conta.marca_id).first() : null;
+  let desempenho = cache && agora - cache.ms < 6 * 3600000 ? JSON.parse(cache.dados) : null, erroDesempenho = null;
+  if (!desempenho) {
+    try {
+      const token = await tokenDa(env, k, conta);
+      const per = periodoPedido(agora, { dias: HISTORICO_DIAS });
+      const serie = await serieDoPeriodo(conta, token, per.ini, per.fim);
+      const meses = new Map();
+      for (const d of serie.diario) {
+        const m = d.data.slice(0, 7);
+        if (!meses.has(m)) meses.set(m, { mes: m, dias: 0, ...Object.fromEntries(Object.keys(d).filter(x => x !== "data").map(x => [x, 0])) });
+        const o = meses.get(m); o.dias++;
+        for (const [x, v] of Object.entries(d)) if (x !== "data" && typeof v === "number") o[x] += v;
+      }
+      desempenho = { de: isoDia(per.ini), ate: isoDia(per.fim), meses: [...meses.values()], totais: serie.totais, detalhe: serie.detalhe };
+      await env.DB.prepare("INSERT OR REPLACE INTO plt_mk_google_cache(org_id,marca_id,chave,dados,ms) VALUES(?,?,'desempenho18',?,?)").bind(conta.org_id, conta.marca_id, JSON.stringify(desempenho), agora).run();
+    } catch (e) { erroDesempenho = e.message; }
+  }
+  const q = async (sql, ...a) => (await env.DB.prepare(sql).bind(...a).all()).results || [];
+  const base = [conta.org_id, conta.marca_id];
+  const porMes = await q(`SELECT substr(data,1,7) mes, COUNT(*) n, AVG(nota) media, SUM(CASE WHEN resposta IS NOT NULL AND resposta<>'' THEN 1 ELSE 0 END) respondidas,
+      SUM(CASE WHEN nota<=2 THEN 1 ELSE 0 END) negativas FROM plt_mk_avaliacoes WHERE org_id=? AND marca_id=? AND google_id IS NOT NULL AND removida_ms IS NULL AND data IS NOT NULL AND data >= ? GROUP BY 1 ORDER BY 1`, ...base, isoDia(new Date(agora - 730 * DIA_MS)));
+  const dist = await q("SELECT nota, COUNT(*) n FROM plt_mk_avaliacoes WHERE org_id=? AND marca_id=? AND google_id IS NOT NULL AND removida_ms IS NULL GROUP BY nota", ...base);
+  const resp = await q(`SELECT criado_google, resposta_em, nota FROM plt_mk_avaliacoes WHERE org_id=? AND marca_id=? AND google_id IS NOT NULL AND removida_ms IS NULL AND resposta_em IS NOT NULL AND criado_google IS NOT NULL AND data >= ?`, ...base, isoDia(new Date(agora - 365 * DIA_MS)));
+  const horas = resp.map(r => (Date.parse(r.resposta_em + "Z") - Date.parse(r.criado_google + "Z")) / 3600000).filter(x => Number.isFinite(x) && x >= 0).sort((a, b) => a - b);
+  const tot = await env.DB.prepare(`SELECT COUNT(*) n, AVG(nota) media, SUM(CASE WHEN resposta IS NOT NULL AND resposta<>'' THEN 1 ELSE 0 END) respondidas FROM plt_mk_avaliacoes WHERE org_id=? AND marca_id=? AND google_id IS NOT NULL AND removida_ms IS NULL`).bind(...base).first();
+  const posts = await q(`SELECT substr(COALESCE(data, date(criado_ms/1000,'unixepoch')),1,7) mes, COUNT(*) n FROM plt_mk_posts WHERE org_id=? AND marca_id=? AND canais LIKE '%google%' AND status='PUBLICADO' GROUP BY 1 ORDER BY 1`, ...base).catch(() => []);
+  const grades = (await q("SELECT palavra, media, top3, criado_ms, tamanho, raio_km FROM plt_mk_geogrid WHERE org_id=? AND marca_id=? ORDER BY id LIMIT 300", ...base));
+  const porPalavra = {};
+  for (const g of grades) (porPalavra[g.palavra] = porPalavra[g.palavra] || []).push({ ms: g.criado_ms, media: g.media, top3: g.top3 });
+  return {
+    perfil: conta.local_titulo, desempenho, erro_desempenho: erroDesempenho,
+    avaliacoes: {
+      total: tot?.n || 0, media: tot?.media ? Math.round(tot.media * 100) / 100 : null, taxa_resposta: tot?.n ? Math.round((tot.respondidas || 0) / tot.n * 100) : null,
+      total_google: conta.total_google ?? null, media_google: conta.media_google ?? null,
+      distribuicao: [5, 4, 3, 2, 1].map(n => ({ nota: n, n: dist.find(x => Number(x.nota) === n)?.n || 0 })),
+      por_mes: porMes.map(x => ({ mes: x.mes, n: x.n, media: Math.round(x.media * 100) / 100, respondidas: x.respondidas, negativas: x.negativas })),
+      tempo_resposta_h: horas.length ? { mediana: Math.round(horas[Math.floor(horas.length / 2)] * 10) / 10, ate_24h_pct: Math.round(horas.filter(x => x <= 24).length / horas.length * 100), amostra: horas.length } : null
+    },
+    posts: posts, mapa: Object.entries(porPalavra).map(([palavra, serie]) => ({ palavra, serie: serie.slice(-24) }))
+  };
+}
 async function rotasGoogleExtra(request, env, k, orgId, papel, resto, url) {
   const { json, pode } = k;
   const metodo = request.method;
@@ -1258,27 +1398,55 @@ async function rotasGoogleExtra(request, env, k, orgId, papel, resto, url) {
     if (!conta) return json({ erro: "Conecte o Google deste perfil primeiro." }, 409);
     const palavra = String(c.palavra || "").trim().slice(0, 100);
     if (palavra.length < 2) return json({ erro: "Digite a busca, por exemplo \"pedreiro\"." }, 400);
-    const raio = Math.min(15, Math.max(0.5, Number(c.raio_km) || 3));
+    try { return json(await rodarGeogrid(env, k, orgId, conta, palavra, c.raio_km, c.tamanho)); }
+    catch (e) { return e.status === 409 ? json({ erro: e.message }, 409) : erroJson(e); }
+  }
+  // Mapa de posição repetido sozinho (toda semana, a cada 15 dias ou todo mês): a evolução aparece nos gráficos.
+  if (resto === "google/geogrid/agenda" && metodo === "GET") {
+    const conta = await marcaDe();
+    if (!conta) return json({ agendas: [] });
+    return json({ agendas: (await env.DB.prepare("SELECT * FROM plt_mk_geogrid_agenda WHERE org_id=? AND marca_id=? ORDER BY id").bind(orgId, conta.marca_id).all()).results || [] });
+  }
+  if (resto === "google/geogrid/agenda" && metodo === "POST") {
+    if (!pode(papel, "ADMIN")) return json({ erro: "Somente administradores agendam o mapa de posição." }, 403);
+    const c = await corpoDe().catch(e => e);
+    if (c instanceof Error) return json({ erro: c.message }, 400);
+    const conta = await contaGoogleDe(env, orgId, Number(c.marca_id));
+    if (!conta) return json({ erro: "Conecte o Google deste perfil primeiro." }, 409);
+    if (c.remover) { await env.DB.prepare("DELETE FROM plt_mk_geogrid_agenda WHERE id=? AND org_id=?").bind(Number(c.remover), orgId).run(); return json({ ok: true }); }
+    const palavra = String(c.palavra || "").trim().slice(0, 100);
+    if (palavra.length < 2) return json({ erro: "Digite a busca." }, 400);
+    const dias = [7, 15, 30].includes(Number(c.dias)) ? Number(c.dias) : 7;
+    const n = (await env.DB.prepare("SELECT COUNT(*) n FROM plt_mk_geogrid_agenda WHERE org_id=?").bind(orgId).first())?.n || 0;
+    if (n >= 10) return json({ erro: "Até 10 buscas agendadas por empresa." }, 400);
+    await env.DB.prepare("INSERT INTO plt_mk_geogrid_agenda(org_id,marca_id,palavra,raio_km,tamanho,dias,proxima_ms,criado_ms) VALUES(?,?,?,?,?,?,?,?)")
+      .bind(orgId, conta.marca_id, palavra, Math.min(15, Math.max(0.5, Number(c.raio_km) || 3)), [3, 5, 7].includes(Number(c.tamanho)) ? Number(c.tamanho) : 5, dias, k.agora(env) + dias * DIA_MS, k.agora(env)).run();
+    return json({ ok: true });
+  }
+  // ----- Gráficos (como o GBP Check, e além): 18 meses de desempenho por mês, avaliações, respostas, posts e o mapa de posição.
+  if (resto === "google/graficos" && metodo === "GET") {
+    const conta = await marcaDe();
+    if (!conta) return json({ conectada: false });
+    try { return json({ conectada: true, ...(await graficosDoPerfil(env, k, conta, url.searchParams.get("novo") === "1")) }); }
+    catch (e) { return erroJson(e); }
+  }
+  // ----- Buscar empresas (prospecção e mapa de calor do segmento): qualquer ramo em qualquer região.
+  if (resto === "google/empresas" && metodo === "GET") {
+    const r = (await env.DB.prepare("SELECT id, busca, total, criado_ms FROM plt_mk_leads WHERE org_id=? ORDER BY id DESC LIMIT 20").bind(orgId).all()).results || [];
+    const id = Number(url.searchParams.get("id"));
+    if (id) { const x = await env.DB.prepare("SELECT * FROM plt_mk_leads WHERE id=? AND org_id=?").bind(id, orgId).first(); return x ? json({ ...JSON.parse(x.dados), id: x.id, criado_ms: x.criado_ms }) : json({ erro: "Busca não encontrada." }, 404); }
+    return json({ buscas: r, places_configurado: Boolean(chavePlaces(env)) });
+  }
+  if (resto === "google/empresas" && metodo === "POST") {
+    if (!pode(papel, "AGENTE")) return json({ erro: "Seu perfil não tem permissão para esta ação." }, 403);
+    const c = await corpoDe().catch(e => e);
+    if (c instanceof Error) return json({ erro: c.message }, 400);
+    const busca = String(c.busca || "").trim().slice(0, 150);
+    if (busca.length < 3) return json({ erro: "Digite o ramo e a região, por exemplo \"pet shop em Botafogo, Rio de Janeiro\"." }, 400);
     try {
-      const token = await tokenDa(env, k, conta);
-      const info = await chamar("GET", `${API_INFO}/${conta.local_nome}?readMask=latlng,metadata,title`, token);
-      const placeId = info.metadata?.placeId, ll = info.latlng;
-      if (!placeId || !ll?.latitude) return json({ erro: "O Google não informou a localização deste perfil (perfis só com área de atendimento, sem endereço, não têm ponto no mapa)." }, 409);
-      const { n, pts } = pontosDaGrade(ll.latitude, ll.longitude, raio, c.tamanho);
-      const raioBusca = Math.round(Math.max(500, Math.min(3000, raio * 1000 / Math.max(1, (n - 1) / 2))));
-      const res = [];
-      for (let i = 0; i < pts.length; i += 5) res.push(...await Promise.all(pts.slice(i, i + 5).map(async pt => {
-        const d = await chamarPlaces(env, orgId, "POST", "places:searchText", { textQuery: palavra, languageCode: "pt-BR", regionCode: "BR", pageSize: 20, locationBias: { circle: { center: { latitude: pt.lat, longitude: pt.lng }, radius: raioBusca } } }, "places.id,places.displayName").catch(() => null);
-        if (!d) return { ...pt, posicao: null, primeiro: "" };
-        const l = d.places || [], idx = l.findIndex(x => x.id === placeId);
-        return { ...pt, posicao: idx >= 0 ? idx + 1 : 0, primeiro: l[0]?.displayName?.text || "" };
-      })));
-      const medidos = res.filter(x => x.posicao != null);
-      const media = medidos.length ? Math.round(medidos.reduce((t, x) => t + (x.posicao || 21), 0) / medidos.length * 10) / 10 : null;
-      const top3 = medidos.length ? Math.round(medidos.filter(x => x.posicao && x.posicao <= 3).length / medidos.length * 100) : 0;
-      const dados = { n, centro: { lat: ll.latitude, lng: ll.longitude }, pontos: res };
-      const ins = await env.DB.prepare("INSERT INTO plt_mk_geogrid(org_id,marca_id,palavra,raio_km,tamanho,media,top3,dados,criado_ms) VALUES(?,?,?,?,?,?,?,?,?) RETURNING id").bind(orgId, conta.marca_id, palavra, raio, n, media, top3, JSON.stringify(dados), k.agora(env)).first();
-      return json({ id: ins.id, palavra, raio_km: raio, tamanho: n, media, top3, dados, criado_ms: k.agora(env) });
+      const r = await buscarEmpresas(env, orgId, busca, Math.min(3, Math.max(1, Number(c.paginas) || 3)));
+      const ins = await env.DB.prepare("INSERT INTO plt_mk_leads(org_id,busca,total,dados,criado_ms) VALUES(?,?,?,?,?) RETURNING id").bind(orgId, busca, r.empresas.length, JSON.stringify(r), k.agora(env)).first();
+      return json({ ...r, id: ins.id, criado_ms: k.agora(env) });
     } catch (e) { return erroJson(e); }
   }
   // ----- Buscas no Google: o que as pessoas digitaram e quantas vezes (dado oficial do Google), a posição medida

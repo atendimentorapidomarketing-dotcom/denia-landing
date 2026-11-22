@@ -3,6 +3,7 @@
 // Extrato do banco: importa OFX (padrão dos bancos brasileiros) e CSV, sem repetir o que já entrou.
 // Relatório do mês em PDF com gráficos e, se a empresa quiser, por e-mail no dia 1.
 import { gerarPdf } from "./pdf.js";
+import { gerarXlsx as gerarXlsxF } from "./planilha.js";
 
 export const DDL_FINANCEIRO = [
   `CREATE TABLE IF NOT EXISTS fin_lanc (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, tipo TEXT NOT NULL, descricao TEXT NOT NULL,
@@ -46,7 +47,9 @@ const DDL_FIN_EXTRA = [
   "CREATE INDEX IF NOT EXISTS fin_lanc_pago ON fin_lanc(org_id, pago_em)",
   // Comprovantes e notas anexados ao lançamento (até 3 MB cada).
   "CREATE TABLE IF NOT EXISTS fin_anexos (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, lanc_id INTEGER NOT NULL, nome TEXT, tipo TEXT NOT NULL, tamanho INTEGER, dados TEXT NOT NULL, por TEXT, ms INTEGER)",
-  "CREATE INDEX IF NOT EXISTS fin_anexos_lanc ON fin_anexos(org_id, lanc_id)"
+  "CREATE INDEX IF NOT EXISTS fin_anexos_lanc ON fin_anexos(org_id, lanc_id)",
+  // Grupo de cada categoria na DRE (a empresa ou o contador ajusta; sem ajuste, vale a sugestão automática).
+  "CREATE TABLE IF NOT EXISTS fin_dre_grupos (org_id INTEGER NOT NULL, tipo TEXT NOT NULL, categoria TEXT NOT NULL, grupo TEXT NOT NULL, PRIMARY KEY (org_id, tipo, categoria))"
 ];
 const prontos = new WeakSet();
 export async function garantirFinanceiro(env) {
@@ -300,9 +303,62 @@ export async function analiseDaIA(envIA, openai, r, moeda = "BRL") {
 // Rotas: /api/orgs/:id/fin/...
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// DRE (Demonstração do Resultado) mês a mês, por competência ou por caixa, com os grupos que o contador usa.
+// ---------------------------------------------------------------------------
+export const GRUPOS_DRE = {
+  RECEITA: "Receita bruta", DEDUCOES: "(−) Impostos sobre a receita", CUSTOS: "(−) Custos dos serviços e mercadorias", PESSOAL: "(−) Pessoal e encargos",
+  ADMINISTRATIVAS: "(−) Despesas administrativas e operacionais", COMERCIAIS: "(−) Despesas comerciais e marketing", FINANCEIRAS: "(−) Resultado financeiro (tarifas e juros)",
+  RECEITAS_FINANCEIRAS: "(+) Receitas financeiras", NAO_OPERACIONAL: "Movimentações fora do resultado (sócios, transferências, empréstimos)"
+};
+export function grupoSugerido(tipo, categoria) {
+  const c = String(categoria || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  if (/transfer|retirada|socio|distribui|aporte|emprestimo|financiamento|aplicac|resgate|investimento/.test(c)) return "NAO_OPERACIONAL";
+  if (tipo === "ENTRADA") return /juros|rendimento|multa/.test(c) ? "RECEITAS_FINANCEIRAS" : "RECEITA";
+  if (/das\b|simples|iss|icms|pis|cofins|imposto sobre|impostos e taxas|impostos/.test(c)) return "DEDUCOES";
+  if (/tarifa|banc|juros|iof|multa/.test(c)) return "FINANCEIRAS";
+  if (/salari|encargo|funcionari|pro.?labore|ferias|13|fgts|inss|vale|beneficio|domestic/.test(c)) return "PESSOAL";
+  if (/marketing|anuncio|propaganda|publicidade|comiss/.test(c)) return "COMERCIAIS";
+  if (/fornecedor|peca|material|mercadoria|repasse|insumo|terceir|estoque|cmv|limpeza e faxina|lavanderia|enxoval/.test(c)) return "CUSTOS";
+  return "ADMINISTRATIVAS";
+}
+export async function dreDoPeriodo(env, orgId, de, ate, regime = "competencia") {
+  const meses = []; for (let m = de; m <= ate && meses.length < 24; m = somarMes(m, 1)) meses.push(m);
+  const ajustes = new Map(((await env.DB.prepare("SELECT * FROM fin_dre_grupos WHERE org_id=?").bind(orgId).all()).results || []).map(x => [`${x.tipo}|${x.categoria}`, x.grupo]));
+  const caixa = regime === "caixa";
+  const mesSql = caixa ? "substr(pago_em,1,7)" : "COALESCE(NULLIF(competencia,''), substr(data,1,7))";
+  const linhas = (await env.DB.prepare(`SELECT tipo, COALESCE(categoria,'Sem categoria') categoria, ${mesSql} mes, SUM(${caixa ? "COALESCE(valor_pago_cent, valor_cent)" : "valor_cent"}) v, COUNT(*) n
+    FROM fin_lanc WHERE org_id=? AND COALESCE(fora_conta,0)=0 ${caixa ? "AND pago=1 AND pago_em IS NOT NULL" : ""} AND ${mesSql} BETWEEN ? AND ? GROUP BY 1,2,3`).bind(orgId, de, ate).all()).results || [];
+  const cats = new Map();
+  for (const l of linhas) {
+    const ch = `${l.tipo}|${l.categoria}`, grupo = ajustes.get(ch) || grupoSugerido(l.tipo, l.categoria);
+    if (!cats.has(ch)) cats.set(ch, { tipo: l.tipo, categoria: l.categoria, grupo, ajustado: ajustes.has(ch), meses: Object.fromEntries(meses.map(m => [m, 0])), total: 0, lancamentos: 0 });
+    const e = cats.get(ch), sinal = l.tipo === "ENTRADA" ? 1 : -1;
+    e.meses[l.mes] = (e.meses[l.mes] || 0) + sinal * l.v; e.total += sinal * l.v; e.lancamentos += l.n;
+  }
+  const porGrupo = g => [...cats.values()].filter(c => c.grupo === g);
+  const somaG = (g, m) => porGrupo(g).reduce((t, c) => t + (m ? c.meses[m] || 0 : c.total), 0);
+  const linha = (chave, nome, f) => ({ chave, nome, meses: Object.fromEntries(meses.map(m => [m, f(m)])), total: f(null) });
+  const receita = m => somaG("RECEITA", m), liquida = m => receita(m) + somaG("DEDUCOES", m), bruto = m => liquida(m) + somaG("CUSTOS", m);
+  const operacional = m => bruto(m) + somaG("PESSOAL", m) + somaG("ADMINISTRATIVAS", m) + somaG("COMERCIAIS", m);
+  const liquido = m => operacional(m) + somaG("FINANCEIRAS", m) + somaG("RECEITAS_FINANCEIRAS", m);
+  const g = (chave) => ({ ...linha(chave, GRUPOS_DRE[chave], m => somaG(chave, m)), grupo: true, contas: porGrupo(chave).sort((a, b) => Math.abs(b.total) - Math.abs(a.total)) });
+  const pct = (a, b) => b ? Math.round(a / b * 1000) / 10 : null;
+  return {
+    de, ate, regime, meses,
+    estrutura: [g("RECEITA"), g("DEDUCOES"), { ...linha("LIQUIDA", "(=) Receita líquida", liquida), resultado: true }, g("CUSTOS"), { ...linha("BRUTO", "(=) Lucro bruto", bruto), resultado: true },
+      g("PESSOAL"), g("ADMINISTRATIVAS"), g("COMERCIAIS"), { ...linha("OPERACIONAL", "(=) Resultado operacional", operacional), resultado: true },
+      g("FINANCEIRAS"), g("RECEITAS_FINANCEIRAS"), { ...linha("LIQUIDO", "(=) Resultado líquido do período", liquido), resultado: true, final: true }, g("NAO_OPERACIONAL")],
+    margens: { bruta: pct(bruto(null), liquida(null)), operacional: pct(operacional(null), liquida(null)), liquida: pct(liquido(null), liquida(null)) },
+    grupos: GRUPOS_DRE
+  };
+}
+
 export async function rotasFinanceiro(request, env, k, orgId, papel, resto) {
   const { json, lerCorpo, pode, agora } = k;
-  if (!pode(papel, "ADMIN")) return json({ erro: "O financeiro é visível só para o dono e os administradores da empresa." }, 403);
+  // O contador da empresa consulta tudo e baixa os relatórios, mas não altera nada.
+  if (papel === "CONTADOR" && request.method !== "GET") return json({ erro: "O acesso do contador é somente leitura." }, 403);
+  if (!pode(papel, "ADMIN") && papel !== "CONTADOR") return json({ erro: "O financeiro é visível só para o dono e os administradores da empresa." }, 403);
   await garantirFinanceiro(env);
   const url = new URL(request.url), metodo = request.method, partes = resto.split("/").slice(1);
   const ms = agora(env), hoje = hojeLocal(ms);
@@ -723,6 +779,46 @@ export async function rotasFinanceiro(request, env, k, orgId, papel, resto) {
     const esc = v => { const s = String(v ?? ""); return /[";\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
     const linhas = ["Data;Tipo;Descrição;Categoria;Valor;Situação;Pago em;Forma;Contato", ...lista.map(l => [l.data.split("-").reverse().join("/"), l.tipo === "ENTRADA" ? "Entrada" : "Saída", l.descricao, l.categoria, (l.valor_cent / 100).toFixed(2).replace(".", ","), l.pago ? "Pago" : "Em aberto", l.pago_em ? l.pago_em.split("-").reverse().join("/") : "", l.forma, l.contato].map(esc).join(";"))];
     return new Response("﻿" + linhas.join("\r\n"), { headers: { "content-type": "text/csv; charset=UTF-8", "content-disposition": `attachment; filename="financeiro-${mes}.csv"` } });
+  }
+  // ----- DRE mês a mês e o pacote para o contador.
+  if (partes[0] === "dre" && !partes[1] && metodo === "GET") {
+    const ate = mesValido(url.searchParams.get("ate")) ? url.searchParams.get("ate") : hoje.slice(0, 7);
+    const de = mesValido(url.searchParams.get("de")) ? url.searchParams.get("de") : somarMes(ate, -5);
+    if (de > ate) return json({ erro: "O mês inicial é depois do final." }, 400);
+    return json({ ...(await dreDoPeriodo(env, orgId, de, ate, url.searchParams.get("regime") === "caixa" ? "caixa" : "competencia")), moeda: (await config()).moeda || "BRL" });
+  }
+  if (partes[0] === "dre" && partes[1] === "grupo" && metodo === "PUT") {
+    const { corpo, erro } = await lerCorpo(request); if (erro) return erro;
+    const tipo = corpo.tipo === "ENTRADA" ? "ENTRADA" : "SAIDA", cat = re(corpo.categoria, 60);
+    if (!cat || !GRUPOS_DRE[corpo.grupo]) return json({ erro: "Escolha a categoria e o grupo." }, 400);
+    await env.DB.prepare("INSERT INTO fin_dre_grupos(org_id,tipo,categoria,grupo) VALUES(?,?,?,?) ON CONFLICT(org_id,tipo,categoria) DO UPDATE SET grupo=excluded.grupo").bind(orgId, tipo, cat, corpo.grupo).run();
+    await registrar("mudou o grupo da DRE", null, `${cat}: ${GRUPOS_DRE[corpo.grupo]}`);
+    return json({ ok: true });
+  }
+  if (partes[0] === "contador" && metodo === "GET") {
+    const ate = mesValido(url.searchParams.get("ate")) ? url.searchParams.get("ate") : mesValido(url.searchParams.get("mes")) ? url.searchParams.get("mes") : hoje.slice(0, 7);
+    const de = mesValido(url.searchParams.get("de")) ? url.searchParams.get("de") : ate;
+    const dreC = await dreDoPeriodo(env, orgId, de, ate, "competencia"), dreX = await dreDoPeriodo(env, orgId, de, ate, "caixa");
+    const v = c => c == null ? "" : Math.round(c) / 100;
+    const linhasDre = d => [["Conta", ...d.meses.map(m => nomeMes(m)), "Total"], ...d.estrutura.flatMap(l => [[l.nome, ...d.meses.map(m => v(l.meses[m])), v(l.total)], ...(l.contas || []).map(c0 => ["    " + c0.categoria, ...d.meses.map(m => v(c0.meses[m])), v(c0.total)])])];
+    const ini = de + "-01", fim = ate + "-" + ultimoDia(ate);
+    const lancs = (await env.DB.prepare(`SELECT l.*, (SELECT COUNT(*) FROM fin_anexos a WHERE a.org_id=l.org_id AND a.lanc_id=l.id) AS anexos, c.nome AS conta_nome FROM fin_lanc l LEFT JOIN adm_contas c ON c.id=l.conta_id
+      WHERE l.org_id=? AND ((l.data BETWEEN ? AND ?) OR (l.pago_em BETWEEN ? AND ?) OR (COALESCE(l.competencia,'') BETWEEN ? AND ?)) ORDER BY l.data, l.id LIMIT 20000`).bind(orgId, ini, fim, ini, fim, de, ate).all().catch(async () => (await env.DB.prepare(`SELECT l.*, 0 AS anexos, NULL AS conta_nome FROM fin_lanc l WHERE l.org_id=? AND ((l.data BETWEEN ? AND ?) OR (l.pago_em BETWEEN ? AND ?)) ORDER BY l.data LIMIT 20000`).bind(orgId, ini, fim, ini, fim).all()))).results || [];
+    const ajustes = new Map(((await env.DB.prepare("SELECT * FROM fin_dre_grupos WHERE org_id=?").bind(orgId).all()).results || []).map(x => [`${x.tipo}|${x.categoria}`, x.grupo]));
+    const grupoDe = l => GRUPOS_DRE[ajustes.get(`${l.tipo}|${l.categoria || "Sem categoria"}`) || grupoSugerido(l.tipo, l.categoria)];
+    const data = d => d ? String(d).slice(0, 10).split("-").reverse().join("/") : "";
+    const abertas = lancs.filter(l => !l.pago);
+    const xlsx = gerarXlsxF([
+      { nome: "DRE competência", linhas: linhasDre(dreC), larguras: [48, ...dreC.meses.map(() => 16), 16] },
+      { nome: "DRE caixa", linhas: linhasDre(dreX), larguras: [48, ...dreX.meses.map(() => 16), 16] },
+      { nome: "Lançamentos", linhas: [["ID", "Competência", "Vencimento", "Pagamento", "Tipo", "Categoria", "Grupo na DRE", "Descrição", "Cliente/fornecedor", "Centro de custo", "Conta", "Forma", "Valor previsto", "Valor pago", "Situação", "Fora da conta", "Anexos", "Lançado por", "Confirmado por", "Observação"],
+        ...lancs.map(l => [l.id, l.competencia || String(l.data).slice(0, 7), data(l.data), data(l.pago_em), l.tipo === "ENTRADA" ? "Entrada" : "Saída", l.categoria || "", grupoDe(l), l.descricao, l.contato || "", l.centro || "", l.conta_nome || "", l.forma || "",
+          v(l.valor_cent), l.pago ? v(l.valor_pago_cent ?? l.valor_cent) : "", l.pago ? (l.tipo === "ENTRADA" ? "Recebido" : "Pago") : (l.data < hoje ? "Vencido" : "Em aberto"), l.fora_conta ? "sim" : "", l.anexos || 0, l.criado_por || "", l.confirmado_por || "", l.obs || ""])],
+        larguras: [8, 11, 11, 11, 8, 26, 34, 44, 26, 18, 16, 14, 13, 13, 11, 8, 8, 24, 24, 30] },
+      { nome: "Em aberto", linhas: [["Vencimento", "Tipo", "Descrição", "Cliente/fornecedor", "Valor", "Situação"], ...abertas.map(l => [data(l.data), l.tipo === "ENTRADA" ? "A receber" : "A pagar", l.descricao, l.contato || "", v(l.valor_cent), l.data < hoje ? "Vencido" : "Em aberto"])], larguras: [12, 11, 44, 26, 13, 11] }
+    ]);
+    await registrar("baixou o pacote do contador", null, `${de} a ${ate}`);
+    return new Response(xlsx, { headers: { "content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "content-disposition": `attachment; filename="contabilidade-${de === ate ? de : de + "_" + ate}.xlsx"`, "cache-control": "no-store" } });
   }
   return json({ erro: "Rota não encontrada." }, 404);
 }

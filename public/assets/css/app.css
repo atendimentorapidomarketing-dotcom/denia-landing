@@ -1283,3 +1283,32 @@ video.post-arte-img { width:100%; max-height:520px; border-radius:12px; backgrou
 html.apr-cheia-ativa, html.apr-cheia-ativa body { overflow: hidden; }
 .apr-lugar { aspect-ratio: 16 / 9; margin-bottom: 96px; border-radius: 18px; background: #05070f; }
 .adm-mais-opcoes > summary { cursor: pointer; color: var(--texto-2); font-weight: 600; font-size: 14px; padding: 6px 0; }
+
+/* Google: colunas, mapa de calor da concorrência e guia do Maps */
+.grafico-coluna { fill: var(--azul); }
+.grafico-coluna.destaque { fill: #22d3ee; }
+.calor-grade { display: grid; gap: 2px; aspect-ratio: 1; max-width: 420px; margin: 8px auto; }
+.calor-cel { border-radius: 3px; }
+.guia-maps { display: grid; gap: 12px; padding-left: 22px; }
+.guia-maps li p { margin: 4px 0 0; color: var(--texto-2); font-size: 14px; }
+.guia-sit { margin-left: 8px; font-size: 12px; padding: 2px 8px; border-radius: 99px; background: rgba(255,255,255,.08); color: var(--texto-2); white-space: nowrap; }
+
+/* Ordens de serviço e DRE */
+.selo-os { display: inline-block; font-size: 12px; padding: 2px 8px; border-radius: 99px; white-space: nowrap; background: rgba(255,255,255,.08); color: var(--texto-2); }
+.selo-os.ok { background: rgba(34,197,94,.16); color: #4ade80; }
+.selo-os.atencao { background: rgba(217,119,6,.2); color: #fbbf24; }
+.selo-os.pendente { background: rgba(220,38,38,.14); color: #f87171; }
+.selo-os.info { background: rgba(37,99,235,.18); color: #93c5fd; }
+.dre td, .dre th { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.dre th[scope=row], .dre td:first-child, .dre thead th:first-child { text-align: left; }
+.dre .neg { color: #f87171; }
+.dre-grupo td:first-child { font-weight: 600; }
+.dre-resultado td { font-weight: 700; border-top: 1px solid var(--borda-forte, rgba(255,255,255,.2)); }
+.dre-final td { font-size: 15px; }
+.dre-conta td:first-child { padding-left: 28px; color: var(--texto-2); }
+.dre-abrir { all: unset; cursor: pointer; }
+.dre-abrir:focus-visible { outline: 2px solid var(--azul); }
+.dre-mover { all: unset; cursor: pointer; margin-left: 8px; font-size: 11px; color: var(--azul); }
+.dre-total { font-weight: 600; }
+
+.dre { min-width: 760px; }

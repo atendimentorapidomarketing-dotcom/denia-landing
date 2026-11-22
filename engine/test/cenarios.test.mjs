@@ -1926,3 +1926,57 @@ test("Prova 7 — número bloqueado: a IA nunca responde, nem lê, nem manda nad
   await a.cliente(CLI, "Alô?");
   assert.ok(a.para(CLI).length >= 1);
 });
+
+test("Mensagem guardada (24 h) não confunde a conversa: sai depois da mensagem nova, com a data; descartada se a equipe falou depois", async () => {
+  // 1) A equipe falou com o profissional depois da pergunta guardada: a resposta dele é para a equipe.
+  let a = await criarAmbiente();
+  await iniciarConsultaChaveiro(a);
+  const consulta = a.para(CHAVEIRO)[0];
+  await a.webhook({ statuses: [{ id: consulta.id, status: "failed", recipient_id: CHAVEIRO, errors: [{ code: 131047, title: "Re-engagement message" }] }] });
+  a.avancar(5 * 3600000);
+  await a.eco(CHAVEIRO, "Anderson, sobre o cliente da Tijuca: consegue amanhã cedo?");
+  const antes = a.para(CHAVEIRO).length;
+  let leuComo = 0;
+  a.llmPrestador = () => { leuComo++; return prest({ tipo: "DISPONIBILIDADE", disponibilidade: "amanhã às 10h" }); };
+  await a.cliente(CHAVEIRO, "Consigo sim, amanhã às 10h");
+  assert.equal(leuComo, 0, "não tratou a resposta à equipe como resposta à pergunta antiga da DENIA");
+  assert.equal(a.para(CHAVEIRO).length, antes, "a pergunta antiga não foi mandada fora de contexto");
+  assert.equal(a.DB.q("SELECT status FROM d30_guardadas")[0].status, "DESCARTADA");
+  assert.equal(a.DB.q("SELECT valor_prestador, disponibilidade FROM d30_consultas")[0].disponibilidade ?? null, null, "nada gravado na consulta errada");
+
+  // 2) Sem a equipe no meio: a pergunta sai DEPOIS de ler a mensagem nova, com a data, e a mensagem nova não vira resposta.
+  a = await criarAmbiente();
+  await iniciarConsultaChaveiro(a);
+  const c2 = a.para(CHAVEIRO)[0];
+  await a.webhook({ statuses: [{ id: c2.id, status: "failed", recipient_id: CHAVEIRO, errors: [{ code: 131047, title: "Re-engagement message" }] }] });
+  a.avancar(5 * 3600000);
+  const n0 = a.para(CHAVEIRO).length;
+  leuComo = 0;
+  a.llmPrestador = () => { leuComo++; return prest({ tipo: "VALOR", valor_centavos: 15000 }); };
+  await a.cliente(CHAVEIRO, "Bom dia, tudo bem? Fiquei sem internet ontem");
+  assert.equal(leuComo, 0, "o 'bom dia' não foi lido como resposta a uma pergunta que ele nem viu");
+  const novas = a.para(CHAVEIRO).slice(n0).map(e => e.texto);
+  assert.equal(novas.length, 1);
+  assert.match(novas[0], /^📌 Mensagem anterior, de \d\d\/\d\d às \d\d:\d\d[\s\S]*Cliente em Botafogo/);
+  // Agora ele viu a pergunta: a próxima resposta dele vale para esse atendimento.
+  await a.cliente(CHAVEIRO, "Fica 150 reais");
+  assert.equal(leuComo, 1);
+});
+
+test("Técnico a caminho: o profissional escreve 'estou a caminho' e o cliente é avisado na hora (uma vez)", async () => {
+  const a = await criarAmbiente();
+  await iniciarConsultaChaveiro(a);
+  a.DB.prepare("UPDATE d30_consultas SET status='CONFIRMADA', valor_prestador=12000, valor_cliente=18000").run();
+  a.DB.prepare("UPDATE d30_casos SET etapa='AGENDADO'").run();
+  let ia = 0; a.llmPrestador = () => { ia++; return prest({}); };
+  const n0 = a.para(CLI).length;
+  await a.cliente(CHAVEIRO, "Estou a caminho, chego em 20 min");
+  const novas = a.para(CLI).slice(n0).map(e => e.texto);
+  assert.equal(novas.length, 1);
+  assert.match(novas[0], /🚗 .*já está a caminho.*Previsão de chegada: cerca de 20 min/);
+  assert.match(a.ultimoPara(CHAVEIRO), /Já avisei o cliente/);
+  assert.equal(ia, 0, "não precisou da IA");
+  await a.cliente(CHAVEIRO, "to a caminho");
+  assert.equal(a.para(CLI).length, n0 + 1, "não repete o aviso");
+  assert.equal(a.DB.q("SELECT COUNT(*) n FROM d30_eventos WHERE tipo='A_CAMINHO'")[0].n, 1);
+});
