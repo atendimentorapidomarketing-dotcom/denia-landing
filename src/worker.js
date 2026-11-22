@@ -30,14 +30,14 @@ import { rotasFinanceiro, financeiroDoCron } from "./financeiro.js";
 import { rotasApresentacao } from "./apresentacao.js";
 import { rotasAdmin, adminDoCron, icalAdmin, consolidadoAdmin, agendaGeral, agendaEmTexto } from "./administracao.js";
 import { DDL_PROBLEMAS, rotasProblemas, registrarProblema, resolverProblema, limparProblemas, problemasAbertos } from "./problemas.js";
-import { rotasPush, avisosNoCelular } from "./push.js";
+import { rotasPush, avisosNoCelular, pushAgenda } from "./push.js";
 import { DDL_ZAP, webhookZap, rotasZap, webhookTelegram, segredoTelegram, tokenTelegramPlataforma, processarCampanhas, posVendaChatbot, lembrarAgenda, brutoRelatorioZap, avisarTelegramDaEmpresa , enviarModeloZap, zapEquipe, modelosAgendaZap, MODELOS_AGENDA } from "./zap.js";
 import { publicoCelular, comandoEquipeZap } from "./agendaequipe.js";
 import { rotasOS, osDoCron } from "./ordens.js";
 import { montarRelatorio, planilhaRelatorio, textoRelatorio, base64, ultimos7Dias, lerConfigRelatorio, horaDeEnviar, diaBR, dataBR, DIAS_SEMANA, inicioDoDia as inicioDoDiaBR } from "./relatorio.js";
 import { lerPlanos, acessoDa, recursoDaRota, planoMinimo, rotasPlano, webhookAsaas, lembretesDePlano, TESTE_DIAS, STATUS as STATUS_PLANO, PLANOS_PADRAO, RECURSOS } from "./planos.js";
 
-const VERSAO = "3.47.0";
+const VERSAO = "3.47.1";
 // Versão dos Termos de uso e da Política de privacidade aceitas no cadastro.
 const VERSAO_TERMOS = "2026-10-16";
 // WhatsApp da Central de Atendimento (botão flutuante do site).
@@ -1600,7 +1600,7 @@ export default {
       await garantirSchema(env);
       const k = kitBase(env);
       // Agenda primeiro (lembretes têm hora certa); a última rodada fica guardada para o painel avisar se as tarefas pararem.
-      { const kz = await kitZap(env); await adminDoCron(env, { ...kz, avisarTelegram: (o, t) => avisarTelegramDaEmpresa(env, kz, o, t), enviarModeloZap: (o, tel, modelo, idioma, vars) => enviarModeloZap(env, kz, o, tel, modelo, idioma, vars), ...kitAgendaZap(env, kz) }).catch(e => console.error("administração", e?.message)); }
+      { const kz = await kitZap(env); await adminDoCron(env, { ...kz, avisarTelegram: (o, t) => avisarTelegramDaEmpresa(env, kz, o, t), enviarModeloZap: (o, tel, modelo, idioma, vars) => enviarModeloZap(env, kz, o, tel, modelo, idioma, vars), ...kitAgendaZap(env, kz), pushAgenda: (o, resp, contato, dados) => pushAgenda(env, o, resp, contato, dados) }).catch(e => console.error("administração", e?.message)); }
       await env.DB.prepare("INSERT OR REPLACE INTO plt_meta(chave,valor) VALUES('agenda_cron_ms',?)").bind(String(agora(env))).run().catch(() => { });
       // Avisos novos (avaliação ruim, post que não saiu, mensagem não entregue…) viram notificação no celular.
       if (await aCada(env, "push_avisos", 4 * 60000)) await avisosNoCelular(env, o => problemasAbertos(env, o, agora(env), avisosCentralDe(env, o)), agora(env)).catch(e => console.error("avisos no celular", e?.message));

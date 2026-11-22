@@ -95,6 +95,19 @@ async function destinatarios(env, orgId) {
   return r.map(x => x.usuario_id);
 }
 
+// Lembrete de compromisso (no "avisar antes" e na hora): toca como alarme no celular de quem é o compromisso.
+// Sem responsável: o dono e os administradores. Marcado para um contato sem login: quem cuida da agenda de todos.
+export async function pushAgenda(env, orgId, responsavelId, contatoId, dados) {
+  await garantir(env);
+  const linhas = async (sql, ...a) => ((await env.DB.prepare(sql).bind(...a).all().catch(() => null))?.results || []).map(x => x.usuario_id);
+  const ids = [];
+  if (responsavelId) ids.push(Number(responsavelId));
+  ids.push(...await linhas("SELECT usuario_id FROM adm_pessoas WHERE org_id=? AND ativo=1 AND so_minhas=0 AND lembretes_todos=1", orgId));
+  if (!responsavelId && !contatoId) ids.push(...await linhas(`SELECT DISTINCT p.usuario_id FROM plt_push p JOIN plt_usuarios u ON u.id=p.usuario_id AND u.ativo=1
+    LEFT JOIN plt_membros m ON m.usuario_id=p.usuario_id AND m.org_id=? WHERE m.papel IN ('OWNER','ADMIN') OR u.super_admin=1`, orgId));
+  return notificarUsuarios(env, ids, { alarme: true, urgente: true, org: orgId, ...dados });
+}
+
 const ICONE_AREA = { WHATSAPP: "💬", PUBLICACOES: "📣", CLIENTES: "⭐", TEMPORADA: "🏠", AGENDA: "📅", CENTRAL: "🛠️", FINANCEIRO: "💰" };
 // Tarefa automática: cada aviso novo da página "Avisos e problemas" vira uma notificação no celular (uma vez só).
 // Na primeira vez de cada empresa, o que já estava aberto só é marcado (ninguém recebe uma enxurrada).
@@ -111,7 +124,8 @@ export async function avisosNoCelular(env, problemasDe, agora = Date.now()) {
       const abertos = await problemasDe(o.id);
       const ja = new Set(((await env.DB.prepare("SELECT chave FROM plt_push_enviados WHERE org_id=?").bind(o.id).all())?.results || []).map(x => x.chave));
       const primeira = !(await env.DB.prepare("SELECT 1 FROM plt_meta WHERE chave=?").bind("push_base_" + o.id).first().catch(() => null));
-      const novos = abertos.filter(p => p.chave && !ja.has(p.chave));
+      // Agendamento novo ou cancelado não vira notificação: o celular só toca na hora do lembrete do compromisso.
+      const novos = abertos.filter(p => p.chave && !ja.has(p.chave) && p.area !== "AGENDA");
       if (novos.length) await env.DB.batch(novos.slice(0, 300).map(p => env.DB.prepare("INSERT OR IGNORE INTO plt_push_enviados(org_id,chave,ms) VALUES(?,?,?)").bind(o.id, p.chave, agora)));
       if (primeira) { await env.DB.prepare("INSERT OR REPLACE INTO plt_meta(chave,valor) VALUES(?,?)").bind("push_base_" + o.id, String(agora)).run(); continue; }
       if (!novos.length) continue;
