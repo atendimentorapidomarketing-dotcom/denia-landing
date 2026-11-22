@@ -22,7 +22,7 @@
 
 import { apiMarketing, apiAssistente, analisarAvaliacoesPendentes, relatoriosDaSemana, medirPosicoesDaSemana } from "./marketing.js";
 import { retornoMeta, servirMidiaPublica, publicarPendentes } from "./meta.js";
-import { retornoGoogle, sincronizarGooglePendentes, vigiarPerfis, enviarRelatoriosPdf } from "./google.js";
+import { retornoGoogle, sincronizarGooglePendentes, vigiarPerfis, enviarRelatoriosPdf, geogridAgendados } from "./google.js";
 import { comOrgUso, comRecurso, descarregarUso } from "./uso.js";
 import { DDL_TEMPORADA, ALTERS_TEMPORADA, rotasTemporada, icalPublico, webhookChannex, sincronizarTemporada, desligarInadimplentes, lembrarEstoque, limpezaPublica, avaliacoesDoCron } from "./temporada.js";
 import { openaiBruto } from "./marketing.js";
@@ -32,10 +32,11 @@ import { rotasAdmin, adminDoCron, icalAdmin, consolidadoAdmin, agendaGeral, agen
 import { DDL_PROBLEMAS, rotasProblemas, registrarProblema, resolverProblema, limparProblemas } from "./problemas.js";
 import { DDL_ZAP, webhookZap, rotasZap, webhookTelegram, segredoTelegram, tokenTelegramPlataforma, processarCampanhas, posVendaChatbot, lembrarAgenda, brutoRelatorioZap, avisarTelegramDaEmpresa , enviarModeloZap, zapEquipe, modelosAgendaZap } from "./zap.js";
 import { publicoCelular } from "./agendaequipe.js";
+import { rotasOS, osDoCron } from "./ordens.js";
 import { montarRelatorio, planilhaRelatorio, textoRelatorio, base64, ultimos7Dias, lerConfigRelatorio, horaDeEnviar, diaBR, dataBR, DIAS_SEMANA, inicioDoDia as inicioDoDiaBR } from "./relatorio.js";
 import { lerPlanos, acessoDa, recursoDaRota, planoMinimo, rotasPlano, webhookAsaas, lembretesDePlano, TESTE_DIAS, STATUS as STATUS_PLANO, PLANOS_PADRAO, RECURSOS } from "./planos.js";
 
-const VERSAO = "3.42.0";
+const VERSAO = "3.43.0";
 // Versão dos Termos de uso e da Política de privacidade aceitas no cadastro.
 const VERSAO_TERMOS = "2026-10-16";
 // WhatsApp da Central de Atendimento (botão flutuante do site).
@@ -48,9 +49,9 @@ const BLOQUEIO_MS = 15 * 60 * 1000;
 // PBKDF2: o número fica gravado com cada senha, então pode subir no futuro sem
 // invalidar as senhas antigas. 20 mil cabe no limite de CPU do plano gratuito.
 const PBKDF2_ITER = 20000;
-const PAPEIS = ["OWNER", "ADMIN", "AGENTE", "VISUALIZADOR", "REVISOR"];
+const PAPEIS = ["OWNER", "ADMIN", "AGENTE", "VISUALIZADOR", "REVISOR", "CONTADOR"];
 const NIVEL = { VISUALIZADOR: 1, AGENTE: 2, ADMIN: 3, OWNER: 4 };
-const NOME_PAPEL = { OWNER: "Proprietário", ADMIN: "Administrador", AGENTE: "Atendente", VISUALIZADOR: "Somente leitura", REVISOR: "Revisor de aprendizados" };
+const NOME_PAPEL = { OWNER: "Proprietário", ADMIN: "Administrador", AGENTE: "Atendente", VISUALIZADOR: "Somente leitura", REVISOR: "Revisor de aprendizados", CONTADOR: "Contador (financeiro, só leitura)" };
 
 // Operações do Engine liberadas, com o papel mínimo de cada uma.
 const ROTAS_ENGINE = [
@@ -695,6 +696,13 @@ async function proxyEngine(request, env, sessao, orgId, papel, caminho) {
   }
 }
 
+// Ligação com a IA do atendimento de uma empresa (ordens de serviço, financeiro da Central).
+function kitEngine(env) {
+  return {
+    engineConectado: async orgId => Boolean(await conexaoDa(env, orgId)),
+    engine: async (orgId, metodo, caminho, corpo, params) => { const con = await conexaoDa(env, orgId); return con ? chamarEngine(con, metodo, caminho, corpo, params) : null; }
+  };
+}
 // Ferramentas que os módulos (marketing, Meta) usam.
 function kitBase(env) { return { env, json, lerCorpo, txt, pode, agora, auditar, cifrar, decifrar, hmac, segredo, b64url, deB64url }; }
 // Chatbot do WhatsApp (src/zap.js): IA da empresa, aviso por e-mail quando não há Telegram e o endereço do painel.
@@ -1054,6 +1062,8 @@ async function apiOrg(request, env, sessao, orgId, resto, ctx) {
   if (!papel) return json({ erro: "Empresa não encontrada." }, 404);
   // Revisor de aprendizados: só vê e decide o que a IA aprendeu; nada mais da empresa.
   if (papel === "REVISOR" && !/^engine\/learning(\/suggestions(\/\d{1,12})?)?$/.test(resto)) return json({ erro: "Seu perfil só tem acesso aos aprendizados da IA." }, 403);
+  // Contador: só o financeiro e as ordens de serviço, sem alterar nada (relatórios, planilhas e anexos).
+  if (papel === "CONTADOR" && !(request.method === "GET" && /^(fin|os)(\/|$)/.test(resto)) && !/^(plano|membros)$/.test(resto)) return json({ erro: "O acesso do contador é só ao financeiro, para consulta e relatórios." }, 403);
   const metodo = request.method;
   // Plano: cada área exige um recurso; fora do teste ou sem pagamento, só o plano e a equipe ficam abertos.
   const recurso = recursoDaRota(resto, metodo);
@@ -1070,6 +1080,7 @@ async function apiOrg(request, env, sessao, orgId, resto, ctx) {
   if (resto === "tp" || resto.startsWith("tp/")) return rotasTemporada(request, env, { ...(await kitZap(env, new URL(request.url).origin)), sessao, superAdmin: Boolean(sessao.usuario.super_admin), openai: openaiBruto, acesso: sessao.usuario.super_admin ? { ...acesso, limites: { ...acesso.limites, imoveis: 0 } } : acesso, avisar: async (o, texto) => { for (const para of await responsaveisDa(env, o)) await enviarEmail(env, para, "DENIA — hóspede precisa de você", texto); } }, orgId, papel, resto);
   if (resto === "apresentacao" || resto.startsWith("apresentacao/")) return (await rotasApresentacao(request, env, { ...kitBase(env), comIA, openai: openaiBruto }, orgId, resto)) || json({ erro: "Rota não encontrada." }, 404);
   if (resto === "adm" || resto.startsWith("adm/")) { const kz = await kitZap(env); return rotasAdmin(request, env, { ...kitBase(env), sessao, enviarEmail: (para, assunto, texto, anexos) => enviarEmail(env, para, assunto, texto, anexos), emailConfigurado: () => emailConfigurado(env), zapEquipe: (o, tel, t, m) => zapEquipe(env, kz, o, tel, t, m), modelosAgendaZap: (o, criar) => modelosAgendaZap(env, kz, o, criar) }, orgId, papel, resto); }
+  if (resto === "os" || resto.startsWith("os/")) return rotasOS(request, env, { ...kitBase(env), sessao, ...kitEngine(env) }, orgId, papel, resto);
   if (resto === "fin" || resto.startsWith("fin/")) return rotasFinanceiro(request, env, { ...kitBase(env), sessao, comIA, openai: openaiBruto }, orgId, papel, resto);
   if (resto === "problemas" || resto.startsWith("problemas/")) {
     // Empresa com a IA da Central ligada: os avisos não urgentes dela (que não vão ao Telegram) entram aqui.
@@ -1550,6 +1561,8 @@ export default {
       await posVendaChatbot(env, await kitZap(env)).catch(e => console.error("pós-venda do chatbot", e?.message));
       await lembrarAgenda(env, await kitZap(env)).catch(e => console.error("agenda", e?.message));
       await relatoriosAgendados(env).catch(e => console.error("relatórios agendados", e?.message));
+      await osDoCron(env, { ...k, ...kitEngine(env) }).catch(e => console.error("ordens de serviço", e?.message));
+      await geogridAgendados(env, k).catch(e => console.error("mapa de posição agendado", e?.message));
       await lembrarEstoque(env, await kitZap(env)).catch(e => console.error("estoque", e?.message));
       await avaliacoesDoCron(env, { ...(await kitZap(env)) }).catch(e => console.error("avaliações temporada", e?.message));
       if (await aCada(env, "temporada_inadimplentes", 20 * 3600000)) {

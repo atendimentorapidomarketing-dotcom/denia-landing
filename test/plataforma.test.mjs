@@ -3485,6 +3485,26 @@ test("Google: pré-análise de qualquer empresa, mapa de posição em grade e si
   assert.equal(g.dados.pontos.length, 9); assert.equal(buscasGrade, 9);
   assert.ok(g.dados.pontos.every(x => [1, 3].includes(x.posicao)));
   assert.equal((await p.req(`/api/orgs/1/mk/google/geogrid?marca=${marca}`, { quem: "admin" })).dados.grades.length, 1);
+  // Quem domina o mapa: fatia do top 3 e posição média de cada empresa.
+  const rk = g.dados.concorrentes;
+  assert.equal(rk[0].id, "PLACE_RT"); assert.equal(rk[0].voce, true); assert.equal(rk[0].top3_pct, 100); assert.equal(rk[0].aparece_pct, 100);
+  assert.equal(rk.find(x => x.id === "X").aparece_pct, 44); assert.equal(rk.find(x => x.id === "X").posicao_media, 1);
+  // Agendar o mapa: roda sozinho quando vence.
+  assert.equal((await p.req("/api/orgs/1/mk/google/geogrid/agenda", { metodo: "POST", quem: "admin", corpo: { marca_id: marca, palavra: "pedreiro", raio_km: 2, tamanho: 3, dias: 7 } })).status, 200);
+  p.env.DB.prepare("UPDATE plt_mk_geogrid_agenda SET proxima_ms=0").run();
+  const modG = await import("../src/google.js");
+  assert.equal(await modG.geogridAgendados(p.env, { agora: () => Date.now(), decifrar: async (_e, x) => x, cifrar: async (_e, x) => x }).catch(() => -1) >= 0, true);
+  // Gráficos: 18 meses por mês (do Google), avaliações e evolução do mapa.
+  const gr = (await p.req(`/api/orgs/1/mk/google/graficos?marca=${marca}`, { quem: "admin" })).dados;
+  assert.equal(gr.conectada, true, JSON.stringify(gr).slice(0, 300));
+  const set = gr.desempenho.meses.find(x => x.mes === "2026-09");
+  assert.equal(set.visualizacoes, 400); assert.equal(set.rotas, 7); assert.equal(set.pesquisa_celular, 300);
+  assert.deepEqual(gr.avaliacoes.distribuicao.map(x => x.nota), [5, 4, 3, 2, 1]);
+  assert.equal(gr.mapa[0].palavra, "pedreiro");
+  // Buscar empresas: lista, segmento e mapa de calor (dados do Google Maps).
+  const em = (await p.req("/api/orgs/1/mk/google/empresas", { metodo: "POST", quem: "admin", corpo: { busca: "reforma em Tijuca, Rio" } })).dados;
+  assert.equal(em.empresas[0].nome, "Reforma Tudo RT"); assert.equal(em.segmento.total, 1); assert.equal(em.segmento.nota_media, 4.8);
+  assert.equal((await p.req("/api/orgs/1/mk/google/empresas", { quem: "admin" })).dados.buscas[0].busca, "reforma em Tijuca, Rio");
   // Buscas no Google: o que digitaram, quantas vezes, posição acompanhada, por onde viram e alcance no mapa
   await p.req("/api/orgs/1/mk/palavras", { metodo: "POST", quem: "admin", corpo: { marca_id: marca, palavra: "Pedreiro Tijuca" } });
   const bu = await p.req(`/api/orgs/1/mk/google/buscas?marca=${marca}&meses=3`, { quem: "admin" });
@@ -3711,8 +3731,7 @@ test("Avaliação no perfil certo — cada empresa escolhe o perfil (vários per
   p.env.DB.prepare("INSERT INTO plt_zap_contatos(org_id,telefone,nome,ultima_entrada_ms,ultimo_ms) VALUES(?,?,?,?,?)").bind(inf, tel, "Rita Souza", agora - 3 * 3600000, agora - 3 * 3600000).run();
   p.env.__agora = () => agora;
   const mod = await import("../src/worker.js");
-  await mod.default.scheduled({}, p.env, { waitUntil: pr => pr });
-  await new Promise(r => setTimeout(r, 50));
+  { const pend = []; await mod.default.scheduled({}, p.env, { waitUntil: pr => pend.push(pr) }); await Promise.all(pend); }
   const pergunta = enviadosPara(p, tel).at(-1);
   assert.match(pergunta?.texto || "", /ficou tudo certo com a lavagem do sofá/);
   await webhookZap(p, "111111111111", { from: tel, id: "wamid.pv1", timestamp: String(Math.floor(agora / 1000)), type: "text", text: { body: "Ficou ótimo!" } }, "Rita");
@@ -4358,4 +4377,66 @@ test("Agenda — quem recebe no WhatsApp sem login: lista do dia (mesmo fora das
   assert.equal((await ag(`contatos/${c.dados.id}`, { metodo: "DELETE" })).status, 200);
   assert.equal(p.env.DB.q("SELECT COUNT(*) n FROM adm_agenda WHERE contato_id IS NOT NULL")[0].n, 0);
   delete p.env.__agora;
+});
+
+test("Ordens de serviço da Central: o atendimento no WhatsApp vira cliente, profissional, OS e lançamento no financeiro; comprovante, nota fiscal, DRE e contador", async () => {
+  const p = await criarPlataforma();
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  assert.equal((await p.req("/api/orgs/1/integracao", { metodo: "POST", quem: "admin", corpo: { engine_url: "https://engine.test/", token: TOKEN_ENGINE } })).status, 200);
+  const os = (cam, op = {}) => p.req(`/api/orgs/1/os/${cam}`, { quem: "admin", ...op });
+  assert.equal((await os("sincronizar", { metodo: "POST", corpo: {} })).status, 200, "liga com a IA (cria as tabelas do atendimento)");
+  // Um atendimento real do motor: cliente, caso concluído, profissional confirmado com valores e o comprovante do cliente.
+  const E = p.engine.DB, agora = Date.now();
+  await E.prepare("INSERT INTO pessoas(id,empresa_id,nome,telefone,tipo) VALUES(501,1,'Maria Souza','5521977776666','CLIENTE')").run();
+  await E.prepare("INSERT INTO d30_casos(caso_id,cliente_id,telefone,etapa,fatos_json,resumo,criado_ms,atualizado_ms) VALUES(9001,501,'5521977776666','CONCLUIDO',?, 'Troca da resistência do chuveiro', ?, ?)")
+    .bind(JSON.stringify({ servico: "eletricista", problema: "Trocar a resistência do chuveiro", bairro: "Tijuca", endereco: "Rua Conde de Bonfim, 100" }), agora - 3600000, agora).run();
+  await E.prepare("INSERT INTO d30_consultas(caso_id,cliente_id,cliente_tel,prestador_id,prestador_tel,prestador_nome,area,status,valor_prestador,valor_cliente,criado_ms,atualizado_ms) VALUES(9001,501,'5521977776666','p-joao','5521966665555','João Eletricista','ELETRICA','CONFIRMADA',10000,15000,?,?)").bind(agora - 3000000, agora).run();
+  await E.prepare("INSERT INTO d30_midias(caso_id,telefone,media_id,tipo,mime,legenda,comprovante,criado_ms) VALUES(9001,'5521977776666','MID123','image','image/jpeg','pix',1,?)").bind(agora).run();
+  await E.prepare("INSERT INTO d30_casos(caso_id,cliente_id,telefone,etapa,fatos_json,criado_ms,atualizado_ms) VALUES(9002,501,'5521977776666','COLETANDO','{}',?,?)").bind(agora, agora).run();
+  const s = (await os("sincronizar", { metodo: "POST", corpo: {} })).dados;
+  assert.equal(s.novas, 1, "só vira OS o que tem profissional/agendamento: " + JSON.stringify(s));
+  const mes = new Date(agora - 3 * 3600000).toISOString().slice(0, 7);
+  const lista = (await os(`ordens?mes=${mes}`)).dados.ordens;
+  assert.equal(lista.length, 1);
+  const o = lista[0];
+  assert.deepEqual([o.caso_id, o.status, o.cliente_nome, o.prof_nome, o.valor_cliente_cent, o.valor_prof_cent, o.comissao_cent, o.cliente_pagto, o.anexos], [9001, "CONCLUIDA", "Maria Souza", "João Eletricista", 15000, 10000, 5000, "A_CONFERIR", 1]);
+  // Cadastros feitos sozinhos.
+  const cl = (await os("clientes")).dados.clientes.find(x => x.telefone === "5521977776666");
+  assert.equal(cl.nome, "Maria Souza"); assert.equal(cl.bairro, "Tijuca"); assert.equal(cl.endereco, "Rua Conde de Bonfim, 100");
+  assert.equal((await os("profissionais")).dados.profissionais[0].comissao_pendente_cent, 5000);
+  // Financeiro: a comissão da Central entra no mês, a receber do profissional.
+  const fin = (await p.req(`/api/orgs/1/fin/lancamentos?mes=${mes}`, { quem: "admin" })).dados.lancamentos.find(l => /Comissão OS 9001/.test(l.descricao));
+  assert.ok(fin, "lançamento da comissão"); assert.equal(fin.valor_cent, 5000); assert.equal(fin.pago, 0); assert.equal(fin.categoria, "Comissões");
+  // A equipe confere o comprovante, o profissional acerta a comissão e a nota fiscal sai: tudo registrado.
+  assert.equal((await os(`ordens/${o.id}`, { metodo: "PUT", corpo: { cliente_pagto: "PAGO", prof_repasse: "PAGO", nf_status: "EMITIDA", nf_numero: "123" } })).status, 200);
+  const fin2 = (await p.req(`/api/orgs/1/fin/lancamentos?mes=${mes}`, { quem: "admin" })).dados.lancamentos.find(l => /Comissão OS 9001/.test(l.descricao));
+  assert.equal(fin2.pago, 1);
+  const det = (await os(`ordens/${o.id}`)).dados;
+  assert.ok(det.historico.some(h => /nota fiscal: PENDENTE → EMITIDA/.test(h.detalhe || "")));
+  assert.equal(det.anexos[0].tipo, "COMPROVANTE_CLIENTE"); assert.equal(det.anexos[0].tem, 1);
+  assert.equal((await os(`anexos/${det.anexos[0].id}`)).status, 200);
+  // A correção da equipe não é desfeita pela próxima leitura do atendimento.
+  await os(`ordens/${o.id}`, { metodo: "PUT", corpo: { valor_cliente: "180,00" } });
+  await E.prepare("UPDATE d30_casos SET atualizado_ms=? WHERE caso_id=9001").bind(agora + 1000).run();
+  await os("sincronizar", { metodo: "POST", corpo: {} });
+  assert.equal((await os(`ordens/${o.id}`)).dados.ordem.valor_cliente_cent, 18000);
+  // Resumo do mês, planilha, DRE e pacote do contador.
+  const r = (await os(`resumo?mes=${mes}`)).dados;
+  assert.equal(r.totais.concluidas, 1); assert.equal(r.totais.receita_central_cent, 8000);
+  assert.match((await os(`exportar?mes=${mes}`)).r.headers.get("content-type"), /spreadsheetml/);
+  const dre = (await p.req(`/api/orgs/1/fin/dre?de=${mes}&ate=${mes}`, { quem: "admin" })).dados;
+  assert.equal(dre.estrutura.find(l => l.chave === "RECEITA").total, 8000);
+  assert.equal(dre.estrutura.find(l => l.chave === "LIQUIDO").total, 8000);
+  assert.match((await p.req(`/api/orgs/1/fin/contador?mes=${mes}`, { quem: "admin" })).r.headers.get("content-type"), /spreadsheetml/);
+  // Contador: vê e baixa, não altera; fora do financeiro, nada.
+  const add = await p.req("/api/orgs/1/membros", { metodo: "POST", quem: "admin", corpo: { nome: "Contadora", email: "contadora@escritorio.test", papel: "CONTADOR" } });
+  assert.equal(add.status, 200, JSON.stringify(add.dados));
+  await p.entrar("cont", "contadora@escritorio.test", add.dados.senha_temporaria);
+  await p.req("/api/conta", { metodo: "POST", quem: "cont", corpo: { acao: "senha", atual: add.dados.senha_temporaria, nova: "SenhaDaContadora2026" } });
+  assert.equal((await p.req(`/api/orgs/1/fin/dre?de=${mes}&ate=${mes}`, { quem: "cont" })).status, 200, "vê a DRE");
+  assert.equal((await p.req(`/api/orgs/1/fin/contador?mes=${mes}`, { quem: "cont" })).status, 200, "baixa o pacote");
+  assert.equal((await p.req(`/api/orgs/1/os/ordens?mes=${mes}`, { quem: "cont" })).status, 200, "vê as OS");
+  assert.equal((await p.req("/api/orgs/1/fin/lancamentos", { metodo: "POST", quem: "cont", corpo: { tipo: "SAIDA", descricao: "x", valor: "1", data: `${mes}-01` } })).status, 403, "não lança nada");
+  assert.equal((await p.req(`/api/orgs/1/os/ordens/${o.id}`, { metodo: "PUT", quem: "cont", corpo: { nf_status: "PENDENTE" } })).status, 403, "não altera OS");
+  assert.equal((await p.req("/api/orgs/1/adm/agenda", { quem: "cont" })).status, 403, "fora do financeiro, nada");
 });
