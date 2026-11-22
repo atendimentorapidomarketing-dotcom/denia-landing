@@ -564,6 +564,21 @@
       metrica("Clientes hoje", numero(r.hoje.clientes), `${numero(r.hoje.novos)} novos · ${numero(r.hoje.recorrentes)} recorrentes`),
       metrica("Clientes nos últimos 7 dias", numero(r.sete_dias.clientes), `${numero(r.sete_dias.conversas)} conversas · ${numero(r.sete_dias.voltaram)} voltaram`),
       h("a", { class: "metrica vidro metrica-botao", href: "#/relatorios" }, h("span", { text: "Mais procurado nos 7 dias" }), h("strong", { text: r.categorias[0] ? r.categorias[0].categoria : "Sem dados" }), h("small", { text: "Abrir relatórios" }))));
+    // Tudo zerado: diz o porquê (número desconectado, mensagens indo para outro sistema, chave errada…) e como resolver.
+    if ((r.fontes || []).includes("ia-indisponivel")) caixa.appendChild(h("p", { class: "sub", style: "margin-top:8px", text: "⚠️ Não consegui ler agora os números da IA do atendimento (ela não respondeu). Os totais acima podem estar incompletos — atualize em alguns minutos." }));
+    if (!r.sete_dias.clientes && ((r.fontes || []).includes("chatbot") || estado.org.chatbot)) {
+      const d = await zap("recebimento").catch(() => null);
+      if (d && d.motivo && caixa.isConnected) {
+        const cartao = h("section", { class: "cartao vidro", style: "margin-top:12px;border-color:rgba(239,68,68,.6)" },
+          h("h3", { text: "⚠️ Por que está tudo zerado" }), h("p", { class: "sub", text: d.motivo }), d.acao ? h("p", { class: "sub", text: "O que fazer: " + d.acao }) : null,
+          d.ultima_recebida_ms ? h("p", { class: "prb-meta", text: `Última mensagem de cliente recebida: ${new Date(d.ultima_recebida_ms).toLocaleString("pt-BR")}` }) : null,
+          d.erro_meta ? h("p", { class: "prb-meta", text: "Resposta da Meta: " + d.erro_meta }) : null,
+          h("div", { class: "acoes" },
+            d.conectado ? botao("Ligar o recebimento", async (_e, b) => { b.disabled = true; try { const x = await zap("recebimento", { metodo: "POST", corpo: {} }); aviso(x.denia_recebe === false ? "A Meta ainda não confirmou. Confira a conexão." : "Pronto: a Meta passa a mandar as mensagens para a DENIA. Mande um “oi” de teste.", x.denia_recebe === false ? "erro" : "ok"); } catch (e) { aviso(e.message, "erro"); } b.disabled = false; }, "btn-primario") : null,
+            h("a", { class: "btn btn-secundario", href: "#/chatbot/conexao", text: "Abrir a conexão" })));
+        caixa.appendChild(cartao);
+      }
+    }
   }
   // Relatórios: números do período, planilha para baixar e o envio automático por e-mail.
   function baixarBase64(nome, base64, tipo) {

@@ -1870,6 +1870,37 @@ async function rotasZapExtra(request, env, k, orgId, papel, r, { json, ler, prec
   };
   const falhou = e => json({ erro: e.message, codigo: e.codigo }, e.status && e.status < 500 ? (e.status === 401 ? 400 : e.status) : 502);
 
+  // Por que não chega mensagem? Confere tudo o que pode impedir o recebimento e diz o motivo provável.
+  if (r === "recebimento" && (metodo === "GET" || metodo === "POST")) {
+    const conta = await contaDa(env, orgId);
+    const linha = async sql => (await env.DB.prepare(sql).bind(orgId).first().catch(() => null)) || {};
+    const ult = (await linha("SELECT MAX(criado_ms) ms FROM plt_zap_msgs WHERE org_id=? AND direcao='E'")).ms || null;
+    const total = (await linha("SELECT COUNT(*) n FROM plt_zap_msgs WHERE org_id=? AND direcao='E'")).n || 0;
+    const assin = Number((await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave=?").bind("zap_assinatura_falhou_" + orgId).first().catch(() => null))?.valor || 0) || null;
+    const out = { conectado: Boolean(conta?.phone_number_id && conta?.token_cifrado), ativo: Boolean(conta?.ativo), numero: conta?.numero || "", ultima_recebida_ms: ult, mensagens_recebidas: total,
+      assinatura_falhou_ms: assin && assin > Number(ult || 0) ? assin : null, apps: null, denia_recebe: null, motivo: "", acao: "" };
+    if (out.conectado && conta.waba_id) {
+      try {
+        const token = await k.decifrar(env, conta.token_cifrado);
+        if (metodo === "POST") {
+          const negado = precisa("ADMIN"); if (negado) return negado;
+          await graphZap(token, "POST", `${encodeURIComponent(conta.waba_id)}/subscribed_apps`);
+          try { await k.auditar(env, request, k.sessao, orgId, "WHATSAPP", "Ligou o recebimento das mensagens (assinatura do webhook)"); } catch { }
+        }
+        const d = await graphZap(token, "GET", `${encodeURIComponent(conta.waba_id)}/subscribed_apps`);
+        out.apps = (d.data || []).map(a => ({ id: String(a?.whatsapp_business_api_data?.id || ""), nome: a?.whatsapp_business_api_data?.name || "" }));
+        const appId = String(env.META_APP_ID || "").trim();
+        out.denia_recebe = appId ? out.apps.some(a => a.id === appId) : out.apps.length > 0 ? null : false;
+      } catch (e) { out.erro_meta = cortar(e.message, 200); }
+    }
+    if (!out.conectado) { out.motivo = "O WhatsApp desta empresa não está conectado à DENIA: nenhuma mensagem pode chegar."; out.acao = "Conecte o número em WhatsApp → Conexão."; }
+    else if (!out.ativo) { out.motivo = "O chatbot está desligado nesta empresa."; out.acao = "Ligue o chatbot em WhatsApp → Conexão."; }
+    else if (out.assinatura_falhou_ms) { out.motivo = "As mensagens chegam, mas a DENIA recusa porque a Chave secreta do app salva aqui é diferente da usada pela Meta."; out.acao = "Em WhatsApp → Conexão, cole a Chave secreta do app que esse número usa (se veio do Botpress, é o Client Secret da integração do WhatsApp)."; }
+    else if (out.denia_recebe === false) { out.motivo = `A Meta não está mandando as mensagens deste número para a DENIA${out.apps?.length ? ` — hoje vão para: ${out.apps.map(a => a.nome || a.id).join(", ")}` : ""}.`; out.acao = "Toque em “Ligar o recebimento” (a DENIA passa a receber). Se outro sistema (ex.: Botpress) também responde, desligue-o para o cliente não receber duas respostas."; }
+    else if (!ult) { out.motivo = "O número está conectado, mas nenhuma mensagem de cliente chegou até agora. Os números do painel contam só o que chegou à DENIA desde a conexão (o histórico de outro sistema não vem junto)."; out.acao = "Mande um “oi” de outro celular para o número. Se não aparecer em Conversas em 1 minuto, toque em “Ligar o recebimento”."; }
+    else if (agora - ult > 3 * 86400000) { out.motivo = `A última mensagem de cliente chegou há ${Math.round((agora - ult) / 86400000)} dias. Se o número recebe clientes todo dia, as mensagens deixaram de chegar à DENIA.`; out.acao = "Toque em “Ligar o recebimento” e mande um “oi” de teste."; }
+    return json(out);
+  }
   // Custo do WhatsApp cobrado pela Meta (conversas/mensagens pagas por dia e categoria), com o token da própria empresa.
   if (r === "custos" && metodo === "GET") {
     try {
