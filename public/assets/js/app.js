@@ -5429,15 +5429,23 @@ Botão só com texto = resposta.` })),
     let d;
     try { d = await mk(`google/locais?n=${encodeURIComponent(nonce)}`); }
     catch (e) { aviso(e.message, "erro"); irPara("#/marcas"); return; }
+    const primeiroNovo = d.locais.findIndex(l => !l.conectado_em);
     const opcoes = h("div", { class: "lista-saude lista-rolavel" }, d.locais.map((l, i) => h("label", { class: "opcao-pagina" },
-      h("input", { type: "checkbox", name: "local-google", value: l.id, checked: i === 0 }),
-      h("span", {}, h("strong", { text: l.titulo }), h("span", { class: "sub", text: l.endereco || "Perfil sem endereço (atende na região)" })))));
-    if (!(await modal({ titulo: "Quais perfis do Google você quer conectar?", conteudo: [h("p", { class: "dica", text: "Marque um ou vários. Cada perfil marcado vira um perfil na DENIA, com a logo e os dados puxados sozinhos." }), ...(d.locais.length > 6 ? [filtroDaLista(opcoes, `Procurar entre os ${d.locais.length} perfis (nome ou endereço)`)] : []), opcoes], confirmar: "Conectar" }))) { irPara("#/marcas"); return; }
+      h("input", { type: "checkbox", name: "local-google", value: l.id, checked: i === (primeiroNovo >= 0 ? primeiroNovo : 0) }),
+      h("span", {}, h("strong", { text: l.titulo }), h("span", { class: "sub", text: (l.endereco || "Perfil sem endereço (atende na região)") + (l.conectado_em ? ` · já está na DENIA (${l.conectado_em})` : "") })))));
+    // Selecionar todos (só os que aparecem no filtro, se houver busca) e o contador do que está marcado.
+    const contador = h("span", { class: "sub" });
+    const visiveis = () => [...opcoes.querySelectorAll("label")].filter(x => x.style.display !== "none" && !x.classList.contains("oculto")).map(x => x.querySelector("input"));
+    const atualizar = () => { const n0 = opcoes.querySelectorAll("input:checked").length; contador.textContent = `${n0} de ${d.locais.length} marcado(s)`; todos.checked = visiveis().length > 0 && visiveis().every(x => x.checked); };
+    const todos = h("input", { type: "checkbox", onchange: () => { for (const x of visiveis()) x.checked = todos.checked; atualizar(); } });
+    opcoes.addEventListener("change", atualizar); atualizar();
+    const barraTodos = h("div", { class: "fin-mes", style: "margin:6px 0" }, h("label", { class: "fin-check" }, todos, h("strong", { text: " Selecionar todos" })), h("span", { style: "flex:1" }), contador);
+    if (!(await modal({ titulo: "Quais perfis do Google você quer conectar?", conteudo: [h("p", { class: "dica", text: "Marque um ou vários — ou “Selecionar todos”. Cada perfil marcado vira um perfil na DENIA, com a logo e os dados puxados sozinhos. Os que já estão na DENIA só têm a conexão renovada." }), barraTodos, ...(d.locais.length > 6 ? [filtroDaLista(opcoes, `Procurar entre os ${d.locais.length} perfis (nome ou endereço)`)] : []), opcoes], confirmar: "Conectar" }))) { irPara("#/marcas"); return; }
     const ids = [...opcoes.querySelectorAll("input:checked")].map(x => x.value);
     try {
       aviso(ids.length > 1 ? `Conectando ${ids.length} perfis do Google e trazendo as avaliações…` : "Conectando o perfil do Google e trazendo as avaliações…");
       const r = await mk("google/escolher", { metodo: "POST", corpo: { n: nonce, local_ids: ids, renomear: perfilNovo(d.marca_id) } });
-      if ((r.conectados || []).length > 1) { aviso(`${r.conectados.length} perfis do Google conectados: ${r.conectados.map(c => c.perfil).join(", ")}. Cada um virou um perfil.`, "ok"); cacheGoogle = null; cacheMarcas = null; irPara("#/marcas"); return; }
+      if ((r.conectados || []).length > 1) { aviso(`${r.conectados.length} perfis do Google conectados${r.conectados.length <= 6 ? ": " + r.conectados.map(c => c.perfil).join(", ") : ""}. As avaliações e os dados de cada um continuam chegando em segundo plano.`, "ok"); cacheGoogle = null; cacheMarcas = null; irPara("#/marcas"); return; }
       const s = r.sincronizacao || {};
       aviso(`Google conectado: ${r.perfil}.${s.avaliacoes_total != null ? ` ${s.avaliacoes_total} avaliação(ões) trazidas do perfil.` : s.em_andamento ? " As avaliações e os dados continuam chegando em segundo plano; aparecem em instantes." : ""}` + textoPreenchidos(r.preenchidos), "ok");
       cacheGoogle = null; cacheMarcas = null;

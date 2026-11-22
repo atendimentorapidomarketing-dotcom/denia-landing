@@ -3241,6 +3241,16 @@ test("Conectar conta nova: vários perfis do Google de uma vez viram perfis, com
   assert.deepEqual(esc.dados.conectados.map(c => c.perfil), ["Reforma Tudo RT", "Chaveiro Tijuca"]);
   const nomes = p.env.DB.q("SELECT m.nome, g.local_titulo FROM plt_mk_marcas m JOIN plt_mk_google g ON g.marca_id=m.id ORDER BY m.id").map(x => `${x.nome}=${x.local_titulo}`);
   assert.deepEqual(nomes, ["Reforma Tudo RT=Reforma Tudo RT", "Chaveiro Tijuca=Chaveiro Tijuca"], "o perfil novo ganhou o nome do perfil do Google");
+  // Conectar de novo com "selecionar todos": os que já estão na DENIA aparecem marcados como tal e não são duplicados.
+  const ida2 = await p.req(`/api/orgs/1/mk/google/conectar?marca=${marca}`, { quem: "admin" });
+  const state2 = new URL(ida2.r.headers.get("location")).searchParams.get("state");
+  const nonce2 = (await (await p.req(`/api/google/retorno?code=abc&state=${encodeURIComponent(state2)}`)).r.text()).match(/\/app#\/marcas\/google-([A-Za-z0-9_-]+)/)[1];
+  const loc = (await p.req(`/api/orgs/1/mk/google/locais?n=${nonce2}`, { quem: "admin" })).dados.locais;
+  assert.deepEqual(loc.map(x => Boolean(x.conectado_em)), [true, true, false]);
+  const tudo = await p.req("/api/orgs/1/mk/google/escolher", { metodo: "POST", quem: "admin", corpo: { n: nonce2, local_ids: loc.map(x => x.id) } });
+  assert.equal(tudo.status, 200);
+  assert.equal(p.env.DB.q("SELECT COUNT(*) n FROM plt_mk_google")[0].n, 3, "3 perfis, sem duplicar os 2 que já estavam");
+  assert.equal(p.env.DB.q("SELECT COUNT(*) n FROM plt_mk_marcas")[0].n, 3);
   // Palavra-chave: ao adicionar, já mede (2º lugar).
   const add = await p.req("/api/orgs/1/mk/palavras", { metodo: "POST", quem: "admin", corpo: { marca_id: marca, palavra: "pedreiro", cidade: "Rio de Janeiro" } });
   assert.equal(add.dados.medicao.posicao, 2, JSON.stringify(add.dados));
