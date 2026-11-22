@@ -846,8 +846,7 @@ test("Instagram e Facebook — conectar a marca pela Meta, publicar no horário 
   const agora = new Date(Date.now() - 3 * 3600000).toISOString();
   p.env.DB.prepare("UPDATE plt_mk_posts SET data=?, hora=? WHERE id=?").bind(agora.slice(0, 10), agora.slice(11, 16), post).run();
   const mod = await import("../src/worker.js");
-  await mod.default.scheduled({}, p.env, { waitUntil: (pr) => pr });
-  await new Promise(r => setTimeout(r, 50));
+  { const pend = []; await mod.default.scheduled({}, p.env, { waitUntil: (pr) => pend.push(pr) }); await Promise.all(pend); }
   const depois = p.env.DB.q("SELECT status, publicacao FROM plt_mk_posts WHERE id=?", post)[0];
   assert.equal(depois.status, "PUBLICADO");
   const pub = JSON.parse(depois.publicacao);
@@ -1110,7 +1109,7 @@ test("Google Meu Negócio — conectar o perfil, trazer avaliações e desempenh
     return antes2(url, metodo, corpo);
   };
   const modW = await import("../src/worker.js");
-  await modW.default.scheduled({}, p.env, { waitUntil: pr => pr });
+  { const pend = []; await modW.default.scheduled({}, p.env, { waitUntil: pr => pend.push(pr) }); await Promise.all(pend); }
   await new Promise(r => setTimeout(r, 50));
   const ofertaDepois = p.env.DB.q("SELECT status, publicacao FROM plt_mk_posts WHERE id=?", oferta)[0];
   assert.equal(ofertaDepois.status, "APROVADO", "recusado depois de analisar não fica como publicado");
@@ -1141,7 +1140,7 @@ test("Avaliações — a DENIA lê cada uma no contexto, avisa quando precisa de
 
   // Cron: lê as novas, guarda a análise e a resposta sugerida, e avisa os responsáveis por e-mail.
   const mod = await import("../src/worker.js");
-  await mod.default.scheduled({}, p.env, { waitUntil: (pr) => pr });
+  { const pend = []; await mod.default.scheduled({}, p.env, { waitUntil: pr => pend.push(pr) }); await Promise.all(pend); }
   await new Promise(r => setTimeout(r, 50));
   const avs = (await p.req(`/api/orgs/1/mk/avaliacoes?marca=${marca}`, { quem: "admin" })).dados.avaliacoes;
   const a1 = avs.find(a => a.id === boa), a2 = avs.find(a => a.id === ruim);
@@ -1205,7 +1204,7 @@ test("Avaliações no automático — a DENIA responde sozinha no Google as norm
   };
   const ja = await p.req("/api/orgs/1/mk/google/agora", { metodo: "POST", quem: "admin", corpo: { marca_id: marca } });
   assert.deepEqual([ja.dados.analisadas, ja.dados.publicadas, ja.dados.precisam_de_voce], [2, 2, 1], "buscar e responder agora, sem esperar a rodada");
-  await mod.default.scheduled({}, p.env, { waitUntil: (pr) => pr });
+  { const pend = []; await mod.default.scheduled({}, p.env, { waitUntil: pr => pend.push(pr) }); await Promise.all(pend); }
   await new Promise(r => setTimeout(r, 50));
   const avs = (await p.req(`/api/orgs/1/mk/avaliacoes?marca=${marca}`, { quem: "admin" })).dados.avaliacoes;
   assert.equal(avs.length, 3, JSON.stringify(p.googleChamadas?.map(c => c.url)));
@@ -3054,7 +3053,7 @@ test("Relatórios — conversas pela janela de 24 h, planilha profissional e env
   const cfg = await p.req(`/api/orgs/${inf}/relatorio/config`, { metodo: "POST", quem: "admin", corpo: { ativo: true, dia: 3, hora: 10, emails: "gerente@loja.test" } });
   assert.deepEqual(cfg.dados.config, { ativo: true, dia: 3, hora: 10, emails: "gerente@loja.test" });
   const mod = await import(new URL("../src/worker.js?t=rel" + Math.random(), import.meta.url).href);
-  const rodar = async () => { await mod.default.scheduled({}, p.env, { waitUntil: pr => pr }); await new Promise(r => setTimeout(r, 50)); };
+  const rodar = async () => { { const pend = []; await mod.default.scheduled({}, p.env, { waitUntil: pr => pend.push(pr) }); await Promise.all(pend); } };
   p.env.__agora = () => ms("2026-10-19T11:30:00Z"); await rodar(); // segunda: não é o dia escolhido
   p.env.__agora = () => ms("2026-10-21T12:30:00Z"); await rodar(); // quarta 09:30: antes do horário
   const daLoja = () => p.emails.filter(e => /Loja Chatbot/.test(e.subject));
@@ -3438,7 +3437,7 @@ test("Avaliação ruim no Google (3★ ou menos) que chegou agora: avisa a equip
   const ins = (gid, nota, data) => p.env.DB.prepare("INSERT INTO plt_mk_avaliacoes(org_id,marca_id,autor,nota,texto,data,status,criado_ms,google_id) VALUES(1,?,?,?,?,?,'PENDENTE',?,?)").bind(marca, "Cliente " + gid, nota, "Demorou muito", data, Date.now(), gid).run();
   await ins("g1", 2, hoje); await ins("g2", 5, hoje); await ins("g3", 1, "2024-01-10");
   const mod = await import(new URL("../src/worker.js?t=aval" + Math.random(), import.meta.url).href);
-  const rodar = async () => { await mod.default.scheduled({}, p.env, { waitUntil: pr => pr }); await new Promise(r => setTimeout(r, 50)); };
+  const rodar = async () => { { const pend = []; await mod.default.scheduled({}, p.env, { waitUntil: pr => pend.push(pr) }); await Promise.all(pend); } };
   await rodar();
   const avisos = () => p.emails.filter(e => /avaliação \d★ no Google/.test(e.subject));
   assert.equal(avisos().length, 1, JSON.stringify(p.emails.map(e => e.subject)));
@@ -3566,7 +3565,7 @@ test("Google: relatório em PDF para o cliente, envio automático (dia 1) e prop
   assert.equal((await p.req("/api/orgs/1/mk/google/relatorio-envio", { metodo: "POST", quem: "admin", corpo: { marca_id: marca, ativo: true, frequencia: "mensal", emails: "errado" } })).status, 400);
   await p.req("/api/orgs/1/mk/google/relatorio-envio", { metodo: "POST", quem: "admin", corpo: { marca_id: marca, ativo: true, frequencia: "mensal", emails: "cliente@empresa.test" } });
   const mod = await import(new URL("../src/worker.js?t=relpdf" + Math.random(), import.meta.url).href);
-  const rodar = async () => { await mod.default.scheduled({}, p.env, { waitUntil: pr => pr }); await new Promise(r => setTimeout(r, 50)); };
+  const rodar = async () => { { const pend = []; await mod.default.scheduled({}, p.env, { waitUntil: pr => pend.push(pr) }); await Promise.all(pend); } };
   const doCliente = () => p.emails.filter(e => e.to[0] === "cliente@empresa.test");
   p.env.__agora = () => Date.parse("2026-11-02T12:00:00Z"); await rodar();
   assert.equal(doCliente().length, 0, "dia 2: não é dia de mandar");
@@ -3697,7 +3696,7 @@ test("Post agendado sem aprovação — no horário a DENIA avisa em Problemas q
   await p.req(`/api/orgs/1/mk/posts/${id}/acao`, { metodo: "POST", quem: "admin", corpo: { acao: "enviar" } });
   p.env.DB.prepare("UPDATE plt_mk_posts SET status='AGUARDANDO' WHERE id=?").bind(id).run();
   const mod = await import("../src/worker.js");
-  await mod.default.scheduled({}, p.env, { waitUntil: pr => pr });
+  { const pend = []; await mod.default.scheduled({}, p.env, { waitUntil: pr => pend.push(pr) }); await Promise.all(pend); }
   await new Promise(r => setTimeout(r, 50));
   const pb = p.env.DB.q("SELECT titulo, motivo FROM plt_problemas WHERE chave=?", `post_${id}`)[0];
   assert.ok(pb, "registrou o problema");
@@ -3809,13 +3808,13 @@ test("Vigia de recebimento — empresa que recebe todo dia e para de receber ger
     p.env.DB.prepare("INSERT INTO plt_zap_msgs(org_id,telefone,direcao,origem,texto,criado_ms) VALUES(?,?, 'E','CLIENTE','oi',?)").bind(inf, "55219" + d + i, agora - d * 86400000 + i * 3600000).run();
   p.env.__agora = () => agora + 12 * 3600000; // 12 h sem nada depois da última
   const mod = await import("../src/worker.js");
-  await mod.default.scheduled({}, p.env, { waitUntil: pr => pr });
+  { const pend = []; await mod.default.scheduled({}, p.env, { waitUntil: pr => pend.push(pr) }); await Promise.all(pend); }
   await new Promise(r => setTimeout(r, 50));
   const pb = p.env.DB.q("SELECT titulo, resolvido_ms FROM plt_problemas WHERE org_id=? AND chave='recebimento_parado'", inf)[0];
   assert.ok(pb, "registrou o aviso"); assert.match(pb.titulo, /Nenhuma mensagem do WhatsApp chegou há/);
   assert.equal(p.env.DB.q("SELECT COUNT(*) n FROM plt_problemas WHERE org_id=1 AND chave='recebimento_parado'")[0].n, 0, "a outra empresa (sem movimento) não recebe aviso falso");
   p.env.DB.prepare("INSERT INTO plt_zap_msgs(org_id,telefone,direcao,origem,texto,criado_ms) VALUES(?, '5521900', 'E','CLIENTE','voltou', ?)").bind(inf, agora + 12 * 3600000 - 60000).run();
-  await mod.default.scheduled({}, p.env, { waitUntil: pr => pr });
+  { const pend = []; await mod.default.scheduled({}, p.env, { waitUntil: pr => pend.push(pr) }); await Promise.all(pend); }
   await new Promise(r => setTimeout(r, 50));
   assert.ok(p.env.DB.q("SELECT resolvido_ms FROM plt_problemas WHERE org_id=? AND chave='recebimento_parado'", inf)[0].resolvido_ms, "resolveu sozinho quando as mensagens voltaram");
   delete p.env.__agora;
@@ -4398,6 +4397,47 @@ test("Agenda — quem recebe no WhatsApp sem login: lista do dia (mesmo fora das
   assert.equal((await ag(`contatos/${c.dados.id}/testar`, { metodo: "POST", corpo: {} })).dados.via, "texto");
   assert.equal((await ag(`contatos/${c.dados.id}`, { metodo: "DELETE" })).status, 200);
   assert.equal(p.env.DB.q("SELECT COUNT(*) n FROM adm_agenda WHERE contato_id IS NOT NULL")[0].n, 0);
+  delete p.env.__agora;
+});
+
+test("Agenda profissional — secretária recebe o dia de todos (por pessoa) e os lembretes de todos; cada médico só o seu; conflito, busca e confirmado", async () => {
+  const { p, inf } = await duasEmpresasComChatbot();
+  const ag = (cam, op = {}) => p.req(`/api/orgs/${inf}/adm/${cam}`, { quem: "admin", ...op });
+  p.env.__agora = () => Date.parse("2099-10-20T10:00:00Z");
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  const SEC = "5521911112222", DRJ = "5521933334444", DRM = "5521955556666";
+  const sec = await ag("contatos", { metodo: "POST", corpo: { nome: "Carla secretária", telefone: "21 91111-2222" } });
+  assert.equal((await ag(`contatos/${sec.dados.id}`, { metodo: "PUT", corpo: { so_minhas: false, lembretes_todos: true } })).dados.lembretes_todos, 1);
+  const jo = await ag("contatos", { metodo: "POST", corpo: { nome: "Dr. João", telefone: "21 93333-4444" } });
+  const ma = await ag("contatos", { metodo: "POST", corpo: { nome: "Dra. Marina", telefone: "21 95555-6666" } });
+  // Conflito: dois compromissos do Dr. João no mesmo horário.
+  const c1 = await ag("agenda", { metodo: "POST", corpo: { titulo: "Consulta Paulo", data: "2099-10-20", hora: "09:00", duracao_min: 30, aviso_min: 30, contato_id: jo.dados.id, quem: "Paulo", quem_tel: "(21) 97777-1234", situacao: "CONFIRMADO" } });
+  assert.deepEqual(c1.dados.conflitos, []);
+  const c2 = await ag("agenda", { metodo: "POST", corpo: { titulo: "Retorno Ana", data: "2099-10-20", hora: "09:15", duracao_min: 30, contato_id: jo.dados.id } });
+  assert.equal(c2.dados.conflitos[0].titulo, "Consulta Paulo", "avisa o conflito ao salvar");
+  await ag("agenda", { metodo: "POST", corpo: { titulo: "Congresso", data: "2099-10-20", hora: "15:00", contato_id: ma.dados.id } });
+  await ag("agenda", { metodo: "POST", corpo: { titulo: "Pagar aluguel da sala", data: "2099-10-20" } });
+  const it = (await ag("agenda?de=2099-10-20&ate=2099-10-20")).dados.itens.find(x => x.titulo === "Consulta Paulo");
+  assert.equal(it.quem_tel, "21977771234"); assert.equal(it.situacao_atual, "CONFIRMADO"); assert.equal(it.duracao_min, 30);
+  assert.deepEqual((await ag("agenda?busca=paulo")).dados.itens.map(x => x.titulo), ["Consulta Paulo"], "a busca acha pelo nome de com quem");
+  // Manhã: a secretária recebe o dia de todos, por pessoa; cada médico só o seu.
+  const mod = await import("../src/worker.js");
+  const rodar = async () => { const pend = []; await mod.default.scheduled({}, p.env, { waitUntil: x => pend.push(x) }); await Promise.all(pend); };
+  p.env.__agora = () => Date.parse("2099-10-20T11:00:00Z"); // 08:00
+  let n0 = p.engine.enviados.length; await rodar();
+  const de = tel => p.engine.enviados.slice(n0).filter(e => e.to === tel).map(e => e.corpo?.template?.components?.[0]?.parameters?.map(x => x.text).join(" | ") || e.texto).join("\n");
+  assert.match(de(SEC), /Consulta Paulo/); assert.match(de(SEC), /Congresso/); assert.match(de(SEC), /Pagar aluguel/, "a secretária vê tudo, até o que não tem dono");
+  assert.match(de(DRJ), /Consulta Paulo/); assert.doesNotMatch(de(DRJ), /Congresso|aluguel/, "o Dr. João só vê o dele");
+  assert.match(de(DRM), /Congresso/); assert.doesNotMatch(de(DRM), /Paulo|aluguel/);
+  // Lembrete das 08:30 (30 min antes da consulta): para o Dr. João e para a secretária (lembretes de todos), não para a Dra. Marina.
+  p.env.__agora = () => Date.parse("2099-10-20T11:31:00Z");
+  n0 = p.engine.enviados.length; await rodar();
+  const lembrou = tel => p.engine.enviados.slice(n0).some(e => e.to === tel && /Consulta Paulo/.test(JSON.stringify(e)));
+  assert.ok(lembrou(DRJ)); assert.ok(lembrou(SEC), "a secretária também é lembrada"); assert.ok(!lembrou(DRM));
+  // A lista completa da secretária (janela aberta) mostra a agenda de cada pessoa.
+  const zap = async t => { const n = p.engine.enviados.length; await webhookAssinado(p, { object: "whatsapp_business_account", entry: [{ changes: [{ field: "messages", value: { metadata: { phone_number_id: "111111111111" }, contacts: [{ wa_id: SEC, profile: { name: "Carla" } }], messages: [{ id: "wamid." + Math.random().toString(36).slice(2), timestamp: String(Math.floor(p.env.__agora() / 1000)), from: SEC, type: "text", text: { body: t } }] } }] }] }); return p.engine.enviados.slice(n).filter(e => e.to === SEC).map(e => e.texto).join("\n"); };
+  const r = await zap("agenda");
+  assert.match(r, /Agenda de cada pessoa/); assert.match(r, /\*Dr\. João\*: 09:00 Consulta Paulo; 09:15 Retorno Ana/); assert.match(r, /\*Dra\. Marina\*: 15:00 Congresso/); assert.match(r, /Sem responsável\* ⚠️: Pagar aluguel da sala/);
   delete p.env.__agora;
 });
 

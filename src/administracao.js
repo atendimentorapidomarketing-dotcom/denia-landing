@@ -78,6 +78,8 @@ const ALTERS_ADMIN = ["ALTER TABLE adm_locatarios ADD COLUMN periodicidade TEXT"
     zap_lembretes INTEGER NOT NULL DEFAULT 1, zap_relatorios INTEGER NOT NULL DEFAULT 0, so_minhas INTEGER NOT NULL DEFAULT 1, ultimo_manha TEXT, ultimo_meio TEXT, ultimo_fim TEXT, criado_ms INTEGER)`,
   "CREATE INDEX IF NOT EXISTS adm_contatos_org ON adm_contatos(org_id)",
   "ALTER TABLE adm_agenda ADD COLUMN contato_id INTEGER", "ALTER TABLE adm_tarefas ADD COLUMN contato_id INTEGER",
+  // Agenda profissional: telefone de com quem é o compromisso (confirmar pelo WhatsApp) e quem recebe os lembretes de todos.
+  "ALTER TABLE adm_agenda ADD COLUMN quem_tel TEXT", "ALTER TABLE adm_pessoas ADD COLUMN lembretes_todos INTEGER NOT NULL DEFAULT 0", "ALTER TABLE adm_contatos ADD COLUMN lembretes_todos INTEGER NOT NULL DEFAULT 0",
   "CREATE TABLE IF NOT EXISTS adm_alarmes_ok (usuario_id INTEGER NOT NULL, chave TEXT NOT NULL, ms INTEGER, PRIMARY KEY (usuario_id, chave))"];
 
 const prontos = new WeakSet();
@@ -1074,13 +1076,18 @@ export async function rotasAdmin(request, env, k, orgId, papel, resto) {
       return { titulo: re(v.titulo, 160), data: v.data, hora: v.hora || null, duracao_min: inteiro(v.duracao_min, 5, 1440, 60), quem: re(v.quem, 60) || null, local: re(v.local, 120) || null,
         prioridade: prioridadeValida(v.prioridade), aviso_min: inteiro(v.aviso_min, 0, 10080, 60), repetir: repeticaoValida(v.repetir), obs: re(v.obs, 800) || null,
         responsavel_id: v.responsavel_id === undefined ? atual.responsavel_id ?? null : Number(v.responsavel_id) || null,
-        tipo: v.tipo === "LEMBRETE" ? "LEMBRETE" : "COMPROMISSO", categoria: categoriaValida(v.categoria), escopo: escopoValido(v.escopo), situacao: v.situacao === "EM_ANDAMENTO" ? "EM_ANDAMENTO" : null,
-        contato_id: c.contato_id === undefined ? atual.contato_id ?? null : Number(c.contato_id) || null };
+        tipo: v.tipo === "LEMBRETE" ? "LEMBRETE" : "COMPROMISSO", categoria: categoriaValida(v.categoria), escopo: escopoValido(v.escopo), situacao: ["EM_ANDAMENTO", "CONFIRMADO"].includes(v.situacao) ? v.situacao : null,
+        contato_id: c.contato_id === undefined ? atual.contato_id ?? null : Number(c.contato_id) || null,
+        quem_tel: String(v.quem_tel ?? "").replace(/\D/g, "").slice(0, 15) || null };
     };
     if (metodo === "GET" && !id1) {
       const de = dataValida(url.searchParams.get("de")) ? url.searchParams.get("de") : somarDias(hoje, -30), ate = dataValida(url.searchParams.get("ate")) ? url.searchParams.get("ate") : somarDias(hoje, 120);
       const minha = url.searchParams.get("minha") ? " AND a.responsavel_id=" + Number(k.sessao?.usuario?.id || 0) : "";
-      const itens = (await env.DB.prepare(`SELECT a.*, COALESCE(NULLIF(u.nome,''), u.email) AS responsavel_nome, ct.nome AS contato_nome FROM adm_agenda a LEFT JOIN plt_usuarios u ON u.id=a.responsavel_id LEFT JOIN adm_contatos ct ON ct.id=a.contato_id WHERE a.org_id=? AND ((a.data BETWEEN ? AND ?) OR (a.feito=0 AND a.data < ?))${minha} ORDER BY a.data, COALESCE(a.hora,'99:99') LIMIT 1500`).bind(orgId, de, ate, hoje).all()).results || [];
+      const busca = re(url.searchParams.get("busca"), 60);
+      // Busca em toda a agenda (passado e futuro): título, com quem, local, telefone e observações.
+      const filtro = busca ? ` AND (a.titulo LIKE ? OR a.quem LIKE ? OR a.local LIKE ? OR a.obs LIKE ? OR a.quem_tel LIKE ? OR u.nome LIKE ? OR ct.nome LIKE ?)` : ` AND ((a.data BETWEEN ? AND ?) OR (a.feito=0 AND a.data < ?))`;
+      const args = busca ? Array(7).fill(`%${busca.replace(/[%_]/g, "")}%`) : [de, ate, hoje];
+      const itens = (await env.DB.prepare(`SELECT a.*, COALESCE(NULLIF(u.nome,''), u.email) AS responsavel_nome, ct.nome AS contato_nome FROM adm_agenda a LEFT JOIN plt_usuarios u ON u.id=a.responsavel_id LEFT JOIN adm_contatos ct ON ct.id=a.contato_id WHERE a.org_id=?${filtro}${minha} ORDER BY a.data${busca ? " DESC" : ""}, COALESCE(a.hora,'99:99') LIMIT ${busca ? 200 : 1500}`).bind(orgId, ...args).all()).results || [];
       // Tarefas com prazo aparecem no calendário também.
       const tarefas = (await env.DB.prepare("SELECT id, titulo, prazo, feito FROM adm_tarefas WHERE org_id=? AND prazo BETWEEN ? AND ?").bind(orgId, de, ate).all()).results || [];
       return json({ itens: itens.map(a => ({ ...a, prioridade: prioridadeValida(a.prioridade), situacao_atual: situacaoDe(a, hoje) })), tarefas, hoje });
@@ -1099,10 +1106,10 @@ export async function rotasAdmin(request, env, k, orgId, papel, resto) {
       const v = validar(c); if (typeof v === "string") return json({ erro: v }, 400);
       v.responsavel_id = await responsavelValido(v.responsavel_id); v.contato_id = await contatoValido(v.contato_id);
       const id = await criarCompromisso(env, orgId, v, "painel", ms);
-      await env.DB.prepare("UPDATE adm_agenda SET tipo=?, categoria=?, escopo=?, situacao=?, criado_por=?, criado_por_id=?, contato_id=? WHERE id=?").bind(v.tipo, v.categoria, v.escopo, v.situacao, euP.nome, euP.id, v.contato_id, id).run();
+      await env.DB.prepare("UPDATE adm_agenda SET tipo=?, categoria=?, escopo=?, situacao=?, criado_por=?, criado_por_id=?, contato_id=?, quem_tel=? WHERE id=?").bind(v.tipo, v.categoria, v.escopo, v.situacao, euP.nome, euP.id, v.contato_id, v.quem_tel, id).run();
       await hist("AGENDA", id, "criou", v.titulo, `${br(v.data)}${v.hora ? " " + v.hora : ""}${v.prioridade !== "NORMAL" ? "; prioridade " + v.prioridade.toLowerCase() : ""}`);
       await avisarMudanca(env, k, orgId, { ...v, id }, "marcado", euP, ms);
-      return json({ ok: true, id }, 201);
+      return json({ ok: true, id, conflitos: await conflitosDe(env, orgId, { ...v, id }) }, 201);
     }
     if (id1) {
       const atual = await env.DB.prepare("SELECT * FROM adm_agenda WHERE id=? AND org_id=?").bind(id1, orgId).first();
@@ -1120,11 +1127,11 @@ export async function rotasAdmin(request, env, k, orgId, papel, resto) {
         if (c.tipo === undefined) v.tipo = atual.tipo || "COMPROMISSO"; if (c.categoria === undefined) v.categoria = atual.categoria; if (c.escopo === undefined) v.escopo = atual.escopo; if (c.situacao === undefined) v.situacao = atual.situacao;
         const adiou = v.data > atual.data || (v.data === atual.data && v.hora && atual.hora && v.hora > atual.hora);
         const mudouHora = v.data !== atual.data || v.hora !== atual.hora || Number(v.aviso_min) !== Number(atual.aviso_min);
-        await env.DB.prepare(`UPDATE adm_agenda SET titulo=?,data=?,hora=?,duracao_min=?,quem=?,local=?,prioridade=?,aviso_min=?,repetir=?,obs=?,responsavel_id=?,tipo=?,categoria=?,escopo=?,situacao=?,alterado_por=?,alterado_ms=?,adiado_n=adiado_n+?,contato_id=?${mudouHora ? ",avisado_ms=NULL,avisado_hora_ms=NULL" : ""} WHERE id=?`)
-          .bind(v.titulo, v.data, v.hora, v.duracao_min, v.quem, v.local, v.prioridade, v.aviso_min, v.repetir, v.obs, v.responsavel_id, v.tipo, v.categoria, v.escopo, v.situacao, euP.nome, ms, adiou ? 1 : 0, v.contato_id, id1).run();
+        await env.DB.prepare(`UPDATE adm_agenda SET titulo=?,data=?,hora=?,duracao_min=?,quem=?,local=?,prioridade=?,aviso_min=?,repetir=?,obs=?,responsavel_id=?,tipo=?,categoria=?,escopo=?,situacao=?,alterado_por=?,alterado_ms=?,adiado_n=adiado_n+?,contato_id=?,quem_tel=?${mudouHora ? ",avisado_ms=NULL,avisado_hora_ms=NULL" : ""} WHERE id=?`)
+          .bind(v.titulo, v.data, v.hora, v.duracao_min, v.quem, v.local, v.prioridade, v.aviso_min, v.repetir, v.obs, v.responsavel_id, v.tipo, v.categoria, v.escopo, v.situacao, euP.nome, ms, adiou ? 1 : 0, v.contato_id, c.quem_tel === undefined ? atual.quem_tel ?? null : v.quem_tel, id1).run();
         const dif = diferencas(atual, v, ["titulo", "data", "hora", "local", "prioridade", "responsavel_id", "contato_id", "aviso_min", "repetir", "tipo", "categoria", "escopo", "situacao"]);
-        if (dif) { await hist("AGENDA", id1, adiou ? "adiou" : v.situacao === "EM_ANDAMENTO" && atual.situacao !== "EM_ANDAMENTO" ? "iniciou" : "alterou", v.titulo, dif); await avisarMudanca(env, k, orgId, { ...v, id: id1 }, adiou ? "adiado" : "alterado", euP, ms); }
-        return json({ ok: true });
+        if (dif) { await hist("AGENDA", id1, adiou ? "adiou" : v.situacao === "EM_ANDAMENTO" && atual.situacao !== "EM_ANDAMENTO" ? "iniciou" : v.situacao === "CONFIRMADO" && atual.situacao !== "CONFIRMADO" ? "confirmou" : "alterou", v.titulo, dif); await avisarMudanca(env, k, orgId, { ...v, id: id1 }, adiou ? "adiado" : "alterado", euP, ms); }
+        return json({ ok: true, conflitos: await conflitosDe(env, orgId, { ...v, id: id1 }) });
       }
       if (metodo === "DELETE") { await env.DB.prepare("DELETE FROM adm_agenda WHERE id=? AND org_id=?").bind(id1, orgId).run(); await hist("AGENDA", id1, "excluiu", atual.titulo, `era ${br(atual.data)}${atual.hora ? " " + atual.hora : ""}`); await avisarMudanca(env, k, orgId, atual, "cancelado", euP, ms); return json({ ok: true }); }
     }
@@ -1596,4 +1603,14 @@ export async function consolidadoAdmin(env, orgs, mes, agoraMs) {
     } catch (e) { out.push({ id: o.id, nome: o.nome, erro: "Não foi possível ler os números desta empresa." }); }
   }
   return out;
+}
+
+// Horário em conflito: outro compromisso da mesma pessoa (responsável ou contato) que se sobrepõe no mesmo dia.
+export async function conflitosDe(env, orgId, v) {
+  if (!v.hora || (!v.responsavel_id && !v.contato_id)) return [];
+  const min = h => { const [a, b] = String(h).split(":").map(Number); return a * 60 + b; };
+  const ini = min(v.hora), fim = ini + (Number(v.duracao_min) || 60);
+  const outros = (await env.DB.prepare("SELECT id, titulo, hora, duracao_min FROM adm_agenda WHERE org_id=? AND data=? AND hora IS NOT NULL AND feito=0 AND id<>? AND ((? IS NOT NULL AND responsavel_id=?) OR (? IS NOT NULL AND contato_id=?))")
+    .bind(orgId, v.data, v.id || 0, v.responsavel_id || null, v.responsavel_id || null, v.contato_id || null, v.contato_id || null).all().catch(() => null))?.results || [];
+  return outros.filter(o => { const i = min(o.hora), f = i + (Number(o.duracao_min) || 60); return i < fim && ini < f; }).map(o => ({ id: o.id, titulo: o.titulo, hora: o.hora }));
 }
