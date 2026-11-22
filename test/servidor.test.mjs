@@ -223,3 +223,48 @@ test("Servidor Node — webhook do WhatsApp: cada número vai para quem cuida de
     db.close(); dbIa.close();
   } finally { await s.parar(); rmSync(pasta, { recursive: true, force: true }); }
 });
+
+test("Servidor Node — agenda pelo WhatsApp da própria IA (Central): lista do dia sai pelo número da oficina e mensagem marca compromisso", async () => {
+  const pasta = mkdtempSync(path.join(os.tmpdir(), "denia-srv-"));
+  const original = globalThis.fetch, enviados = [];
+  globalThis.fetch = async (url, op = {}) => {
+    if (String(url).startsWith("https://graph.facebook.com/")) {
+      try { enviados.push(JSON.parse(op.body)); } catch { enviados.push(op.body); }
+      return new Response(JSON.stringify({ messages: [{ id: "wamid.x" + enviados.length }] }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    return original(url, op);
+  };
+  const s = await iniciar({ env: base({ DENIA_DADOS: pasta, WHATSAPP_PHONE_NUMBER_ID: "111000111", WHATSAPP_TOKEN: "tk-teste", ENGINE_JANELA_AGRUPAMENTO_MS: "0" }), porta: 0, ip: "127.0.0.1", semRelogio: true, silencioso: true });
+  try {
+    const req = cliente(s.porta);
+    assert.equal((await req("/api/entrar", { metodo: "POST", corpo: { email: "dono@teste.com", senha: SENHA } })).status, 200);
+    const z = await req("/api/orgs/1/adm/zap");
+    assert.equal(z.status, 200, z.texto);
+    assert.ok(z.dados.opcoes.some(c => c.org_id === 1), "o número da IA aparece como conta da agenda");
+    const c = await req("/api/orgs/1/adm/contatos", { metodo: "POST", corpo: { nome: "João mecânico", telefone: "(21) 98888-9162" } });
+    assert.equal(c.status, 201, c.texto);
+    // Ele escreve para o número da oficina (a IA): vira compromisso, sem passar pelo atendimento.
+    const msg = texto => ({ object: "whatsapp_business_account", entry: [{ changes: [{ field: "messages", value: { metadata: { phone_number_id: "111000111" }, contacts: [{ wa_id: "5521988889162", profile: { name: "João" } }], messages: [{ id: "wamid." + Math.random().toString(36).slice(2), from: "5521988889162", timestamp: String(Math.floor(Date.now() / 1000)), type: "text", text: { body: texto } }] } }] }] });
+    assert.equal((await req("/ia/webhook", { metodo: "POST", corpo: msg("dentista amanhã às 15h") })).status, 200);
+    const db = new DatabaseSync(path.join(pasta, "denia.db"));
+    let ag = null;
+    for (let i = 0; i < 80 && !ag; i++) { await new Promise(r => setTimeout(r, 100)); await req("/__denia/tique?chave=" + CHAVE); try { ag = db.prepare("SELECT * FROM adm_agenda WHERE org_id=1").get(); } catch { ag = null; } }
+    assert.ok(ag, "o compromisso entrou na agenda");
+    assert.match(ag.titulo, /dentista/i);
+    assert.equal(ag.hora, "15:00");
+    for (let i = 0; i < 40 && !enviados.some(e => e && e.to && /dentista/i.test(JSON.stringify(e))); i++) await new Promise(r => setTimeout(r, 50));
+    assert.ok(enviados.some(e => e && /88889162/.test(e.to || "") && /C\d+/.test(JSON.stringify(e))), "a confirmação sai pelo número da oficina");
+    // Envio direto pela ponte (lista do dia / lembrete) também sai pelo número da IA.
+    const antes = enviados.length;
+    const t = await req("/api/orgs/1/adm/zap/testar", { metodo: "POST", corpo: { contato_id: c.dados.id } });
+    assert.ok([200, 201].includes(t.status), t.texto);
+    assert.ok(enviados.length > antes, "o teste da agenda saiu pelo número da IA");
+    // Tirar da agenda pelo WhatsApp.
+    assert.equal((await req("/ia/webhook", { metodo: "POST", corpo: msg("cancelar C" + ag.id) })).status, 200);
+    let some = false;
+    for (let i = 0; i < 80 && !some; i++) { await new Promise(r => setTimeout(r, 100)); some = !db.prepare("SELECT 1 FROM adm_agenda WHERE id=?").get(ag.id); }
+    assert.ok(some, "CANCELAR tira o compromisso da agenda");
+    assert.equal(db.prepare("SELECT COUNT(*) n FROM adm_historico WHERE org_id=1 AND acao='excluiu'").get().n, 1);
+    db.close();
+  } finally { globalThis.fetch = original; await s.parar(); rmSync(pasta, { recursive: true, force: true }); }
+});

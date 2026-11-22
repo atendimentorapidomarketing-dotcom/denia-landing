@@ -164,6 +164,8 @@ export async function iniciar(op = {}) {
     ENGINE: { fetch: (req, init) => engine.fetch(req instanceof Request && !init ? req : new Request(req, init), envEngine, contexto()) },
     ...(op.extrasPlataforma || {})
   };
+  // A IA do atendimento fala com a plataforma por dentro (agenda pelo WhatsApp do número da IA).
+  envEngine.PLATAFORMA = { fetch: (req, init) => plataforma.fetch(req instanceof Request && !init ? req : new Request(req, init), envPlataforma, contexto()) };
 
   // Tarefas automáticas: IA do WhatsApp a cada minuto, plataforma a cada 5 minutos (como na Cloudflare).
   const desligadas = /^(desligadas|0|false|nao|não)$/i.test(ambiente.DENIA_TAREFAS || "");

@@ -3591,6 +3591,12 @@ async function processarLote(c, tel, itens) {
   // para ela sai depois (com a data), e só se ainda fizer sentido.
   if (!opts.apenasRegistrar) await abrirJanela(c, tel).catch(e => console.warn("janela", e?.message));
   const id = await identificar(c, tel);
+  // Pessoa cadastrada na agenda da plataforma (equipe ou contato): AGENDA, MARCAR, FEITO… viram agenda, não atendimento.
+  // Profissional com atendimento aberto só vai para a agenda com um comando explícito (senão "amanhã às 10h" dele é resposta ao cliente).
+  const textoAg = msgs.map(m => String(m.texto || "").trim()).join(" ");
+  const comandoExplicito = /^\s*[/!]?(agenda|hoje|amanh[aã]|semana|pend[eê]ncias?|marcar|agendar|lembrar|lembrete|me lembr|tarefa|anotar|comprar|repor|feito|conclu[ií]d|iniciar|adiar|cancelar|remover|apagar|tirar|desmarcar|pago|paguei|recebido|recebi|contas|empresa|ajuda|menu|comandos)\b/i.test(textoAg);
+  const ehProfissionalOcupado = id.papel === "PRESTADOR" && (await consultasAbertasPrestador(c, tel).catch(() => [])).length > 0;
+  if (!opts.apenasRegistrar && c.env.PLATAFORMA && (!ehProfissionalOcupado || comandoExplicito) && msgs.every(m => !m.mediaId) && await comandoDaAgenda(c, tel, id, msgs).catch(e => { console.warn("agenda pela plataforma", e?.message); return false; })) return;
   try { return await processarLoteIdentificado(c, tel, id, msgs, opts); }
   finally { if (!opts.apenasRegistrar) await entregarGuardadas(c, tel, { soDescartar: await estaPausado(c, tel).catch(() => true) }).catch(e => console.warn("guardadas", e?.message)); }
 }
@@ -3611,6 +3617,21 @@ async function processarLoteIdentificado(c, tel, id, msgs, opts) {
     return;
   }
   return processarCliente(c, tel, id, msgs, opts);
+}
+// A plataforma decide se é um comando da agenda (só para números cadastrados lá) e devolve as respostas.
+async function comandoDaAgenda(c, tel, id, msgs) {
+  const texto = msgs.map(m => String(m.texto || m.conteudo || "").trim()).filter(Boolean).join("\n").slice(0, 600);
+  if (!texto) return false;
+  const token = String(c.env.DENIA_PLATFORM_SERVICE_TOKEN || "");
+  if (token.length < 16) return false;
+  const r = await c.env.PLATAFORMA.fetch(new Request("https://plataforma.interna/api/agenda/zap-comando", { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "x-denia": "1" }, body: JSON.stringify({ telefone: tel, texto }) }));
+  const d = await r.json().catch(() => null);
+  if (!d?.tratado) return false;
+  const pessoa = id.pessoa || await obterPessoa(c, tel, msgs.map(m => m.nome).filter(Boolean).pop() || "", "ATENDENTE").catch(() => null);
+  for (const m of msgs) await registrarMensagem(c, { pessoaId: pessoa?.id, wamid: m.wamid, direcao: "ENTRADA", origem: "WHATSAPP", tipo: String(m.tipo || "text").toUpperCase(), conteudo: m.conteudo || m.texto || "" });
+  for (const t of (d.respostas || []).slice(0, 4)) { const s0 = await c.saida.texto(tel, String(t).slice(0, 3900), { papel: "EQUIPE" }); if (s0.ok) await registrarMensagem(c, { pessoaId: pessoa?.id, wamid: s0.id, direcao: "SAIDA", origem: "SISTEMA", conteudo: String(t).slice(0, 3900) }); }
+  await evento(c, null, "AGENDA_WHATSAPP", `${tel}: comando da agenda — ${txt(texto, 120)}`).catch(() => { });
+  return true;
 }
 async function casoDeOutroComProfissional(c, tel, msgs) {
   const texto = msgs.map(m => m.conteudo || m.texto || "").join("\n");
@@ -4584,6 +4605,49 @@ async function platformApi(request, env, caminho, metodo) {
     }
     try { const m = await metaBaixarMidia(c.env, x.media_id); return json({ sucesso: true, mime: m.mime, base64: base64(m.buffer) }); }
     catch (e) { return json({ sucesso: false, erro: "O WhatsApp não liberou mais esta foto (fotos ficam disponíveis por cerca de 30 dias)." }, 410); }
+  }
+  // Agenda da plataforma pelo número da IA (ex.: o número da oficina): a lista do dia, os lembretes e as respostas.
+  // Janela de 24 h aberta (a pessoa escreveu nas últimas 24 h): texto completo. Fechada: o modelo aprovado.
+  if (caminho === "/platform/agenda/enviar" && metodo === "POST") {
+    const tel = digitos(corpo?.telefone), texto = String(corpo?.texto || "").slice(0, 3900);
+    if (tel.length < 10 || !texto) return json({ sucesso: false, erro: "Telefone ou texto inválido." }, 400);
+    const pessoa = await buscarPessoa(c, tel).catch(() => null);
+    const ult = pessoa ? await c.db.prepare("SELECT MAX(criado_em) em FROM mensagens WHERE empresa_id=? AND pessoa_id=? AND UPPER(direcao)='ENTRADA'").bind(EMPRESA_ID, pessoa.id).first().catch(() => null) : null;
+    const entradaMs = ult?.em ? Date.parse(String(ult.em).replace(" ", "T") + "Z") : 0;
+    if (entradaMs && c.agora() - entradaMs < 23.5 * 3600000) {
+      const partes = texto.split(/\n(?=\n)/).reduce((l, par) => { if (l.length && (l[l.length - 1] + par).length < 3800) l[l.length - 1] += par; else l.push(par); return l; }, []);
+      let ok = false;
+      for (const parte of partes.slice(0, 4)) { const r = await c.saida.texto(tel, parte.trim(), { papel: "EQUIPE" }); if (r.ok) { ok = true; await registrarMensagem(c, { pessoaId: pessoa?.id, wamid: r.id, direcao: "SAIDA", origem: "SISTEMA", conteudo: parte.trim() }); } }
+      if (ok) return json({ sucesso: true, via: "texto" });
+    }
+    const m0 = corpo?.modelo;
+    if (m0?.nome && /^[a-z0-9_]{1,512}$/.test(m0.nome)) {
+      const params = (Array.isArray(m0.params) ? m0.params : []).map(x => txt(String(x ?? "-").replace(/[\r\n\t]+/g, " "), 700) || "-");
+      const r = await c.saida.template(tel, m0.nome, params, { papel: "EQUIPE" });
+      if (r.ok) { await registrarMensagem(c, { pessoaId: pessoa?.id, wamid: r.id, direcao: "SAIDA", origem: "SISTEMA", conteudo: `[modelo ${m0.nome}] ${params.join(" · ")}` }); return json({ sucesso: true, via: "modelo" }); }
+      return json({ sucesso: false, erro: r.erro || "A Meta recusou o modelo (ainda não aprovado?)." }, 502);
+    }
+    return json({ sucesso: false, erro: "A pessoa não escreveu nas últimas 24 h e não há modelo aprovado." }, 409);
+  }
+  // Modelos da agenda na conta do WhatsApp da IA (precisa de WHATSAPP_WABA_ID no motor).
+  if (caminho === "/platform/agenda/modelos" && (metodo === "GET" || metodo === "POST")) {
+    const waba = String(env.WHATSAPP_WABA_ID || "").trim(), token = String(env.WHATSAPP_TOKEN || "").trim();
+    if (!waba || !token) return json({ sucesso: false, erro: "Falta a variável WHATSAPP_WABA_ID (ID da conta do WhatsApp Business) no motor da IA para criar os modelos. Sem ela, a agenda sai como texto para quem escreveu nas últimas 24 h." }, 409);
+    const q0 = new URL(request.url).searchParams;
+    const lista = metodo === "POST" ? corpo?.modelos || [] : JSON.parse(q0.get("modelos") || "[]");
+    const g = async (met, cam, b) => { const r = await fetch(`https://graph.facebook.com/${GRAPH}/${cam}`, { method: met, headers: { authorization: `Bearer ${token}`, ...(b ? { "content-type": "application/json" } : {}) }, body: b ? JSON.stringify(b) : undefined, signal: AbortSignal.timeout(20000) }); const d = await r.json().catch(() => ({})); if (!r.ok) throw new Error(d?.error?.error_user_msg || d?.error?.message || `HTTP ${r.status}`); return d; };
+    try {
+      const ja = (await g("GET", `${encodeURIComponent(waba)}/message_templates?fields=name,status,language,rejected_reason&limit=250`)).data || [];
+      const out = [];
+      for (const m0 of (Array.isArray(lista) ? lista : []).slice(0, 5)) {
+        const t = ja.find(x => x.name === m0.nome && x.language === "pt_BR");
+        if (t) { out.push({ nome: m0.nome, status: t.status, motivo: t.rejected_reason && t.rejected_reason !== "NONE" ? t.rejected_reason : null, texto: m0.texto }); continue; }
+        if (metodo !== "POST") { out.push({ nome: m0.nome, status: "NAO_CRIADO", texto: m0.texto }); continue; }
+        try { const d = await g("POST", `${encodeURIComponent(waba)}/message_templates`, { name: m0.nome, category: "UTILITY", language: "pt_BR", components: [{ type: "BODY", text: m0.texto, example: { body_text: [m0.exemplos] } }] }); out.push({ nome: m0.nome, status: d.status || "PENDING", texto: m0.texto }); }
+        catch (e) { out.push({ nome: m0.nome, status: "ERRO", motivo: txt(e.message, 200), texto: m0.texto }); }
+      }
+      return json({ sucesso: true, modelos: out });
+    } catch (e) { return json({ sucesso: false, erro: "Meta: " + txt(e.message, 200) }, 502); }
   }
   // Ordens de serviço para o financeiro da plataforma: atendimento, cliente, profissional, valores, comprovantes.
   if (caminho === "/platform/os" && metodo === "GET") {

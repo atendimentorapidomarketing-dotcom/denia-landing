@@ -435,6 +435,31 @@ export async function comandoEquipeZap(env, k, contaOrg, tel, texto, responder) 
     const r = await confirmarConta(env, p.org_id, id, quem(p), ms, "whatsapp");
     await responder(r.erro || (r.ja ? `${r.l.descricao} já estava confirmado.` : `✅ ${r.l.tipo === "ENTRADA" ? "Recebimento" : "Pagamento"} confirmado: ${r.l.descricao} — ${dinheiro(r.l.valor_cent, await moedaDe(p.org_id))} (por ${p.nome}, ${quando(ms)}).`)); return true;
   }
+  // Tirar da agenda: CANCELAR C12 / REMOVER T5 / APAGAR C12.
+  if ((m = /^(cancelar|cancela|remover|remove|apagar|apaga|tirar|tira|excluir|exclui|desmarcar|desmarca)\s*([ct])\s*(\d+)$/.exec(t))) {
+    const letra = m[2].toUpperCase(), id = Number(m[3]), p = await pessoaDoCodigo(letra, id);
+    if (!p) { await responder(`Não encontrei ${letra}${id}.`); return true; }
+    const tabela = letra === "C" ? "adm_agenda" : "adm_tarefas";
+    const item = await env.DB.prepare(`SELECT * FROM ${tabela} WHERE id=? AND org_id=?`).bind(id, p.org_id).first();
+    if (!item) { await responder(`Não encontrei ${letra}${id}.`); return true; }
+    if (item.origem === "google") { await responder("Este compromisso vem do Google Agenda: apague por lá (a DENIA atualiza sozinha)."); return true; }
+    await env.DB.prepare(`DELETE FROM ${tabela} WHERE id=?`).bind(id).run();
+    await registrarHistorico(env, p.org_id, letra === "C" ? "AGENDA" : "TAREFA", id, "excluiu", item.titulo, `pelo WhatsApp${item.data || item.prazo ? " — era " + br(item.data || item.prazo) : ""}`, quem(p), ms, "whatsapp");
+    await responder(`🗑️ Tirei da agenda: ${item.titulo}${item.data ? ` (${nomeDia(item.data, hoje)}${item.hora ? " " + item.hora : ""})` : ""}.`); return true;
+  }
+  // Sem comando: se a mensagem tem dia (e/ou hora) de algo a fazer, já vira compromisso — "dentista amanhã às 15h".
+  if (!/\?\s*$/.test(bruto) && bruto.length <= 200) {
+    const v = interpretarCompromisso(bruto, hoje);
+    const temQuando = !v.erro && v.data && (v.hora || /\b(hoje|amanha|depois de amanha|segunda|terca|quarta|quinta|sexta|sabado|domingo|dia \d{1,2}|\d{1,2}\/\d{1,2})\b/.test(t));
+    if (temQuando && v.titulo && v.titulo.length >= 3 && !/^(ok|sim|nao|obrigad|bom dia|boa tarde|boa noite)/.test(semAcento(v.titulo).toLowerCase())) {
+      const r = await compromissoPorTexto(env, atual.org_id, bruto, ms, "whatsapp");
+      if (r.ok) {
+        await env.DB.prepare("UPDATE adm_agenda SET responsavel_id=?, contato_id=?, criado_por=?, criado_por_id=? WHERE id=?").bind(atual.usuario_id || null, atual.contato_id || null, atual.nome, atual.usuario_id || null, r.id).run();
+        await registrarHistorico(env, atual.org_id, "AGENDA", r.id, "criou", r.titulo, `${br(r.data)}${r.hora ? " " + r.hora : ""}`, quem(atual), ms, "whatsapp");
+        await responder(`✅ ${r.frase} [C${r.id}]\nPara tirar: CANCELAR C${r.id} · Para ver o dia: AGENDA`); return true;
+      }
+    }
+  }
   return false;
 }
 async function textoPendencias(env, pessoas, hoje, admin, moedaDe, titulo = "📌 *Pendências*") {
@@ -890,6 +915,8 @@ export async function rotasAgendaEquipe(request, env, k, orgId, papel, partes, a
       // Números de WhatsApp que esta pessoa administra (a própria empresa ou outra das suas empresas).
       const opcoes = await q(eu.super_admin ? "SELECT z.org_id, o.nome, z.numero, z.nome_verificado FROM plt_zap_contas z JOIN plt_organizacoes o ON o.id=z.org_id WHERE z.phone_number_id IS NOT NULL AND z.token_cifrado IS NOT NULL AND z.ativo=1 AND o.status='ATIVA'"
         : "SELECT z.org_id, o.nome, z.numero, z.nome_verificado FROM plt_zap_contas z JOIN plt_organizacoes o ON o.id=z.org_id JOIN plt_membros m ON m.org_id=z.org_id AND m.usuario_id=? AND m.papel IN ('OWNER','ADMIN') WHERE z.phone_number_id IS NOT NULL AND z.token_cifrado IS NOT NULL AND z.ativo=1 AND o.status='ATIVA'", ...(eu.super_admin ? [] : [eu.id])).catch(() => []);
+      // Número atendido pela IA da empresa (ex.: a oficina da Central): a agenda sai por ele.
+      if (k.numeroDaIA && await k.numeroDaIA(orgId).catch(() => false) && !opcoes.some(o0 => o0.org_id === orgId)) opcoes.unshift({ org_id: orgId, nome: "WhatsApp do atendimento com IA desta empresa", numero: "" });
       let modelos = null;
       if (k.modelosAgendaZap && opcoes.some(o => o.org_id === contaOrg)) modelos = await k.modelosAgendaZap(contaOrg, false).catch(e => ({ erro: e.message }));
       return json({ conta_org: opcoes.some(o => o.org_id === contaOrg) ? contaOrg : null, opcoes, modelos, config: { hora_resumo: cfg.hora_resumo ?? 8, hora_meio: cfg.hora_meio ?? 12, hora_fim: cfg.hora_fim ?? 18, transferir: cfg.transferir ?? 1, aviso_fin_dias: cfg.aviso_fin_dias ?? 2, relatorio_meio: cfg.relatorio_meio ?? 1, relatorio_fim: cfg.relatorio_fim ?? 1 } });
@@ -913,9 +940,14 @@ export async function rotasAgendaEquipe(request, env, k, orgId, papel, partes, a
       return r.erro ? json(r, 502) : json(r);
     }
     if (partes[1] === "testar" && metodo === "POST") {
-      const p = await env.DB.prepare("SELECT * FROM adm_pessoas WHERE org_id=? AND usuario_id=? AND telefone IS NOT NULL").bind(orgId, eu.id).first();
-      if (!p) return json({ erro: "Cadastre primeiro o seu WhatsApp na lista da equipe." }, 400);
-      const d = await itensDoDia(env, orgId, hoje, hoje, { pessoaId: eu.id, soMinhas: Boolean(p.so_minhas), fin: admin, finDias: Number(cfg.aviso_fin_dias ?? 2) });
+      // Testa para quem recebe sem login (contato_id) ou para o próprio usuário.
+      const { c: ct } = await corpo().catch(() => ({ c: {} }));
+      const cid = Number(ct?.contato_id) || 0;
+      if (cid && !admin) return json({ erro: "Só o dono e os administradores testam para outra pessoa." }, 403);
+      const p = cid ? await env.DB.prepare("SELECT * FROM adm_contatos WHERE org_id=? AND id=? AND ativo=1").bind(orgId, cid).first()
+        : await env.DB.prepare("SELECT * FROM adm_pessoas WHERE org_id=? AND usuario_id=? AND telefone IS NOT NULL").bind(orgId, eu.id).first();
+      if (!p) return json({ erro: cid ? "Contato não encontrado." : "Cadastre primeiro o seu WhatsApp na lista da equipe." }, 400);
+      const d = await itensDoDia(env, orgId, hoje, hoje, cid ? { contatoId: cid, soMinhas: Boolean(p.so_minhas), fin: false } : { pessoaId: eu.id, soMinhas: Boolean(p.so_minhas), fin: admin, finDias: Number(cfg.aviso_fin_dias ?? 2) });
       const moeda = (await env.DB.prepare("SELECT moeda FROM fin_config WHERE org_id=?").bind(orgId).first().catch(() => null))?.moeda || "BRL";
       const via = k.zapEquipe ? await k.zapEquipe(contaOrg, p.telefone, textoDoDiaEquipe(d, { moeda, hoje }), { nome: MODELO_RESUMO, idioma: "pt_BR", params: [`hoje, ${br(hoje)}`, listaCurta(d)] }).catch(() => "") : "";
       if (!via) return json({ erro: "Não consegui enviar. Se você nunca escreveu para este número, mande um “oi” para ele pelo WhatsApp (abre a janela de 24 horas) ou aguarde a Meta aprovar os modelos." }, 502);

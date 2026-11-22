@@ -30,13 +30,13 @@ import { rotasFinanceiro, financeiroDoCron } from "./financeiro.js";
 import { rotasApresentacao } from "./apresentacao.js";
 import { rotasAdmin, adminDoCron, icalAdmin, consolidadoAdmin, agendaGeral, agendaEmTexto } from "./administracao.js";
 import { DDL_PROBLEMAS, rotasProblemas, registrarProblema, resolverProblema, limparProblemas } from "./problemas.js";
-import { DDL_ZAP, webhookZap, rotasZap, webhookTelegram, segredoTelegram, tokenTelegramPlataforma, processarCampanhas, posVendaChatbot, lembrarAgenda, brutoRelatorioZap, avisarTelegramDaEmpresa , enviarModeloZap, zapEquipe, modelosAgendaZap } from "./zap.js";
-import { publicoCelular } from "./agendaequipe.js";
+import { DDL_ZAP, webhookZap, rotasZap, webhookTelegram, segredoTelegram, tokenTelegramPlataforma, processarCampanhas, posVendaChatbot, lembrarAgenda, brutoRelatorioZap, avisarTelegramDaEmpresa , enviarModeloZap, zapEquipe, modelosAgendaZap, MODELOS_AGENDA } from "./zap.js";
+import { publicoCelular, comandoEquipeZap } from "./agendaequipe.js";
 import { rotasOS, osDoCron } from "./ordens.js";
 import { montarRelatorio, planilhaRelatorio, textoRelatorio, base64, ultimos7Dias, lerConfigRelatorio, horaDeEnviar, diaBR, dataBR, DIAS_SEMANA, inicioDoDia as inicioDoDiaBR } from "./relatorio.js";
 import { lerPlanos, acessoDa, recursoDaRota, planoMinimo, rotasPlano, webhookAsaas, lembretesDePlano, TESTE_DIAS, STATUS as STATUS_PLANO, PLANOS_PADRAO, RECURSOS } from "./planos.js";
 
-const VERSAO = "3.44.1";
+const VERSAO = "3.45.0";
 // Versão dos Termos de uso e da Política de privacidade aceitas no cadastro.
 const VERSAO_TERMOS = "2026-10-16";
 // WhatsApp da Central de Atendimento (botão flutuante do site).
@@ -696,6 +696,49 @@ async function proxyEngine(request, env, sessao, orgId, papel, caminho) {
   }
 }
 
+// Agenda pelo WhatsApp do número da IA: só aceita quem tem o token da ligação com a IA de alguma empresa.
+async function agendaPelaIA(request, env) {
+  await garantirSchema(env);
+  const token = String(request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
+  const { corpo } = await lerCorpo(request, 4000);
+  const tel = String(corpo?.telefone || "").replace(/\D/g, ""), texto = String(corpo?.texto || "");
+  if (token.length < 16 || !tel || !texto) return json({ tratado: false }, 400);
+  const orgs = (await env.DB.prepare("SELECT id FROM plt_organizacoes WHERE status='ATIVA' ORDER BY id LIMIT 50").all()).results || [];
+  const kz = await kitZap(env);
+  let autorizado = false;
+  for (const o of orgs) {
+    const con = await conexaoDa(env, o.id);
+    if (!con || !iguaisSeguro(con.token || "", token)) continue;
+    autorizado = true;
+    const respostas = [];
+    const r = await comandoEquipeZap(env, { ...kz, ...kitAgendaZap(env, kz) }, o.id, tel, texto, async t => { respostas.push(String(t)); return true; }).catch(e => { console.error("agenda pela IA", e?.message); return false; });
+    if (r) return json({ tratado: true, respostas });
+  }
+  return json({ tratado: false }, autorizado ? 200 : 401);
+}
+// Envio da agenda pelo WhatsApp da empresa: o chatbot da plataforma, ou — quando o número é atendido pela IA
+// (ex.: a oficina da Central) — pelo próprio motor da IA.
+function kitAgendaZap(env, kz) {
+  const temChatbot = async o => Boolean(await env.DB.prepare("SELECT 1 FROM plt_zap_contas WHERE org_id=? AND phone_number_id IS NOT NULL AND token_cifrado IS NOT NULL AND ativo=1").bind(o).first().catch(() => null));
+  return {
+    zapEquipe: async (o, tel, t, m) => {
+      if (await temChatbot(o)) return zapEquipe(env, kz, o, tel, t, m);
+      const con = await conexaoDa(env, o);
+      if (!con) return "";
+      const r = await chamarEngine(con, "POST", "agenda/enviar", { telefone: tel, texto: t, modelo: m || null }).catch(() => null);
+      return r?.dados?.sucesso ? r.dados.via : "";
+    },
+    modelosAgendaZap: async (o, criar) => {
+      if (await temChatbot(o)) return modelosAgendaZap(env, kz, o, criar);
+      const con = await conexaoDa(env, o);
+      if (!con) return { erro: "Esta empresa não tem WhatsApp conectado." };
+      const lista = MODELOS_AGENDA.map(x => ({ nome: x.nome, texto: x.texto, exemplos: x.exemplos }));
+      const r = criar ? await chamarEngine(con, "POST", "agenda/modelos", { modelos: lista }).catch(() => null) : await chamarEngine(con, "GET", "agenda/modelos", null, { modelos: JSON.stringify(lista) }).catch(() => null);
+      return r?.dados?.sucesso ? { modelos: r.dados.modelos } : { erro: r?.dados?.erro || "Não consegui falar com a IA do atendimento." };
+    },
+    numeroDaIA: async o => !(await temChatbot(o)) && Boolean(await conexaoDa(env, o))
+  };
+}
 // Ligação com a IA do atendimento de uma empresa (ordens de serviço, financeiro da Central).
 function kitEngine(env) {
   return {
@@ -1079,7 +1122,7 @@ async function apiOrg(request, env, sessao, orgId, resto, ctx) {
   const kit = { ...kitBase(env), sessao, emSegundoPlano: tarefa => { const t = Promise.resolve().then(tarefa).catch(e => console.error("segundo plano", e?.message)); if (ctx && ctx.waitUntil) ctx.waitUntil(t); return t; } };
   if (resto === "tp" || resto.startsWith("tp/")) return rotasTemporada(request, env, { ...(await kitZap(env, new URL(request.url).origin)), sessao, superAdmin: Boolean(sessao.usuario.super_admin), openai: openaiBruto, acesso: sessao.usuario.super_admin ? { ...acesso, limites: { ...acesso.limites, imoveis: 0 } } : acesso, avisar: async (o, texto) => { for (const para of await responsaveisDa(env, o)) await enviarEmail(env, para, "DENIA — hóspede precisa de você", texto); } }, orgId, papel, resto);
   if (resto === "apresentacao" || resto.startsWith("apresentacao/")) return (await rotasApresentacao(request, env, { ...kitBase(env), comIA, openai: openaiBruto }, orgId, resto)) || json({ erro: "Rota não encontrada." }, 404);
-  if (resto === "adm" || resto.startsWith("adm/")) { const kz = await kitZap(env); return rotasAdmin(request, env, { ...kitBase(env), sessao, enviarEmail: (para, assunto, texto, anexos) => enviarEmail(env, para, assunto, texto, anexos), emailConfigurado: () => emailConfigurado(env), zapEquipe: (o, tel, t, m) => zapEquipe(env, kz, o, tel, t, m), modelosAgendaZap: (o, criar) => modelosAgendaZap(env, kz, o, criar) }, orgId, papel, resto); }
+  if (resto === "adm" || resto.startsWith("adm/")) { const kz = await kitZap(env); return rotasAdmin(request, env, { ...kitBase(env), sessao, enviarEmail: (para, assunto, texto, anexos) => enviarEmail(env, para, assunto, texto, anexos), emailConfigurado: () => emailConfigurado(env), ...kitAgendaZap(env, kz) }, orgId, papel, resto); }
   if (resto === "os" || resto.startsWith("os/")) return rotasOS(request, env, { ...kitBase(env), sessao, ...kitEngine(env) }, orgId, papel, resto);
   if (resto === "fin" || resto.startsWith("fin/")) return rotasFinanceiro(request, env, { ...kitBase(env), sessao, comIA, openai: openaiBruto }, orgId, papel, resto);
   if (resto === "problemas" || resto.startsWith("problemas/")) {
@@ -1140,7 +1183,7 @@ async function apiOrg(request, env, sessao, orgId, resto, ctx) {
       const req = new Request(new URL(`/api/orgs/${orgId}/${base}/${caminho}`, request.url), { method: metodo, headers: { "content-type": "application/json", origin: new URL(request.url).origin }, body: metodo === "POST" ? JSON.stringify(corpo || {}) : undefined });
       const rota = caminho.split("?")[0];
       const r = base === "mk" ? await apiMarketing(req, await comIA(env, orgId), kit, orgId, papel, rota)
-        : base === "adm" ? await rotasAdmin(req, env, { ...kitBase(env), sessao }, orgId, papel, "adm/" + rota)
+        : base === "adm" ? await (async () => { const kz = await kitZap(env); return rotasAdmin(req, env, { ...kitBase(env), sessao, ...kitAgendaZap(env, kz) }, orgId, papel, "adm/" + rota); })()
         : base === "tp" ? await apiOrg(req, env, sessao, orgId, "tp/" + rota)
           : await proxyEngine(req, env, sessao, orgId, papel, rota);
       return { status: r.status, dados: await r.json().catch(() => ({})) };
@@ -1333,6 +1376,8 @@ async function api(request, env, caminho, ctx) {
   // Volta do Login do Facebook: chega sem a sessão (cookie SameSite=Strict); vale pelo state assinado.
   if (caminho === "/api/meta/retorno" && metodo === "GET") return retornoMeta(request, env, kitBase(env));
   if (caminho === "/api/google/retorno" && metodo === "GET") return retornoGoogle(request, env, kitBase(env));
+  // A IA do atendimento (número da oficina) repassa o que a equipe escreveu: se for comando da agenda, a plataforma trata.
+  if (caminho === "/api/agenda/zap-comando" && metodo === "POST") return agendaPelaIA(request, env);
 
   const sessao = await lerSessao(request, env);
   if (!sessao) return json({ erro: "Sua sessão expirou. Entre novamente." }, 401);
@@ -1554,7 +1599,7 @@ export default {
       await vigiarWhatsapp(env).catch(e => console.error("whatsapp", e?.message));
       await vigiarRecebimento(env).catch(e => console.error("vigia de recebimento", e?.message));
       await financeiroDoCron(env, { ...(await kitZap(env)), openai: openaiBruto, enviarEmail: (para, assunto, texto, anexos) => enviarEmail(env, para, assunto, texto, anexos), emailConfigurado: () => emailConfigurado(env), responsaveis: o => responsaveisDa(env, o) }).catch(e => console.error("financeiro", e?.message));
-      { const kz = await kitZap(env); await adminDoCron(env, { ...kz, avisarTelegram: (o, t) => avisarTelegramDaEmpresa(env, kz, o, t), enviarModeloZap: (o, tel, modelo, idioma, vars) => enviarModeloZap(env, kz, o, tel, modelo, idioma, vars), zapEquipe: (o, tel, t, m) => zapEquipe(env, kz, o, tel, t, m) }).catch(e => console.error("administração", e?.message)); }
+      { const kz = await kitZap(env); await adminDoCron(env, { ...kz, avisarTelegram: (o, t) => avisarTelegramDaEmpresa(env, kz, o, t), enviarModeloZap: (o, tel, modelo, idioma, vars) => enviarModeloZap(env, kz, o, tel, modelo, idioma, vars), ...kitAgendaZap(env, kz) }).catch(e => console.error("administração", e?.message)); }
       await limparBanco(env).catch(e => console.error("limpeza", e?.message));
       await sincronizarTemporada(env, await kitZap(env)).catch(e => console.error("temporada", e?.message));
       await processarCampanhas(env, await kitZap(env)).catch(e => console.error("campanhas", e?.message));
