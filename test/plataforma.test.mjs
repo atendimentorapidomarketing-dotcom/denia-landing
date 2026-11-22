@@ -4462,3 +4462,31 @@ test("Ordens de serviço da Central: o atendimento no WhatsApp vira cliente, pro
   assert.equal((await p.req(`/api/orgs/1/os/ordens/${o.id}`, { metodo: "PUT", quem: "cont", corpo: { nf_status: "PENDENTE" } })).status, 403, "não altera OS");
   assert.equal((await p.req("/api/orgs/1/adm/agenda", { quem: "cont" })).status, 403, "fora do financeiro, nada");
 });
+
+test("Chatbot — painel zerado explica o porquê: número sem envio para a DENIA, liga o recebimento e mostra a última mensagem", async () => {
+  const { p, inf } = await duasEmpresasComChatbot();
+  p.env.META_APP_ID = "5550001";
+  p.env.DB.db.prepare("UPDATE plt_zap_contas SET waba_id='777000777' WHERE org_id=?").run(inf);
+  let assinado = false;
+  const metaAntes = p.meta;
+  p.meta = (url, metodo) => {
+    if (/777000777\/subscribed_apps/.test(url)) { if (metodo === "POST") { assinado = true; return { success: true }; } return { data: assinado ? [{ whatsapp_business_api_data: { id: "5550001", name: "DENIA" } }] : [{ whatsapp_business_api_data: { id: "9990001", name: "Botpress" } }] }; }
+    return metaAntes ? metaAntes(url, metodo) : {};
+  };
+  const r = await p.req(`/api/orgs/${inf}/relatorio?resumo=1`, { quem: "admin" });
+  assert.equal(r.dados.sete_dias.clientes, 0);
+  assert.ok(r.dados.fontes.includes("chatbot"));
+  const d = await p.req(`/api/orgs/${inf}/zap/recebimento`, { quem: "admin" });
+  assert.equal(d.status, 200, JSON.stringify(d.dados));
+  assert.equal(d.dados.denia_recebe, false);
+  assert.match(d.dados.motivo, /Botpress/, "diz para onde as mensagens estão indo");
+  const liga = await p.req(`/api/orgs/${inf}/zap/recebimento`, { metodo: "POST", quem: "admin", corpo: {} });
+  assert.equal(liga.status, 200, JSON.stringify(liga.dados));
+  assert.equal(liga.dados.denia_recebe, true);
+  assert.match(liga.dados.motivo, /nenhuma mensagem de cliente chegou/);
+  // Chegou mensagem: o painel conta o cliente.
+  await webhookZap(p, "111111111111", { from: "5521977776666", type: "text", text: { body: "oi" } }, "Bia");
+  const r2 = await p.req(`/api/orgs/${inf}/relatorio?resumo=1`, { quem: "admin" });
+  assert.equal(r2.dados.ultimas_24h.clientes, 1);
+  assert.equal(r2.dados.hoje.clientes, 1);
+});
