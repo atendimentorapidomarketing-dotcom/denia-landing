@@ -193,7 +193,9 @@ export async function rotasGoogle(request, env, k, orgId, papel, resto) {
   if (resto === "google/locais" && metodo === "GET") {
     const reg = await lerNonce(env, k, txt(url.searchParams.get("n"), 60));
     if (!reg || reg.o !== orgId || reg.u !== sessao.usuario.id || !reg.locais) return json({ erro: "A conexão expirou. Clique em Conectar Google de novo." }, 410);
-    return json({ marca_id: reg.m, locais: reg.locais.map(l => ({ id: l.local, titulo: l.titulo, endereco: l.endereco })) });
+    // Quais já estão na DENIA (para não duplicar e já virem desmarcados).
+    const ja = new Map(((await env.DB.prepare("SELECT g.local_nome, m.nome FROM plt_mk_google g LEFT JOIN plt_mk_marcas m ON m.id=g.marca_id WHERE g.org_id=?").bind(orgId).all()).results || []).map(x => [x.local_nome, x.nome || "um perfil"]));
+    return json({ marca_id: reg.m, locais: reg.locais.map(l => ({ id: l.local, titulo: l.titulo, endereco: l.endereco, conectado_em: ja.get(l.local) || null })) });
   }
   if (resto === "google/escolher" && metodo === "POST") {
     if (!pode(papel, "ADMIN")) return json({ erro: "Somente administradores conectam contas." }, 403);
@@ -203,13 +205,17 @@ export async function rotasGoogle(request, env, k, orgId, papel, resto) {
     const reg = await lerNonce(env, k, n);
     if (!reg || reg.o !== orgId || reg.u !== sessao.usuario.id || !reg.locais) return json({ erro: "A conexão expirou. Clique em Conectar Google de novo." }, 410);
     // Um ou vários perfis: o primeiro vai para o perfil que pediu a conexão; cada outro vira um perfil novo.
-    const ids = [...new Set((Array.isArray(corpo.local_ids) ? corpo.local_ids : [corpo.local_id]).map(x => String(x || "")).filter(Boolean))].slice(0, 30);
+    const ids = [...new Set((Array.isArray(corpo.local_ids) ? corpo.local_ids : [corpo.local_id]).map(x => String(x || "")).filter(Boolean))].slice(0, 200);
     const escolhidos = ids.map(id => reg.locais.find(x => x.local === id)).filter(Boolean);
     if (!escolhidos.length) return json({ erro: "Escolha um dos perfis." }, 400);
     const conectados = [];
+    const varios = escolhidos.length > 1;
     for (const [i, l] of escolhidos.entries()) {
       let marcaId = reg.m;
-      if (i > 0) marcaId = (await env.DB.prepare("INSERT INTO plt_mk_marcas(org_id,nome,ativa,criado_ms) VALUES(?,?,1,?) RETURNING id").bind(orgId, String(l.titulo || "Novo perfil").slice(0, 200), agora(env)).first()).id;
+      // Perfil do Google que já está na DENIA: atualiza a conexão no mesmo perfil (não cria outro igual).
+      const existente = await env.DB.prepare("SELECT marca_id FROM plt_mk_google WHERE org_id=? AND local_nome=?").bind(orgId, l.local).first();
+      if (existente) marcaId = existente.marca_id;
+      else if (i > 0) marcaId = (await env.DB.prepare("INSERT INTO plt_mk_marcas(org_id,nome,ativa,criado_ms) VALUES(?,?,1,?) RETURNING id").bind(orgId, String(l.titulo || "Novo perfil").slice(0, 200), agora(env)).first()).id;
       else if (corpo.renomear === true) await env.DB.prepare("UPDATE plt_mk_marcas SET nome=? WHERE id=? AND org_id=?").bind(String(l.titulo || "").slice(0, 200) || "Novo perfil", marcaId, orgId).run();
       await env.DB.prepare(`INSERT INTO plt_mk_google(org_id,marca_id,conta_nome,local_nome,local_titulo,token_cifrado,criado_por,criado_ms,atualizado_ms) VALUES(?,?,?,?,?,?,?,?,?)
         ON CONFLICT(org_id, marca_id) DO UPDATE SET conta_nome=excluded.conta_nome, local_nome=excluded.local_nome, local_titulo=excluded.local_titulo, token_cifrado=excluded.token_cifrado, criado_por=excluded.criado_por, atualizado_ms=excluded.atualizado_ms, sincronizado_ms=NULL, erro=NULL`)
@@ -222,7 +228,8 @@ export async function rotasGoogle(request, env, k, orgId, papel, resto) {
       const trabalho = Promise.all([sincronizarConta(env, k, conta).catch(e => ({ erro: e.message })),
         preencherPeloGoogle(env, k, conta).catch(e => { console.error("preencher pelo Google", e?.message); return { preenchidos: [] }; })]);
       if (k.emSegundoPlano) k.emSegundoPlano(() => trabalho);
-      const [sinc, auto] = await Promise.race([trabalho, new Promise(r => setTimeout(() => r([{ em_andamento: true }, { preenchidos: [] }]), 8000))]);
+      // Vários de uma vez: tudo continua em segundo plano (não espera perfil por perfil).
+      const [sinc, auto] = varios ? [{ em_andamento: true }, { preenchidos: [] }] : await Promise.race([trabalho, new Promise(r => setTimeout(() => r([{ em_andamento: true }, { preenchidos: [] }]), 8000))]);
       conectados.push({ marca_id: marcaId, perfil: l.titulo, sincronizacao: sinc, preenchidos: auto.preenchidos });
     }
     await env.DB.prepare("DELETE FROM plt_meta WHERE chave=?").bind("google_n_" + n).run();
