@@ -7812,7 +7812,7 @@ Botão só com texto = resposta.` })),
   }
   // Prioridade, situação, categoria e repetição (iguais em compromissos, tarefas e contas).
   const PRIO_UI = [["BAIXA", "Baixa"], ["NORMAL", "Normal"], ["ALTA", "Alta"], ["EXTREMA", "Extrema importância"]];
-  const SIT_UI = { PENDENTE: "Pendente", EM_ANDAMENTO: "Em andamento", CONCLUIDA: "Concluída", ATRASADA: "Atrasada" };
+  const SIT_UI = { PENDENTE: "Pendente", CONFIRMADO: "Confirmado", EM_ANDAMENTO: "Em andamento", CONCLUIDA: "Concluída", ATRASADA: "Atrasada" };
   const CATS_UI = ["Geral", "Reunião", "Visita", "Compras", "Alimentação", "Suprimentos", "Estoque", "Manutenção", "Documentos", "Financeiro", "Saúde", "Família"];
   const selectPrio = atual => { const s0 = h("select", { class: "entrada" }, PRIO_UI.map(([v, n]) => h("option", { value: v, text: n }))); s0.value = PRIO_UI.some(x => x[0] === atual) ? atual : "NORMAL"; return s0; };
   const selectRepetir = atual => { const s0 = h("select", { class: "entrada" }, [["", "Não repete"], ["diario", "Todo dia"], ["semanal", "Toda semana"], ["mensal", "Todo mês"], ["anual", "Todo ano"]].map(([v, n]) => h("option", { value: v, text: n }))); s0.value = atual || ""; return s0; };
@@ -7892,89 +7892,265 @@ Botão só com texto = resposta.` })),
     const eq = await equipeAdm();
     const titulo = entradaTxt(a && a.titulo, "Ex.: Troca de óleo do Gol, reunião com o contador"), data = entradaData(a && a.data ? a.data : dataPadrao || hojeUi()), hora = h("input", { class: "entrada", type: "time", value: (a && a.hora) || "" });
     const quem = entradaTxt(a && a.quem, "Cliente ou com quem (opcional)"), local = entradaTxt(a && a.local, "Onde (opcional)"), obs = h("textarea", { class: "entrada", rows: "2", placeholder: "Observações" }, (a && a.obs) || "");
+    const quemTel = h("input", { class: "entrada", type: "tel", inputmode: "tel", value: (a && a.quem_tel) || "", placeholder: "WhatsApp de com quem (para confirmar)" });
+    const duracao = h("select", { class: "entrada" }, [[15, "15 min"], [30, "30 min"], [45, "45 min"], [60, "1 hora"], [90, "1h30"], [120, "2 horas"], [180, "3 horas"], [240, "4 horas"], [480, "8 horas"]].map(([v, n]) => h("option", { value: v, text: n })));
+    duracao.value = String([15, 30, 45, 60, 90, 120, 180, 240, 480].includes(Number(a && a.duracao_min)) ? Number(a.duracao_min) : 60);
+    const situacao = h("select", { class: "entrada" }, h("option", { value: "", text: "A confirmar" }), h("option", { value: "CONFIRMADO", text: "Confirmado" }), h("option", { value: "EM_ANDAMENTO", text: "Em andamento" }));
+    situacao.value = a && ["CONFIRMADO", "EM_ANDAMENTO"].includes(a.situacao) ? a.situacao : "";
     const aviso0 = h("select", { class: "entrada" }, [[0, "Na hora"], [5, "5 minutos antes"], [15, "15 minutos antes"], [30, "30 minutos antes"], [60, "1 hora antes"], [180, "3 horas antes"], [1440, "1 dia antes"], [2880, "2 dias antes"], [10080, "1 semana antes"]].map(([v, n]) => h("option", { value: v, text: n })));
     aviso0.value = String(a && a.aviso_min != null ? a.aviso_min : 60);
     const repetir = selectRepetir(a && a.repetir);
     const rec = quemRecebe(eq, a && a.responsavel_id, a && a.contato_id);
     const prio = selectPrio(a && a.prioridade), cat = entradaCategoria(a && a.categoria), escopo = selectEscopo(a && a.escopo);
     const tipo = h("select", { class: "entrada" }, h("option", { value: "COMPROMISSO", text: "Compromisso" }), h("option", { value: "LEMBRETE", text: "Lembrete" })); tipo.value = (a && a.tipo) || "COMPROMISSO";
-    const andamento = h("input", { type: "checkbox", checked: Boolean(a && a.situacao === "EM_ANDAMENTO") });
-    const temMais = a && (a.repetir || a.local || a.quem || a.obs || a.categoria || a.escopo || a.tipo === "LEMBRETE" || (a.aviso_min != null && a.aviso_min !== 60) || (a.prioridade && a.prioridade !== "NORMAL"));
+    const temMais = a && (a.repetir || a.local || a.quem || a.quem_tel || a.obs || a.categoria || a.escopo || a.tipo === "LEMBRETE" || (a.aviso_min != null && a.aviso_min !== 60) || (a.prioridade && a.prioridade !== "NORMAL"));
     const mais = h("details", { class: "adm-mais-opcoes", ...(temMais ? { open: "" } : {}) }, h("summary", { text: "Mais opções (aviso, repetir, prioridade, local…)" }), h("div", { class: "fin-form", style: "margin-top:10px" },
       h("div", { class: "fin-duas" }, campo("Avisar", aviso0), campo("Repetir", repetir)), h("div", { class: "fin-duas" }, campo("Prioridade", prio), campo("Tipo", tipo)),
-      h("div", { class: "fin-duas" }, campo("Com quem", quem), campo("Local", local)), h("div", { class: "fin-duas" }, campo("Categoria", cat), campo("Pessoal ou profissional", escopo)), campo("Observações", obs),
-      editando ? h("label", { class: "fin-check" }, andamento, " Em andamento") : null));
-    await formulario(editando ? "Editar compromisso" : "Novo compromisso", [campo("O que é", titulo), h("div", { class: "fin-duas" }, campo("Data", data), campo("Hora", hora, "Vazio = o dia todo")), rec.el, mais,
+      h("div", { class: "fin-duas" }, campo("Com quem", quem), campo("WhatsApp de com quem", quemTel, "Para confirmar com um toque.")), h("div", { class: "fin-duas" }, campo("Local", local), campo("Categoria", cat)), campo("Pessoal ou profissional", escopo), campo("Observações", obs)));
+    await formulario(editando ? "Editar compromisso" : "Novo compromisso", [campo("O que é", titulo), h("div", { class: "fin-duas" }, campo("Data", data), campo("Hora", hora, "Vazio = o dia todo")), h("div", { class: "fin-duas" }, campo("Duração", duracao), campo("Situação", situacao)), rec.el, mais,
       editando ? h("p", { class: "sub", text: [a.criado_por && `Criado por ${a.criado_por}${a.criado_ms ? " em " + horaMs(a.criado_ms) : ""}`, a.alterado_por && `alterado por ${a.alterado_por} em ${horaMs(a.alterado_ms)}`, a.feito_por && `concluído por ${a.feito_por} em ${horaMs(a.feito_ms)}`, a.adiado_n ? `adiado ${a.adiado_n}×` : ""].filter(Boolean).join(" · ") }) : null].filter(Boolean), "Salvar",
-      async () => { const q0 = await rec.ler(); await adm(editando ? `agenda/${a.id}` : "agenda", { metodo: editando ? "PUT" : "POST", corpo: { titulo: titulo.value, data: data.value, hora: hora.value || null, quem: quem.value, local: local.value, obs: obs.value, aviso_min: Number(aviso0.value), repetir: repetir.value, prioridade: prio.value, ...q0, tipo: tipo.value, categoria: cat.value, escopo: escopo.value, situacao: andamento.checked ? "EM_ANDAMENTO" : "" } }); aviso("Salvo.", "ok"); recarregarAdm(); });
+      async () => {
+        const q0 = await rec.ler();
+        const x = await adm(editando ? `agenda/${a.id}` : "agenda", { metodo: editando ? "PUT" : "POST", corpo: { titulo: titulo.value, data: data.value, hora: hora.value || null, duracao_min: Number(duracao.value), quem: quem.value, quem_tel: quemTel.value, local: local.value, obs: obs.value, aviso_min: Number(aviso0.value), repetir: repetir.value, prioridade: prio.value, ...q0, tipo: tipo.value, categoria: cat.value, escopo: escopo.value, situacao: situacao.value } });
+        if (x && x.conflitos && x.conflitos.length) aviso(`Salvo — atenção: no mesmo horário já existe ${x.conflitos.map(c0 => `${c0.hora} ${c0.titulo}`).join(", ")}. Confira a agenda.`, "erro");
+        else aviso("Salvo.", "ok");
+        recarregarAdm();
+      });
   }
 
-  // Agenda: lista, semana ou mês (grade), só os meus, e o campo para escrever o compromisso.
+  // Agenda profissional (secretária): dia por pessoa, semana em horários, mês e lista; mini calendário,
+  // cores por pessoa, conflitos de horário, horários livres, busca, confirmação pelo WhatsApp e impressão.
+  const CORES_AGENDA = ["#2563eb", "#0d9488", "#7c3aed", "#ea580c", "#db2777", "#16a34a", "#ca8a04", "#0891b2", "#9333ea", "#be123c"];
+  function pessoasDaAgenda(eq) {
+    const lista = [...(eq.equipe || []).map(p0 => ({ chave: "u:" + p0.id, nome: p0.nome, id: p0.id, tipo: "u" })), ...(eq.contatos || []).map(c0 => ({ chave: "c:" + c0.id, nome: c0.nome, id: c0.id, tipo: "c" }))];
+    lista.forEach((p0, i) => { p0.cor = CORES_AGENDA[i % CORES_AGENDA.length]; });
+    return lista;
+  }
+  const chaveAg = a => a.responsavel_id ? "u:" + a.responsavel_id : a.contato_id ? "c:" + a.contato_id : "";
+  const minAg = h0 => { const [x, y] = String(h0 || "0:0").split(":").map(Number); return x * 60 + (y || 0); };
+  const hhmmAg = m => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+  const durAg = a => Math.max(10, Number(a.duracao_min) || 60);
+  // Dois compromissos da mesma pessoa no mesmo horário: os dois ficam marcados com ⚠.
+  function marcarConflitos(itens) {
+    const grupos = new Map();
+    for (const a of itens) { a._conflito = null; if (!a.hora || a.feito || !chaveAg(a)) continue; const k = chaveAg(a) + "|" + a.data; (grupos.get(k) || grupos.set(k, []).get(k)).push(a); }
+    for (const g of grupos.values()) for (let i = 0; i < g.length; i++) for (let j = i + 1; j < g.length; j++) {
+      const a = g[i], b = g[j], ia = minAg(a.hora), ib = minAg(b.hora);
+      if (ia < ib + durAg(b) && ib < ia + durAg(a)) { (a._conflito ||= []).push(b); (b._conflito ||= []).push(a); }
+    }
+  }
+  // Horários livres de uma pessoa num dia (expediente 8h–18h, blocos de pelo menos 30 minutos).
+  function horariosLivres(itens, ini = 8 * 60, fim = 18 * 60, minimo = 30) {
+    const ocup = itens.filter(a => a.hora && !a.feito).map(a => [minAg(a.hora), minAg(a.hora) + durAg(a)]).sort((x, y) => x[0] - y[0]);
+    const out = []; let t = ini;
+    for (const [i, f] of ocup) { if (i - t >= minimo) out.push([t, Math.min(i, fim)]); t = Math.max(t, f); if (t >= fim) break; }
+    if (fim - t >= minimo) out.push([t, fim]);
+    return out.filter(([i, f]) => f - i >= minimo);
+  }
+  function linkConfirmar(a) {
+    let tel = String(a.quem_tel || "").replace(/\D/g, "");
+    if (!tel) return null;
+    if (tel.length <= 11) tel = "55" + tel;
+    const dia = new Intl.DateTimeFormat(LOCALE, { weekday: "long", day: "2-digit", month: "2-digit", timeZone: "UTC" }).format(new Date(a.data + "T12:00:00Z"));
+    const txt = `Olá${a.quem ? " " + a.quem.split(" ")[0] : ""}! Passando para confirmar: ${a.titulo}, ${dia}${a.hora ? " às " + a.hora : ""}${a.local ? ", em " + a.local : ""}. Está confirmado?`;
+    return `https://wa.me/${tel}?text=${encodeURIComponent(txt)}`;
+  }
+
   async function admAgenda(el, vivo) {
-    const vis = admEstado.visAgenda = admEstado.visAgenda || armazenamento.ler("denia_adm_vis") || "lista";
+    const salva = admEstado.visAgenda || armazenamento.ler("denia_adm_vis") || "dia";
+    const vis = admEstado.visAgenda = ["dia", "semana", "mes", "lista"].includes(salva) ? salva : "dia";
     const ref = admEstado.refAgenda = admEstado.refAgenda || hojeUi();
+    const filtro = admEstado.pessoaAgenda || "", busca = admEstado.buscaAgenda || "";
     const segundaDe = d => { const x = new Date(d + "T12:00:00Z"); x.setUTCDate(x.getUTCDate() - ((x.getUTCDay() + 6) % 7)); return x.toISOString().slice(0, 10); };
     const somarDiasUi = (d, n) => new Date(Date.parse(d + "T12:00:00Z") + n * 86400000).toISOString().slice(0, 10);
     const mesRef = ref.slice(0, 7), ultimoDiaMes = m => `${m}-${String(new Date(Date.UTC(+m.slice(0, 4), +m.slice(5, 7), 0)).getUTCDate()).padStart(2, "0")}`;
-    let de, ate;
-    if (vis === "semana") { de = segundaDe(ref); ate = somarDiasUi(de, 6); }
-    else if (vis === "mes") { de = segundaDe(`${mesRef}-01`); ate = somarDiasUi(segundaDe(ultimoDiaMes(mesRef)), 6); }
-    else { de = `${mesRef}-01`; ate = ultimoDiaMes(mesRef); }
+    // Carrega o mês do mini calendário (semanas inteiras) e a semana de referência.
+    const gIni = segundaDe(`${mesRef}-01`), gFim = somarDiasUi(segundaDe(ultimoDiaMes(mesRef)), 6);
+    const sIni = segundaDe(ref), sFim = somarDiasUi(sIni, 6);
+    const de = sIni < gIni ? sIni : gIni, ate = sFim > gFim ? sFim : gFim;
     const minha = admEstado.agendaMinha ? "&minha=1" : "";
-    const r = await adm(`agenda?de=${de}&ate=${ate}${minha}`);
+    const [r, eq] = await Promise.all([adm(busca ? `agenda?busca=${encodeURIComponent(busca)}` : `agenda?de=${de}&ate=${ate}${minha}`), equipeAdm()]);
     if (!vivo()) return;
+    const pessoas = pessoasDaAgenda(eq);
+    const corDe = ch => (pessoas.find(p0 => p0.chave === ch) || {}).cor || "#64748b";
+    const nomeDe = a => a.responsavel_nome || a.contato_nome || "Sem responsável";
+    marcarConflitos(r.itens);
+    const passa = a => !filtro || (filtro === "sem" ? !chaveAg(a) : chaveAg(a) === filtro);
+    const visiveis = r.itens.filter(passa);
+    const itensDoDia = d => visiveis.filter(a => a.data === d);
+    const tarefasDoDia = d => (r.tarefas || []).filter(t => t.prazo === d && !t.feito);
     const feito = async (a, desfazer) => { try { const x = await adm(`agenda/${a.id}/feito`, { metodo: "POST", corpo: desfazer ? { desfazer: true } : {} }); aviso(x.proximo ? `Feito. Próxima vez: ${dataCurtaFin(x.proximo.data)}.` : desfazer ? "Voltou para pendente." : "Feito.", "ok"); recarregarAdm(); } catch (e) { aviso(e.message, "erro"); } };
+    const confirmar = async a => { try { await adm(`agenda/${a.id}`, { metodo: "PUT", corpo: { situacao: a.situacao === "CONFIRMADO" ? "" : "CONFIRMADO" } }); aviso(a.situacao === "CONFIRMADO" ? "Voltou para a confirmar." : "Marcado como confirmado.", "ok"); recarregarAdm(); } catch (e) { aviso(e.message, "erro"); } };
     const apagar = async a => { if (!(await modal({ titulo: "Apagar compromisso?", conteudo: a.origem === "google" ? `${a.titulo}. Ele vem do Google Agenda: se continuar lá, volta na próxima sincronização.` : a.titulo, confirmar: "Apagar", perigo: true }))) return; try { await adm(`agenda/${a.id}`, { metodo: "DELETE" }); aviso("Apagado.", "ok"); recarregarAdm(); } catch (e) { aviso(e.message, "erro"); } };
     const fmtDia = new Intl.DateTimeFormat(LOCALE, { weekday: "long", day: "2-digit", month: "long", timeZone: "UTC" });
-    const meta = a => [a.tipo === "LEMBRETE" && "lembrete", a.local, a.quem && "com " + a.quem, a.responsavel_nome && "responsável: " + a.responsavel_nome, a.contato_nome && "WhatsApp: " + a.contato_nome, a.categoria, a.escopo === "PESSOAL" && "pessoal", a.repetir && { diario: "todo dia", semanal: "toda semana", mensal: "todo mês", anual: "todo ano" }[a.repetir], a.origem === "google" && "Google Agenda", a.origem === "telegram" && "pelo Telegram", a.origem === "whatsapp" && "pelo WhatsApp",
-      a.situacao_atual && a.situacao_atual !== "PENDENTE" && a.situacao_atual !== "CONCLUIDA" && SIT_UI[a.situacao_atual], a.feito && a.feito_por && `concluído por ${a.feito_por}${a.feito_ms ? " " + horaMs(a.feito_ms) : ""}`, a.adiado_n ? `adiado ${a.adiado_n}×` : "", `C${a.id}`, a.obs].filter(Boolean).join(" · ");
-    const andar = n => { admEstado.refAgenda = vis === "semana" ? somarDiasUi(ref, 7 * n) : `${somarMesUi(mesRef, n)}-01`; navegar(); };
-    const titulo = vis === "semana" ? `${dataCurtaFin(de).slice(0, 5)} a ${dataCurtaFin(ate)}` : nomeMesUi(mesRef);
-    const seg = (v, n) => h("button", { type: "button", class: "aba" + (vis === v ? " ativo" : ""), "aria-pressed": vis === v ? "true" : "false", onclick: () => { admEstado.visAgenda = v; armazenamento.gravar("denia_adm_vis", v); navegar(); } }, n);
-    const barra = h("div", { class: "fin-mes" },
-      botao("‹", () => andar(-1), "btn-secundario btn-pequeno", { "aria-label": "Anterior" }), h("strong", { text: titulo }), botao("›", () => andar(1), "btn-secundario btn-pequeno", { "aria-label": "Próximo" }),
-      botao("Hoje", () => { admEstado.refAgenda = hojeUi(); navegar(); }, "btn-secundario btn-pequeno"),
-      h("span", { style: "flex:1" }), h("div", { class: "abas abas-chips", role: "group", "aria-label": "Visualização" }, seg("lista", "Lista"), seg("semana", "Semana"), seg("mes", "Mês")),
-      h("label", { class: "fin-check" }, h("input", { type: "checkbox", checked: Boolean(admEstado.agendaMinha), onchange: e => { admEstado.agendaMinha = e.target.checked; navegar(); } }), " Só os meus"));
-    const tarefasDoDia = d => (r.tarefas || []).filter(t => t.prazo === d && !t.feito);
-    const itensDoDia = d => r.itens.filter(a => a.data === d);
+    const fmtCurto = new Intl.DateTimeFormat(LOCALE, { weekday: "short", day: "2-digit", timeZone: "UTC" });
+    const faixa = a => a.hora ? `${a.hora}–${hhmmAg(Math.min(24 * 60 - 1, minAg(a.hora) + durAg(a)))}` : "Dia todo";
+    const meta = a => [a.tipo === "LEMBRETE" && "lembrete", a.situacao === "CONFIRMADO" && !a.feito && "✓ confirmado", a.local, a.quem && "com " + a.quem, a.quem_tel && "tel. " + a.quem_tel, chaveAg(a) && nomeDe(a), a.categoria, a.escopo === "PESSOAL" && "pessoal", a.repetir && { diario: "todo dia", semanal: "toda semana", mensal: "todo mês", anual: "todo ano" }[a.repetir], a.origem === "google" && "Google Agenda", a.origem === "telegram" && "pelo Telegram", a.origem === "whatsapp" && "pelo WhatsApp",
+      a.situacao_atual === "ATRASADA" && "atrasado", a.situacao_atual === "EM_ANDAMENTO" && "em andamento", a.feito && a.feito_por && `concluído por ${a.feito_por}${a.feito_ms ? " " + horaMs(a.feito_ms) : ""}`, a.adiado_n ? `adiado ${a.adiado_n}×` : "", a._conflito && `⚠ conflito com ${a._conflito.map(b => b.hora + " " + b.titulo).join(", ")}`, `C${a.id}`, a.obs].filter(Boolean).join(" · ");
+    const selo = a => (a._conflito ? "⚠ " : "") + (a.prioridade === "EXTREMA" ? "🚨 " : a.prioridade === "ALTA" ? "❗ " : "") + (a.situacao === "CONFIRMADO" && !a.feito ? "✓ " : "");
+    const novoEm = (data, hora, chave) => novoCompromisso({ data, hora: hora || "", responsavel_id: chave && chave.startsWith("u:") ? Number(chave.slice(2)) : null, contato_id: chave && chave.startsWith("c:") ? Number(chave.slice(2)) : null }, data, true);
+
+    async function abrirEvento(a) {
+      const wa = linkConfirmar(a);
+      gaveta(a.titulo, [h("p", { class: "sub", text: `${fmtDia.format(new Date(a.data + "T12:00:00Z"))} · ${faixa(a)}` }),
+        h("p", {}, h("span", { class: "ag-pt", style: `--cor:${corDe(chaveAg(a))}` }), " ", nomeDe(a)),
+        a._conflito ? h("p", { class: "ag-alerta", text: `⚠ Conflito de horário com: ${a._conflito.map(b => `${faixa(b)} ${b.titulo}`).join("; ")}` }) : null,
+        meta(a) ? h("p", { class: "sub", text: meta(a) }) : null,
+        h("div", { class: "acoes" }, a.feito ? botao("Desfazer", () => feito(a, true), "btn-secundario") : botao("Feito", () => feito(a), "btn-primario"),
+          a.feito || a.origem === "google" ? null : botao(a.situacao === "CONFIRMADO" ? "Voltar para a confirmar" : "Marcar como confirmado", () => confirmar(a), "btn-secundario"),
+          wa ? h("a", { class: "btn btn-secundario", href: wa, target: "_blank", rel: "noopener" }, "Confirmar pelo WhatsApp") : null,
+          a.origem === "google" || a.feito ? null : botao("Adiar", () => adiarItem("AGENDA", a), "btn-secundario"),
+          a.origem === "google" ? null : botao("Editar", () => { fecharGaveta && fecharGaveta(); novoCompromisso(a); }, "btn-secundario"),
+          a.origem === "google" ? null : botao("Duplicar", () => { fecharGaveta && fecharGaveta(); novoCompromisso({ ...a, id: null }, a.data, true); }, "btn-secundario"),
+          botao("Histórico", () => historicoItem("AGENDA", a.id, a.titulo), "btn-secundario"), botao("Apagar", () => apagar(a), "btn-secundario"))]);
+    }
+
+    // Resumo de hoje (respeita a pessoa escolhida).
+    const agoraMin = (() => { const x = new Date(); return x.getHours() * 60 + x.getMinutes(); })();
+    const hojeIts = r.itens.filter(a => a.data === r.hoje && passa(a));
+    const proximo = hojeIts.filter(a => !a.feito && a.hora && minAg(a.hora) + durAg(a) > agoraMin).sort((a, b) => minAg(a.hora) - minAg(b.hora))[0];
+    const atrasados = r.itens.filter(a => passa(a) && !a.feito && a.data < r.hoje).length;
+    const conflitos = r.itens.filter(a => passa(a) && a._conflito && a.data >= r.hoje).length;
+    const semDono = r.itens.filter(a => !a.feito && a.data >= r.hoje && !chaveAg(a)).length;
+    const aConfirmar = r.itens.filter(a => passa(a) && !a.feito && a.hora && a.data >= r.hoje && a.data <= somarDiasUi(r.hoje, 1) && a.situacao !== "CONFIRMADO" && a.tipo !== "LEMBRETE").length;
+    const resumo = busca ? null : h("section", { class: "grade grade-4 ag-resumo" },
+      metrica("Hoje", String(hojeIts.length), `${hojeIts.filter(a => a.feito).length} concluído(s) · ${hojeIts.filter(a => !a.feito).length} pendente(s)`),
+      metrica("Próximo", proximo ? proximo.hora : "—", proximo ? `${proximo.titulo}${chaveAg(proximo) ? " · " + nomeDe(proximo) : ""}` : "Nada mais hoje"),
+      metrica("A confirmar (hoje e amanhã)", String(aConfirmar), aConfirmar ? "Toque no compromisso → Confirmar pelo WhatsApp" : "Tudo confirmado"),
+      metrica("Atenção", String(atrasados + conflitos + semDono), [atrasados && `${atrasados} atrasado(s)`, conflitos && `${conflitos} em conflito`, semDono && `${semDono} sem responsável`].filter(Boolean).join(" · ") || "Nada pendente"));
+
+    // Barra: navegar, visualização, busca, só os meus, imprimir.
+    const passo = { dia: 1, semana: 7 };
+    const andar = n => { admEstado.refAgenda = passo[vis] ? somarDiasUi(ref, passo[vis] * n) : `${somarMesUi(mesRef, n)}-01`; navegar(); };
+    const titulo = busca ? `Busca: “${busca}”` : vis === "dia" ? fmtDia.format(new Date(ref + "T12:00:00Z")) : vis === "semana" ? `${dataCurtaFin(sIni).slice(0, 5)} a ${dataCurtaFin(sFim)}` : nomeMesUi(mesRef);
+    const seg = (v, n) => h("button", { type: "button", class: "aba" + (vis === v && !busca ? " ativo" : ""), "aria-pressed": vis === v ? "true" : "false", onclick: () => { admEstado.visAgenda = v; admEstado.buscaAgenda = ""; armazenamento.gravar("denia_adm_vis", v); navegar(); } }, n);
+    const campoBusca = h("input", { class: "entrada ag-busca", type: "search", value: busca, placeholder: "Buscar (nome, cliente, telefone, local)…", "aria-label": "Buscar na agenda" });
+    campoBusca.addEventListener("keydown", e => { if (e.key === "Enter") { admEstado.buscaAgenda = campoBusca.value.trim(); navegar(); } });
+    campoBusca.addEventListener("search", () => { if (!campoBusca.value) { admEstado.buscaAgenda = ""; navegar(); } });
+    const periodo = vis === "dia" ? [ref, ref] : vis === "semana" ? [sIni, sFim] : [`${mesRef}-01`, ultimoDiaMes(mesRef)];
+    const imprimir = () => baixarDaApi(`adm/relatorio-agenda?de=${periodo[0]}&ate=${periodo[1]}${filtro.startsWith("u:") ? "&colaborador=" + filtro.slice(2) : ""}&formato=pdf`, `agenda-${periodo[0]}_${periodo[1]}.pdf`).catch(e => aviso(e.message, "erro"));
+    const barra = h("div", { class: "fin-mes ag-barra" },
+      busca ? botao("‹ Voltar", () => { admEstado.buscaAgenda = ""; navegar(); }, "btn-secundario btn-pequeno") : h("span", { class: "ag-nav" }, botao("‹", () => andar(-1), "btn-secundario btn-pequeno", { "aria-label": "Anterior" }), botao("Hoje", () => { admEstado.refAgenda = hojeUi(); navegar(); }, "btn-secundario btn-pequeno"), botao("›", () => andar(1), "btn-secundario btn-pequeno", { "aria-label": "Próximo" })),
+      h("strong", { class: "ag-titulo", text: titulo }),
+      h("span", { style: "flex:1" }),
+      h("div", { class: "abas abas-chips", role: "group", "aria-label": "Visualização" }, seg("dia", "Dia"), seg("semana", "Semana"), seg("mes", "Mês"), seg("lista", "Lista")),
+      campoBusca,
+      h("label", { class: "fin-check" }, h("input", { type: "checkbox", checked: Boolean(admEstado.agendaMinha), onchange: e => { admEstado.agendaMinha = e.target.checked; navegar(); } }), " Só os meus"),
+      botao("Imprimir", imprimir, "btn-secundario btn-pequeno"));
+
+    // Lateral: mini calendário + pessoas (cores e filtro).
+    const diasMini = []; for (let d = gIni; d <= gFim; d = somarDiasUi(d, 1)) diasMini.push(d);
+    const porDia = new Map(); for (const a of visiveis) if (!a.feito) (porDia.get(a.data) || porDia.set(a.data, []).get(a.data)).push(a);
+    const mini = h("section", { class: "cartao vidro ag-mini" },
+      h("div", { class: "ag-mini-topo" }, botao("‹", () => { admEstado.refAgenda = `${somarMesUi(mesRef, -1)}-01`; navegar(); }, "btn-secundario btn-pequeno", { "aria-label": "Mês anterior" }), h("strong", { text: nomeMesUi(mesRef) }), botao("›", () => { admEstado.refAgenda = `${somarMesUi(mesRef, 1)}-01`; navegar(); }, "btn-secundario btn-pequeno", { "aria-label": "Próximo mês" })),
+      h("div", { class: "ag-mini-grade" }, ["S", "T", "Q", "Q", "S", "S", "D"].map(n => h("span", { class: "ag-mini-cab", text: n })),
+        diasMini.map(d => {
+          const its = porDia.get(d) || [];
+          const cores = [...new Set(its.map(a => corDe(chaveAg(a))))].slice(0, 3);
+          return h("button", { type: "button", class: "ag-mini-dia" + (d === r.hoje ? " hoje" : "") + (d === ref ? " sel" : "") + (d.slice(0, 7) !== mesRef ? " fora" : ""), title: its.length ? `${its.length} compromisso(s)` : "Livre", "aria-label": `${d.slice(8)}${its.length ? `, ${its.length} compromisso(s)` : ""}`,
+            onclick: () => { admEstado.refAgenda = d; if (vis !== "semana") admEstado.visAgenda = "dia"; admEstado.buscaAgenda = ""; navegar(); } },
+            h("span", { text: String(Number(d.slice(8))) }), h("span", { class: "ag-pontos" }, cores.map(c => h("i", { style: `background:${c}` }))));
+        })));
+    const contaFut = ch => r.itens.filter(a => !a.feito && a.data >= r.hoje && (ch === "sem" ? !chaveAg(a) : chaveAg(a) === ch)).length;
+    const chip = (ch, nome, cor) => h("button", { type: "button", class: "ag-pessoa" + (filtro === ch ? " ativo" : ""), "aria-pressed": filtro === ch ? "true" : "false", onclick: () => { admEstado.pessoaAgenda = filtro === ch ? "" : ch; navegar(); } },
+      cor ? h("span", { class: "ag-pt", style: `--cor:${cor}` }) : null, h("span", { class: "ag-pessoa-nome", text: nome }), ch ? h("small", { text: String(contaFut(ch)) }) : null);
+    const comAgenda = pessoas.filter(p0 => contaFut(p0.chave) || p0.tipo === "u" || filtro === p0.chave);
+    const lado = h("aside", { class: "ag-lado" }, mini,
+      h("section", { class: "cartao vidro ag-pessoas" }, h("h3", { text: "Agendas" }), h("p", { class: "sub", text: "Toque numa pessoa para ver só a agenda dela." }),
+        chip("", "Todas as pessoas", null), ...comAgenda.map(p0 => chip(p0.chave, p0.nome, p0.cor)), contaFut("sem") || filtro === "sem" ? chip("sem", "Sem responsável", "#64748b") : null,
+        h("a", { class: "btn btn-secundario btn-pequeno", href: "#/admin/avisos", style: "margin-top:8px" }, "+ Pessoa / quem recebe")));
+
+    // Coluna de horários (usada no Dia — uma coluna por pessoa — e na Semana — uma coluna por dia).
+    const its0 = vis === "dia" ? itensDoDia(ref) : visiveis.filter(a => a.data >= sIni && a.data <= sFim);
+    const comHora = its0.filter(a => a.hora);
+    const hIni = Math.min(7 * 60, ...comHora.map(a => Math.floor(minAg(a.hora) / 60) * 60)), hFim = Math.max(20 * 60, ...comHora.map(a => Math.min(24 * 60, Math.ceil((minAg(a.hora) + durAg(a)) / 60) * 60)));
+    const PX = 1.4; // 84 px por hora: um compromisso de 30 min mostra hora e nome
+    function coluna(cab, itens, data, chave, comLivres) {
+      const dia = itens.filter(a => !a.hora), hr = itens.filter(a => a.hora).sort((a, b) => minAg(a.hora) - minAg(b.hora));
+      // Sobreposição: divide a largura entre os que se cruzam.
+      const pos = new Map(); let grupo = [], fimG = -1;
+      const fechar = () => { const n = Math.max(...grupo.map(x => x.lane)) + 1; grupo.forEach(x => pos.set(x.a, { lane: x.lane, n })); grupo = []; };
+      for (const a of hr) {
+        const i = minAg(a.hora), f = i + durAg(a);
+        if (grupo.length && i >= fimG) { fechar(); fimG = -1; }
+        const ocup = new Set(grupo.filter(x => x.f > i).map(x => x.lane)); let lane = 0; while (ocup.has(lane)) lane++;
+        grupo.push({ a, lane, f }); fimG = Math.max(fimG, f);
+      }
+      if (grupo.length) fechar();
+      const corpo = h("div", { class: "ag-col-corpo", style: `height:${(hFim - hIni) * PX}px;background-size:100% ${60 * PX}px`, title: "Toque num horário vazio para marcar" });
+      corpo.addEventListener("click", e => {
+        if (e.target !== corpo) return;
+        const m = Math.round((hIni + e.offsetY / PX) / 15) * 15;
+        novoEm(data, hhmmAg(Math.max(0, Math.min(23 * 60 + 45, m))), chave);
+      });
+      for (const a of hr) {
+        const i = minAg(a.hora), p0 = pos.get(a) || { lane: 0, n: 1 };
+        corpo.appendChild(h("button", { type: "button", class: "ag-ev" + (a.feito ? " feito" : "") + (a._conflito ? " conflito" : "") + (a.prioridade === "EXTREMA" ? " extrema" : ""),
+          style: `--cor:${corDe(chaveAg(a))};top:${(i - hIni) * PX}px;height:${Math.max(24, durAg(a) * PX - 2)}px;left:calc(${(p0.lane / p0.n) * 100}% + 2px);width:calc(${100 / p0.n}% - 4px)`,
+          title: `${faixa(a)} · ${a.titulo}${meta(a) ? " — " + meta(a) : ""}`, onclick: () => abrirEvento(a) },
+          h("b", { text: `${selo(a)}${faixa(a)}` }), h("span", { text: a.titulo }), durAg(a) >= 45 && (a.quem || chaveAg(a)) ? h("small", { text: [a.quem, vis === "semana" && chaveAg(a) ? nomeDe(a) : ""].filter(Boolean).join(" · ") }) : null));
+      }
+      if (data === r.hoje && agoraMin >= hIni && agoraMin <= hFim) corpo.appendChild(h("div", { class: "ag-agora", style: `top:${(agoraMin - hIni) * PX}px` }));
+      const livres = comLivres ? horariosLivres(itens).slice(0, 4) : [];
+      return h("div", { class: "ag-col" },
+        h("div", { class: "ag-col-cab" }, cab,
+          livres.length ? h("div", { class: "ag-livres" }, h("small", { text: "Livre:" }), ...livres.map(([i]) => h("button", { type: "button", class: "ag-livre", onclick: () => novoEm(data, hhmmAg(i), chave), title: "Marcar neste horário" }, hhmmAg(i)))) : null),
+        h("div", { class: "ag-col-diatodo" }, dia.map(a => h("button", { type: "button", class: "adm-ev" + (a.feito ? " feito" : ""), style: `--cor:${corDe(chaveAg(a))}`, onclick: () => abrirEvento(a), title: meta(a) }, selo(a) + a.titulo)),
+          ...tarefasDoDia(data).filter(() => !chave).map(t => h("a", { class: "adm-ev tarefa", href: "#/admin/tarefas", text: "☐ " + t.titulo }))),
+        corpo);
+    }
+    function grade(colunas) {
+      const horas = []; for (let m = hIni; m < hFim; m += 60) horas.push(m);
+      return h("section", { class: "cartao vidro ag-grade-cartao" }, h("div", { class: "ag-grade", style: `--ncol:${colunas.length};--colmin:${vis === "semana" ? 104 : 150}px` },
+        h("div", { class: "ag-horas" }, h("div", { class: "ag-col-cab" }), h("div", { class: "ag-col-diatodo" }, h("small", { text: "dia todo" })),
+          h("div", { style: `position:relative;height:${(hFim - hIni) * PX}px` }, horas.map(m => h("span", { class: "ag-hora", style: `top:${(m - hIni) * PX}px`, text: hhmmAg(m) })))),
+        ...colunas));
+    }
+
     let corpo;
-    if (vis === "lista") {
-      const dias = [...new Set([...r.itens.map(a => a.data), ...(r.tarefas || []).filter(t => !t.feito).map(t => t.prazo)])].sort();
+    if (busca || vis === "lista") {
+      const dias = busca ? [...new Set(visiveis.map(a => a.data))] : [...new Set([...visiveis.filter(a => a.data.slice(0, 7) === mesRef || (!a.feito && a.data < r.hoje)).map(a => a.data), ...(r.tarefas || []).filter(t => !t.feito && t.prazo && t.prazo.slice(0, 7) === mesRef).map(t => t.prazo)])].sort();
       corpo = dias.length ? h("div", {}, dias.map(dia => h("section", { class: "cartao vidro", style: "margin-top:12px" },
-        h("h3", { style: "margin:0 0 8px;text-transform:capitalize", text: `${dia === r.hoje ? "Hoje — " : dia < r.hoje ? "Atrasado — " : ""}${fmtDia.format(new Date(dia + "T12:00:00Z"))}` }),
-        h("ul", { class: "prb-lista" }, [...itensDoDia(dia).map(a => itemAg(`${a.feito ? "✓ " : ""}${a.hora || "Dia todo"} · ${a.titulo}`, a.prioridade, meta(a),
+        h("h3", { style: "margin:0 0 8px;text-transform:capitalize", text: `${dia === r.hoje ? "Hoje — " : dia < r.hoje && !busca ? "Atrasado — " : ""}${fmtDia.format(new Date(dia + "T12:00:00Z"))}${dia.slice(0, 4) !== r.hoje.slice(0, 4) ? " de " + dia.slice(0, 4) : ""}` }),
+        h("ul", { class: "prb-lista" }, [...itensDoDia(dia).map(a => itemAg(`${a.feito ? "✓ " : ""}${selo(a)}${faixa(a)} · ${a.titulo}`, a.prioridade, meta(a),
           a.feito ? botao("Desfazer", () => feito(a, true), "btn-secundario btn-pequeno") : botao("Feito", () => feito(a), "btn-primario btn-pequeno"),
-          a.origem === "google" || a.feito ? null : botao("Adiar", () => adiarItem("AGENDA", a), "btn-secundario btn-pequeno"),
-          a.origem === "google" ? null : botao("Editar", () => novoCompromisso(a), "btn-secundario btn-pequeno"), botao("Histórico", () => historicoItem("AGENDA", a.id, a.titulo), "btn-secundario btn-pequeno"), botao("Apagar", () => apagar(a), "btn-secundario btn-pequeno"))),
-          ...tarefasDoDia(dia).map(t => item(`☐ Tarefa: ${t.titulo}`, "prazo", h("a", { class: "btn btn-secundario btn-pequeno", href: "#/admin/tarefas" }, "Abrir tarefas")))])))) :
-        h("section", { class: "cartao vidro", style: "margin-top:12px" }, vazio("Nada neste mês", "Escreva acima do jeito que fala, ou toque em + Compromisso. A DENIA avisa por e-mail, Telegram e no celular."));
+          botao("Abrir", () => abrirEvento(a), "btn-secundario btn-pequeno"),
+          a.origem === "google" ? null : botao("Editar", () => novoCompromisso(a), "btn-secundario btn-pequeno"))),
+          ...(busca ? [] : tarefasDoDia(dia).map(t => item(`☐ Tarefa: ${t.titulo}`, "prazo", h("a", { class: "btn btn-secundario btn-pequeno", href: "#/admin/tarefas" }, "Abrir tarefas"))))])))) :
+        h("section", { class: "cartao vidro", style: "margin-top:12px" }, vazio(busca ? "Nada encontrado" : "Nada neste mês", busca ? "Tente outra palavra: nome, cliente, telefone ou local." : "Escreva acima do jeito que fala, ou toque em + Compromisso."));
+    } else if (vis === "dia") {
+      const doDia = itensDoDia(ref);
+      let chaves = filtro ? [filtro] : [...new Set(doDia.map(chaveAg))];
+      chaves.sort((a, b) => (a === "" || a === "sem") - (b === "" || b === "sem") || pessoas.findIndex(p0 => p0.chave === a) - pessoas.findIndex(p0 => p0.chave === b));
+      if (!chaves.length) chaves = [""];
+      const cols = chaves.map(ch => {
+        const its = doDia.filter(a => (ch === "" || ch === "sem") ? !chaveAg(a) : chaveAg(a) === ch);
+        const p0 = pessoas.find(x => x.chave === ch);
+        const nome = p0 ? p0.nome : doDia.length && chaves.length > 1 ? "Sem responsável" : "Agenda";
+        return coluna(h("div", { class: "ag-col-nome" }, p0 ? h("span", { class: "ag-pt", style: `--cor:${p0.cor}` }) : null, h("strong", { text: nome }), h("small", { text: its.length === 1 ? "1 compromisso" : `${its.length} compromissos` })), its, ref, ch === "sem" ? "" : ch, Boolean(p0));
+      });
+      corpo = h("div", {}, doDia.length ? null : h("p", { class: "sub", style: "margin:10px 0 0", text: "Dia livre. Toque num horário da grade para marcar." }), grade(cols));
+    } else if (vis === "semana") {
+      const dias = []; for (let d = sIni; d <= sFim; d = somarDiasUi(d, 1)) dias.push(d);
+      corpo = grade(dias.map(d => coluna(h("button", { type: "button", class: "ag-col-nome ag-col-dia" + (d === r.hoje ? " hoje" : ""), onclick: () => { admEstado.refAgenda = d; admEstado.visAgenda = "dia"; navegar(); }, title: "Abrir o dia" },
+        h("strong", { text: fmtCurto.format(new Date(d + "T12:00:00Z")) }), h("small", { text: itensDoDia(d).length === 1 ? "1 compromisso" : `${itensDoDia(d).length} compromissos` })), itensDoDia(d), d, filtro && filtro !== "sem" ? filtro : "", Boolean(filtro && filtro !== "sem"))));
     } else {
-      // Grade: semana (7 colunas) ou mês (semanas de segunda a domingo).
-      const dias = []; for (let d = de; d <= ate; d = somarDiasUi(d, 1)) dias.push(d);
-      const nomes = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"];
-      corpo = h("section", { class: "cartao vidro adm-grade-cartao", style: "margin-top:12px" }, h("div", { class: "adm-grade" + (vis === "semana" ? " adm-grade-semana" : "") },
-        nomes.map(n => h("div", { class: "adm-grade-cab", text: n })),
+      const dias = []; for (let d = gIni; d <= gFim; d = somarDiasUi(d, 1)) dias.push(d);
+      corpo = h("section", { class: "cartao vidro adm-grade-cartao", style: "margin-top:12px" }, h("div", { class: "adm-grade" },
+        ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"].map(n => h("div", { class: "adm-grade-cab", text: n })),
         dias.map(d => {
-          const its = itensDoDia(d), tfs = tarefasDoDia(d), fora = vis === "mes" && d.slice(0, 7) !== mesRef;
-          const limite = vis === "mes" ? 3 : 12;
-          return h("div", { class: "adm-dia" + (d === r.hoje ? " hoje" : "") + (fora ? " fora" : ""), onclick: e => { if (e.target === e.currentTarget || e.target.classList.contains("adm-dia-n")) novoCompromisso(null, d); }, title: "Toque num espaço vazio para marcar neste dia" },
-            h("span", { class: "adm-dia-n", text: String(Number(d.slice(8))) }),
-            ...its.slice(0, limite).map(a => h("button", { type: "button", class: "adm-ev" + (a.feito ? " feito" : "") + (a.origem === "google" ? " google" : "") + (a.prioridade === "ALTA" ? " alta" : a.prioridade === "EXTREMA" ? " extrema" : ""), title: `${a.hora || "Dia todo"} · ${a.titulo}${meta(a) ? " — " + meta(a) : ""}`, onclick: () => abrirEvento(a) }, h("b", { text: a.hora || "•" }), " ", a.titulo)),
+          const its = itensDoDia(d), tfs = tarefasDoDia(d), fora = d.slice(0, 7) !== mesRef, limite = 4;
+          return h("div", { class: "adm-dia" + (d === r.hoje ? " hoje" : "") + (fora ? " fora" : ""), onclick: e => { if (e.target === e.currentTarget) novoEm(d, "", filtro && filtro !== "sem" ? filtro : ""); }, title: "Toque num espaço vazio para marcar neste dia" },
+            h("button", { type: "button", class: "adm-dia-n", onclick: () => { admEstado.refAgenda = d; admEstado.visAgenda = "dia"; navegar(); }, text: String(Number(d.slice(8))), title: "Abrir o dia" }),
+            ...its.slice(0, limite).map(a => h("button", { type: "button", class: "adm-ev" + (a.feito ? " feito" : "") + (a.origem === "google" ? " google" : ""), style: `--cor:${corDe(chaveAg(a))}`, title: `${faixa(a)} · ${a.titulo}${meta(a) ? " — " + meta(a) : ""}`, onclick: () => abrirEvento(a) }, h("b", { text: selo(a) + (a.hora || "•") }), " ", a.titulo)),
             ...tfs.slice(0, 2).map(t => h("a", { class: "adm-ev tarefa", href: "#/admin/tarefas", text: "☐ " + t.titulo })),
-            its.length > limite ? h("button", { type: "button", class: "adm-mais", onclick: () => { admEstado.visAgenda = "lista"; admEstado.refAgenda = d; navegar(); }, text: `+${its.length - limite}` }) : null);
+            its.length > limite ? h("button", { type: "button", class: "adm-mais", onclick: () => { admEstado.visAgenda = "dia"; admEstado.refAgenda = d; navegar(); }, text: `+${its.length - limite}` }) : null);
         })));
     }
-    async function abrirEvento(a) {
-      gaveta(a.titulo, [h("p", { class: "sub", text: `${fmtDia.format(new Date(a.data + "T12:00:00Z"))}${a.hora ? " às " + a.hora : " (dia todo)"}` }), meta(a) ? h("p", { text: meta(a) }) : null,
-        h("div", { class: "acoes" }, a.feito ? botao("Desfazer", () => feito(a, true), "btn-secundario") : botao("Feito", () => feito(a), "btn-primario"),
-          a.origem === "google" || a.feito ? null : botao("Adiar", () => adiarItem("AGENDA", a), "btn-secundario"),
-          a.origem === "google" ? null : botao("Editar", () => { fecharGaveta && fecharGaveta(); novoCompromisso(a); }, "btn-secundario"), botao("Histórico", () => historicoItem("AGENDA", a.id, a.titulo), "btn-secundario"), botao("Apagar", () => apagar(a), "btn-secundario"))]);
-    }
-    trocar(el, cabeca("Agenda e compromissos", "Marque aqui, por voz ou pelo WhatsApp. Quem você escolher em “Quem recebe no WhatsApp” ganha a lista do dia de manhã e o lembrete antes do horário.",
-      botao("+ Compromisso", () => novoCompromisso(null, ref < r.hoje ? r.hoje : ref), "btn-primario"), h("a", { class: "btn btn-secundario", href: "#/admin/tarefas" }, "Tarefas"),
+    trocar(el, cabeca("Agenda e compromissos", "A agenda de cada pessoa num lugar só: toque num horário vazio para marcar, num compromisso para confirmar, concluir ou adiar. Quem escolhe receber pelo WhatsApp ganha de manhã a lista do dia e o lembrete antes do horário.",
+      botao("+ Compromisso", () => novoEm(ref < r.hoje ? r.hoje : ref, "", filtro && filtro !== "sem" ? filtro : ""), "btn-primario"), h("a", { class: "btn btn-secundario", href: "#/admin/tarefas" }, "Tarefas"),
       (estado.eu.organizacoes || []).length > 1 ? h("a", { class: "btn btn-secundario", href: "#/admin/geral" }, "Todas as empresas") : null),
-      escreverCompromisso(() => recarregarAdm()), barra, corpo);
+      escreverCompromisso(() => recarregarAdm()), resumo, barra, h("div", { class: "ag-layout" }, lado, h("div", { class: "ag-principal" }, corpo)));
   }
 
   // Tarefas: com ou sem prazo, checklist, responsável e "cobrar retorno em".
@@ -8063,27 +8239,28 @@ Botão só com texto = resposta.` })),
       : u.via ? h("p", { class: "prb-meta", style: "color:var(--ok,#1a7f37)", text: `✓ Último envio: ${u.tipo || "aviso"} em ${quandoEnv(u.ms)} — ${u.via === "texto" ? "mensagem completa" : "resumo por modelo aprovado"}.` })
       : h("p", { class: "prb-meta", style: "color:var(--erro,#b42318)", text: `✗ Não chegou (${u.tipo || "aviso"}, ${quandoEnv(u.ms)}): ${u.erro}${u.ultimo_ok_ms ? ` · último que chegou: ${quandoEnv(u.ultimo_ok_ms)}` : ""}` });
     const linhasC = cts.contatos.map(c0 => {
-      const opc = [ck(c0.zap_manha, "Lista do dia (manhã)"), ck(c0.zap_lembretes, "Lembretes"), ck(c0.zap_relatorios, "Meio-dia e fim do dia"), ck(c0.so_minhas, "Só os compromissos dele")];
+      const opc = [ck(c0.zap_manha, "Lista do dia (manhã)"), ck(c0.zap_lembretes, "Lembretes"), ck(c0.zap_relatorios, "Meio-dia e fim do dia"), ck(!c0.so_minhas, "Recebe a agenda de TODOS (secretária)"), ck(c0.lembretes_todos, "Lembretes de todos")];
       const val = i => opc[i].querySelector("input").checked;
       return h("li", { class: "prb-item", style: "border-color:var(--borda)" }, h("div", {}, h("strong", { text: `${c0.nome}${c0.ativo ? "" : " (pausado)"}` }), h("p", { class: "prb-meta", text: `WhatsApp ${String(c0.telefone).replace(/^55(\d{2})(\d{4,5})(\d{4})$/, "($1) $2-$3")}` }), linhaEnvio(c0.ultimo_envio),
         h("div", { class: "fin-mes", style: "flex-wrap:wrap;gap:8px" }, ...opc),
-        h("div", { class: "acoes" }, botao("Salvar", async () => { try { await adm(`contatos/${c0.id}`, { metodo: "PUT", corpo: { zap_manha: val(0), zap_lembretes: val(1), zap_relatorios: val(2), so_minhas: val(3) } }); aviso("Salvo.", "ok"); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario btn-pequeno"),
+        h("div", { class: "acoes" }, botao("Salvar", async () => { try { await adm(`contatos/${c0.id}`, { metodo: "PUT", corpo: { zap_manha: val(0), zap_lembretes: val(1), zap_relatorios: val(2), so_minhas: !val(3), lembretes_todos: val(3) && val(4) } }); recarregarAdm(); aviso("Salvo.", "ok"); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario btn-pequeno"),
           botao("Enviar a lista de hoje", async () => { try { const r = await adm(`contatos/${c0.id}/testar`, { metodo: "POST", corpo: {} }); aviso(r.via === "texto" ? "Enviada pelo WhatsApp." : "Enviada (modelo aprovado, com a lista do dia).", "ok"); } catch (e) { aviso(e.message, "erro"); } recarregarAdm(); }, "btn-secundario btn-pequeno"),
           botao("Remover", async () => { if (!(await modal({ titulo: "Remover?", conteudo: `${c0.nome} deixa de receber. Os compromissos continuam na agenda.`, confirmar: "Remover", perigo: true }))) return; try { await adm(`contatos/${c0.id}`, { metodo: "DELETE" }); equipeCache = null; recarregarAdm(); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno"))));
     });
     blocos.push(h("section", { class: "cartao vidro", style: "margin-top:12px" }, h("h3", { text: "Quem recebe no WhatsApp" }),
-      h("p", { class: "sub", text: `${numeroEnvia ? `As mensagens saem do WhatsApp da empresa (${numeroEnvia}). ` : ""}Cadastre o nome e o WhatsApp de quem precisa receber — não precisa de login. Depois, no compromisso, escolha a pessoa em “Quem recebe no WhatsApp”: ela recebe de manhã a lista do dia e um lembrete antes do horário. Pelo mesmo WhatsApp ela escreve “dentista amanhã às 15h” para marcar, “AGENDA” para ver o dia, “OK C12” quando terminar e “CANCELAR C12” para tirar. Dica: peça para ela mandar um “oi” para este número uma vez — assim a lista chega completa.` }),
+      h("p", { class: "sub", text: `${numeroEnvia ? `As mensagens saem do WhatsApp da empresa (${numeroEnvia}). ` : ""}Cadastre o nome e o WhatsApp de quem precisa receber — não precisa de login. Depois, no compromisso, escolha a pessoa em “Quem recebe no WhatsApp”: ela recebe de manhã a lista do dia e um lembrete antes do horário. Cada pessoa recebe só os próprios compromissos; marque “Recebe a agenda de TODOS” só para quem cuida da agenda (a secretária): ela recebe de manhã o dia de todo mundo, com quem é responsável por cada compromisso, e com “Lembretes de todos” também cada lembrete. Pelo mesmo WhatsApp ela escreve “dentista amanhã às 15h” para marcar, “AGENDA” para ver o dia, “OK C12” quando terminar e “CANCELAR C12” para tirar. Dica: peça para ela mandar um “oi” para este número uma vez — assim a lista chega completa.` }),
       linhasC.length ? h("ul", { class: "prb-lista" }, linhasC) : null,
       h("div", { class: "fin-duas", style: "margin-top:10px" }, campo("Nome", nomeN), campo("WhatsApp", telN)),
       h("div", { class: "acoes" }, botao("+ Cadastrar", async () => { try { await adm("contatos", { metodo: "POST", corpo: { nome: nomeN.value, telefone: telN.value } }); equipeCache = null; aviso("Cadastrado. Agora escolha a pessoa no compromisso.", "ok"); recarregarAdm(); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario"))));
     // Equipe no WhatsApp
     const linhas = pes.pessoas.map(x => {
       const tel = h("input", { class: "entrada", type: "tel", value: x.telefone || "", placeholder: "21 99999-0000", style: "min-width:150px" });
-      const ck = (v, n) => h("label", { class: "fin-check" }, h("input", { type: "checkbox", checked: Boolean(v), "data-c": n }), " ", { zap_manha: "Agenda da manhã", zap_lembretes: "Lembretes", zap_relatorios: "Meio-dia e fim do dia", so_minhas: "Só o que é meu" }[n]);
-      const ops = ["zap_manha", "zap_lembretes", "zap_relatorios", "so_minhas"].map(n => ck(x[n], n));
+      const ck = (v, n) => h("label", { class: "fin-check" }, h("input", { type: "checkbox", checked: Boolean(v), "data-c": n }), " ", { zap_manha: "Agenda da manhã", zap_lembretes: "Lembretes", zap_relatorios: "Meio-dia e fim do dia", todos: "Recebe a agenda de TODOS (secretária)", lembretes_todos: "Lembretes de todos" }[n]);
+      const ops = ["zap_manha", "zap_lembretes", "zap_relatorios", "todos", "lembretes_todos"].map(n => ck(n === "todos" ? !x.so_minhas : x[n], n));
       const salvar = async () => {
         const corpo = { usuario_id: x.usuario_id, telefone: tel.value.trim() };
         for (const o of ops) { const i = o.querySelector("input"); corpo[i.dataset.c] = i.checked; }
+        corpo.so_minhas = !corpo.todos; corpo.lembretes_todos = corpo.todos && corpo.lembretes_todos; delete corpo.todos;
         try { const r = await adm("pessoas", { metodo: "PUT", corpo }); tel.value = r.telefone || ""; aviso(r.telefone ? "WhatsApp salvo." : "Número removido.", "ok"); } catch (e) { aviso(e.message, "erro"); }
       };
       return h("li", { class: "prb-item", style: "border-color:var(--borda)" }, h("div", {}, h("strong", { text: `${x.nome}${x.usuario_id === pes.eu ? " (você)" : ""}` }), h("p", { class: "prb-meta", text: x.email }), x.telefone ? linhaEnvio(x.ultimo_envio) : null,

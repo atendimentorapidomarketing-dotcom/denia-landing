@@ -60,7 +60,7 @@ export function situacaoDe(x, hoje) {
   if (x.feito) return "CONCLUIDA";
   const d = x.data || x.prazo;
   if (d && d < hoje) return "ATRASADA";
-  return x.situacao === "EM_ANDAMENTO" ? "EM_ANDAMENTO" : "PENDENTE";
+  return x.situacao === "EM_ANDAMENTO" ? "EM_ANDAMENTO" : x.situacao === "CONFIRMADO" ? "CONFIRMADO" : "PENDENTE";
 }
 export const CATEGORIAS_AGENDA = ["Geral", "Reunião", "Visita", "Compras", "Alimentação", "Suprimentos", "Estoque", "Manutenção", "Documentos", "Financeiro", "Saúde", "Família"];
 export const categoriaValida = c => re(c, 40) || null;
@@ -154,8 +154,9 @@ export async function confirmarConta(env, orgId, id, por, ms, canal = "painel") 
 export async function itensDoDia(env, orgId, data, hoje, { pessoaId = null, contatoId = null, soMinhas = false, fin = true, finDias = 0 } = {}) {
   await garantirAdmin(env);
   const q = async (sql, ...a) => (await env.DB.prepare(sql).bind(...a).all()).results || [];
-  // Só o que é da pessoa: da equipe = o que é dela ou sem responsável; contato de fora = só o que foi marcado para ele.
-  const meu = soMinhas && contatoId ? " AND x.contato_id=?" : soMinhas && pessoaId ? " AND (x.responsavel_id=? OR x.responsavel_id IS NULL)" : "";
+  // Só os próprios: só o que foi marcado para a pessoa. A agenda de todos (com o que não tem dono) é de quem
+  // foi escolhido para receber tudo (a secretária, o gestor).
+  const meu = soMinhas && contatoId ? " AND x.contato_id=?" : soMinhas && pessoaId ? " AND x.responsavel_id=?" : "";
   const argMeu = soMinhas && contatoId ? [contatoId] : soMinhas && pessoaId ? [pessoaId] : [];
   if (contatoId) fin = false;
   const comAtrasos = data === hoje;
@@ -205,8 +206,16 @@ export function textoDoDiaEquipe(d, { empresa = "", moeda = "BRL", hoje, titulo 
   if (d.receber.length) L.push("", "💰 *Receber*", ...d.receber.map(x => linha(x, moeda)));
   if (d.atrasados.length) L.push("", `⏰ *Atrasados (${d.atrasados.length})*`, ...d.atrasados.slice(0, 25).map(x => linha(x, moeda, { comData: true, hoje })), ...(d.atrasados.length > 25 ? [`… e mais ${d.atrasados.length - 25} no painel`] : []));
   if (d.antecipados.length) L.push("", "🔔 *Vencem nos próximos dias*", ...d.antecipados.map(x => linha(x, moeda, { comData: true, hoje })));
-  const resp = [...new Set(d.todos.filter(x => !x.feito && x.responsavel_nome && (x.data === d.data || x.atrasado)).map(x => x.responsavel_nome))];
-  if (resp.length > 1) L.push("", "👥 *Por responsável*", ...resp.map(n => `• ${n}: ${d.todos.filter(x => !x.feito && x.responsavel_nome === n && (x.data === d.data || x.atrasado)).length} item(ns)`));
+  // Agenda de todos (secretária): o dia de cada pessoa, em ordem de horário.
+  const doDia = d.todos.filter(x => !x.feito && (x.data === d.data || x.atrasado) && x.tipo !== "P");
+  const resp = [...new Set(doDia.map(x => x.responsavel_nome || "Sem responsável"))];
+  if (resp.length > 1 || (resp.length === 1 && resp[0] === "Sem responsável" && doDia.length)) {
+    L.push("", "👥 *Agenda de cada pessoa*");
+    for (const n of resp.sort((a, b) => (a === "Sem responsável") - (b === "Sem responsável") || a.localeCompare(b))) {
+      const its = doDia.filter(x => (x.responsavel_nome || "Sem responsável") === n).sort((a, b) => String(a.hora || "99").localeCompare(String(b.hora || "99")));
+      L.push(`*${n}*${n === "Sem responsável" ? " ⚠️" : ""}: ${its.map(x => `${x.atrasado ? "atrasado " : ""}${x.hora || ""}${x.hora ? " " : ""}${x.titulo}`).join("; ")}`);
+    }
+  }
   if (L.length === 1) L.push("", "Nada marcado. 🙂");
   else if (rodape) L.push("", "Responda: FEITO C12 · PAGO P34 · ADIAR T5 amanhã · AJUDA");
   return L.join("\n");
@@ -246,6 +255,9 @@ async function pessoasParaAviso(env, orgId, responsavelId, campo = "zap_lembrete
   const out = [];
   if (contatoId) out.push(...(await q(`SELECT *, id AS contato_id FROM adm_contatos WHERE org_id=? AND id=? AND ativo=1 AND ${campo}=1`, orgId, contatoId)));
   if (responsavelId) out.push(...(await q(`SELECT * FROM adm_pessoas WHERE org_id=? AND usuario_id=? AND ativo=1 AND telefone IS NOT NULL AND ${campo}=1`, orgId, responsavelId)));
+  // Quem cuida da agenda de todos (secretária) e marcou "lembretes de todos" também recebe.
+  if (campo === "zap_lembretes" && (contatoId || responsavelId)) out.push(...(await q("SELECT * FROM adm_pessoas WHERE org_id=? AND ativo=1 AND telefone IS NOT NULL AND zap_lembretes=1 AND so_minhas=0 AND lembretes_todos=1", orgId).catch(() => [])),
+    ...(await q("SELECT *, id AS contato_id FROM adm_contatos WHERE org_id=? AND ativo=1 AND zap_lembretes=1 AND so_minhas=0 AND lembretes_todos=1", orgId).catch(() => [])));
   if (out.length) return dedupTel(out);
   if (contatoId) return []; // marcado para um contato que não recebe lembretes: não manda para os outros
   return dedupTel([...(await q(`SELECT * FROM adm_pessoas WHERE org_id=? AND ativo=1 AND telefone IS NOT NULL AND ${campo}=1 AND so_minhas=0`, orgId)),
@@ -848,12 +860,12 @@ export async function rotasAgendaEquipe(request, env, k, orgId, papel, partes, a
       const dono = await env.DB.prepare(`SELECT id FROM adm_contatos WHERE org_id=? AND telefone IN (${variantesTel(tel).map(() => "?").join(",")}) AND id<>?`).bind(orgId, ...variantesTel(tel), atual?.id || 0).first();
       if (dono) return { msg: "Este WhatsApp já está cadastrado.", existente: dono.id };
       const b = (v, padrao) => v === undefined ? padrao : v === false || v === 0 || v === "0" ? 0 : 1;
-      return { v: { nome, telefone: tel, ativo: b(c.ativo, atual?.ativo ?? 1), zap_manha: b(c.zap_manha, atual?.zap_manha ?? 1), zap_lembretes: b(c.zap_lembretes, atual?.zap_lembretes ?? 1), zap_relatorios: b(c.zap_relatorios, atual?.zap_relatorios ?? 0), so_minhas: b(c.so_minhas, atual?.so_minhas ?? 1) } };
+      return { v: { nome, telefone: tel, ativo: b(c.ativo, atual?.ativo ?? 1), zap_manha: b(c.zap_manha, atual?.zap_manha ?? 1), zap_lembretes: b(c.zap_lembretes, atual?.zap_lembretes ?? 1), zap_relatorios: b(c.zap_relatorios, atual?.zap_relatorios ?? 0), so_minhas: b(c.so_minhas, atual?.so_minhas ?? 1), lembretes_todos: b(c.lembretes_todos, atual?.lembretes_todos ?? 0) } };
     };
     if (metodo === "POST" && !id) {
       const r = await ler(null); if (r.erro) return r.erro; if (r.msg) return json({ erro: r.msg, existente: r.existente || null }, r.existente ? 409 : 400);
       const v = r.v;
-      const ins = await env.DB.prepare("INSERT INTO adm_contatos(org_id,nome,telefone,ativo,zap_manha,zap_lembretes,zap_relatorios,so_minhas,criado_ms) VALUES(?,?,?,?,?,?,?,?,?)").bind(orgId, v.nome, v.telefone, v.ativo, v.zap_manha, v.zap_lembretes, v.zap_relatorios, v.so_minhas, ms).run();
+      const ins = await env.DB.prepare("INSERT INTO adm_contatos(org_id,nome,telefone,ativo,zap_manha,zap_lembretes,zap_relatorios,so_minhas,lembretes_todos,criado_ms) VALUES(?,?,?,?,?,?,?,?,?,?)").bind(orgId, v.nome, v.telefone, v.ativo, v.zap_manha, v.zap_lembretes, v.zap_relatorios, v.so_minhas, v.so_minhas ? 0 : v.lembretes_todos, ms).run();
       await garantirModelos();
       return json({ ok: true, id: ins.meta?.last_row_id, ...v }, 201);
     }
@@ -863,7 +875,7 @@ export async function rotasAgendaEquipe(request, env, k, orgId, papel, partes, a
       if (metodo === "PUT") {
         const r = await ler(atual); if (r.erro) return r.erro; if (r.msg) return json({ erro: r.msg }, 400);
         const v = r.v;
-        await env.DB.prepare("UPDATE adm_contatos SET nome=?, telefone=?, ativo=?, zap_manha=?, zap_lembretes=?, zap_relatorios=?, so_minhas=? WHERE id=?").bind(v.nome, v.telefone, v.ativo, v.zap_manha, v.zap_lembretes, v.zap_relatorios, v.so_minhas, id).run();
+        await env.DB.prepare("UPDATE adm_contatos SET nome=?, telefone=?, ativo=?, zap_manha=?, zap_lembretes=?, zap_relatorios=?, so_minhas=?, lembretes_todos=? WHERE id=?").bind(v.nome, v.telefone, v.ativo, v.zap_manha, v.zap_lembretes, v.zap_relatorios, v.so_minhas, v.so_minhas ? 0 : v.lembretes_todos, id).run();
         return json({ ok: true, ...v });
       }
       if (metodo === "DELETE") {
@@ -887,7 +899,7 @@ export async function rotasAgendaEquipe(request, env, k, orgId, papel, partes, a
     const membros = await ajudas.membros();
     if (metodo === "GET") {
       const regs = new Map((await q("SELECT * FROM adm_pessoas WHERE org_id=?", orgId)).map(p => [p.usuario_id, p]));
-      const lista = membros.filter(m0 => admin || m0.id === eu.id).map(m0 => { const r = regs.get(m0.id) || {}; return { usuario_id: m0.id, nome: m0.nome, email: m0.email, papel: m0.papel, telefone: r.telefone || "", ativo: r.ativo ?? 1, zap_manha: r.zap_manha ?? 1, zap_lembretes: r.zap_lembretes ?? 1, zap_relatorios: r.zap_relatorios ?? 1, so_minhas: r.so_minhas ?? 0, cadastrado: Boolean(r.telefone) }; });
+      const lista = membros.filter(m0 => admin || m0.id === eu.id).map(m0 => { const r = regs.get(m0.id) || {}; return { usuario_id: m0.id, nome: m0.nome, email: m0.email, papel: m0.papel, telefone: r.telefone || "", ativo: r.ativo ?? 1, zap_manha: r.zap_manha ?? 1, zap_lembretes: r.zap_lembretes ?? 1, zap_relatorios: r.zap_relatorios ?? 1, so_minhas: r.so_minhas ?? (["OWNER", "ADMIN"].includes(m0.papel) || m0.super_admin ? 0 : 1), lembretes_todos: r.lembretes_todos ?? 0, cadastrado: Boolean(r.telefone) }; });
       const env0 = await ultimosEnvios(env, orgId);
       return json({ pessoas: lista.map(x => ({ ...x, ultimo_envio: x.telefone ? env0.get(variantesTel(x.telefone)[0]) || null : null })), eu: eu.id || null });
     }
@@ -903,9 +915,13 @@ export async function rotasAgendaEquipe(request, env, k, orgId, papel, partes, a
         if (dono) return json({ erro: "Este número já está cadastrado para outra pessoa da equipe." }, 409);
       }
       const b = v => v === false || v === 0 || v === "0" ? 0 : 1;
-      await env.DB.prepare(`INSERT INTO adm_pessoas(org_id,usuario_id,telefone,ativo,zap_manha,zap_lembretes,zap_relatorios,so_minhas,atualizado_ms) VALUES(?,?,?,?,?,?,?,?,?)
-        ON CONFLICT(org_id,usuario_id) DO UPDATE SET telefone=excluded.telefone, ativo=excluded.ativo, zap_manha=excluded.zap_manha, zap_lembretes=excluded.zap_lembretes, zap_relatorios=excluded.zap_relatorios, so_minhas=excluded.so_minhas, atualizado_ms=excluded.atualizado_ms`)
-        .bind(orgId, uid, tel, b(c.ativo), b(c.zap_manha), b(c.zap_lembretes), b(c.zap_relatorios), c.so_minhas ? 1 : 0, ms).run();
+      const todos = c.so_minhas === false || c.so_minhas === 0 || c.so_minhas === "0";
+      // Sem escolha: o dono e os administradores recebem a agenda de todos; o resto, só a própria.
+      const m1 = membros.find(m0 => m0.id === uid) || {};
+      const soMinhas = c.so_minhas === undefined ? (["OWNER", "ADMIN"].includes(m1.papel) || m1.super_admin ? 0 : 1) : todos ? 0 : 1;
+      await env.DB.prepare(`INSERT INTO adm_pessoas(org_id,usuario_id,telefone,ativo,zap_manha,zap_lembretes,zap_relatorios,so_minhas,lembretes_todos,atualizado_ms) VALUES(?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(org_id,usuario_id) DO UPDATE SET telefone=excluded.telefone, ativo=excluded.ativo, zap_manha=excluded.zap_manha, zap_lembretes=excluded.zap_lembretes, zap_relatorios=excluded.zap_relatorios, so_minhas=excluded.so_minhas, lembretes_todos=excluded.lembretes_todos, atualizado_ms=excluded.atualizado_ms`)
+        .bind(orgId, uid, tel, b(c.ativo), b(c.zap_manha), b(c.zap_lembretes), b(c.zap_relatorios), soMinhas, !soMinhas && c.lembretes_todos ? 1 : 0, ms).run();
       if (tel) await garantirModelos();
       return json({ ok: true, telefone: tel });
     }
