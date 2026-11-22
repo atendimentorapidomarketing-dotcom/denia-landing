@@ -8034,17 +8034,26 @@ Botão só com texto = resposta.` })),
     if (!vivo()) return;
     const base = location.origin;
     const numeroEnvia = zap && !zap.erro && zap.conta_org ? (zap.opcoes.find(o => o.org_id === zap.conta_org) || {}).numero : null;
-    const blocos = [cabeca("WhatsApp e celular", "A lista do dia, os lembretes e as pendências chegam pelo WhatsApp que a empresa já usa — e pelo mesmo número quem recebe consulta e conclui. No iPhone, alarmes de verdade pelo app Atalhos.")];
+    // As tarefas automáticas (lembretes e lista da manhã) pararam? Avisa com o motivo e a solução.
+    const atrasoMin = zap && !zap.erro && zap.ultima_verificacao_ms ? Math.round((zap.agora_ms - zap.ultima_verificacao_ms) / 60000) : null;
+    const alertaTarefas = atrasoMin !== null && atrasoMin > 15 ? h("section", { class: "cartao vidro", style: "margin-top:12px;border-color:var(--erro,#b42318)" }, h("h3", { text: "⚠️ Os lembretes automáticos estão parados" }),
+      h("p", { class: "sub", text: `A última verificação da agenda foi há ${atrasoMin >= 120 ? Math.round(atrasoMin / 60) + " horas" : atrasoMin + " minutos"} (o normal é a cada 5 minutos). Isso acontece quando a hospedagem adormece o site sem visitas. Solução: na Hostinger, em Avançado → Cron Jobs, crie uma tarefa a cada 5 minutos com o comando curl -s "https://denia-ai.com/__denia/tique?chave=SUA_CHAVE" — troque SUA_CHAVE pelo valor de DENIA_CHAVE_SERVIDOR (cole você mesmo, não mande para ninguém).` })) : null;
+    const blocos = [alertaTarefas, cabeca("WhatsApp e celular", "A lista do dia, os lembretes e as pendências chegam pelo WhatsApp que a empresa já usa — e pelo mesmo número quem recebe consulta e conclui. No iPhone, alarmes de verdade pelo app Atalhos.")];
     // Quem recebe (sem login): nome e WhatsApp. Depois é só escolher a pessoa no compromisso.
     const nomeN = entradaTxt("", "Nome (ex.: João mecânico)"), telN = h("input", { class: "entrada", type: "tel", placeholder: "WhatsApp com DDD (ex.: 21 99999-9162)" });
     const ck = (v, rot) => h("label", { class: "fin-check" }, h("input", { type: "checkbox", checked: Boolean(v) }), " ", rot);
+    // Último envio pelo WhatsApp: deu certo (texto completo ou modelo) ou o motivo de não ter chegado.
+    const quandoEnv = ms => new Date(ms).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+    const linhaEnvio = u => !u ? h("p", { class: "prb-meta", text: "Ainda não recebeu nada pelo WhatsApp." })
+      : u.via ? h("p", { class: "prb-meta", style: "color:var(--ok,#1a7f37)", text: `✓ Último envio: ${u.tipo || "aviso"} em ${quandoEnv(u.ms)} — ${u.via === "texto" ? "mensagem completa" : "resumo por modelo aprovado"}.` })
+      : h("p", { class: "prb-meta", style: "color:var(--erro,#b42318)", text: `✗ Não chegou (${u.tipo || "aviso"}, ${quandoEnv(u.ms)}): ${u.erro}${u.ultimo_ok_ms ? ` · último que chegou: ${quandoEnv(u.ultimo_ok_ms)}` : ""}` });
     const linhasC = cts.contatos.map(c0 => {
       const opc = [ck(c0.zap_manha, "Lista do dia (manhã)"), ck(c0.zap_lembretes, "Lembretes"), ck(c0.zap_relatorios, "Meio-dia e fim do dia"), ck(c0.so_minhas, "Só os compromissos dele")];
       const val = i => opc[i].querySelector("input").checked;
-      return h("li", { class: "prb-item", style: "border-color:var(--borda)" }, h("div", {}, h("strong", { text: `${c0.nome}${c0.ativo ? "" : " (pausado)"}` }), h("p", { class: "prb-meta", text: `WhatsApp ${String(c0.telefone).replace(/^55(\d{2})(\d{4,5})(\d{4})$/, "($1) $2-$3")}` }),
+      return h("li", { class: "prb-item", style: "border-color:var(--borda)" }, h("div", {}, h("strong", { text: `${c0.nome}${c0.ativo ? "" : " (pausado)"}` }), h("p", { class: "prb-meta", text: `WhatsApp ${String(c0.telefone).replace(/^55(\d{2})(\d{4,5})(\d{4})$/, "($1) $2-$3")}` }), linhaEnvio(c0.ultimo_envio),
         h("div", { class: "fin-mes", style: "flex-wrap:wrap;gap:8px" }, ...opc),
         h("div", { class: "acoes" }, botao("Salvar", async () => { try { await adm(`contatos/${c0.id}`, { metodo: "PUT", corpo: { zap_manha: val(0), zap_lembretes: val(1), zap_relatorios: val(2), so_minhas: val(3) } }); aviso("Salvo.", "ok"); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario btn-pequeno"),
-          botao("Enviar a lista de hoje", async () => { try { const r = await adm(`contatos/${c0.id}/testar`, { metodo: "POST", corpo: {} }); aviso(r.via === "texto" ? "Enviada pelo WhatsApp." : "Enviada (modelo aprovado, com a lista do dia).", "ok"); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno"),
+          botao("Enviar a lista de hoje", async () => { try { const r = await adm(`contatos/${c0.id}/testar`, { metodo: "POST", corpo: {} }); aviso(r.via === "texto" ? "Enviada pelo WhatsApp." : "Enviada (modelo aprovado, com a lista do dia).", "ok"); } catch (e) { aviso(e.message, "erro"); } recarregarAdm(); }, "btn-secundario btn-pequeno"),
           botao("Remover", async () => { if (!(await modal({ titulo: "Remover?", conteudo: `${c0.nome} deixa de receber. Os compromissos continuam na agenda.`, confirmar: "Remover", perigo: true }))) return; try { await adm(`contatos/${c0.id}`, { metodo: "DELETE" }); equipeCache = null; recarregarAdm(); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno"))));
     });
     blocos.push(h("section", { class: "cartao vidro", style: "margin-top:12px" }, h("h3", { text: "Quem recebe no WhatsApp" }),
@@ -8062,7 +8071,7 @@ Botão só com texto = resposta.` })),
         for (const o of ops) { const i = o.querySelector("input"); corpo[i.dataset.c] = i.checked; }
         try { const r = await adm("pessoas", { metodo: "PUT", corpo }); tel.value = r.telefone || ""; aviso(r.telefone ? "WhatsApp salvo." : "Número removido.", "ok"); } catch (e) { aviso(e.message, "erro"); }
       };
-      return h("li", { class: "prb-item", style: "border-color:var(--borda)" }, h("div", {}, h("strong", { text: `${x.nome}${x.usuario_id === pes.eu ? " (você)" : ""}` }), h("p", { class: "prb-meta", text: x.email }),
+      return h("li", { class: "prb-item", style: "border-color:var(--borda)" }, h("div", {}, h("strong", { text: `${x.nome}${x.usuario_id === pes.eu ? " (você)" : ""}` }), h("p", { class: "prb-meta", text: x.email }), x.telefone ? linhaEnvio(x.ultimo_envio) : null,
         h("div", { class: "fin-mes", style: "flex-wrap:wrap;gap:8px" }, tel, ...ops, botao("Salvar", salvar, "btn-primario btn-pequeno"))));
     });
     blocos.push(h("section", { class: "cartao vidro", style: "margin-top:12px" }, h("h3", { text: admin ? "Equipe com login no WhatsApp" : "Meu WhatsApp" }),
@@ -8106,7 +8115,7 @@ Botão só com texto = resposta.` })),
           h("p", { class: "sub", text: "Limites do iPhone: a Apple não deixa nenhum site ou app criar alarmes sozinho; o Atalhos faz isso nos horários que você programar. Alarmes do relógio não somem se o compromisso for cancelado depois — apague no app Relógio. Sem ligações e sem custo." })),
         h("details", {}, h("summary", { text: "Android" }), h("p", { text: "No computador, abra o Google Agenda → Outras agendas → + → Do URL, cole o link do Calendário. Ele aparece no celular com os alertas." }))) :
         h("p", { class: "sub", text: "Crie o link: ele mostra só o que é seu (ou sem responsável) em todas as suas empresas, com alertas conforme a prioridade." })));
-    trocar(el, ...blocos);
+    trocar(el, ...blocos.filter(Boolean));
   }
 
   // ----- Relatório da equipe: filtros, quem fez o quê, Excel e PDF.

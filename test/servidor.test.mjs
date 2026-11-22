@@ -228,7 +228,12 @@ test("Servidor Node — agenda pelo WhatsApp da própria IA (Central): lista do 
   const pasta = mkdtempSync(path.join(os.tmpdir(), "denia-srv-"));
   const original = globalThis.fetch, enviados = [];
   globalThis.fetch = async (url, op = {}) => {
-    if (String(url).startsWith("https://graph.facebook.com/")) {
+    const u0 = String(url);
+    const resp = d => new Response(JSON.stringify(d), { status: 200, headers: { "content-type": "application/json" } });
+    if (/\/debug_token\?/.test(u0)) return resp({ data: { granular_scopes: [{ scope: "whatsapp_business_management", target_ids: ["999888777"] }] } });
+    if (/\/999888777\/phone_numbers/.test(u0)) return resp({ data: [{ id: "111000111" }] });
+    if (/\/999888777\/message_templates/.test(u0)) { (globalThis.__modelos ||= []).push(op.method || "GET"); return resp(op.method === "POST" ? { id: "t1", status: "PENDING" } : { data: [] }); }
+    if (u0.startsWith("https://graph.facebook.com/")) {
       try { enviados.push(JSON.parse(op.body)); } catch { enviados.push(op.body); }
       return new Response(JSON.stringify({ messages: [{ id: "wamid.x" + enviados.length }] }), { status: 200, headers: { "content-type": "application/json" } });
     }
@@ -259,6 +264,23 @@ test("Servidor Node — agenda pelo WhatsApp da própria IA (Central): lista do 
     const t = await req("/api/orgs/1/adm/zap/testar", { metodo: "POST", corpo: { contato_id: c.dados.id } });
     assert.ok([200, 201].includes(t.status), t.texto);
     assert.ok(enviados.length > antes, "o teste da agenda saiu pelo número da IA");
+    const cts = await req("/api/orgs/1/adm/contatos");
+    assert.equal(cts.dados.contatos[0].ultimo_envio.tipo, "teste");
+    assert.ok(cts.dados.contatos[0].ultimo_envio.via, "o painel mostra que chegou");
+    // Lembrete de verdade: compromisso para daqui a 30 min marcado para ele → a tarefa automática avisa pelo número da IA.
+    const fmt = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+    const pz = Object.fromEntries(fmt.formatToParts(new Date(Date.now() + 30 * 60000)).map(x => [x.type, x.value]));
+    const novo = await req("/api/orgs/1/adm/agenda", { metodo: "POST", corpo: { titulo: "Visita na casa da Dona Maria", data: `${pz.year}-${pz.month}-${pz.day}`, hora: `${pz.hour}:${pz.minute}`, aviso_min: 60, contato_id: c.dados.id } });
+    assert.ok([200, 201].includes(novo.status), novo.texto);
+    const antesL = enviados.length;
+    s.situacao.tiques.plataforma = 0; // a tarefa da plataforma roda a cada 5 min: força a próxima
+    await req("/__denia/tique?chave=" + CHAVE);
+    for (let i = 0; i < 40 && !enviados.slice(antesL).some(e => /Dona Maria/.test(JSON.stringify(e))); i++) await new Promise(r => setTimeout(r, 50));
+    assert.ok(enviados.slice(antesL).some(e => /88889162/.test(e.to || "") && /Lembrete/.test(JSON.stringify(e)) && /Dona Maria/.test(JSON.stringify(e))), "o lembrete chegou para ele pelo número da oficina");
+    // Modelos da agenda: a conta do WhatsApp (WABA) é descoberta pela chave e os modelos são criados.
+    const mod = await req("/api/orgs/1/adm/zap/modelos", { metodo: "POST", corpo: {} });
+    assert.equal(mod.status, 200, mod.texto);
+    assert.deepEqual(mod.dados.modelos.map(m0 => m0.status), ["PENDING", "PENDING"]);
     // Tirar da agenda pelo WhatsApp.
     assert.equal((await req("/ia/webhook", { metodo: "POST", corpo: msg("cancelar C" + ag.id) })).status, 200);
     let some = false;

@@ -257,16 +257,34 @@ async function lembrarUltimo(env, contaOrg, tel, tipo, id, orgId, ms) {
     .bind(contaOrg, tel, tipo, id, orgId, ms).run().catch(() => { });
 }
 // Envia a uma pessoa: texto completo se a janela de 24h estiver aberta; senão o modelo aprovado (curto).
-async function enviarPessoa(env, k, pessoa, texto, modelo) {
+async function enviarPessoa(env, k, pessoa, texto, modelo, tipo = "aviso") {
   if (!k.zapEquipe) return "";
   const conta = await contaZapDaOrg(env, pessoa.org_id);
-  return k.zapEquipe(conta, pessoa.telefone, texto, modelo).catch(e => { console.error("zap equipe", e?.message); return ""; });
+  return (await enviarRegistrando(env, k, pessoa.org_id, conta, pessoa.telefone, texto, modelo, tipo)).via;
+}
+// Envia e guarda o resultado (via texto/modelo, ou o motivo da falha) para mostrar no painel.
+export async function enviarRegistrando(env, k, orgId, conta, tel, texto, modelo, tipo) {
+  const info = {};
+  const via = await k.zapEquipe(conta, tel, texto, modelo, info).catch(e => { info.erro = e?.message || "erro"; return ""; });
+  const ms = k.agora ? k.agora(env) : Date.now();
+  await env.DB.prepare("INSERT INTO adm_zap_envios(org_id,conta_org,telefone,tipo,via,erro,ms) VALUES(?,?,?,?,?,?,?)").bind(orgId, conta, String(tel), tipo, via || null, via ? null : String(info.erro || "Não enviado.").slice(0, 400), ms).run().catch(() => { });
+  if (!via) console.warn("agenda whatsapp não enviado", tipo, info.erro || "");
+  return { via: via || "", erro: via ? null : info.erro || "Não enviado." };
+}
+// Último envio de cada telefone (para mostrar ao lado da pessoa).
+export async function ultimosEnvios(env, orgId) {
+  const r = (await env.DB.prepare("SELECT e.* FROM adm_zap_envios e JOIN (SELECT telefone, MAX(id) id FROM adm_zap_envios WHERE org_id=? GROUP BY telefone) u ON u.id=e.id").bind(orgId).all().catch(() => null))?.results || [];
+  const ok = (await env.DB.prepare("SELECT telefone, MAX(ms) ms FROM adm_zap_envios WHERE org_id=? AND via IS NOT NULL GROUP BY telefone").bind(orgId).all().catch(() => null))?.results || [];
+  const m = new Map();
+  for (const x of r) m.set(variantesTel(x.telefone)[0], { tipo: x.tipo, via: x.via, erro: x.erro, ms: x.ms });
+  for (const x of ok) { const k0 = variantesTel(x.telefone)[0]; if (m.has(k0)) m.get(k0).ultimo_ok_ms = x.ms; }
+  return m;
 }
 // Aviso de um item (lembrete antes, na hora, mudança) para as pessoas certas. Devolve quantas receberam.
 export async function avisarPessoasZap(env, k, orgId, item, texto, params, ms) {
   let n = 0;
   for (const p of await pessoasParaAviso(env, orgId, item.responsavel_id, "zap_lembretes", item.contato_id || null)) {
-    const via = await enviarPessoa(env, k, p, texto, { nome: MODELO_LEMBRETE, idioma: "pt_BR", params });
+    const via = await enviarPessoa(env, k, p, texto, { nome: MODELO_LEMBRETE, idioma: "pt_BR", params }, "lembrete");
     if (via) { n++; if (item.tipo && item.id) await lembrarUltimo(env, await contaZapDaOrg(env, orgId), p.telefone, item.tipo, item.id, orgId, ms); }
   }
   return n;
@@ -282,7 +300,7 @@ export async function avisarMudanca(env, k, orgId, item, acao, por, ms) {
     const ps = await pessoasParaAviso(env, orgId, resp, "zap_lembretes", item.contato_id || null);
     const alvo = ps.filter(p => (p.contato_id && Number(p.contato_id) === Number(item.contato_id)) || (resp && Number(p.usuario_id) === Number(resp)));
     const txt = `🔄 *Agenda atualizada*: ${item.titulo} — ${acao} por ${por?.nome || "alguém da equipe"} (${nomeDia(d, hoje)}${item.hora ? " às " + item.hora : ""}).`;
-    for (const p of alvo) await enviarPessoa(env, k, p, txt, { nome: MODELO_RESUMO, idioma: "pt_BR", params: [`${nomeDia(d, hoje)}`, `${item.titulo} foi ${acao} por ${por?.nome || "alguém da equipe"}`] });
+    for (const p of alvo) await enviarPessoa(env, k, p, txt, { nome: MODELO_RESUMO, idioma: "pt_BR", params: [`${nomeDia(d, hoje)}`, `${item.titulo} foi ${acao} por ${por?.nome || "alguém da equipe"}`] }, "mudança na agenda");
   } catch (e) { console.error("aviso de mudança", e?.message); }
 }
 
@@ -501,6 +519,18 @@ export async function cronAgendaEquipe(env, k, avisar) {
   // 1) Repetições que passaram da data sem concluir: cria a próxima (uma vez).
   for (const a of await q("SELECT * FROM adm_agenda WHERE repetir IS NOT NULL AND COALESCE(gerou_prox,0)=0 AND data < ? LIMIT 200", hoje)) if (await garantirProxima(env, "adm_agenda", a, ms, hoje)) out.repeticoes++;
   for (const t of await q("SELECT * FROM adm_tarefas WHERE repetir IS NOT NULL AND COALESCE(gerou_prox,0)=0 AND prazo IS NOT NULL AND prazo < ? LIMIT 200", hoje)) if (await garantirProxima(env, "adm_tarefas", t, ms, hoje)) out.repeticoes++;
+  // Modelos da agenda: cria sozinho os que faltam (uma vez por dia por número) e limpa o registro de envios antigo.
+  if (k.modelosAgendaZap) {
+    const contas = new Set();
+    for (const r of await q("SELECT DISTINCT org_id FROM adm_contatos WHERE ativo=1 UNION SELECT DISTINCT org_id FROM adm_pessoas WHERE ativo=1 AND telefone IS NOT NULL")) contas.add(await contaZapDaOrg(env, r.org_id));
+    for (const conta of contas) {
+      const ja = await env.DB.prepare("SELECT 1 FROM adm_zap_envios WHERE conta_org=? AND tipo='modelos' AND ms >= ?").bind(conta, ms - 20 * 3600000).first().catch(() => null);
+      if (ja) continue;
+      const r = await k.modelosAgendaZap(conta, true).catch(e => ({ erro: e?.message || "erro" }));
+      await env.DB.prepare("INSERT INTO adm_zap_envios(org_id,conta_org,telefone,tipo,via,erro,ms) VALUES(?,?,'-','modelos',?,?,?)").bind(conta, conta, r?.erro ? null : (r?.modelos || []).map(m0 => `${m0.nome}:${m0.status}`).join(", ").slice(0, 300), r?.erro ? String(r.erro).slice(0, 400) : null, ms).run().catch(() => { });
+    }
+    await env.DB.prepare("DELETE FROM adm_zap_envios WHERE ms < ?").bind(ms - 45 * 86400000).run().catch(() => { });
+  }
   // 2) Segundo aviso, NA HORA (o primeiro, "antes", já saiu pelo aviso normal). Extrema importância sempre tem.
   const agoraMin = Date.parse(`${hoje}T${horaLocal(ms)}:00Z`);
   for (const a of await q("SELECT * FROM adm_agenda WHERE feito=0 AND hora IS NOT NULL AND data=? AND avisado_hora_ms IS NULL AND aviso_min > 0 LIMIT 200", hoje)) {
@@ -575,7 +605,7 @@ export async function cronAgendaEquipe(env, k, avisar) {
           cont.push((manha.length > 1 ? p.org_nome + ": " : "") + listaCurta(d, Math.floor(650 / manha.length)));
         }
         if (partes.length) {
-          const via = await enviarPessoa(env, k, p0, partes.join("\n\n———\n\n") + "\n\nResponda: FEITO C12 · PAGO P34 · ADIAR T5 amanhã · AJUDA", { nome: MODELO_RESUMO, idioma: "pt_BR", params: [`hoje, ${br(hoje)}`, cont.join("; ").slice(0, 900)] });
+          const via = await enviarPessoa(env, k, p0, partes.join("\n\n———\n\n") + "\n\nResponda: FEITO C12 · PAGO P34 · ADIAR T5 amanhã · AJUDA", { nome: MODELO_RESUMO, idioma: "pt_BR", params: [`hoje, ${br(hoje)}`, cont.join("; ").slice(0, 900)] }, "lista do dia");
           if (via) out.manha++;
         }
       }
@@ -584,7 +614,7 @@ export async function cronAgendaEquipe(env, k, avisar) {
       if (meio.length) {
         await marcar(meio, "ultimo_meio");
         const txt = await textoPendencias(env, meio, hoje, admin, moedaDe, "📌 *Pendências do meio-dia*");
-        if (txt) { const n = (txt.match(/\[[CTP]\d+\]/g) || []).length; if (await enviarPessoa(env, k, p0, txt, { nome: MODELO_RESUMO, idioma: "pt_BR", params: ["meio-dia de hoje", `${n} pendência(s) em aberto`] })) out.meio++; }
+        if (txt) { const n = (txt.match(/\[[CTP]\d+\]/g) || []).length; if (await enviarPessoa(env, k, p0, txt, { nome: MODELO_RESUMO, idioma: "pt_BR", params: ["meio-dia de hoje", `${n} pendência(s) em aberto`] }, "meio-dia")) out.meio++; }
       }
       // Fim do dia: concluídas (quem fez e a hora), contas confirmadas, atrasadas e transferidas.
       const fim = lista.filter(p => p.zap_relatorios && p.r_fim && (p.ultimo_fim || "") < hoje && hora >= p.h_fim);
@@ -595,7 +625,7 @@ export async function cronAgendaEquipe(env, k, avisar) {
           const r = await fechamentoDoDia(env, p.org_id, hoje, admin(p), await moedaDe(p.org_id), p.so_minhas && !p.contato_id ? p.usuario_id : null, p.contato_id && p.so_minhas ? p.contato_id : null);
           if (!r.vazio) { partes.push(`🌙 *Fechamento de ${br(hoje)}*${fim.length > 1 || lista.length > 1 ? " — " + p.org_nome : ""}\n${r.texto}`); cont.push(r.resumo); }
         }
-        if (partes.length && await enviarPessoa(env, k, p0, partes.join("\n\n———\n\n"), { nome: MODELO_RESUMO, idioma: "pt_BR", params: [`hoje, ${br(hoje)}`, cont.join("; ").slice(0, 900)] })) out.fim++;
+        if (partes.length && await enviarPessoa(env, k, p0, partes.join("\n\n———\n\n"), { nome: MODELO_RESUMO, idioma: "pt_BR", params: [`hoje, ${br(hoje)}`, cont.join("; ").slice(0, 900)] }, "fim do dia")) out.fim++;
       }
     } catch (e) { console.error("agenda equipe", e?.message); }
   }
@@ -805,7 +835,10 @@ export async function rotasAgendaEquipe(request, env, k, orgId, papel, partes, a
   // Quem recebe no WhatsApp sem precisar de login (ex.: o mecânico, a secretária, o cliente da oficina).
   if (area === "contatos") {
     const id = /^\d+$/.test(partes[1] || "") ? Number(partes[1]) : null;
-    if (metodo === "GET" && !id) return json({ contatos: await q("SELECT * FROM adm_contatos WHERE org_id=? ORDER BY ativo DESC, nome", orgId) });
+    if (metodo === "GET" && !id) {
+      const env0 = await ultimosEnvios(env, orgId);
+      return json({ contatos: (await q("SELECT * FROM adm_contatos WHERE org_id=? ORDER BY ativo DESC, nome", orgId)).map(c0 => ({ ...c0, ultimo_envio: env0.get(variantesTel(c0.telefone)[0]) || null })) });
+    }
     const ler = async atual => {
       const { c, erro } = await corpo(); if (erro) return { erro };
       const nome = re(c.nome ?? atual?.nome, 80);
@@ -842,9 +875,9 @@ export async function rotasAgendaEquipe(request, env, k, orgId, papel, partes, a
       if (partes[2] === "testar" && metodo === "POST") {
         const cfg = await ajudas.config();
         const d = await itensDoDia(env, orgId, hoje, hoje, { contatoId: id, soMinhas: Boolean(atual.so_minhas), fin: false });
-        const via = k.zapEquipe ? await k.zapEquipe(Number(cfg.zap_org_id) || orgId, atual.telefone, textoDoDiaEquipe(d, { hoje }), { nome: MODELO_RESUMO, idioma: "pt_BR", params: [`hoje, ${br(hoje)}`, listaCurta(d)] }).catch(() => "") : "";
-        if (!via) return json({ erro: "Não consegui enviar. Confira se o WhatsApp da empresa está conectado e se os modelos já foram aprovados pela Meta (WhatsApp e celular). Se a pessoa mandar um “oi” para o número da empresa, a lista chega na hora." }, 502);
-        return json({ ok: true, via });
+        const via = k.zapEquipe ? await enviarRegistrando(env, k, orgId, Number(cfg.zap_org_id) || orgId, atual.telefone, textoDoDiaEquipe(d, { hoje }), { nome: MODELO_RESUMO, idioma: "pt_BR", params: [`hoje, ${br(hoje)}`, listaCurta(d)] }, "teste") : { via: "", erro: "WhatsApp indisponível." };
+        if (!via.via) return json({ erro: `Não consegui enviar: ${via.erro} Peça para ${atual.nome} mandar um “oi” para o número da empresa — a lista chega na hora — e confira os modelos em WhatsApp e celular.` }, 502);
+        return json({ ok: true, via: via.via });
       }
     }
   }
@@ -855,7 +888,8 @@ export async function rotasAgendaEquipe(request, env, k, orgId, papel, partes, a
     if (metodo === "GET") {
       const regs = new Map((await q("SELECT * FROM adm_pessoas WHERE org_id=?", orgId)).map(p => [p.usuario_id, p]));
       const lista = membros.filter(m0 => admin || m0.id === eu.id).map(m0 => { const r = regs.get(m0.id) || {}; return { usuario_id: m0.id, nome: m0.nome, email: m0.email, papel: m0.papel, telefone: r.telefone || "", ativo: r.ativo ?? 1, zap_manha: r.zap_manha ?? 1, zap_lembretes: r.zap_lembretes ?? 1, zap_relatorios: r.zap_relatorios ?? 1, so_minhas: r.so_minhas ?? 0, cadastrado: Boolean(r.telefone) }; });
-      return json({ pessoas: lista, eu: eu.id || null });
+      const env0 = await ultimosEnvios(env, orgId);
+      return json({ pessoas: lista.map(x => ({ ...x, ultimo_envio: x.telefone ? env0.get(variantesTel(x.telefone)[0]) || null : null })), eu: eu.id || null });
     }
     if (metodo === "PUT") {
       const { c, erro } = await corpo(); if (erro) return erro;
@@ -919,7 +953,8 @@ export async function rotasAgendaEquipe(request, env, k, orgId, papel, partes, a
       if (k.numeroDaIA && await k.numeroDaIA(orgId).catch(() => false) && !opcoes.some(o0 => o0.org_id === orgId)) opcoes.unshift({ org_id: orgId, nome: "WhatsApp do atendimento com IA desta empresa", numero: "" });
       let modelos = null;
       if (k.modelosAgendaZap && opcoes.some(o => o.org_id === contaOrg)) modelos = await k.modelosAgendaZap(contaOrg, false).catch(e => ({ erro: e.message }));
-      return json({ conta_org: opcoes.some(o => o.org_id === contaOrg) ? contaOrg : null, opcoes, modelos, config: { hora_resumo: cfg.hora_resumo ?? 8, hora_meio: cfg.hora_meio ?? 12, hora_fim: cfg.hora_fim ?? 18, transferir: cfg.transferir ?? 1, aviso_fin_dias: cfg.aviso_fin_dias ?? 2, relatorio_meio: cfg.relatorio_meio ?? 1, relatorio_fim: cfg.relatorio_fim ?? 1 } });
+      const ultimaVerificacao = Number((await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave='agenda_cron_ms'").first().catch(() => null))?.valor) || null;
+      return json({ conta_org: opcoes.some(o => o.org_id === contaOrg) ? contaOrg : null, opcoes, modelos, ultima_verificacao_ms: ultimaVerificacao, agora_ms: ms, config: { hora_resumo: cfg.hora_resumo ?? 8, hora_meio: cfg.hora_meio ?? 12, hora_fim: cfg.hora_fim ?? 18, transferir: cfg.transferir ?? 1, aviso_fin_dias: cfg.aviso_fin_dias ?? 2, relatorio_meio: cfg.relatorio_meio ?? 1, relatorio_fim: cfg.relatorio_fim ?? 1 } });
     }
     if (metodo === "PUT" && !partes[1]) {
       const { c, erro } = await corpo(); if (erro) return erro;
@@ -949,9 +984,9 @@ export async function rotasAgendaEquipe(request, env, k, orgId, papel, partes, a
       if (!p) return json({ erro: cid ? "Contato não encontrado." : "Cadastre primeiro o seu WhatsApp na lista da equipe." }, 400);
       const d = await itensDoDia(env, orgId, hoje, hoje, cid ? { contatoId: cid, soMinhas: Boolean(p.so_minhas), fin: false } : { pessoaId: eu.id, soMinhas: Boolean(p.so_minhas), fin: admin, finDias: Number(cfg.aviso_fin_dias ?? 2) });
       const moeda = (await env.DB.prepare("SELECT moeda FROM fin_config WHERE org_id=?").bind(orgId).first().catch(() => null))?.moeda || "BRL";
-      const via = k.zapEquipe ? await k.zapEquipe(contaOrg, p.telefone, textoDoDiaEquipe(d, { moeda, hoje }), { nome: MODELO_RESUMO, idioma: "pt_BR", params: [`hoje, ${br(hoje)}`, listaCurta(d)] }).catch(() => "") : "";
-      if (!via) return json({ erro: "Não consegui enviar. Se você nunca escreveu para este número, mande um “oi” para ele pelo WhatsApp (abre a janela de 24 horas) ou aguarde a Meta aprovar os modelos." }, 502);
-      return json({ ok: true, via });
+      const via = k.zapEquipe ? await enviarRegistrando(env, k, orgId, contaOrg, p.telefone, textoDoDiaEquipe(d, { moeda, hoje }), { nome: MODELO_RESUMO, idioma: "pt_BR", params: [`hoje, ${br(hoje)}`, listaCurta(d)] }, "teste") : { via: "", erro: "WhatsApp indisponível." };
+      if (!via.via) return json({ erro: `Não consegui enviar: ${via.erro} Mande um “oi” para o número da empresa pelo WhatsApp (abre a janela de 24 horas) ou aguarde a Meta aprovar os modelos.` }, 502);
+      return json({ ok: true, via: via.via });
     }
   }
 
