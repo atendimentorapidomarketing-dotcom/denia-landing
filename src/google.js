@@ -195,7 +195,7 @@ export async function rotasGoogle(request, env, k, orgId, papel, resto) {
     if (!reg || reg.o !== orgId || reg.u !== sessao.usuario.id || !reg.locais) return json({ erro: "A conexão expirou. Clique em Conectar Google de novo." }, 410);
     // Quais já estão na DENIA (para não duplicar e já virem desmarcados).
     const ja = new Map(((await env.DB.prepare("SELECT g.local_nome, m.nome FROM plt_mk_google g LEFT JOIN plt_mk_marcas m ON m.id=g.marca_id WHERE g.org_id=?").bind(orgId).all()).results || []).map(x => [x.local_nome, x.nome || "um perfil"]));
-    return json({ marca_id: reg.m, locais: reg.locais.map(l => ({ id: l.local, titulo: l.titulo, endereco: l.endereco, conectado_em: ja.get(l.local) || null })) });
+    return json({ marca_id: reg.m, locais: reg.locais.map(l => ({ id: l.local, titulo: l.titulo, endereco: l.endereco, ...(ja.has(l.local) ? { conectado_em: ja.get(l.local) } : {}) })) });
   }
   if (resto === "google/escolher" && metodo === "POST") {
     if (!pode(papel, "ADMIN")) return json({ erro: "Somente administradores conectam contas." }, 403);
@@ -214,7 +214,8 @@ export async function rotasGoogle(request, env, k, orgId, papel, resto) {
       let marcaId = reg.m;
       // Perfil do Google que já está na DENIA: atualiza a conexão no mesmo perfil (não cria outro igual).
       const existente = await env.DB.prepare("SELECT marca_id FROM plt_mk_google WHERE org_id=? AND local_nome=?").bind(orgId, l.local).first();
-      if (existente) marcaId = existente.marca_id;
+      // (O primeiro vai sempre para o perfil que pediu a conexão, como antes.)
+      if (i > 0 && existente) marcaId = existente.marca_id;
       else if (i > 0) marcaId = (await env.DB.prepare("INSERT INTO plt_mk_marcas(org_id,nome,ativa,criado_ms) VALUES(?,?,1,?) RETURNING id").bind(orgId, String(l.titulo || "Novo perfil").slice(0, 200), agora(env)).first()).id;
       else if (corpo.renomear === true) await env.DB.prepare("UPDATE plt_mk_marcas SET nome=? WHERE id=? AND org_id=?").bind(String(l.titulo || "").slice(0, 200) || "Novo perfil", marcaId, orgId).run();
       await env.DB.prepare(`INSERT INTO plt_mk_google(org_id,marca_id,conta_nome,local_nome,local_titulo,token_cifrado,criado_por,criado_ms,atualizado_ms) VALUES(?,?,?,?,?,?,?,?,?)
