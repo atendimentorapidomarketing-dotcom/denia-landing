@@ -4577,6 +4577,23 @@ test("Notificações no celular — inscrição, conteúdo cifrado (RFC 8291) co
   assert.match(av.titulo, /Post de segunda não saiu no Instagram/); assert.equal(av.url, "/app#/instagram/publicacoes"); assert.equal(av.urgente, true);
   await rodar();
   assert.equal(p.pushes.length, 2, "o mesmo aviso não chega de novo");
+  // Agendamento novo (área da agenda) não vira notificação.
+  await registrarProblema(p.env, 1, { chave: "agenda_nova", area: "AGENDA", gravidade: "MEDIA", titulo: "Novo agendamento: corte com Ana" });
+  await rodar();
+  assert.equal(p.pushes.length, 2, "marcar compromisso não notifica");
+  // Lembrete do compromisso: toca como alarme no celular do responsável (no "avisar antes" e na hora).
+  const eu = (await p.req("/api/eu", { quem: "admin" })).dados.usuario.id;
+  const fmt = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+  const pz = Object.fromEntries(fmt.formatToParts(new Date(relogio + 5 * 60000 + 30 * 60000)).map(x => [x.type, x.value]));
+  await p.req("/api/eu", { quem: "admin" });
+  const c = await p.req("/api/orgs/1/adm/agenda", { metodo: "POST", quem: "admin", corpo: { titulo: "Reunião com o banco", data: `${pz.year}-${pz.month}-${pz.day}`, hora: `${pz.hour}:${pz.minute}`, aviso_min: 30, responsavel_id: eu, local: "Agência centro" } });
+  assert.equal(c.status, 201, JSON.stringify(c.dados));
+  assert.equal(p.pushes.length, 2, "criar o compromisso não notifica");
+  await rodar();
+  const al = await ler(p.pushes.at(-1));
+  assert.match(al.titulo, /Reunião com o banco/); assert.equal(al.alarme, true); assert.match(al.texto, /Começa às .*Agência centro/);
+  relogio += 25 * 60000; await rodar();
+  assert.match((await ler(p.pushes.at(-1))).titulo, /Agora \(\d\d:\d\d\): Reunião com o banco/, "e de novo na hora");
   // Aparelho que desinstalou (410): sai da lista.
   p.push = () => 410;
   await p.req("/api/push/testar", { metodo: "POST", quem: "admin", corpo: {} });

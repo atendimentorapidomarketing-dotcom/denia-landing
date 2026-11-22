@@ -1550,6 +1550,8 @@ export async function adminDoCron(env, k) {
     const texto = `${selo}${a.titulo}\n${quando}${a.local ? "\nLocal: " + a.local : ""}${a.quem ? "\nCom: " + a.quem : ""}${a.obs ? "\n\n" + a.obs : ""}${k.base ? `\n\nAgenda: ${k.base}/app#/admin/agenda` : ""}`;
     const zapTxt = `🔔 ${selo ? "*" + selo.replace(/ — $/, "") + "*\n" : ""}*Lembrete${a.tipo === "LEMBRETE" ? "" : " de compromisso"}*: ${a.titulo}\n${quando}${a.local ? "\nLocal: " + a.local : ""}${a.obs ? "\n" + a.obs : ""}\n\nResponda OK quando concluir. [C${a.id}]`;
     out.avisos += await avisar(a.org_id, `${selo ? selo.replace(/ — $/, ": ") : "Lembrete: "}${a.titulo}${a.hora ? " às " + a.hora : ""}`, texto, a.responsavel_id, [`${prio === "EXTREMA" ? "URGENTE: " : ""}${a.titulo}`, quando], { zap: { item: { tipo: "C", id: a.id, responsavel_id: a.responsavel_id, contato_id: a.contato_id }, texto: zapTxt } });
+    // No celular (app da DENIA): toca como alarme no "avisar antes" (ou na hora, se o aviso for na hora).
+    if (k.pushAgenda) await k.pushAgenda(a.org_id, a.responsavel_id, a.contato_id, { titulo: `⏰ ${selo}${a.titulo}`.slice(0, 120), texto: `${a.hora && avisoMin ? `Começa às ${a.hora}` : a.hora ? `Agora, ${a.hora}` : "Hoje (dia todo)"}${a.local ? " · " + a.local : ""}${a.quem ? " · com " + a.quem : ""}`.slice(0, 200), url: "/app#/admin/agenda", tag: "ag" + a.id }).catch(e => console.error("alarme agenda", e?.message));
   }
   // Tarefas: no dia do prazo e no dia de cobrar retorno (uma vez por dia).
   if (hora >= 8) {

@@ -541,7 +541,12 @@
     window.addEventListener("pageshow", e => { if (e.persisted) conferirVersao(true); });
     setInterval(() => { if (document.visibilityState === "visible") conferirVersao(false); }, 10 * 60000);
     // Notificação tocada com o app já aberto: vai direto para o aviso.
-    if ("serviceWorker" in navigator) navigator.serviceWorker.addEventListener("message", e => { if (e.data && e.data.abrir) location.href = e.data.abrir; });
+    if ("serviceWorker" in navigator) navigator.serviceWorker.addEventListener("message", e => {
+      if (!e.data) return;
+      if (e.data.abrir) location.href = e.data.abrir;
+      if (e.data.alarme) tocarAlarme(e.data.alarme);
+      if (e.data.pararAlarme) pararAlarme();
+    });
     // Desenha a primeira tela na hora; a conferência da chave da IA corre junto (e só redesenha o Painel se faltar a chave).
     navegar();
     verificarIa().then(() => { if (estado.iaLigada === false && rotaAtual().nome === "painel") navegar(); });
@@ -1665,6 +1670,37 @@
   // ---------------------------------------------------------------------------
 
   const AREAS_PROBLEMA = [["", "Todos"], ["WHATSAPP", "Mensagens"], ["CLIENTES", "Clientes"], ["PUBLICACOES", "Postagens"], ["TEMPORADA", "Temporada"], ["AGENDA", "Agendamentos"], ["CENTRAL", "IA da Central"], ["AVISOS", "Avisos para a equipe"], ["SISTEMA", "Sistema"]];
+  // ----- Alarme do lembrete com a DENIA aberta: som repetido e vibração até tocar em "Parar" (no máximo 2 minutos).
+  let alarmeAtivo = null;
+  function pararAlarme() {
+    if (!alarmeAtivo) return;
+    clearInterval(alarmeAtivo.timer); clearTimeout(alarmeAtivo.fim);
+    try { alarmeAtivo.ctx.close(); } catch { /* já fechado */ }
+    if (navigator.vibrate) navigator.vibrate(0);
+    alarmeAtivo.caixa.remove(); alarmeAtivo = null;
+  }
+  function tocarAlarme(d) {
+    pararAlarme();
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    const ctx = Ctx ? new Ctx() : null;
+    const bip = () => {
+      if (navigator.vibrate) navigator.vibrate([700, 200, 700]);
+      if (!ctx) return;
+      if (ctx.state === "suspended") ctx.resume().catch(() => { });
+      [0, 0.28, 0.56].forEach(t0 => {
+        const o = ctx.createOscillator(), g = ctx.createGain();
+        o.type = "square"; o.frequency.value = t0 === 0.28 ? 1175 : 880;
+        g.gain.setValueAtTime(0.0001, ctx.currentTime + t0); g.gain.exponentialRampToValueAtTime(0.35, ctx.currentTime + t0 + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + t0 + 0.24);
+        o.connect(g).connect(ctx.destination); o.start(ctx.currentTime + t0); o.stop(ctx.currentTime + t0 + 0.26);
+      });
+    };
+    const caixa = h("div", { class: "alarme-tela", role: "alertdialog", "aria-label": "Lembrete" },
+      h("div", { class: "alarme-cartao" }, h("div", { class: "alarme-sino", text: "⏰" }), h("strong", { text: d.titulo || "Lembrete" }), d.texto ? h("p", { text: d.texto }) : null,
+        h("div", { class: "acoes", style: "justify-content:center" }, botao("Parar alarme", () => pararAlarme(), "btn-primario"), botao("Ver na agenda", () => { pararAlarme(); location.hash = "#/admin/agenda"; }, "btn-secundario"))));
+    document.body.appendChild(caixa);
+    bip();
+    alarmeAtivo = { ctx, caixa, timer: setInterval(bip, 1500), fim: setTimeout(pararAlarme, 120000) };
+  }
   // ----- Notificações no celular (do próprio app da DENIA na tela inicial; sem loja, sem custo).
   const suportaPush = () => "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
   const ehIphone = () => /iPhone|iPad|iPod/i.test(navigator.userAgent || "");

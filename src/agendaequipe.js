@@ -552,6 +552,7 @@ export async function cronAgendaEquipe(env, k, avisar) {
     const p = prioridadeValida(a.prioridade);
     const txt = `${p === "EXTREMA" ? "🚨 *EXTREMA IMPORTÂNCIA* — " : p === "ALTA" ? "⚠️ " : "⏰ "}*Agora (${a.hora})*: ${a.titulo}${a.local ? "\nLocal: " + a.local : ""}\n\nResponda OK quando concluir. [C${a.id}]`;
     out.na_hora += await avisarPessoasZap(env, k, a.org_id, { tipo: "C", id: a.id, responsavel_id: a.responsavel_id, contato_id: a.contato_id }, txt, [`${p === "EXTREMA" ? "URGENTE: " : ""}${a.titulo}`, `agora, ${a.hora}`], ms);
+    if (k.pushAgenda) await k.pushAgenda(a.org_id, a.responsavel_id, a.contato_id, { titulo: `${p === "EXTREMA" ? "🚨" : "⏰"} Agora (${a.hora}): ${a.titulo}`.slice(0, 120), texto: `${a.local ? "Local: " + a.local : "Está na hora."}${a.quem ? " · com " + a.quem : ""}`.slice(0, 200), url: "/app#/admin/agenda", tag: "ag" + a.id + "h" }).catch(e => console.error("alarme agenda", e?.message));
     if (p === "EXTREMA" && avisar) await avisar(a.org_id, `🚨 Agora: ${a.titulo}`, `${a.titulo}\nAgora, ${a.hora}${a.local ? "\nLocal: " + a.local : ""}`, a.responsavel_id, null, { semZap: true }).catch(() => 0);
   }
   // 3) Contas com aviso antecipado ou de extrema/alta importância: aviso individual ao responsável, uma vez.
