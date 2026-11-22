@@ -3091,7 +3091,27 @@ async function processarPrestador(c, tel, id, msgs, { apenasRegistrar, chaveLote
   if (!consulta && abertas.length > 1 && !msgs.every(m => !m.mediaId && ehMensagemSocial(m.conteudo))) consulta = await identificarCasoComIA(c, abertas, msgs, textoTodo, pessoa, anexos);
 
   for (const m of msgs) await registrarMensagem(c, { pessoaId: pessoa?.id, casoId: consulta?.caso_id, wamid: m.wamid, direcao: "ENTRADA", origem: "WHATSAPP", tipo: String(m.tipo || "text").toUpperCase(), conteudo: m.conteudo });
-  if (apenasRegistrar || await estaPausado(c, tel)) return;
+  if (apenasRegistrar) return;
+  // O técnico avisou que saiu para o cliente ("a caminho", "saindo agora", "chego em 20 min"), ou respondeu "sim" quando
+  // alguém da equipe (ou a DENIA) perguntou se ele já está a caminho: o cliente fica sabendo na hora — mesmo com a
+  // equipe na conversa (o aviso vai para o cliente, não para o profissional).
+  if (consulta && !msgs.some(m => m.mediaId)) {
+    const casoAC = await carregarCasoPorId(c, consulta.caso_id);
+    if (casoAC && ["AGENDADO", "EM_ANDAMENTO"].includes(casoAC.etapa)) {
+      const perguntaCaminho = await perguntaSobreCaminho(c, pessoa?.id, msgs);
+      const respondeuSim = perguntaCaminho && RE_SIM_CAMINHO.test(norm(textoTodo)) && !/\b(nao|ainda nao|daqui a pouco|mais tarde|depois)\b/.test(norm(textoTodo));
+      if (RE_A_CAMINHO.test(textoTodo) && !/\b(nao|ainda nao)\b/.test(norm(textoTodo)) || respondeuSim) {
+        const prev = (textoTodo.match(/chego em (\d+\s*(?:min(?:utos)?|h(?:ora)?s?))/i) || [])[1] || "";
+        const r = await avisarTecnicoACaminho(c, casoAC.casoId, { previsao: prev ? `cerca de ${prev}` : "", autor: respondeuSim ? "profissional respondeu à pergunta da equipe" : "profissional pelo WhatsApp" });
+        if (r.ok) {
+          if (!(await estaPausado(c, tel))) await enviarAgoraAoPrestador(c, { consulta, texto: "Combinado! Já avisei o cliente que você está a caminho. 👍", chave: "acaminho-ok:" + chaveLote });
+          else await alertarEquipe(c, `🚗 ${consulta.prestador_nome || "O profissional"} confirmou que está a caminho de ${casoAC.fatos.bairro || "o cliente"}: o cliente foi avisado pelo WhatsApp.`, "acaminho-eq:" + chaveLote, casoAC.casoId).catch(() => { });
+          return;
+        }
+      }
+    }
+  }
+  if (await estaPausado(c, tel)) return;
   if (!abertas.length) return responderProfissionalSemCaso(c, tel, pessoa, prest, msgs, textoTodo, chaveLote);
   // Ele ainda não viu a pergunta da DENIA (estava guardada): não responde agora; a pergunta sai em seguida, com a data.
   if (!consulta && !vistas.length) { await evento(c, null, "AGUARDA_PERGUNTA_GUARDADA", `${tel} escreveu antes de ver a pergunta guardada: só registrado.`).catch(() => { }); return; }
@@ -3119,12 +3139,6 @@ async function processarPrestador(c, tel, id, msgs, { apenasRegistrar, chaveLote
 
   const caso = await carregarCasoPorId(c, consulta.caso_id);
   if (!caso) return;
-  // O técnico avisou que saiu para o cliente ("a caminho", "saindo agora", "chego em 20 min"): o cliente fica sabendo na hora.
-  if (["AGENDADO", "EM_ANDAMENTO"].includes(caso.etapa) && RE_A_CAMINHO.test(textoTodo) && !msgs.some(m => m.mediaId)) {
-    const prev = (textoTodo.match(/chego em (\d+\s*(?:min(?:utos)?|h(?:ora)?s?))/i) || [])[1] || "";
-    const r = await avisarTecnicoACaminho(c, caso.casoId, { previsao: prev ? `cerca de ${prev}` : "", autor: "profissional pelo WhatsApp" });
-    if (r.ok) { await enviarAgoraAoPrestador(c, { consulta, texto: "Combinado! Já avisei o cliente que você está a caminho. 👍", chave: "acaminho-ok:" + chaveLote }); return; }
-  }
   // "ok", "beleza", "obrigado" sem anexo: não gasta IA. Aguardando confirmação → vale como confirmação; senão só registra.
   if (msgs.every(m => !m.mediaId && ehMensagemSocial(m.conteudo))) {
     if (caso.etapa === "AGUARDANDO_CONFIRMACAO_PRESTADOR" && /\b(ok+|okay|blz|beleza|certo|combinado|fechado|perfeito|show|tranquilo|joia|pode deixar)\b/i.test(norm(textoTodo)))
@@ -3191,6 +3205,17 @@ async function avisarTecnicoACaminho(c, casoId, { previsao = "", autor = "" } = 
   await registrarMensagem(c, { pessoaId: cliente?.id, casoId, wamid: r.id, direcao: "SAIDA", origem: "SISTEMA", conteudo: texto });
   await evento(c, casoId, "A_CAMINHO", `Cliente avisado que o técnico está a caminho (${autor || "sistema"})`, { previsao });
   return { ok: true, texto };
+}
+// A última mensagem enviada a ele (pela equipe no celular ou pela DENIA), há menos de 1 hora, perguntou se ele já saiu?
+const RE_PERGUNTA_CAMINHO = /(a caminho|j[aá] saiu|ja esta indo|j[aá] est[aá] indo|est[aá] indo|saindo|vai sair|que horas (voc[eê] )?chega|previs[aã]o de chegada|chegando)/i;
+const RE_SIM_CAMINHO = /^(sim|s|isso|ja|estou|to|to sim|estou sim|ja sai|sai|saindo|ja estou|positivo|indo|to indo|estou indo|sim senhora?|sim,? (ja|estou|to)|ja sim|ja,? (estou|to)|chegando)\b/;
+async function perguntaSobreCaminho(c, pessoaId, msgs) {
+  if (!pessoaId) return false;
+  const wamids = msgs.map(m => m.wamid).filter(Boolean);
+  const ult = await c.db.prepare(`SELECT conteudo, criado_em FROM mensagens WHERE empresa_id=? AND pessoa_id=? AND UPPER(direcao)='SAIDA' ${wamids.length ? `AND COALESCE(whatsapp_message_id,'') NOT IN (${wamids.map(() => "?").join(",")})` : ""} ORDER BY id DESC LIMIT 1`).bind(EMPRESA_ID, pessoaId, ...wamids).first().catch(() => null);
+  if (!ult) return false;
+  const em = Date.parse(String(ult.criado_em || "").replace(" ", "T") + "Z");
+  return Number.isFinite(em) && c.agora() - em < 60 * 60000 && RE_PERGUNTA_CAMINHO.test(String(ult.conteudo || ""));
 }
 const RE_A_CAMINHO = /\b(a caminho|to a caminho|tô a caminho|estou a caminho|saindo agora|sa[ií] agora|j[aá] sa[ií]|indo pra[ia]? (?:l[aá]|cliente|casa)|estou indo|t[oô] indo|chego em \d+|chegando)\b/i;
 

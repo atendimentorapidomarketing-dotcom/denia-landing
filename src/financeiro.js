@@ -719,6 +719,16 @@ export async function rotasFinanceiro(request, env, k, orgId, papel, resto) {
   }
   if (partes[0] === "historico" && metodo === "GET") return json({ historico: (await env.DB.prepare("SELECT * FROM fin_log WHERE org_id=? ORDER BY ms DESC LIMIT 300").bind(orgId).all()).results || [] });
 
+  // Ganhos e gastos fixos: os que a empresa cadastrou (qualquer ramo) e, onde existirem, os aluguéis recebidos.
+  if (partes[0] === "fixos" && metodo === "GET") {
+    const rec = (await env.DB.prepare("SELECT * FROM fin_recorrente WHERE org_id=? AND ativo=1 ORDER BY tipo, descricao").bind(orgId).all()).results || [];
+    const alug = (await env.DB.prepare("SELECT id, nome, unidade, aluguel_cent, condominio_cent, outras_cent, dia_venc, periodicidade, ativo FROM adm_locatarios WHERE org_id=? AND ativo=1 ORDER BY nome").bind(orgId).all().catch(() => null))?.results || [];
+    const itens = [...rec.map(r0 => ({ origem: "fixo", id: r0.id, tipo: r0.tipo, nome: r0.descricao, valor_cent: r0.valor_cent, dia: r0.dia, freq: r0.freq || "mensal", dia_semana: r0.dia_semana, categoria: r0.categoria, contato: r0.contato, ate_mes: r0.ate_mes })),
+      ...alug.map(a => ({ origem: "aluguel", id: a.id, tipo: "ENTRADA", nome: `Aluguel — ${a.nome}${a.unidade ? " (" + a.unidade + ")" : ""}`, valor_cent: (a.aluguel_cent || 0) + (a.condominio_cent || 0) + (a.outras_cent || 0), dia: a.dia_venc, freq: a.periodicidade === "semanal" ? "semanal" : "mensal", categoria: "Aluguéis recebidos", contato: a.nome }))];
+    const mensal = i => i.freq === "semanal" ? i.valor_cent * 52 / 12 : i.freq === "quinzenal" ? i.valor_cent * 2 : i.freq === "bimestral" ? i.valor_cent / 2 : i.freq === "trimestral" ? i.valor_cent / 3 : i.freq === "semestral" ? i.valor_cent / 6 : i.freq === "anual" ? i.valor_cent / 12 : i.valor_cent;
+    const somaM = t => Math.round(itens.filter(i => i.tipo === t).reduce((a, i) => a + mensal(i), 0));
+    return json({ itens, por_mes: { ganhos: somaM("ENTRADA"), gastos: somaM("SAIDA"), saldo: somaM("ENTRADA") - somaM("SAIDA") } });
+  }
   if (partes[0] === "recorrentes") {
     if (metodo === "GET" && !partes[1]) return json({ recorrentes: (await env.DB.prepare("SELECT * FROM fin_recorrente WHERE org_id=? ORDER BY ativo DESC, tipo, descricao").bind(orgId).all()).results || [] });
     if (metodo === "POST" && !partes[1]) {
@@ -733,8 +743,21 @@ export async function rotasFinanceiro(request, env, k, orgId, papel, resto) {
       return json({ ok: true, id: r.meta?.last_row_id }, 201);
     }
     if (/^\d+$/.test(partes[1] || "") && (metodo === "DELETE" || metodo === "PUT")) {
-      const ativo = metodo === "PUT" ? ((await lerCorpo(request)).corpo?.ativo ? 1 : 0) : 0;
-      await env.DB.prepare("UPDATE fin_recorrente SET ativo=? WHERE id=? AND org_id=?").bind(ativo, Number(partes[1]), orgId).run();
+      const id = Number(partes[1]);
+      const atual = await env.DB.prepare("SELECT * FROM fin_recorrente WHERE id=? AND org_id=?").bind(id, orgId).first();
+      if (!atual) return json({ erro: "Não encontrado." }, 404);
+      const corpo = metodo === "PUT" ? (await lerCorpo(request)).corpo || {} : {};
+      // Editar o ganho ou gasto fixo (vale para os próximos meses; o que já foi lançado não muda).
+      if (metodo === "PUT" && corpo.descricao !== undefined) {
+        const v = validar({ tipo: atual.tipo, descricao: corpo.descricao, valor: corpo.valor, data: hoje, categoria: corpo.categoria ?? atual.categoria, contato: corpo.contato ?? atual.contato });
+        if (typeof v === "string") return json({ erro: v }, 400);
+        const dia = Math.min(Math.max(1, Number(corpo.dia) || atual.dia || 5), 31);
+        await env.DB.prepare("UPDATE fin_recorrente SET descricao=?, valor_cent=?, categoria=?, contato=?, dia=?, ate_mes=?, ativo=1 WHERE id=?").bind(v.descricao, v.valor_cent, v.categoria, v.contato, dia, mesValido(corpo.ate_mes) ? corpo.ate_mes : null, id).run();
+        await registrar("editou ganho/gasto fixo", null, { de: { descricao: atual.descricao, valor: atual.valor_cent, dia: atual.dia }, para: { descricao: v.descricao, valor: v.valor_cent, dia } });
+        return json({ ok: true });
+      }
+      const ativo = metodo === "PUT" ? (corpo.ativo ? 1 : 0) : 0;
+      await env.DB.prepare("UPDATE fin_recorrente SET ativo=? WHERE id=? AND org_id=?").bind(ativo, id, orgId).run();
       return json({ ok: true });
     }
   }

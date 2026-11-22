@@ -5596,7 +5596,7 @@ Botão só com texto = resposta.` })),
     if (!lista.length) { semMarcas(el); return; }
     const meta = await estadoMeta(true);
     if (!vivo()) return;
-    const abas = [["visao", "Visão geral"], ["checagem", "Checagem do perfil"], ["analise", "O que funciona"], ["publicacoes", "Publicações"], ["comentarios", "Comentários"], ["horarios", "Melhores horários"], ...(canal === "instagram" ? [["stories", "Stories"], ["marcacoes", "Marcações"], ["concorrentes", "Concorrentes"]] : [["avaliacoes", "Recomendações"]]), ["agenda", "Agenda e criação"], ["conexao", "Conexão"]];
+    const abas = [["visao", "Visão geral"], ["graficos", "Gráficos"], ["checagem", "Checagem do perfil"], ["analise", "O que funciona"], ["publicacoes", "Publicações"], ["comentarios", "Comentários"], ["horarios", "Melhores horários"], ...(canal === "instagram" ? [["feed", "Prévia do feed"], ["stories", "Stories"], ["marcacoes", "Marcações"], ["concorrentes", "Concorrentes"], ["hashtags", "Hashtags"]] : [["avaliacoes", "Recomendações"]]), ["agenda", "Agenda e criação"], ["ferramentas", "Ferramentas"], ["conexao", "Conexão"]];
     const chaveMarca = canal === "instagram" ? "marcaInstagram" : "marcaFacebook";
     const sel = seletorMarca(lista, estado[chaveMarca] || lista[0].id);
     sel.addEventListener("change", () => { estado[chaveMarca] = sel.value; navegar(); });
@@ -5612,6 +5612,7 @@ Botão só com texto = resposta.` })),
     try {
       if (atual === "conexao") return abaConexaoSocial(area, canal, lista, meta);
       if (atual === "agenda") return await abaAgendaSocial(area, canal, lista);
+      if (atual === "ferramentas") return abaFerramentasSocial(area, canal);
       if (!pronta) return precisaConexao();
       if (atual === "visao") await abaVisaoSocial(area, canal, marcaId);
       else if (atual === "checagem" || atual === "analise") await abaAnaliseSocial(area, canal, marcaId, atual);
@@ -5622,6 +5623,9 @@ Botão só com texto = resposta.` })),
       else if (atual === "stories") await abaStoriesSocial(area, marcaId);
       else if (atual === "marcacoes") await abaMarcacoesSocial(area, marcaId);
       else if (atual === "avaliacoes") await abaAvaliacoesFacebook(area, marcaId);
+      else if (atual === "graficos") await abaGraficosSocial(area, canal, marcaId);
+      else if (atual === "feed") await abaFeedSocial(area, marcaId);
+      else if (atual === "hashtags") await abaHashtags(area, marcaId);
     } catch (e) { falha(area, e); }
   }
 
@@ -5821,7 +5825,129 @@ Botão só com texto = resposta.` })),
       h("p", { class: "sub", style: "margin:0", text: "Seguidores, frequência e o que mais engaja nos perfis profissionais públicos — pela API oficial (Business Discovery)." }),
       h("div", { class: "linha-form" }, campo("Instagram do concorrente", entrada)),
       h("div", { class: "acoes" }, botao("Comparar", () => entrada.value.trim() ? comparar(entrada.value.trim()) : aviso("Digite o @.", "erro"), "btn-primario"),
+        salvos.length > 1 ? botao(`Comparar todos (${Math.min(8, salvos.length)}) em gráfico`, () => compararTodos(), "btn-secundario") : null,
         salvos.map(u => botao("@" + u, () => comparar(u), "btn-secundario btn-pequeno")))), resultado);
+    // Vários concorrentes lado a lado: seguidores, publicações e taxa de engajamento (com você incluído).
+    async function compararTodos() {
+      trocar(resultado, carregando("Lendo os perfis públicos…"));
+      const lista0 = [];
+      for (const u of salvos.slice(0, 8)) { try { lista0.push(await mk(`social/concorrente?marca=${marcaId}&canal=instagram&usuario=${encodeURIComponent(u)}`)); } catch { /* perfil não público */ } }
+      const eu = meu ? { usuario: meu.usuario + " (você)", seguidores: meu.seguidores, publicacoes: meu.publicacoes, taxa_engajamento: null, voce: true } : null;
+      const todos = [...(eu ? [eu] : []), ...lista0];
+      const card = (titulo, campo, fmt = numero) => h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: titulo }), barras(todos.filter(x => x[campo] != null).sort((a, b) => b[campo] - a[campo]).map(x => ({ rotulo: "@" + x.usuario, valor: x[campo] })), fmt));
+      trocar(resultado, h("div", { class: "grade grade-2" }, card("Seguidores", "seguidores"), card("Taxa de engajamento (últimos 12 posts)", "taxa_engajamento", v => `${String(v).replace(".", ",")}%`)),
+        h("div", { class: "grade grade-2" }, card("Interações médias por post", "engajamento_medio"), card("Publicações no perfil", "publicacoes")),
+        h("p", { class: "fx-nota", text: "Dados públicos da API oficial da Meta (Business Discovery). Perfis pessoais ou privados não aparecem. A sua taxa de engajamento real (com alcance) está em Gráficos." }));
+    }
+  }
+
+  // ----- Painel de gráficos do Instagram/Facebook (como as ferramentas profissionais de social media).
+  async function abaGraficosSocial(area, canal, marcaId) {
+    const f = estado.socialGraf = estado.socialGraf || { dias: "30" };
+    const [ins, an] = await Promise.all([mk(`social/insights?marca=${marcaId}&canal=${canal}&dias=${f.dias}`).catch(e => ({ erro: e.message })), mk(`social/analise?marca=${marcaId}&canal=${canal}`).catch(e => ({ erro: e.message }))]);
+    const cartao = (titulo, sub, ...filhos) => h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: titulo }), sub ? h("p", { class: "sub", text: sub }) : null, ...filhos);
+    const filtro = h("div", { class: "abas abas-chips", role: "group", style: "margin-bottom:8px" }, [["7", "7 dias"], ["30", "30 dias"], ["90", "90 dias"], ["180", "6 meses"], ["365", "12 meses"]].map(([v, n0]) => h("button", { type: "button", class: "aba" + (f.dias === v ? " ativo" : ""), onclick: () => { f.dias = v; abaGraficosSocial(area, canal, marcaId).catch(e => falha(area, e)); } }, n0)));
+    const blocos = [filtro];
+    if (ins.erro) blocos.push(cartao("Números do período", "", h("p", { class: "nota nota-alerta", text: ins.erro })));
+    else {
+      const t = ins.totais || {}, a0 = (ins.anterior && ins.anterior.totais) || {};
+      const varTxt = (k0) => a0[k0] ? `${t[k0] >= a0[k0] ? "+" : ""}${Math.round((t[k0] / a0[k0] - 1) * 100)}% vs período anterior` : "";
+      const taxa = t.alcance ? (t.interacoes || 0) / t.alcance * 100 : null;
+      blocos.push(h("section", { class: "grade grade-4" }, metrica("Alcance", numero(t.alcance || 0), varTxt("alcance")), metrica("Visualizações", numero(t.visualizacoes || 0), varTxt("visualizacoes")),
+        metrica("Interações", numero(t.interacoes || 0), varTxt("interacoes")), metrica("Taxa de engajamento", taxa == null ? "—" : `${taxa.toFixed(2).replace(".", ",")}%`, "interações ÷ alcance")));
+      blocos.push(h("section", { class: "grade grade-4" }, metrica("Novos seguidores", numero(t.novos_seguidores || 0), t.deixaram_de_seguir != null ? `${numero(t.deixaram_de_seguir)} deixaram de seguir` : ""),
+        metrica(canal === "instagram" ? "Visitas ao perfil" : "Visitas à página", numero(t.visitas_perfil ?? t.visitas_pagina ?? 0), varTxt(canal === "instagram" ? "visitas_perfil" : "visitas_pagina")),
+        metrica(canal === "instagram" ? "Contas engajadas" : "Ações na página", numero((canal === "instagram" ? t.contas_engajadas : t.acoes_na_pagina) || 0), ""), metrica(canal === "instagram" ? "Toques no link" : "Seguidores da página", numero((canal === "instagram" ? t.cliques_link : t.seguidores) || 0), "")));
+      const dia = ins.diario || [];
+      if (dia.length > 1) blocos.push(h("div", { class: "grade grade-2" },
+        cartao("Alcance por dia", `${dataCurtaFin(ins.de)} a ${dataCurtaFin(ins.ate)}.`, graficoLinha(dia.map(x => ({ chave: x.data, rotulo: dataCompleta(x.data), curto: dataCurta(x.data), valor: x.alcance || 0 })), null, "Alcance", "")),
+        cartao("Novos seguidores por dia", canal === "instagram" ? "A Meta só informa os últimos 30 dias." : "", graficoColunas(dia.map(x => ({ rotulo: dataCompleta(x.data), curto: dataCurta(x.data), valor: x.novos_seguidores || 0 })), { nome: "Novos seguidores" }))));
+      const comp = [["Curtidas/reações", t.curtidas], ["Comentários", t.comentarios], ["Compartilhamentos", t.compartilhamentos], ["Salvamentos", t.salvamentos], ["Respostas a stories", t.respostas_stories]].filter(([, v]) => v);
+      if (comp.length) blocos.push(cartao("Do que são feitas as interações", "Salvamentos e compartilhamentos são os sinais que mais aumentam o alcance.", barras(comp.map(([rotulo, valor]) => ({ rotulo, valor })))));
+      const pub = ins.publico || {};
+      const pubBloco = (tit, l) => l && l.length ? cartao(tit, "", barras(l.map(x => ({ rotulo: x.nome === "F" ? "Mulheres" : x.nome === "M" ? "Homens" : x.nome === "U" ? "Não informado" : x.nome, valor: x.valor })))) : null;
+      const pubs = [pubBloco("Idade de quem segue", pub.age), pubBloco("Gênero", pub.gender), pubBloco("Cidades", pub.city), pubBloco("Países", pub.country)].filter(Boolean);
+      if (pubs.length) blocos.push(h("div", { class: "grade grade-2" }, ...pubs));
+      else if (canal === "instagram") blocos.push(cartao("Público", "", h("p", { class: "sub", text: "A Meta só mostra idade, gênero e cidades de perfis com pelo menos 100 seguidores." })));
+    }
+    if (an.erro) blocos.push(cartao("Publicações", "", h("p", { class: "nota nota-alerta", text: an.erro })));
+    else {
+      const posts = (an.posts || []).slice().sort((a, b) => Date.parse(a.quando) - Date.parse(b.quando));
+      const medida = an.analise && an.analise.medida === "interacoes" ? "interacoes" : "alcance";
+      if (posts.length) {
+        blocos.push(cartao(`${medida === "alcance" ? "Alcance" : "Interações"} de cada publicação`, `As últimas ${posts.length}, da mais antiga para a mais recente. Passe o dedo ou o mouse para ver a legenda.`, graficoColunas(posts.map(x => ({ rotulo: `${dataCompleta(x.quando)} · ${x.tipo}`, curto: dataCurta(String(x.quando).slice(0, 10)), valor: x[medida] || 0, extra: `${numero(x.interacoes || 0)} interações${x.alcance ? ` · taxa ${(x.interacoes / x.alcance * 100).toFixed(1).replace(".", ",")}%` : ""} — ${x.texto.slice(0, 70)}` })), { nome: medida === "alcance" ? "Alcance" : "Interações" })));
+        const comAlc = posts.filter(x => x.alcance > 0);
+        if (comAlc.length > 2) blocos.push(cartao("Taxa de engajamento por publicação", "Interações ÷ alcance de cada post (%). Acima de 3% é bom; acima de 6%, excelente.", graficoLinha(comAlc.map(x => ({ chave: x.id, rotulo: `${dataCompleta(x.quando)} · ${x.tipo}`, curto: dataCurta(String(x.quando).slice(0, 10)), valor: Math.round(x.interacoes / x.alcance * 1000) / 10 })), null, "Taxa %", "")));
+      }
+      const a = an.analise || {};
+      const grafGrupo = (tit, l, sub) => l && l.length ? cartao(tit, sub || "", barras(l.map(x => ({ rotulo: `${x.nome} (${x.posts})`, valor: x.media })))) : null;
+      const gs = [grafGrupo("Por formato", a.formatos, `Média de ${a.medida === "interacoes" ? "interações" : "alcance"} por post.`), grafGrupo("Por dia da semana", a.dias), grafGrupo("Por horário", a.faixas), grafGrupo("Por tamanho da legenda", a.legenda)].filter(Boolean);
+      for (let i = 0; i < gs.length; i += 2) blocos.push(h("div", { class: "grade grade-2" }, gs[i], gs[i + 1] || h("span")));
+      if ((a.hashtags || []).length) blocos.push(cartao("Hashtags que puxam o alcance", "Comparadas com a média dos seus posts (só as usadas em 2 ou mais).", barras(a.hashtags.slice(0, 12).map(x => ({ rotulo: `${x.hashtag} (${x.posts})`, valor: Math.max(0, 100 + x.vs_geral) })), v => `${v - 100 >= 0 ? "+" : ""}${v - 100}%`)));
+      const top = (an.posts || []).slice().sort((x, y) => (y[medida] || 0) - (x[medida] || 0)).slice(0, 9);
+      if (top.length) blocos.push(cartao("As 9 melhores publicações", "", h("div", { class: "feed-grade" }, top.map(x => h("a", { class: "feed-item", href: x.link, target: "_blank", rel: "noopener", title: x.texto }, x.imagem ? h("img", { src: x.imagem, alt: "", loading: "lazy" }) : h("span", { class: "feed-texto", text: x.texto.slice(0, 80) || x.tipo }),
+        h("span", { class: "feed-numeros", text: `${numero(x.alcance || 0)} alcance · ${numero(x.interacoes || 0)} int.` }))))));
+    }
+    trocar(area, ...blocos);
+  }
+  // ----- Prévia do feed: como o perfil vai ficar com o que está programado (antes de publicar).
+  async function abaFeedSocial(area, marcaId) {
+    const hoje = isoLocal(new Date());
+    const [prog, pub] = await Promise.all([mk(`posts?canal=instagram&de=${hoje}&ate=${isoLocal(somarDias(new Date(), 60))}`).then(r => (r.posts || []).filter(p0 => String(p0.marca_id) === String(marcaId) && p0.midia_id && !["PUBLICADO", "REJEITADO"].includes(p0.status))).catch(() => []), mk(`social/midias?marca=${marcaId}&canal=instagram`).then(r => r.itens || []).catch(() => [])]);
+    const futuros = prog.slice().sort((a, b) => `${b.data} ${b.hora}`.localeCompare(`${a.data} ${a.hora}`));
+    const item0 = (img, rotulo, cls, link) => h(link ? "a" : "div", { class: "feed-item " + cls, ...(link ? { href: link, target: "_blank", rel: "noopener" } : {}) }, img ? h("img", { src: img, alt: "", loading: "lazy" }) : h("span", { class: "feed-texto", text: "sem imagem" }), rotulo ? h("span", { class: "feed-numeros", text: rotulo }) : null);
+    trocar(area, h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Prévia do feed" }),
+      h("p", { class: "sub", text: "Como o perfil vai ficar: as publicações programadas (com borda) entram em cima das que já estão no ar. Confira cores e sequência antes de publicar." }),
+      h("div", { class: "feed-grade feed-celular" }, ...futuros.map(p0 => item0(`/api/orgs/${estado.org.id}/mk/midias/${p0.midia_id}`, `${dataCurtaFin(p0.data)}${p0.hora ? " " + p0.hora : ""} · ${p0.status === "APROVADO" ? "aprovado" : "aguardando aprovação"}`, "feed-futuro")),
+        ...pub.filter(x => x.tipo !== "STORY").slice(0, 21).map(x => item0(x.imagem, "", "", x.link))),
+      futuros.length ? null : h("p", { class: "sub", text: "Nenhuma publicação programada com imagem. Crie em Agenda e criação." })));
+  }
+  // ----- Pesquisa de hashtags.
+  async function abaHashtags(area, marcaId) {
+    const entrada = h("input", { class: "entrada", placeholder: "#hashtag" }), res = h("div", { class: "grade" });
+    const buscar = async v => {
+      trocar(res, carregando("Pesquisando no Instagram…"));
+      try {
+        const r = await mk(`social/hashtag?marca=${marcaId}&canal=instagram&nome=${encodeURIComponent(v)}`);
+        trocar(res, h("section", { class: "grade grade-4" }, metrica("Hashtag", r.hashtag, ""), metrica("Engajamento dos posts em alta", r.engajamento_top != null ? numero(r.engajamento_top) : "—", "curtidas + comentários por post"), metrica("Engajamento dos recentes", r.engajamento_recentes != null ? numero(r.engajamento_recentes) : "—", ""), metrica("Posts nas últimas 24 h", numero(r.posts_ultimas_24h), r.posts_ultimas_24h > 40 ? "muito concorrida" : r.posts_ultimas_24h < 5 ? "pouco usada" : "boa para nichos")),
+          h("div", { class: "grade grade-2" }, h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Hashtags que andam junto" }), barras(r.relacionadas.map(x => ({ rotulo: x.hashtag, valor: x.vezes })))),
+            h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Formatos em alta nesta hashtag" }), barras(r.formatos_em_alta.map(x => ({ rotulo: x.tipo, valor: x.n }))))),
+          h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Publicações em alta" }), h("ul", { class: "prb-lista" }, r.top.map(x => item(`${x.tipo} · ${x.curtidas != null ? numero(x.curtidas) + " curtidas" : ""} · ${numero(x.comentarios || 0)} comentários`, x.texto, h("a", { class: "btn btn-secundario btn-pequeno", href: x.link, target: "_blank", rel: "noopener" }, "Abrir"))))),
+          h("p", { class: "fx-nota", text: r.aviso }));
+      } catch (e) { trocar(res, h("section", { class: "cartao vidro" }, h("p", { class: "nota nota-alerta", text: e.message }))); }
+    };
+    entrada.addEventListener("keydown", e => { if (e.key === "Enter" && entrada.value.trim()) buscar(entrada.value.trim()); });
+    trocar(area, h("section", { class: "cartao vidro formulario" }, h("h3", { style: "margin:0", text: "Pesquisa de hashtags" }), h("p", { class: "sub", text: "Veja o quanto uma hashtag engaja, quantos posts ela recebe por dia, os formatos em alta e as hashtags que andam junto — para escolher as que dão alcance sem se perder na multidão." }),
+      h("div", { class: "linha-form", style: "align-items:end" }, campo("Hashtag", entrada), botao("Pesquisar", () => entrada.value.trim() ? buscar(entrada.value.trim()) : aviso("Digite a hashtag.", "erro"), "btn-primario"))), res);
+  }
+  // ----- Ferramentas do dia a dia do social media.
+  function abaFerramentasSocial(area, canal) {
+    const ig = canal === "instagram";
+    // Calculadora de engajamento
+    const cInt = h("input", { class: "entrada", type: "number", min: "0", placeholder: "Interações" }), cBase = h("input", { class: "entrada", type: "number", min: "0", placeholder: "Alcance ou seguidores" }), cRes = h("strong", { text: "—" });
+    const calc = () => { const a = Number(cInt.value), b = Number(cBase.value); cRes.textContent = b ? `${(a / b * 100).toFixed(2).replace(".", ",")}% ${a / b * 100 >= 6 ? "(excelente)" : a / b * 100 >= 3 ? "(bom)" : a / b * 100 >= 1 ? "(médio)" : "(baixo)"}` : "—"; };
+    cInt.oninput = calc; cBase.oninput = calc;
+    // Links com UTM (para saber no Google Analytics quantas visitas vieram de cada post)
+    const uUrl = entradaTxt("", "https://seusite.com.br/pagina"), uCamp = entradaTxt("", "nome-da-campanha"), uConteudo = entradaTxt("", "post-ou-story (opcional)"), uRes = h("code", { style: "word-break:break-all" });
+    const gerarUtm = () => { try { const u = new URL(uUrl.value.trim()); u.searchParams.set("utm_source", ig ? "instagram" : "facebook"); u.searchParams.set("utm_medium", "social"); if (uCamp.value.trim()) u.searchParams.set("utm_campaign", uCamp.value.trim().toLowerCase().replace(/\s+/g, "-")); if (uConteudo.value.trim()) u.searchParams.set("utm_content", uConteudo.value.trim().toLowerCase().replace(/\s+/g, "-")); uRes.textContent = u.toString(); } catch { uRes.textContent = "Digite um endereço completo (https://…)"; } };
+    [uUrl, uCamp, uConteudo].forEach(i => i.oninput = gerarUtm);
+    // Legenda: limites e o que aparece antes do "mais"
+    const leg = h("textarea", { class: "entrada", rows: "5", placeholder: "Cole a legenda aqui" }), legRes = h("div", { class: "sub" });
+    const conferir = () => { const t0 = leg.value, tags = (t0.match(/#[\p{L}\p{N}_]+/gu) || []).length, men = (t0.match(/@[\w.]+/g) || []).length; const lim = ig ? 2200 : 63206;
+      legRes.replaceChildren(h("p", { text: `${t0.length} de ${numero(lim)} caracteres · ${tags} hashtag(s)${ig ? " (máx. 30; o ideal são 3 a 5)" : ""} · ${men} menção(ões)${ig ? " (máx. 20)" : ""}` }), h("p", { text: `Aparece antes do "mais": “${t0.slice(0, 125)}${t0.length > 125 ? "…" : ""}”` }), t0.length > lim || (ig && tags > 30) ? h("p", { class: "nota nota-alerta", text: "Passou do limite: a publicação vai falhar." }) : null); };
+    leg.oninput = conferir;
+    // Link do WhatsApp para a bio
+    const wTel = entradaTxt("", "DDD + número"), wMsg = entradaTxt("", "Mensagem inicial (opcional)"), wRes = h("code", { style: "word-break:break-all" });
+    const gerarW = () => { const d = wTel.value.replace(/\D/g, ""); wRes.textContent = d.length >= 10 ? `https://wa.me/${d.length <= 11 ? "55" + d : d}${wMsg.value.trim() ? "?text=" + encodeURIComponent(wMsg.value.trim()) : ""}` : ""; };
+    [wTel, wMsg].forEach(i => i.oninput = gerarW);
+    const tamanhos = ig ? [["Post (retrato)", "1080 × 1350 px (4:5) — ocupa mais tela"], ["Post quadrado", "1080 × 1080 px"], ["Reels e stories", "1080 × 1920 px (9:16); deixe 250 px livres em cima e embaixo"], ["Capa do reels no feed", "1080 × 1440 px (3:4)"], ["Foto do perfil", "320 × 320 px (aparece redonda)"], ["Carrossel", "até 20 fotos/vídeos, todas no mesmo formato"]]
+      : [["Post com imagem", "1080 × 1350 px ou 1200 × 630 px (link)"], ["Capa da página", "1640 × 624 px (no celular corta as laterais)"], ["Stories e reels", "1080 × 1920 px"], ["Foto do perfil", "320 × 320 px"], ["Evento", "1920 × 1005 px"]];
+    trocar(area,
+      h("div", { class: "grade grade-2" }, h("section", { class: "cartao vidro formulario" }, h("h3", { style: "margin:0", text: "Calculadora de engajamento" }), h("p", { class: "sub", text: "Interações ÷ alcance (mais preciso) ou ÷ seguidores." }), h("div", { class: "fin-duas" }, campo("Interações", cInt), campo("Alcance ou seguidores", cBase)), h("p", {}, "Taxa: ", cRes)),
+        h("section", { class: "cartao vidro formulario" }, h("h3", { style: "margin:0", text: "Link com UTM" }), h("p", { class: "sub", text: "Para o Google Analytics separar as visitas de cada publicação." }), campo("Endereço", uUrl), h("div", { class: "fin-duas" }, campo("Campanha", uCamp), campo("Conteúdo", uConteudo)), uRes, h("div", { class: "acoes" }, botao("Copiar", () => uRes.textContent && copiar(uRes.textContent), "btn-secundario btn-pequeno")))),
+      h("div", { class: "grade grade-2" }, h("section", { class: "cartao vidro formulario" }, h("h3", { style: "margin:0", text: "Conferir legenda" }), leg, legRes),
+        h("section", { class: "cartao vidro formulario" }, h("h3", { style: "margin:0", text: "Link do WhatsApp para a bio" }), h("div", { class: "fin-duas" }, campo("WhatsApp", wTel), campo("Mensagem", wMsg)), wRes, h("div", { class: "acoes" }, botao("Copiar", () => wRes.textContent && copiar(wRes.textContent), "btn-secundario btn-pequeno")))),
+      h("section", { class: "cartao vidro" }, h("h3", { style: "margin-top:0", text: "Tamanhos certos" }), h("div", { class: "tabela-rolagem" }, h("table", { class: "tabela" }, h("tbody", {}, tamanhos.map(([a0, b0]) => h("tr", {}, h("td", {}, h("strong", { text: a0 })), h("td", { text: b0 }))))))));
   }
 
   async function abaAgendaSocial(area, canal, lista) {
@@ -6573,6 +6699,19 @@ Botão só com texto = resposta.` })),
       blocos.push(h("div", { class: "grade grade-2" }, cartao("Ligações por mês", "", graficoColunas(serie("ligacoes"), { nome: "Ligações" })), cartao("Pedidos de rota por mês", "", graficoColunas(serie("rotas"), { nome: "Rotas" }))));
       blocos.push(h("div", { class: "grade grade-2" }, cartao("Cliques no site por mês", "", graficoColunas(serie("cliques_site"), { nome: "Cliques" })),
         cartao("Taxa de conversão por mês", "Interações ÷ visualizações, em %.", graficoColunas(serie("conv", x => x.visualizacoes ? Math.round(x.interacoes / x.visualizacoes * 1000) / 10 : 0), { nome: "Conversão", formato: v => `${String(v).replace(".", ",")}%` }))));
+      // Funil: de quem viu o perfil até quem agiu (ligou, pediu rota, foi ao site, mandou mensagem).
+      const funil = [{ rotulo: "Viram o perfil", valor: t.visualizacoes || 0 }, { rotulo: "Agiram (interações)", valor: t.interacoes || 0 }, { rotulo: "Ligaram", valor: t.ligacoes || 0 }, { rotulo: "Pediram rota", valor: t.rotas || 0 }, { rotulo: "Foram ao site", valor: t.cliques_site || 0 }, { rotulo: "Mandaram mensagem", valor: t.mensagens || 0 }];
+      blocos.push(h("div", { class: "grade grade-2" },
+        cartao("Funil do perfil (18 meses)", "De quem viu até quem agiu. A largura é proporcional a quem viu o perfil.", h("div", { class: "funil" }, funil.map((x, i) => h("div", { class: "funil-linha" }, h("span", { class: "funil-rotulo", text: x.rotulo }), h("div", { class: "funil-trilho" }, h("i", { style: `width:${Math.max(1.5, t.visualizacoes ? x.valor / t.visualizacoes * 100 : 0)}%;opacity:${1 - i * 0.1}` })), h("strong", { text: numero(x.valor) + (i && t.visualizacoes ? ` · ${(x.valor / t.visualizacoes * 100).toFixed(1).replace(".", ",")}%` : "") }))))),
+        cartao("O que as pessoas fazem no perfil", "Tipos de interação, somados nos 18 meses.", barras([["Ligações", t.ligacoes], ["Pedidos de rota", t.rotas], ["Cliques no site", t.cliques_site], ["Mensagens", t.mensagens], ["Reservas", t.reservas], ["Pedidos de comida", t.pedidos_comida], ["Cliques no cardápio", t.cliques_cardapio]].filter(([, v]) => v).map(([rotulo, valor]) => ({ rotulo, valor }))))));
+      if (des.semana) blocos.push(h("div", { class: "grade grade-2" },
+        cartao("Visualizações por dia da semana", "Média de cada dia nos 18 meses: os dias mais fortes são os melhores para posts e ofertas.", graficoColunas(des.semana.map(x => ({ rotulo: ["Domingo", "Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado"][x.dia], curto: ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"][x.dia], valor: x.visualizacoes, extra: `${String(x.interacoes).replace(".", ",")} interações em média` })), { nome: "Média" })),
+        cartao("Últimos 90 dias, dia a dia", "Linha cheia: visualizações · tracejada: interações (×10, para caber na mesma escala).", graficoLinha(des.ultimos90.map(x => ({ chave: x.data, rotulo: dataCompleta(x.data), curto: dataCurta(x.data), valor: x.visualizacoes })), des.ultimos90.map(x => ({ chave: x.data, rotulo: dataCompleta(x.data), curto: dataCurta(x.data), valor: x.interacoes * 10 })), "Visualizações", "Interações ×10"))));
+      // Ano a ano: o mesmo mês do ano passado (quando o Google ainda tem os dois).
+      const porMes = new Map(meses.map(x => [x.mes, x]));
+      const yoy = meses.filter(x => x.dias >= 28).map(x => { const ant = porMes.get(`${Number(x.mes.slice(0, 4)) - 1}${x.mes.slice(4)}`); return ant && ant.dias >= 28 && ant.visualizacoes ? { mes: x.mes, var: Math.round((x.visualizacoes / ant.visualizacoes - 1) * 1000) / 10, agora: x.visualizacoes, antes: ant.visualizacoes } : null; }).filter(Boolean);
+      if (yoy.length) blocos.push(cartao("Comparado com o mesmo mês do ano passado", "Variação das visualizações (%). Acima de zero: cresceu.", graficoColunas(yoy.map(x => ({ rotulo: nomeMesUi(x.mes), curto: mesCurtoG(x.mes), valor: Math.max(0, x.var), extra: `${x.var > 0 ? "+" : ""}${String(x.var).replace(".", ",")}% (${numero(x.agora)} contra ${numero(x.antes)})`, destaque: x.var > 0 })), { nome: "Crescimento", formato: v => `${String(Math.round(v)).replace(".", ",")}%` }), yoy.some(x => x.var < 0) ? h("p", { class: "fx-nota", text: "Meses que caíram: " + yoy.filter(x => x.var < 0).map(x => `${mesCurtoG(x.mes)} (${String(x.var).replace(".", ",")}%)`).join(", ") } ) : null));
+      if ((des.palavras || []).length) blocos.push(cartao("O que as pessoas digitaram para achar o perfil", `Mês passado, número oficial do Google. Termos com menos de 15 buscas aparecem como "menos de 15".`, barras(des.palavras.slice(0, 12).map(x => ({ rotulo: x.palavra + (x.buscas == null ? " (menos de 15)" : ""), valor: x.buscas ?? x.menos_de ?? 0 })))));
     } else blocos.push(cartao("Desempenho", "", h("p", { class: "nota nota-alerta", text: d.erro_desempenho ? `O Google não devolveu os números agora: ${d.erro_desempenho}` : "Sem números de desempenho ainda." })));
     const av = d.avaliacoes;
     blocos.push(h("section", { class: "grade grade-4" }, metrica("Nota no Google", av.media_google != null ? String(av.media_google).replace(".", ",") + " ★" : "—", `${numero(av.total_google ?? av.total)} avaliações`),
@@ -6582,6 +6721,8 @@ Botão só com texto = resposta.` })),
     blocos.push(h("div", { class: "grade grade-2" },
       cartao("Distribuição das notas", "Todas as avaliações lidas do Google.", barras(av.distribuicao.map(x => ({ rotulo: `${x.nota} ★`, valor: x.n })))),
       cartao("Avaliações por mês", "Novas avaliações recebidas (últimos 24 meses).", av.por_mes.length ? graficoColunas(av.por_mes.map(x => ({ rotulo: nomeMesUi(x.mes), curto: mesCurtoG(x.mes), valor: x.n, extra: `nota média ${String(x.media).replace(".", ",")} · ${x.respondidas} respondidas${x.negativas ? ` · ${x.negativas} com nota 1–2` : ""}` })), { nome: "Avaliações" }) : vazio("Sem avaliações no período", ""))));
+    if (av.por_mes.length > 1) blocos.push(cartao("Respostas às avaliações por mês", "Porcentagem das avaliações de cada mês que receberam resposta. O Google valoriza responder todas.", graficoColunas(av.por_mes.map(x => ({ rotulo: nomeMesUi(x.mes), curto: mesCurtoG(x.mes), valor: x.n ? Math.round(x.respondidas / x.n * 100) : 0, extra: `${x.respondidas} de ${x.n} respondidas`, destaque: x.n && x.respondidas === x.n })), { nome: "Respondidas", formato: v => `${v}%` })));
+    if (d.concorrentes_mapa) blocos.push(cartao(`Quem domina o mapa: "${d.concorrentes_mapa.palavra}"`, `Fatia dos pontos do mapa em que cada empresa aparece no top 3 (medição de ${quando(d.concorrentes_mapa.criado_ms)}).`, barras(d.concorrentes_mapa.lista.map(c0 => ({ rotulo: `${c0.nome}${c0.voce ? " (você)" : ""}`, valor: c0.top3_pct })), v => `${v}%`)));
     if (av.por_mes.length > 1) blocos.push(cartao("Nota média por mês", "Média das avaliações recebidas em cada mês.", graficoLinha(av.por_mes.map(x => ({ chave: x.mes, rotulo: nomeMesUi(x.mes), curto: mesCurtoG(x.mes), valor: x.media })), null, "Nota média", "")));
     blocos.push(cartao("Posts publicados no Google por mês", "Publicados pela DENIA. Perfis com post toda semana aparecem mais.", (d.posts || []).length ? graficoColunas(d.posts.map(x => ({ rotulo: nomeMesUi(x.mes), curto: mesCurtoG(x.mes), valor: x.n })), { nome: "Posts" }) : vazio("Nenhum post publicado pela DENIA ainda", "")));
     for (const mp of (d.mapa || []).filter(x => x.serie.length > 1)) blocos.push(cartao(`Mapa de posição: "${mp.palavra}"`, "Posição média nos pontos do mapa a cada medição (quanto menor, melhor).", graficoLinha(mp.serie.map(x => ({ chave: String(x.ms), rotulo: `${quando(x.ms)} · no top 3 em ${x.top3}% dos pontos`, curto: new Date(x.ms).toLocaleDateString(LOCALE, { day: "2-digit", month: "2-digit" }), valor: x.media || 0 })), null, "Posição média", "")));
@@ -7418,8 +7559,9 @@ Botão só com texto = resposta.` })),
     desenhar();
     const analise = h("div", {});
     blocos.push(blocoFluxo());
+    blocos.push(h("div", { style: "margin-top:12px" }, blocoRecorrentes()));
     blocos.push(h("div", { class: "grade grade-2", style: "margin-top:12px" },
-      blocoRecorrentes(), blocoGestao(),
+      blocoGestao(),
       h("section", { class: "cartao vidro" }, h("h3", { style: "margin:0 0 6px", text: "Leitura da DENIA" }),
         h("p", { class: "sub", text: "A IA lê só os números do mês (sem nomes de clientes) e aponta o que melhorou, o que piorou e uma ação prática. Não substitui o contador." }),
         analise, h("div", { class: "acoes" }, botao("Analisar este mês", async () => { trocar(analise, carregando("Analisando…")); try { const a = await fin(`analise?mes=${mes}`, { metodo: "POST", corpo: {} }); trocar(analise, h("p", { style: "white-space:pre-line", text: a.analise })); } catch (e) { trocar(analise); aviso(e.message, "erro"); } }, "btn-primario"))),
@@ -7452,9 +7594,10 @@ Botão só com texto = resposta.` })),
       carregar();
       gaveta(`Comprovantes — ${l.descricao}`, [h("p", { class: "sub", text: "Foto ou PDF do comprovante, boleto ou nota (até 3 MB)." }), enviar, h("div", { class: "acoes" }, botao("Anexar arquivo", () => enviar.click(), "btn-primario")), lista]);
     }
-    async function novaRecorrente() {
-      const tipo = h("select", { class: "entrada" }, h("option", { value: "SAIDA", text: "Conta a pagar" }), h("option", { value: "ENTRADA", text: "Valor a receber" }));
-      const desc = h("input", { class: "entrada", type: "text", maxlength: "160", placeholder: "Ex.: Aluguel, Internet, Salário da Ana" });
+    async function novaRecorrente(tipoInicial = "SAIDA") {
+      const tipo = h("select", { class: "entrada" }, h("option", { value: "SAIDA", text: "Gasto fixo (a pagar)" }), h("option", { value: "ENTRADA", text: "Ganho fixo (a receber)" }));
+      tipo.value = tipoInicial;
+      const desc = h("input", { class: "entrada", type: "text", maxlength: "160", placeholder: "Dê um nome: mensalidade do cliente X, aluguel recebido, internet, salário da Ana…" });
       const valor = h("input", { class: "entrada", type: "text", inputmode: "decimal", placeholder: "0,00" });
       const freq = h("select", { class: "entrada" }, Object.entries(op.frequencias || { mensal: "Todo mês" }).map(([k, v]) => h("option", { value: k, text: v })));
       freq.value = "mensal";
@@ -7468,24 +7611,36 @@ Botão só com texto = resposta.` })),
       const ajustar = () => { campoDia.classList.toggle("oculto", freq.value === "semanal"); campoSem.classList.toggle("oculto", freq.value !== "semanal"); };
       freq.addEventListener("change", ajustar); ajustar();
       for (;;) {
-        if (!(await modal({ titulo: "Conta que se repete", conteudo: h("div", { class: "fin-form" }, h("p", { class: "sub", text: "A DENIA cria esta conta sozinha em cada vencimento. Nos meses futuros ela já aparece como prevista." }), campo("Tipo", tipo), campo("Descrição", desc),
+        if (!(await modal({ titulo: tipo.value === "ENTRADA" ? "Ganho fixo" : "Gasto fixo", conteudo: h("div", { class: "fin-form" }, h("p", { class: "sub", text: "A DENIA cria esta conta sozinha em cada vencimento. Nos meses futuros ela já aparece como prevista." }), campo("Tipo", tipo), campo("Descrição", desc),
           h("div", { class: "fin-duas" }, campo("Valor", valor), campo("Repetir", freq)), h("div", { class: "fin-duas" }, campoDia, campoSem), h("div", { class: "fin-duas" }, campo("Começa em", inicio), campo("Termina em (opcional)", ate)),
           h("div", { class: "fin-duas" }, campo("Categoria", categoria), campo("Quem", contato))), confirmar: "Salvar" }))) return;
-        try { await fin("recorrentes", { metodo: "POST", corpo: { tipo: tipo.value, descricao: desc.value, valor: valor.value, dia: Number(dia.value), dia_semana: Number(diaSem.value), frequencia: freq.value, inicio_mes: inicio.value, ate_mes: ate.value, categoria: categoria.value === "__nova" ? "" : categoria.value, contato: contato.value } }); aviso("Conta fixa salva.", "ok"); recarregar(); return; }
+        try { await fin("recorrentes", { metodo: "POST", corpo: { tipo: tipo.value, descricao: desc.value, valor: valor.value, dia: Number(dia.value), dia_semana: Number(diaSem.value), frequencia: freq.value, inicio_mes: inicio.value, ate_mes: ate.value, categoria: categoria.value === "__nova" ? "" : categoria.value, contato: contato.value } }); aviso("Salvo: a DENIA lança sozinha em cada vencimento.", "ok"); recarregar(); return; }
         catch (e) { aviso(e.message, "erro"); }
+      }
+    }
+    // Ganhos e gastos fixos: o que entra e o que sai todo mês (ou toda semana, todo ano…), com o nome que a empresa quiser.
+    async function editarFixo(i) {
+      const desc = h("input", { class: "entrada", type: "text", maxlength: "160", value: i.nome }), valor = h("input", { class: "entrada", type: "text", inputmode: "decimal", value: (i.valor_cent / 100).toFixed(2).replace(".", ",") });
+      const dia = h("input", { class: "entrada", type: "number", min: "1", max: "31", value: String(i.dia || 5) }), ate = h("input", { class: "entrada", type: "month", value: i.ate_mes || "" });
+      const contato = h("input", { class: "entrada", type: "text", value: i.contato || "" });
+      for (;;) {
+        if (!(await modal({ titulo: i.tipo === "ENTRADA" ? "Editar ganho fixo" : "Editar gasto fixo", conteudo: h("div", { class: "fin-form" }, h("p", { class: "sub", text: "Vale para os próximos lançamentos. O que já foi lançado não muda." }), campo("Nome", desc), h("div", { class: "fin-duas" }, campo("Valor", valor), campo("Dia", dia)), h("div", { class: "fin-duas" }, campo(i.tipo === "ENTRADA" ? "Quem paga" : "Para quem", contato), campo("Termina em (opcional)", ate))), confirmar: "Salvar" }))) return;
+        try { await fin(`recorrentes/${i.id}`, { metodo: "PUT", corpo: { descricao: desc.value, valor: valor.value, dia: Number(dia.value), contato: contato.value, ate_mes: ate.value } }); aviso("Salvo.", "ok"); recarregar(); return; } catch (e) { aviso(e.message, "erro"); }
       }
     }
     function blocoRecorrentes() {
       const caixa = h("div", {}, carregando());
-      fin("recorrentes").then(x => {
-        const ativas = x.recorrentes.filter(r0 => r0.ativo);
-        const quando = r0 => r0.freq === "semanal" ? `toda ${["domingo", "segunda", "terça", "quarta", "quinta", "sexta", "sábado"][r0.dia_semana ?? 1]}` : `${(op.frequencias || {})[r0.freq || "mensal"] || "todo mês"}, dia ${r0.dia}`;
-        trocar(caixa, ativas.length ? h("ul", { class: "prb-lista" }, ativas.map(r0 => h("li", { class: "prb-item", style: "border-color:var(--borda)" },
-          h("div", {}, h("strong", { text: `${r0.descricao} — ${din(r0.valor_cent)}` }), h("p", { class: "prb-meta", text: `${r0.tipo === "ENTRADA" ? "A receber" : "A pagar"} · ${quando(r0).toLowerCase()}${r0.ate_mes ? ` · até ${r0.ate_mes.split("-").reverse().join("/")}` : ""}` }),
-            h("div", { class: "acoes" }, botao("Parar de repetir", async () => { try { await fin(`recorrentes/${r0.id}`, { metodo: "DELETE" }); aviso("Não repete mais.", "ok"); recarregar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno")))))) :
-          h("p", { class: "sub", text: "Nenhuma conta fixa ainda." }));
+      fin("fixos").then(x => {
+        const quandoF = r0 => r0.freq === "semanal" ? `toda ${["domingo", "segunda", "terça", "quarta", "quinta", "sexta", "sábado"][r0.dia_semana ?? 1]}` : `${(op.frequencias || {})[r0.freq || "mensal"] || "todo mês"}, dia ${r0.dia}`;
+        const lista = tipo => { const its = x.itens.filter(i => i.tipo === tipo); return its.length ? h("ul", { class: "prb-lista" }, its.map(i => h("li", { class: "prb-item", style: "border-color:var(--borda)" },
+          h("div", {}, h("strong", { text: `${i.nome} — ${din(i.valor_cent)}` }), h("p", { class: "prb-meta", text: [quandoF(i).toLowerCase(), i.categoria, i.contato && i.contato !== i.nome ? i.contato : "", i.ate_mes ? `até ${i.ate_mes.split("-").reverse().join("/")}` : ""].filter(Boolean).join(" · ") }),
+            ehContador() ? null : h("div", { class: "acoes" }, i.origem === "aluguel" ? h("a", { class: "btn btn-secundario btn-pequeno", href: "#/admin/alugueis" }, "Detalhes do aluguel (multa, juros, reajuste, recibo)") : botao("Editar", () => editarFixo(i), "btn-secundario btn-pequeno"),
+              i.origem === "fixo" ? botao("Parar", async () => { if (!(await modal({ titulo: "Parar de lançar?", conteudo: `${i.nome} deixa de ser lançado nos próximos meses. O que já foi lançado fica.`, confirmar: "Parar" }))) return; try { await fin(`recorrentes/${i.id}`, { metodo: "DELETE" }); aviso("Não repete mais.", "ok"); recarregar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno") : null))))) : h("p", { class: "sub", text: tipo === "ENTRADA" ? "Nenhum ganho fixo. Ex.: mensalidade de cliente, contrato de manutenção, aluguel recebido." : "Nenhum gasto fixo. Ex.: aluguel do ponto, internet, salário, sistema, contador." }); };
+        trocar(caixa, h("div", { class: "grade grade-3", style: "margin-bottom:10px" }, metrica("Ganhos fixos por mês", din(x.por_mes.ganhos), ""), metrica("Gastos fixos por mês", din(x.por_mes.gastos), ""), metrica("Sobra fixa por mês", din(x.por_mes.saldo), x.por_mes.saldo < 0 ? "os fixos não se pagam sozinhos" : "antes dos ganhos e gastos variáveis")),
+          h("div", { class: "grade grade-2" }, h("div", {}, h("h4", { style: "margin:0 0 6px", text: "Ganhos fixos" }), lista("ENTRADA")), h("div", {}, h("h4", { style: "margin:0 0 6px", text: "Gastos fixos" }), lista("SAIDA"))));
       }).catch(e => trocar(caixa, h("p", { class: "sub", text: e.message })));
-      return h("section", { class: "cartao vidro" }, h("h3", { style: "margin:0 0 6px", text: "Contas que se repetem" }), caixa, h("div", { class: "acoes" }, botao("+ Conta fixa", () => novaRecorrente(), "btn-secundario")));
+      return h("section", { class: "cartao vidro" }, h("h3", { style: "margin:0 0 6px", text: "Ganhos e gastos fixos" }), h("p", { class: "sub", text: "O que entra e sai todo mês (ou toda semana, todo ano). Dê o nome que quiser: a DENIA lança sozinha em cada vencimento e os meses futuros já aparecem como previstos." }), caixa,
+        ehContador() ? null : h("div", { class: "acoes" }, botao("+ Ganho fixo", () => novaRecorrente("ENTRADA"), "btn-secundario"), botao("+ Gasto fixo", () => novaRecorrente("SAIDA"), "btn-secundario")));
     }
     // Gestão: categorias, orçamento, fechamento do mês e histórico de alterações.
     function blocoGestao() {
@@ -7546,7 +7701,7 @@ Botão só com texto = resposta.` })),
   const admEstado = { mes: null, moeda: "BRL" };
   const dinA = c => dinheiroFin(c, admEstado.moeda);
   const hojeUi = () => isoLocal(new Date());
-  const ABAS_ADMIN = { hoje: "O dia", agenda: "Agenda e compromissos", contas: "Banco e caixa", alugueis: "Aluguéis e locatários", manutencao: "Manutenção e obrigações", documentos: "Documentos e validades", relatorio: "Relatório do mês", cadastros: "Cadastros", empresas: "Todas as empresas", tarefas: "Tarefas", geral: "Agenda de todas as empresas", ajustes: "Ajustes e importação", avisos: "WhatsApp e celular", equipe: "Relatório da equipe" };
+  const ABAS_ADMIN = { hoje: "O dia", agenda: "Agenda e compromissos", contas: "Banco e caixa", alugueis: "Aluguéis (detalhes)", manutencao: "Manutenção e obrigações", documentos: "Documentos e validades", relatorio: "Relatório do mês", cadastros: "Cadastros", empresas: "Todas as empresas", tarefas: "Tarefas", geral: "Agenda de todas as empresas", ajustes: "Ajustes e importação", avisos: "WhatsApp e celular", equipe: "Relatório da equipe" };
   const ABAS_EQUIPE = ["hoje", "agenda", "manutencao", "tarefas", "geral", "avisos", "equipe"];
   const entradaTxt = (valor, ph, extra = {}) => h("input", { class: "entrada", type: "text", value: valor ?? "", placeholder: ph || "", ...extra });
   const entradaData = valor => h("input", { class: "entrada", type: "date", value: valor || "" });

@@ -1312,3 +1312,18 @@ html.apr-cheia-ativa, html.apr-cheia-ativa body { overflow: hidden; }
 .dre-total { font-weight: 600; }
 
 .dre { min-width: 760px; }
+.funil { display: grid; gap: 8px; }
+.funil-linha { display: grid; grid-template-columns: minmax(120px, 34%) 1fr auto; gap: 10px; align-items: center; font-size: 13.5px; }
+.funil-rotulo { color: var(--texto-2); }
+.funil-trilho { height: 14px; background: rgba(255,255,255,.05); border-radius: 99px; overflow: hidden; }
+.funil-trilho i { display: block; height: 100%; border-radius: 99px; background: linear-gradient(90deg, #6366f1, #22d3ee); }
+@media (max-width: 560px) { .funil-linha { grid-template-columns: 1fr auto; } .funil-trilho { grid-column: 1 / -1; order: 3; } }
+
+/* Instagram: grade de posts (melhores e prévia do feed) */
+.feed-grade { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
+.feed-celular { max-width: 480px; margin: 0 auto; }
+.feed-item { position: relative; aspect-ratio: 4 / 5; overflow: hidden; background: rgba(255,255,255,.05); display: block; border-radius: 4px; }
+.feed-item img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.feed-futuro { outline: 2px solid #22d3ee; outline-offset: -2px; }
+.feed-texto { position: absolute; inset: 0; padding: 8px; font-size: 12px; color: var(--texto-2); }
+.feed-numeros { position: absolute; left: 0; right: 0; bottom: 0; font-size: 11px; padding: 4px 6px; background: linear-gradient(transparent, rgba(0,0,0,.75)); color: #fff; }

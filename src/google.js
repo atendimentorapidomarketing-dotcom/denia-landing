@@ -1210,7 +1210,14 @@ async function graficosDoPerfil(env, k, conta, forcar = false) {
         const o = meses.get(m); o.dias++;
         for (const [x, v] of Object.entries(d)) if (x !== "data" && typeof v === "number") o[x] += v;
       }
-      desempenho = { de: isoDia(per.ini), ate: isoDia(per.fim), meses: [...meses.values()], totais: serie.totais, detalhe: serie.detalhe };
+      // Dia da semana (média por dia, 18 meses) e os últimos 90 dias, dia a dia.
+      const sem = Array.from({ length: 7 }, (_, i) => ({ dia: i, n: 0, visualizacoes: 0, interacoes: 0 }));
+      for (const d of serie.diario) { const w = new Date(d.data + "T12:00:00Z").getUTCDay(); sem[w].n++; sem[w].visualizacoes += d.visualizacoes; sem[w].interacoes += d.interacoes; }
+      const semana = sem.map(x => ({ dia: x.dia, visualizacoes: x.n ? Math.round(x.visualizacoes / x.n) : 0, interacoes: x.n ? Math.round(x.interacoes / x.n * 10) / 10 : 0 }));
+      const ultimos90 = serie.diario.slice(-90).map(d => ({ data: d.data, visualizacoes: d.visualizacoes, interacoes: d.interacoes }));
+      let palavras = [];
+      try { const ag = new Date(agora), m1 = new Date(Date.UTC(ag.getUTCFullYear(), ag.getUTCMonth() - 1, 1)); palavras = (await palavrasDoPeriodo(conta, token, m1, m1, agora, 15)).lista; } catch { palavras = []; }
+      desempenho = { de: isoDia(per.ini), ate: isoDia(per.fim), meses: [...meses.values()], totais: serie.totais, detalhe: serie.detalhe, semana, ultimos90, palavras };
       await env.DB.prepare("INSERT OR REPLACE INTO plt_mk_google_cache(org_id,marca_id,chave,dados,ms) VALUES(?,?,'desempenho18',?,?)").bind(conta.org_id, conta.marca_id, JSON.stringify(desempenho), agora).run();
     } catch (e) { erroDesempenho = e.message; }
   }
@@ -1235,7 +1242,8 @@ async function graficosDoPerfil(env, k, conta, forcar = false) {
       por_mes: porMes.map(x => ({ mes: x.mes, n: x.n, media: Math.round(x.media * 100) / 100, respondidas: x.respondidas, negativas: x.negativas })),
       tempo_resposta_h: horas.length ? { mediana: Math.round(horas[Math.floor(horas.length / 2)] * 10) / 10, ate_24h_pct: Math.round(horas.filter(x => x <= 24).length / horas.length * 100), amostra: horas.length } : null
     },
-    posts: posts, mapa: Object.entries(porPalavra).map(([palavra, serie]) => ({ palavra, serie: serie.slice(-24) }))
+    posts: posts, mapa: Object.entries(porPalavra).map(([palavra, serie]) => ({ palavra, serie: serie.slice(-24) })),
+    concorrentes_mapa: await (async () => { const g = await env.DB.prepare("SELECT palavra, dados, criado_ms FROM plt_mk_geogrid WHERE org_id=? AND marca_id=? ORDER BY id DESC LIMIT 1").bind(...base).first(); if (!g) return null; const dd = JSON.parse(g.dados || "{}"); return dd.concorrentes ? { palavra: g.palavra, criado_ms: g.criado_ms, lista: dd.concorrentes.slice(0, 10) } : null; })()
   };
 }
 async function rotasGoogleExtra(request, env, k, orgId, papel, resto, url) {

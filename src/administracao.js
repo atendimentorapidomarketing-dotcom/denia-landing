@@ -1414,7 +1414,7 @@ export async function rotasAdmin(request, env, k, orgId, papel, resto) {
     if (metodo === "POST" && partes[2] === "enviar") {
       // Só para o e-mail cadastrado do próprio locatário: nunca para um endereço digitado na hora.
       const loc = l.locatario_id ? await env.DB.prepare("SELECT nome, email FROM adm_locatarios WHERE id=? AND org_id=?").bind(l.locatario_id, orgId).first() : null;
-      if (!loc?.email) return json({ erro: "Este locatário não tem e-mail cadastrado. Cadastre em Aluguéis e locatários." }, 400);
+      if (!loc?.email) return json({ erro: "Este locatário não tem e-mail cadastrado. Cadastre em Financeiro → Ganhos e gastos fixos → Detalhes do aluguel." }, 400);
       if (!k.enviarEmail || !(k.emailConfigurado && k.emailConfigurado())) return json({ erro: "O envio de e-mails ainda não está configurado na plataforma." }, 400);
       const b64 = (() => { let t = ""; for (let i = 0; i < pdf.length; i += 0x8000) t += String.fromCharCode(...pdf.subarray(i, i + 0x8000)); return btoa(t); })();
       const ok = await k.enviarEmail(loc.email, `Recibo — ${l.descricao}`, `Olá, ${loc.nome}!\n\nSegue o recibo de ${dinheiro(valorDe(l), await moeda())}, referente a ${l.descricao}, pago em ${br(l.pago_em)}.\n\n${c.recibo_emissor || await empresa()}`, [{ nome: `recibo-${l.id}.pdf`, base64: b64 }]);
