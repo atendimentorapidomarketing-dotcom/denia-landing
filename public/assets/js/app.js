@@ -257,7 +257,7 @@
   const ROTAS = {
     painel: { titulo: "Painel", render: paginaPainel },
     denia: { titulo: "DENIA por voz", render: paginaDenia },
-    problemas: { titulo: "Problemas", render: paginaProblemas },
+    problemas: { titulo: "Avisos e problemas", render: paginaProblemas },
     relatorios: { titulo: "Relatórios", render: paginaRelatorios },
     financeiro: { titulo: "Financeiro", render: paginaFinanceiro },
     os: { titulo: "Ordens de serviço", render: paginaOS },
@@ -477,7 +477,7 @@
     const chip = $("status-engine");
     const marcar = (texto, tipo) => { chip.className = "selo" + (tipo ? " selo-" + tipo : ""); chip.replaceChildren(h("span", { class: "ponto" }), texto); };
     estado.status = null;
-    $("contador-sugestoes").classList.add("oculto");
+    definirAviso("#/aprendizados", 0);
     if (!estado.org) { marcar("Sem empresa"); return; }
     if (!estado.org.conectada && estado.org.chatbot) { marcar("Chatbot do WhatsApp", "ok"); return; }
     if (!estado.org.conectada) { marcar("IA não conectada", "alerta"); return; }
@@ -496,7 +496,7 @@
       else marcar("IA com alertas", "erro");
       const l = await eng("learning").catch(() => null);
       const pend = l && l.sugestoes ? Number(l.sugestoes.PENDENTE || 0) : 0;
-      if (pend && estado.org && estado.org.id === alvo) { const c = $("contador-sugestoes"); c.textContent = pend > 99 ? "99+" : String(pend); c.classList.remove("oculto"); }
+      if (estado.org && estado.org.id === alvo) definirAviso("#/aprendizados", pend);
     } catch { if (estado.org && estado.org.id === alvo) marcar("IA indisponível", "erro"); }
   }
 
@@ -506,7 +506,10 @@
   }
   async function recarregarEu(manterId) {
     estado.eu = await api("/api/eu");
-    escolherEmpresa(manterId || (estado.org && estado.org.id) || armazenamento.ler("denia_empresa"));
+    // Notificação tocada: abre na empresa do aviso (?empresa=ID) e tira o parâmetro do endereço.
+    const daNotificacao = new URLSearchParams(location.search).get("empresa");
+    if (daNotificacao) history.replaceState(null, "", location.pathname + location.hash);
+    escolherEmpresa(daNotificacao || manterId || (estado.org && estado.org.id) || armazenamento.ler("denia_empresa"));
   }
 
   async function iniciar() {
@@ -537,6 +540,8 @@
     });
     window.addEventListener("pageshow", e => { if (e.persisted) conferirVersao(true); });
     setInterval(() => { if (document.visibilityState === "visible") conferirVersao(false); }, 10 * 60000);
+    // Notificação tocada com o app já aberto: vai direto para o aviso.
+    if ("serviceWorker" in navigator) navigator.serviceWorker.addEventListener("message", e => { if (e.data && e.data.abrir) location.href = e.data.abrir; });
     // Desenha a primeira tela na hora; a conferência da chave da IA corre junto (e só redesenha o Painel se faltar a chave).
     navegar();
     verificarIa().then(() => { if (estado.iaLigada === false && rotaAtual().nome === "painel") navegar(); });
@@ -748,6 +753,20 @@
         admin ? botao("Salvar", async () => { try { await org("relatorio/config", { metodo: "POST", corpo: { ativo: ativo.checked, dia: Number(dia.value), hora: Number(hora.value), emails: emails.value.trim() } }); aviso("Envio do relatório salvo.", "ok"); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario") : null,
         pode("AGENTE") ? botao("Enviar os últimos 7 dias para o meu e-mail", async (_e, b) => { const t0 = b.textContent; b.textContent = "Enviando…"; try { const x = await org("relatorio/enviar", { metodo: "POST", corpo: {} }); aviso(x.ok ? `Relatório enviado para ${x.para}.` : "O e-mail não foi aceito. Confira o domínio no Resend.", x.ok ? "ok" : "erro"); } catch (e) { aviso(e.message, "erro"); } finally { b.textContent = t0; } }, "btn-secundario") : null)));
   }
+  // Acesso rápido: onde fica cada coisa, em cartões grandes (só o que esta pessoa pode abrir), com os avisos.
+  function acessoRapido() {
+    const nav = $("lateral-nav");
+    const DESC = { agenda: ["Agenda", "Compromissos de cada pessoa, lembretes e confirmação"], tarefas: ["Tarefas", "O que fazer, com prazo e responsável"], financeiro: ["Financeiro", "Contas a pagar e receber, fluxo de caixa"], os: ["Clientes e OS", "Clientes, profissionais e ordens de serviço"],
+      whatsapp: ["WhatsApp", "Conversas, atendimento e campanhas"], google: ["Google", "Perfil, avaliações e posição no Maps"], instagram: ["Instagram", "Posts, gráficos e comentários"], temporada: ["Temporada", "Reservas, calendário e hóspedes"], problemas: ["Avisos", "O que precisa da sua atenção agora"] };
+    const achar = k => k === "problemas" ? nav.querySelector('a[data-rota="problemas"]') : nav.querySelector(`a[data-atalho="${k}"]`) || nav.querySelector(`a[data-entra="${k}"]`);
+    const cartoes = Object.keys(DESC).map(k => {
+      const a = achar(k);
+      if (!a || a.classList.contains("oculto") || (k === "temporada" && !temRecurso("temporada"))) return null;
+      const n = numeroAviso(a), ic = a.querySelector("svg");
+      return h("a", { class: "atalho", href: a.getAttribute("href") }, ic ? ic.cloneNode(true) : null, h("strong", { text: DESC[k][0] }), h("small", { text: DESC[k][1] }), n ? h("b", { class: "contador contador-alerta", text: n > 99 ? "99+" : String(n) }) : null);
+    }).filter(Boolean);
+    return h("section", { class: "atalhos", "aria-label": "Acesso rápido" }, cartoes);
+  }
   async function paginaPainel(el, _p, vivo) {
     const u = estado.eu.usuario;
     const hora = new Date().getHours();
@@ -760,6 +779,7 @@
       h("div", { class: "acoes" },
         !estado.org.conectada && estado.org.chatbot ? h("a", { class: "btn btn-primario", href: "#/chatbot/conversas" }, "Ver conversas") : estado.org.conectada ? h("a", { class: "btn btn-primario", href: "#/conversas" }, "Ver conversas") : h("a", { class: "btn btn-primario", href: "#/chatbot" }, "Montar o chatbot"),
         !estado.org.conectada && estado.org.chatbot ? h("a", { class: "btn btn-secundario", href: "#/chatbot/menu" }, "Editar o menu") : modoGuia() ? h("a", { class: "btn btn-secundario", href: "#/guia" }, "Guia de lojas") : h("a", { class: "btn btn-secundario", href: "#/treinamento" }, "Treinar a IA"))));
+    el.appendChild(acessoRapido());
 
     if (estado.org.conectada || estado.org.chatbot) { const faixa = h("div", {}); el.appendChild(faixa); faixaClientes(faixa).catch(() => faixa.remove()); }
     if (!estado.org.conectada && estado.org.chatbot) {
@@ -1645,8 +1665,53 @@
   // ---------------------------------------------------------------------------
 
   const AREAS_PROBLEMA = [["", "Todos"], ["WHATSAPP", "Mensagens"], ["CLIENTES", "Clientes"], ["PUBLICACOES", "Postagens"], ["TEMPORADA", "Temporada"], ["AGENDA", "Agendamentos"], ["CENTRAL", "IA da Central"], ["AVISOS", "Avisos para a equipe"], ["SISTEMA", "Sistema"]];
+  // ----- Notificações no celular (do próprio app da DENIA na tela inicial; sem loja, sem custo).
+  const suportaPush = () => "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+  const ehIphone = () => /iPhone|iPad|iPod/i.test(navigator.userAgent || "");
+  const instalado = () => (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) || navigator.standalone === true;
+  const chaveBytes = b => { const t = b.replace(/-/g, "+").replace(/_/g, "/"); const bin = atob(t + "===".slice((t.length + 3) % 4)); return Uint8Array.from(bin, c => c.charCodeAt(0)); };
+  async function inscricaoAtual() {
+    if (!suportaPush()) return null;
+    const reg = await navigator.serviceWorker.getRegistration("/").catch(() => null);
+    return reg ? await reg.pushManager.getSubscription().catch(() => null) : null;
+  }
+  async function ativarNotificacoes() {
+    if (!suportaPush()) throw new Error(ehIphone() ? "No iPhone: abra a DENIA no Safari, toque em Compartilhar → Adicionar à Tela de Início, abra pelo ícone novo e ative aqui." : "Este navegador não recebe notificações. Use o Chrome no Android ou a DENIA instalada na tela inicial.");
+    const reg = await navigator.serviceWorker.register("/sw-avisos.js", { scope: "/" });
+    await navigator.serviceWorker.ready;
+    const perm = await Notification.requestPermission();
+    if (perm !== "granted") throw new Error("As notificações foram bloqueadas. Libere em Ajustes do celular → Notificações → DENIA (ou no cadeado da barra de endereço) e tente de novo.");
+    const { chave } = await api("/api/push");
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: chaveBytes(chave) });
+    const ua = navigator.userAgent || "", nomeAp = /iPhone/.test(ua) ? "iPhone" : /iPad/.test(ua) ? "iPad" : /Android/.test(ua) ? "Android" : /Windows/.test(ua) ? "Computador (Windows)" : /Mac/.test(ua) ? "Computador (Mac)" : "Este aparelho";
+    await api("/api/push/inscrever", { metodo: "POST", corpo: { ...sub.toJSON(), aparelho: nomeAp } });
+    await api("/api/push/testar", { metodo: "POST", corpo: {} }).catch(() => null);
+  }
+  function cartaoNotificacoes(compacto) {
+    const caixa = h("section", { class: "cartao vidro", style: "margin-bottom:14px" }, carregando());
+    (async () => {
+      const sub = await inscricaoAtual();
+      const lig = Boolean(sub) && window.Notification && Notification.permission === "granted";
+      const d = await api("/api/push").catch(() => ({ aparelhos: [] }));
+      if (compacto && lig) { caixa.replaceChildren(h("p", { class: "sub", style: "margin:0", text: `🔔 Notificações ligadas neste aparelho (${d.aparelhos.length} aparelho(s) seu(s) recebem os avisos).` }), h("div", { class: "acoes" }, botao("Enviar um teste", async () => { try { await api("/api/push/testar", { metodo: "POST", corpo: {} }); aviso("Enviado. Deve chegar em segundos.", "ok"); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno"))); return; }
+      const dica = !suportaPush() && ehIphone() && !instalado() ? "No iPhone, as notificações só funcionam com a DENIA na Tela de Início: no Safari, toque em Compartilhar → Adicionar à Tela de Início, abra pelo ícone novo e ative aqui (iOS 16.4 ou mais novo)."
+        : !suportaPush() ? "Este navegador não recebe notificações. No Android, use o Chrome (ou a DENIA instalada na tela inicial)." : "";
+      caixa.replaceChildren(h("h3", { style: "margin:0 0 6px", text: lig ? "🔔 Notificações ligadas neste aparelho" : "🔔 Receber os avisos no celular" }),
+        h("p", { class: "sub", text: "Avaliação ruim, post que não saiu, mensagem não entregue, agendamento novo… chegam como notificação do app da DENIA, mesmo com ele fechado. Recebem o dono e os administradores de cada empresa." }),
+        dica ? h("p", { class: "nota", text: dica }) : null,
+        h("div", { class: "acoes" },
+          lig ? botao("Enviar um teste", async () => { try { await api("/api/push/testar", { metodo: "POST", corpo: {} }); aviso("Enviado. Deve chegar em segundos.", "ok"); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario")
+            : suportaPush() ? botao("Ativar neste aparelho", async (_e, b) => { b.disabled = true; try { await ativarNotificacoes(); aviso("Pronto! Mandei uma notificação de teste.", "ok"); navegar(); } catch (e) { aviso(e.message, "erro"); b.disabled = false; } }, "btn-primario") : null,
+          lig ? botao("Desligar neste aparelho", async () => { try { const s0 = await inscricaoAtual(); if (s0) { await api("/api/push/sair", { metodo: "POST", corpo: { endpoint: s0.endpoint } }); await s0.unsubscribe(); } aviso("Desligadas neste aparelho.", "ok"); navegar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario") : null),
+        d.aparelhos.length ? h("details", { style: "margin-top:8px" }, h("summary", { text: `Seus aparelhos que recebem (${d.aparelhos.length})` }), h("ul", { class: "prb-lista" }, d.aparelhos.map(a => h("li", { class: "prb-item", style: "border-color:var(--borda)" }, h("div", {}, h("strong", { text: a.aparelho || "Aparelho" }), h("p", { class: "prb-meta", text: `Ligado em ${new Date(a.criado_ms).toLocaleDateString(LOCALE)}${a.ultimo_ms ? " · último aviso " + new Date(a.ultimo_ms).toLocaleString(LOCALE) : ""}` }),
+          h("div", { class: "acoes" }, botao("Remover", async () => { try { await api("/api/push/sair", { metodo: "POST", corpo: { id: a.id } }); navegar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno"))))))) : null);
+    })().catch(e => caixa.replaceChildren(h("p", { class: "sub", text: e.message })));
+    return caixa;
+  }
   async function paginaProblemas(el, _p, vivo) {
-    el.appendChild(cabeca("Problemas", "Mensagens que não chegaram, clientes esperando, postagens que não saíram e tudo o que a DENIA não conseguiu fazer, com o motivo e o que fazer."));
+    el.appendChild(cabeca("Avisos e problemas", "Mensagens que não chegaram, clientes esperando, avaliações ruins, postagens que não saíram e tudo o que a DENIA não conseguiu fazer, com o motivo e o que fazer."));
+    el.appendChild(cartaoNotificacoes(true));
     const area = h("div", {}, carregando());
     el.appendChild(area);
     let lista;
@@ -1774,6 +1839,7 @@
     const u = estado.eu.usuario;
     if (u.trocar_senha) el.appendChild(h("p", { class: "nota nota-alerta", text: "Bem-vinda(o)! Para continuar, crie a sua senha pessoal no lugar da senha temporária." }));
     el.appendChild(cabeca("Conta e segurança", u.email + (u.super_admin ? " · administrador geral" : estado.org ? ` · ${NOME_PAPEL[estado.papel] || ""} na ${estado.org.nome}` : "")));
+    el.appendChild(cartaoNotificacoes(false));
     const nome = h("input", { class: "entrada", value: u.nome || "", maxlength: "120" });
     const seletorIdioma = window.denia_seletor_idioma ? window.denia_seletor_idioma() : null;
     const perfil = h("section", { class: "cartao vidro formulario" }, h("h3", { style: "margin:0", text: "Perfil" }), campo("Seu nome", nome),
@@ -3624,27 +3690,62 @@ Botão só com texto = resposta.` })),
     nav.querySelectorAll("a").forEach(a => a.classList.toggle("ativo", !a.dataset.entra && a.dataset.rota === nome && (!a.dataset.aba || a.dataset.aba === aba)));
     return modo;
   }
+  // ----- Avisos (números vermelhos): cada número fica no item exato do submenu; o canal mostra a soma.
+  // Ao abrir o canal, o item que pede atenção aparece com o número e destacado — nada de número "solto".
+  const AVISOS = {};
+  function definirAviso(href, n) {
+    n = Math.max(0, Number(n) || 0);
+    if ((AVISOS[href] || 0) === n) return;
+    AVISOS[href] = n;
+    pintarAvisos();
+    if (estado.ultimaBarra) barraApp(...estado.ultimaBarra);
+    const at = document.querySelector(".atalhos");
+    if (at) at.replaceWith(acessoRapido());
+  }
+  function seloAviso(a, n) {
+    let b = a.querySelector("b.contador-aviso");
+    a.classList.toggle("tem-aviso", Boolean(n));
+    if (!n) { if (b) b.remove(); return; }
+    if (!b) { b = h("b", { class: "contador contador-alerta contador-aviso" }); a.insertBefore(b, a.querySelector(".seta")); }
+    b.textContent = n > 99 ? "99+" : String(n);
+    b.title = `${n} ${n === 1 ? "item pede" : "itens pedem"} atenção aqui`;
+  }
+  function pintarAvisos() {
+    const nav = $("lateral-nav"); if (!nav) return;
+    nav.querySelectorAll("a[data-modo-de]:not([data-voltar])").forEach(a => seloAviso(a, AVISOS[a.getAttribute("href")] || 0));
+    nav.querySelectorAll("a[data-entra]").forEach(a => {
+      const vistos = new Set(); let n = 0;
+      nav.querySelectorAll(`a[data-modo-de~="${a.dataset.entra}"]:not([data-voltar]):not([data-sem-soma])`).forEach(x => { const hr = x.getAttribute("href"); if (!vistos.has(hr)) { vistos.add(hr); n += AVISOS[hr] || 0; } });
+      seloAviso(a, n);
+    });
+  }
+  const numeroAviso = a => { const b = a.querySelector(".contador:not(.oculto)"); return b ? Number(String(b.textContent).replace("+", "")) || 0 : 0; };
   function barraApp(nome, param) {
     const b = $("barra-app");
+    estado.ultimaBarra = [nome, param];
+    pintarAvisos();
+    const modoAntes = estado.modoAtual;
     const modo = aplicarMenu(nome, param);
+    // Ao entrar num canal com aviso, o menu mostra (rola até) o item que pede atenção.
+    if (modo && modo !== modoAntes) { const alvo = $("lateral-nav").querySelector(`a[data-modo-de~="${modo}"].tem-aviso`); if (alvo) setTimeout(() => alvo.scrollIntoView({ block: "nearest" }), 50); }
     if (!b) return;
     const nav = $("lateral-nav");
     const visiveis = [...nav.querySelectorAll("a")].filter(a => !a.classList.contains("fora") && !a.classList.contains("oculto") && !a.dataset.voltar);
     // Nome do item sem o número de avisos nem a seta (senão vira "Google0").
     const nomeDe = a => { const c = a.cloneNode(true); c.querySelectorAll(".contador, .seta, b, i").forEach(x => x.remove()); return c.textContent.trim(); };
-    const item = (a, rotulo) => { const x = h("a", { href: a.getAttribute("href"), class: "barra-app-item" + (a.classList.contains("ativo") ? " ativo" : "") }); const ic = a.querySelector("svg, .canal-ic"); x.append(ic ? ic.cloneNode(true) : svgIc(IC.lista), h("span", { text: rotulo || nomeDe(a).split(" (")[0] })); return x; };
-    const botaoItem = (ic, rotulo, fn, ativo) => h("button", { type: "button", class: "barra-app-item" + (ativo ? " ativo" : ""), onclick: fn }, svgIc(ic), h("span", { text: rotulo }));
+    const bolinha = n => n ? h("b", { class: "contador contador-alerta barra-contador", text: n > 99 ? "99+" : String(n) }) : null;
+    const item = (a, rotulo) => { const x = h("a", { href: a.getAttribute("href"), class: "barra-app-item" + (a.classList.contains("ativo") ? " ativo" : "") }); const ic = a.querySelector("svg, .canal-ic"); x.append(ic ? ic.cloneNode(true) : svgIc(IC.lista), h("span", { text: rotulo || nomeDe(a).split(" (")[0] })); const bo = bolinha(numeroAviso(a)); if (bo) x.append(bo); return x; };
+    const botaoItem = (ic, rotulo, fn, ativo, n) => h("button", { type: "button", class: "barra-app-item" + (ativo ? " ativo" : ""), onclick: fn }, svgIc(ic), h("span", { text: rotulo }), bolinha(n));
     if (modo) {
       const primeiros = visiveis.slice(0, 4), resto = visiveis.slice(4);
-      const curto = { "Agenda de todas": "Todas", "Agenda e compromissos": "Agenda", "WhatsApp e celular": "WhatsApp", "Relatório da equipe": "Equipe", "Desempenho do atendimento": "Desempenho", "Pedidos de serviço": "Pedidos", "Profissionais parceiros": "Profissionais", "Entregas das mensagens": "Entregas", "Palavras-chave e posição": "Palavras", "Pré-análise de empresas": "Pré-análise", "Mapa de posição": "Mapa", "Avaliações ruins (triagem)": "Ruins", "Posts no perfil": "Posts", "Calendário e criação com IA": "Calendário", "Visão geral (todos os perfis)": "Visão", "Custos da Meta": "Custos", "Número, qualidade e custos": "Número", "Visão geral e evolução": "Visão", "Mensagens dos hóspedes": "Mensagens", "Calendário e preços": "Calendário", "Desempenho e cliques": "Desempenho", "Estúdio de criação": "Estúdio", "Calendário de posts": "Calendário", "Visão do chatbot": "Visão", "Métricas de atendimento": "Métricas", "Avaliações 1★ (triagem)": "1 estrela", "Imóveis (todos)": "Imóveis", "Conexões e idiomas": "Conexões", "Palavras-chave e buscas": "Palavras", "Relatório semanal": "Relatório", "Posicionamento no Google": "Posição", "Google orgânico (SEO)": "SEO", "Concorrentes no Maps": "Concorrentes", "Clientes e etiquetas": "Clientes", "Modelos de mensagem": "Modelos", "Saúde do número": "Saúde", "Respostas rápidas": "Rápidas", "Perfil comercial": "Perfil", "Melhores horários": "Horários", "Recomendações": "Avaliações", "Melhorias e manutenção": "Melhorias", "Inventário e checklist": "Inventário", "Avaliações dos hóspedes": "Avaliações", "Agenda e compromissos": "Agenda", "Banco e caixa": "Banco", "Aluguéis e locatários": "Aluguéis", "Manutenção e obrigações": "Manutenção", "Documentos e validades": "Documentos", "Relatório do mês": "Relatório", "Ajustes e importação": "Ajustes", "O dia": "Hoje", "Todas as empresas": "Empresas", "Agenda de todas as empresas": "Todas", "Locação por temporada": "Temporada" };
-      b.replaceChildren(...primeiros.map(a => { const t = nomeDe(a); return item(a, curto[t] || t.split(" ")[0]); }), botaoItem(IC.mais, "Mais", () => maisDoModo(modo, resto), resto.some(a => a.classList.contains("ativo"))));
+      const curto = { "Agenda de todas": "Todas", "Agenda e compromissos": "Agenda", "WhatsApp e celular": "WhatsApp", "Lembretes (WhatsApp e celular)": "Lembretes", "Resumo do dia": "Hoje", "Clientes, profissionais e OS": "OS", "Avisos e problemas": "Avisos", "Relatório da equipe": "Equipe", "Desempenho do atendimento": "Desempenho", "Pedidos de serviço": "Pedidos", "Profissionais parceiros": "Profissionais", "Entregas das mensagens": "Entregas", "Palavras-chave e posição": "Palavras", "Pré-análise de empresas": "Pré-análise", "Mapa de posição": "Mapa", "Avaliações ruins (triagem)": "Ruins", "Posts no perfil": "Posts", "Calendário e criação com IA": "Calendário", "Visão geral (todos os perfis)": "Visão", "Custos da Meta": "Custos", "Número, qualidade e custos": "Número", "Visão geral e evolução": "Visão", "Mensagens dos hóspedes": "Mensagens", "Calendário e preços": "Calendário", "Desempenho e cliques": "Desempenho", "Estúdio de criação": "Estúdio", "Calendário de posts": "Calendário", "Visão do chatbot": "Visão", "Métricas de atendimento": "Métricas", "Avaliações 1★ (triagem)": "1 estrela", "Imóveis (todos)": "Imóveis", "Conexões e idiomas": "Conexões", "Palavras-chave e buscas": "Palavras", "Relatório semanal": "Relatório", "Posicionamento no Google": "Posição", "Google orgânico (SEO)": "SEO", "Concorrentes no Maps": "Concorrentes", "Clientes e etiquetas": "Clientes", "Modelos de mensagem": "Modelos", "Saúde do número": "Saúde", "Respostas rápidas": "Rápidas", "Perfil comercial": "Perfil", "Melhores horários": "Horários", "Recomendações": "Avaliações", "Melhorias e manutenção": "Melhorias", "Inventário e checklist": "Inventário", "Avaliações dos hóspedes": "Avaliações", "Agenda e compromissos": "Agenda", "Banco e caixa": "Banco", "Aluguéis e locatários": "Aluguéis", "Manutenção e obrigações": "Manutenção", "Documentos e validades": "Documentos", "Relatório do mês": "Relatório", "Ajustes e importação": "Ajustes", "O dia": "Hoje", "Todas as empresas": "Empresas", "Agenda de todas as empresas": "Todas", "Locação por temporada": "Temporada" };
+      b.replaceChildren(...primeiros.map(a => { const t = nomeDe(a); return item(a, curto[t] || t.split(" ")[0]); }), botaoItem(IC.mais, "Mais", () => maisDoModo(modo, resto), resto.some(a => a.classList.contains("ativo")), resto.reduce((t, a) => t + numeroAviso(a), 0)));
     } else {
       const entra = m => nav.querySelector(`[data-entra="${m}"]`);
-      const lista = [nav.querySelector('a[data-rota="painel"]'), entra("whatsapp"), temRecurso("temporada") ? entra("temporada") : entra("instagram"), entra("google")].filter(a => a && !a.classList.contains("oculto"));
-      b.replaceChildren(...lista.map(a => item(a, nomeDe(a).replace("Locação por temporada", "Temporada"))), botaoItem(IC.menu, "Menu", () => abrirMenuLateral(), false));
-      // Número vermelho de Problemas também no botão Menu do celular.
-      const cp = $("contador-problemas"), menuB = b.lastElementChild;
-      if (cp && menuB) menuB.appendChild(h("b", { class: "contador contador-alerta barra-contador" + (cp.classList.contains("oculto") ? " oculto" : ""), id: "contador-barra", text: cp.textContent }));
+      // Celular: Painel, Agenda, WhatsApp, Google (ou Temporada) e o Menu completo.
+      const lista = [nav.querySelector('a[data-rota="painel"]'), nav.querySelector('a[data-atalho="agenda"]'), entra("whatsapp"), temRecurso("temporada") ? entra("temporada") : entra("google")].filter(a => a && !a.classList.contains("oculto"));
+      const somaMenu = [...nav.querySelectorAll("a[data-entra]")].filter(a => !lista.includes(a)).reduce((t, a) => t + numeroAviso(a), 0);
+      b.replaceChildren(...lista.map(a => item(a, nomeDe(a).replace("Locação por temporada", "Temporada"))), botaoItem(IC.menu, "Menu", () => abrirMenuLateral(), false, somaMenu + numeroAviso(nav.querySelector('a[data-rota="problemas"]') || h("a"))));
     }
   }
   function maisDoModo(modo, resto) {
@@ -3656,7 +3757,8 @@ Botão só com texto = resposta.` })),
       if (el.classList.contains("lateral-grupo")) { grupoAtual = el.textContent; continue; }
       if (el.tagName !== "A" || !resto.includes(el)) continue;
       const ic = el.querySelector("svg, .canal-ic");
-      blocos.push(h("a", { href: el.getAttribute("href"), class: "mais-tp-item", onclick: () => fechar() }, ic ? ic.cloneNode(true) : svgIc(IC.lista), h("span", {}, h("strong", { text: el.textContent.replace("›", "").trim() }), grupoAtual ? h("small", { text: grupoAtual }) : null)));
+      const nAv = numeroAviso(el);
+      blocos.push(h("a", { href: el.getAttribute("href"), class: "mais-tp-item" + (nAv ? " tem-aviso" : ""), onclick: () => fechar() }, ic ? ic.cloneNode(true) : svgIc(IC.lista), h("span", {}, h("strong", { text: [...el.childNodes].filter(x => x.nodeType === 3).map(x => x.textContent).join("").trim() }), grupoAtual ? h("small", { text: grupoAtual }) : null), nAv ? h("b", { class: "contador contador-alerta", text: String(nAv) }) : null));
     }
     blocos.push(h("a", { href: "#/painel", class: "mais-tp-item", onclick: () => fechar() }, svgIc('<path d="M15 18l-6-6 6-6"/>'), h("span", {}, h("strong", { text: "Menu principal" }), h("small", { text: "Todos os canais e a administração" }))));
     const fechar = gaveta(NOME_MODO[modo], [h("nav", { class: "mais-tp" }, blocos)]);
@@ -9399,24 +9501,16 @@ Botão só com texto = resposta.` })),
       c.classList.toggle("oculto", !r.total);
       c.title = r.total ? `${r.total} problema(s) para ver` : "";
     } catch { c.classList.add("oculto"); }
-    const cb = $("contador-barra");
-    if (cb) { cb.textContent = c.textContent; cb.classList.toggle("oculto", c.classList.contains("oculto")); }
+    if (estado.ultimaBarra) barraApp(...estado.ultimaBarra); // o botão Menu do celular soma os problemas
   }
 
   async function atualizarAprovacoes() {
     atualizarProblemas();
-    const c = $("contador-aprovacoes");
-    if (!c || !estado.org) return;
-    try {
-      const r = await mk("resumo");
-      c.textContent = r.aguardando > 99 ? "99+" : String(r.aguardando);
-      c.classList.toggle("oculto", !r.aguardando);
-    } catch { c.classList.add("oculto"); }
-    // Avaliações do Google que precisam de uma pessoa: contador vermelho no menu.
-    const g = $("contador-google");
-    if (!g) return;
-    try { const a = await mk("alertas"); g.textContent = a.avaliacoes > 99 ? "99+" : String(a.avaliacoes); g.classList.toggle("oculto", !a.avaliacoes); }
-    catch { g.classList.add("oculto"); }
+    if (!estado.org || ehRevisor()) return;
+    // Posts esperando aprovação: no item Aprovações (Marketing, Instagram e Facebook).
+    try { const r = await mk("resumo"); definirAviso("#/aprovacoes", r.aguardando || 0); } catch { definirAviso("#/aprovacoes", 0); }
+    // Avaliações do Google que precisam de uma pessoa: no item da triagem (e a soma no Google).
+    try { const a = await mk("alertas"); definirAviso("#/google/triagem", a.avaliacoes || 0); } catch { definirAviso("#/google/triagem", 0); }
   }
 
   // ---------------------------------------------------------------------------

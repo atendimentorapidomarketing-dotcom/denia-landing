@@ -29,14 +29,15 @@ import { openaiBruto } from "./marketing.js";
 import { rotasFinanceiro, financeiroDoCron } from "./financeiro.js";
 import { rotasApresentacao } from "./apresentacao.js";
 import { rotasAdmin, adminDoCron, icalAdmin, consolidadoAdmin, agendaGeral, agendaEmTexto } from "./administracao.js";
-import { DDL_PROBLEMAS, rotasProblemas, registrarProblema, resolverProblema, limparProblemas } from "./problemas.js";
+import { DDL_PROBLEMAS, rotasProblemas, registrarProblema, resolverProblema, limparProblemas, problemasAbertos } from "./problemas.js";
+import { rotasPush, avisosNoCelular } from "./push.js";
 import { DDL_ZAP, webhookZap, rotasZap, webhookTelegram, segredoTelegram, tokenTelegramPlataforma, processarCampanhas, posVendaChatbot, lembrarAgenda, brutoRelatorioZap, avisarTelegramDaEmpresa , enviarModeloZap, zapEquipe, modelosAgendaZap, MODELOS_AGENDA } from "./zap.js";
 import { publicoCelular, comandoEquipeZap } from "./agendaequipe.js";
 import { rotasOS, osDoCron } from "./ordens.js";
 import { montarRelatorio, planilhaRelatorio, textoRelatorio, base64, ultimos7Dias, lerConfigRelatorio, horaDeEnviar, diaBR, dataBR, DIAS_SEMANA, inicioDoDia as inicioDoDiaBR } from "./relatorio.js";
 import { lerPlanos, acessoDa, recursoDaRota, planoMinimo, rotasPlano, webhookAsaas, lembretesDePlano, TESTE_DIAS, STATUS as STATUS_PLANO, PLANOS_PADRAO, RECURSOS } from "./planos.js";
 
-const VERSAO = "3.46.0";
+const VERSAO = "3.47.0";
 // Versão dos Termos de uso e da Política de privacidade aceitas no cadastro.
 const VERSAO_TERMOS = "2026-10-16";
 // WhatsApp da Central de Atendimento (botão flutuante do site).
@@ -1005,6 +1006,15 @@ async function rotasRelatorio(request, env, sessao, orgId, papel, resto) {
   return null;
 }
 
+// Empresa com a IA da Central ligada: os avisos não urgentes dela (que não vão ao Telegram) entram nos problemas.
+function avisosCentralDe(env, orgId) {
+  return async () => {
+    const con = await conexaoDa(env, orgId).catch(() => null);
+    if (!con?.token || !con?.url) return [];
+    const r = await Promise.race([chamarEngine(con, "GET", "avisos").catch(() => null), new Promise(ok => setTimeout(() => ok(null), 5000))]);
+    return r?.dados?.avisos || [];
+  };
+}
 async function aCada(env, nome, ms) {
   const t = agora(env);
   const r = await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave=?").bind("acada_" + nome).first().catch(() => null);
@@ -1129,13 +1139,7 @@ async function apiOrg(request, env, sessao, orgId, resto, ctx) {
   if (resto === "fin" || resto.startsWith("fin/")) return rotasFinanceiro(request, env, { ...kitBase(env), sessao, comIA, openai: openaiBruto }, orgId, papel, resto);
   if (resto === "problemas" || resto.startsWith("problemas/")) {
     // Empresa com a IA da Central ligada: os avisos não urgentes dela (que não vão ao Telegram) entram aqui.
-    const avisosCentral = async () => {
-      const con = await conexaoDa(env, orgId).catch(() => null);
-      if (!con?.token || !con?.url) return [];
-      const r = await Promise.race([chamarEngine(con, "GET", "avisos").catch(() => null), new Promise(ok => setTimeout(() => ok(null), 5000))]);
-      return r?.dados?.avisos || [];
-    };
-    return (await rotasProblemas(request, env, orgId, papel, resto, pode(papel, "AGENTE"), sessao.usuario.email, avisosCentral)) || json({ erro: "Rota não encontrada." }, 404);
+    return (await rotasProblemas(request, env, orgId, papel, resto, pode(papel, "AGENTE"), sessao.usuario.email, avisosCentralDe(env, orgId))) || json({ erro: "Rota não encontrada." }, 404);
   }
   if (resto === "relatorio" || resto.startsWith("relatorio/")) return (await rotasRelatorio(request, env, sessao, orgId, papel, resto)) || json({ erro: "Rota não encontrada." }, 404);
   if (resto === "zap" || resto.startsWith("zap/")) return rotasZap(request, env, { ...(await kitZap(env, new URL(request.url).origin)), sessao, acesso: sessao.usuario.super_admin ? { ...acesso, recursos: Object.keys(RECURSOS) } : acesso }, orgId, papel, resto);
@@ -1385,6 +1389,7 @@ async function api(request, env, caminho, ctx) {
   if (!sessao) return json({ erro: "Sua sessão expirou. Entre novamente." }, 401);
   const u = sessao.usuario;
 
+  if (caminho === "/api/push" || caminho.startsWith("/api/push/")) { const r = await rotasPush(request, env, sessao, caminho, { json, lerCorpo }); if (r) return r; }
   if (caminho === "/api/eu" && metodo === "GET") {
     return json({ usuario: { id: u.id, email: u.email, nome: u.nome || "", super_admin: u.super_admin, trocar_senha: u.trocar_senha, tem_senha: u.tem_senha }, organizacoes: await organizacoesDo(env, u), sessao_expira_ms: sessao.exp, versao: VERSAO, papeis: NOME_PAPEL });
   }
@@ -1597,6 +1602,8 @@ export default {
       // Agenda primeiro (lembretes têm hora certa); a última rodada fica guardada para o painel avisar se as tarefas pararem.
       { const kz = await kitZap(env); await adminDoCron(env, { ...kz, avisarTelegram: (o, t) => avisarTelegramDaEmpresa(env, kz, o, t), enviarModeloZap: (o, tel, modelo, idioma, vars) => enviarModeloZap(env, kz, o, tel, modelo, idioma, vars), ...kitAgendaZap(env, kz) }).catch(e => console.error("administração", e?.message)); }
       await env.DB.prepare("INSERT OR REPLACE INTO plt_meta(chave,valor) VALUES('agenda_cron_ms',?)").bind(String(agora(env))).run().catch(() => { });
+      // Avisos novos (avaliação ruim, post que não saiu, mensagem não entregue…) viram notificação no celular.
+      if (await aCada(env, "push_avisos", 4 * 60000)) await avisosNoCelular(env, o => problemasAbertos(env, o, agora(env), avisosCentralDe(env, o)), agora(env)).catch(e => console.error("avisos no celular", e?.message));
       await publicarPendentes(env, k).catch(e => console.error("publicação agendada", e?.message));
       await sincronizarGooglePendentes(env, k).catch(e => console.error("google", e?.message));
       await cuidarDasAvaliacoes(env, k).catch(e => console.error("avaliações", e?.message));

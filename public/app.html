@@ -35,39 +35,48 @@
     <nav class="lateral-nav" id="lateral-nav">
       <a href="#/painel" class="voltar-menu" data-modo-de="whatsapp instagram facebook google temporada marketing ia admin" data-voltar="1"><svg viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg>Menu principal</a>
       <p class="lateral-titulo-modo" id="titulo-modo" data-modo-de="whatsapp instagram facebook google temporada marketing ia admin"></p>
-      <p class="lateral-grupo">Visão geral</p>
+      <p class="lateral-grupo">Início</p>
       <a href="#/painel" data-rota="painel"><svg viewBox="0 0 24 24"><path d="M3 13h8V3H3zM13 21h8v-8h-8zM3 21h8v-6H3zM13 11h8V3h-8z"/></svg>Painel</a>
+      <a href="#/problemas" data-rota="problemas"><svg viewBox="0 0 24 24"><path d="M12 3 2 21h20L12 3z"/><path d="M12 10v5M12 18h.01"/></svg>Avisos e problemas<b class="contador contador-alerta oculto" id="contador-problemas"></b></a>
       <a href="#/denia" data-rota="denia"><svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>DENIA por voz</a>
-      <a href="#/problemas" data-rota="problemas"><svg viewBox="0 0 24 24"><path d="M12 3 2 21h20L12 3z"/><path d="M12 10v5M12 18h.01"/></svg>Problemas<b class="contador contador-alerta oculto" id="contador-problemas"></b></a>
-      <a href="#/rotina" data-rota="rotina"><svg viewBox="0 0 24 24"><path d="M9 11l3 3 8-8"/><path d="M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9"/></svg>Rotina do especialista</a>
-      <a href="#/relatorios" data-rota="relatorios"><svg viewBox="0 0 24 24"><path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5M9 17v-3M12 17v-6M15 17v-4"/></svg>Relatórios</a>
-      <a href="#/admin/hoje" data-entra="admin" data-rota="admin"><svg viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="13" rx="2.5"/><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M3 12h18M11 12v2h2v-2"/></svg>Administração e financeiro<i class="seta">›</i></a>
-      <a href="#/apresentacao" data-rota="apresentacao"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="12" rx="2.5"/><path d="m10 8.5 4.5 2.5-4.5 2.5z"/><path d="M8 21h8M12 17v4"/></svg>Apresentação da DENIA</a>
-      <a href="#/ajuda" data-rota="ajuda"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.6V14M12 17.5h.01"/></svg>Ajuda e tutoriais</a>
+      <p class="lateral-grupo">Dia a dia</p>
+      <a href="#/admin/agenda" data-rota="admin" data-aba="agenda" data-atalho="agenda"><svg viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="16" rx="3"/><path d="M3 9.5h18M8 2.5v4M16 2.5v4M8 14h3"/></svg>Agenda</a>
+      <a href="#/admin/tarefas" data-rota="admin" data-aba="tarefas" data-atalho="tarefas"><svg viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11"/><path d="m3.5 6 1.2 1.2L7 5M3.5 12l1.2 1.2L7 11M3.5 18l1.2 1.2L7 17"/></svg>Tarefas</a>
+      <a href="#/admin/hoje" data-rota="admin" data-aba="hoje" data-atalho="hoje"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>Resumo do dia</a>
+      <p class="lateral-grupo">Administrativo e financeiro</p>
+      <a href="#/financeiro" data-rota="financeiro" data-minimo="ADMIN" data-atalho="financeiro"><svg viewBox="0 0 24 24"><rect x="2.5" y="6" width="19" height="12" rx="2.5"/><circle cx="12" cy="12" r="2.6"/><path d="M6 9.5v5M18 9.5v5"/></svg>Financeiro</a>
+      <a href="#/os/ordens" data-rota="os" data-atalho="os"><svg viewBox="0 0 24 24"><path d="M14.5 6.5a4 4 0 0 0-5.3 5.3L3.5 17.5l3 3 5.7-5.7a4 4 0 0 0 5.3-5.3l-2.4 2.4-2.6-.5-.5-2.6z"/></svg>Clientes, profissionais e OS</a>
+      <a href="#/dre" data-rota="dre" data-minimo="ADMIN"><svg viewBox="0 0 24 24"><path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5M9 13h6M9 17h6"/></svg>DRE e contabilidade</a>
+      <a href="#/admin/hoje" data-entra="admin" data-rota="admin"><svg viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="13" rx="2.5"/><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M3 12h18M11 12v2h2v-2"/></svg>Administração completa<i class="seta">›</i></a>
       <p class="lateral-grupo">Canais</p>
       <a href="#/whatsapp" data-entra="whatsapp" data-rota="whatsapp" data-recurso-livre="1"><svg viewBox="0 0 24 24"><path d="M3.5 20.5 5 16a8.5 8.5 0 1 1 3 3z"/><path d="M9 9.5c.4 2 2.1 3.9 4.5 4.6l1.2-1.1 2 1-.6 1.6c-3.6.3-7.6-3.4-7.7-7l1.6-.6 1 2z"/></svg>WhatsApp<i class="seta">›</i></a>
       <a href="#/instagram" data-entra="instagram" data-rota="instagram"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="5"/><circle cx="12" cy="12" r="4"/><path d="M17.5 6.5h.01"/></svg>Instagram<i class="seta">›</i></a>
       <a href="#/facebook" data-entra="facebook" data-rota="facebook"><svg viewBox="0 0 24 24"><path d="M14 8h3V4h-3a4 4 0 0 0-4 4v3H7v4h3v6h4v-6h3l1-4h-4V8z"/></svg>Facebook<i class="seta">›</i></a>
-      <a href="#/google" data-entra="google" data-rota="google"><svg viewBox="0 0 24 24"><path d="M12 21s-7-6.2-7-11.5a7 7 0 0 1 14 0C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/></svg>Google<b class="contador contador-alerta oculto" id="contador-google"></b><i class="seta">›</i></a>
+      <a href="#/google" data-entra="google" data-rota="google"><svg viewBox="0 0 24 24"><path d="M12 21s-7-6.2-7-11.5a7 7 0 0 1 14 0C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/></svg>Google<i class="seta">›</i></a>
       <a href="#/temporada/visao" data-entra="temporada" data-rota="temporada"><svg viewBox="0 0 24 24"><path d="M3 11 12 4l9 7"/><path d="M5 10v10h14V10"/><path d="M10 20v-6h4v6"/></svg>Locação por temporada<i class="seta">›</i></a>
-      <p class="lateral-grupo">Gestão</p>
-      <a href="#/marcas" data-rota="marcas"><svg viewBox="0 0 24 24"><path d="M9 7H6a4 4 0 0 0 0 8h3M15 7h3a4 4 0 0 1 0 8h-3M8 11h8"/></svg>Contas conectadas</a>
+      <p class="lateral-grupo">Marketing e inteligência</p>
       <a href="#/estudio" data-entra="marketing" data-rota="estudio"><svg viewBox="0 0 24 24"><path d="M12 3l2.2 5.3L20 9l-4.4 3.8L17 18.5 12 15.6 7 18.5l1.4-5.7L4 9l5.8-.7z"/></svg>Marketing e conteúdo<i class="seta">›</i></a>
       <a href="#/treinamento" data-entra="ia" data-rota="treinamento" data-motor="1"><svg viewBox="0 0 24 24"><path d="M12 3 2 8l10 5 10-5-10-5z"/><path d="M6 10.5V16c0 1.7 2.7 3 6 3s6-1.3 6-3v-5.5"/></svg>Inteligência da DENIA<i class="seta">›</i></a>
-      <p class="lateral-grupo" data-modo-de="admin">O dia</p>
-      <a href="#/admin/hoje" data-modo-de="admin" data-rota="admin" data-aba="hoje"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>O dia</a>
+      <a href="#/marcas" data-rota="marcas"><svg viewBox="0 0 24 24"><path d="M9 7H6a4 4 0 0 0 0 8h3M15 7h3a4 4 0 0 1 0 8h-3M8 11h8"/></svg>Contas conectadas</a>
+      <p class="lateral-grupo">Relatórios e ajuda</p>
+      <a href="#/relatorios" data-rota="relatorios"><svg viewBox="0 0 24 24"><path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5M9 17v-3M12 17v-6M15 17v-4"/></svg>Relatórios</a>
+      <a href="#/rotina" data-rota="rotina"><svg viewBox="0 0 24 24"><path d="M9 11l3 3 8-8"/><path d="M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9"/></svg>Rotina do especialista</a>
+      <a href="#/apresentacao" data-rota="apresentacao"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="12" rx="2.5"/><path d="m10 8.5 4.5 2.5-4.5 2.5z"/><path d="M8 21h8M12 17v4"/></svg>Apresentação da DENIA</a>
+      <a href="#/ajuda" data-rota="ajuda"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.6V14M12 17.5h.01"/></svg>Ajuda e tutoriais</a>
+      <p class="lateral-grupo" data-modo-de="admin">Agenda e tarefas</p>
+      <a href="#/admin/hoje" data-modo-de="admin" data-rota="admin" data-aba="hoje"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>Resumo do dia</a>
       <a href="#/admin/agenda" data-modo-de="admin" data-rota="admin" data-aba="agenda"><svg viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="16" rx="3"/><path d="M3 9.5h18M8 2.5v4M16 2.5v4M8 14h3"/></svg>Agenda e compromissos</a>
       <a href="#/admin/tarefas" data-modo-de="admin" data-rota="admin" data-aba="tarefas"><svg viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11"/><path d="m3.5 6 1.2 1.2L7 5M3.5 12l1.2 1.2L7 11M3.5 18l1.2 1.2L7 17"/></svg>Tarefas</a>
       <a href="#/admin/geral" data-modo-de="admin" data-rota="admin" data-aba="geral" data-varias="1"><svg viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="16" rx="3"/><path d="M3 9.5h18M8 2.5v4M16 2.5v4"/><path d="M7 13h3M7 16.5h3M14 13h3M14 16.5h3"/></svg>Agenda de todas</a>
-      <a href="#/admin/avisos" data-modo-de="admin" data-rota="admin" data-aba="avisos"><svg viewBox="0 0 24 24"><path d="M21 11.5a8.4 8.4 0 0 1-12.4 7.4L3 20.5l1.6-5.4A8.4 8.4 0 1 1 21 11.5z"/><path d="M9 10h6M9 13.5h4"/></svg>WhatsApp e celular</a>
+      <a href="#/admin/avisos" data-modo-de="admin" data-rota="admin" data-aba="avisos"><svg viewBox="0 0 24 24"><path d="M21 11.5a8.4 8.4 0 0 1-12.4 7.4L3 20.5l1.6-5.4A8.4 8.4 0 1 1 21 11.5z"/><path d="M9 10h6M9 13.5h4"/></svg>Lembretes (WhatsApp e celular)</a>
       <a href="#/admin/equipe" data-modo-de="admin" data-rota="admin" data-aba="equipe"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M17 11v6M20 8v9M14 14v3"/></svg>Relatório da equipe</a>
-      <p class="lateral-grupo" data-modo-de="admin">Dinheiro</p>
+      <p class="lateral-grupo" data-modo-de="admin">Financeiro</p>
       <a href="#/financeiro" data-modo-de="admin" data-rota="financeiro" data-minimo="ADMIN"><svg viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="13" rx="2.5"/><path d="M3 10h18M7 15h4"/><path d="M16 3.5 19 6"/></svg>Financeiro</a>
-      <a href="#/os/ordens" data-modo-de="admin" data-rota="os"><svg viewBox="0 0 24 24"><rect x="5" y="3" width="14" height="18" rx="2"/><path d="M9 7h6M9 11h6M9 15h4"/></svg>Ordens de serviço</a>
+      <a href="#/os/ordens" data-modo-de="admin" data-rota="os"><svg viewBox="0 0 24 24"><rect x="5" y="3" width="14" height="18" rx="2"/><path d="M9 7h6M9 11h6M9 15h4"/></svg>Clientes, profissionais e OS</a>
       <a href="#/dre" data-modo-de="admin" data-rota="dre"><svg viewBox="0 0 24 24"><path d="M4 4h16v16H4z"/><path d="M8 9h8M8 13h8M8 17h5"/></svg>DRE e contabilidade</a>
       <a href="#/admin/contas" data-modo-de="admin" data-rota="admin" data-aba="contas" data-minimo="ADMIN"><svg viewBox="0 0 24 24"><path d="M3 10 12 4l9 6M5 10v8M9 10v8M15 10v8M19 10v8M3 20h18"/></svg>Banco e caixa</a>
       <a href="#/admin/relatorio" data-modo-de="admin" data-rota="admin" data-aba="relatorio" data-minimo="ADMIN"><svg viewBox="0 0 24 24"><path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5M9 17v-3M12 17v-6M15 17v-4"/></svg>Relatório do mês</a>
-      <p class="lateral-grupo" data-modo-de="admin">Prédio e papéis</p>
+      <p class="lateral-grupo" data-modo-de="admin">Empresa e documentos</p>
       <a href="#/admin/manutencao" data-modo-de="admin" data-rota="admin" data-aba="manutencao"><svg viewBox="0 0 24 24"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.5 2.5-2.5-.5-.5-2.5z"/></svg>Manutenção e obrigações</a>
       <a href="#/admin/documentos" data-modo-de="admin" data-rota="admin" data-aba="documentos" data-minimo="ADMIN"><svg viewBox="0 0 24 24"><path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5M9 13h7M9 17h5"/></svg>Documentos e validades</a>
       <a href="#/temporada/visao" data-modo-de="admin"><svg viewBox="0 0 24 24"><path d="M3 11 12 4l9 7"/><path d="M5 10v10h14V10"/><path d="M10 20v-6h4v6"/></svg>Locação por temporada<i class="seta">›</i></a>
@@ -114,7 +123,7 @@
       <a href="#/instagram/feed" data-modo-de="instagram" data-rota="instagram" data-aba="feed"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/></svg>Prévia do feed</a>
       <a href="#/instagram/ferramentas" data-modo-de="instagram" data-rota="instagram" data-aba="ferramentas"><svg viewBox="0 0 24 24"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.5 2.5-2.5-.5-.5-2.5z"/></svg>Ferramentas</a>
       <a href="#/estudio" data-modo-de="instagram" data-rota="estudio"><svg viewBox="0 0 24 24"><path d="M12 3l2.2 5.3L20 9l-4.4 3.8L17 18.5 12 15.6 7 18.5l1.4-5.7L4 9l5.8-.7z"/></svg>Criar posts e artes</a>
-      <a href="#/aprovacoes" data-modo-de="instagram" data-rota="aprovacoes"><svg viewBox="0 0 24 24"><path d="M9 11l3 3 8-8"/><path d="M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9"/></svg>Aprovações</a>
+      <a href="#/aprovacoes" data-modo-de="instagram" data-rota="aprovacoes" data-sem-soma="1"><svg viewBox="0 0 24 24"><path d="M9 11l3 3 8-8"/><path d="M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9"/></svg>Aprovações</a>
       <a href="#/instagram/publicacoes" data-modo-de="instagram" data-rota="instagram" data-aba="publicacoes"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>Publicações</a>
       <p class="lateral-grupo" data-modo-de="instagram">Comunidade</p>
       <a href="#/instagram/comentarios" data-modo-de="instagram" data-rota="instagram" data-aba="comentarios"><svg viewBox="0 0 24 24"><path d="M4 4h16v12H8l-4 4z"/></svg>Comentários</a>
@@ -133,7 +142,7 @@
       <a href="#/facebook/agenda" data-modo-de="facebook" data-rota="facebook" data-aba="agenda"><svg viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="16" rx="3"/><path d="M3 9.5h18M8 2.5v4M16 2.5v4"/></svg>Calendário e criação com IA</a>
       <a href="#/facebook/ferramentas" data-modo-de="facebook" data-rota="facebook" data-aba="ferramentas"><svg viewBox="0 0 24 24"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.5 2.5-2.5-.5-.5-2.5z"/></svg>Ferramentas</a>
       <a href="#/estudio" data-modo-de="facebook" data-rota="estudio"><svg viewBox="0 0 24 24"><path d="M12 3l2.2 5.3L20 9l-4.4 3.8L17 18.5 12 15.6 7 18.5l1.4-5.7L4 9l5.8-.7z"/></svg>Criar posts e artes</a>
-      <a href="#/aprovacoes" data-modo-de="facebook" data-rota="aprovacoes"><svg viewBox="0 0 24 24"><path d="M9 11l3 3 8-8"/><path d="M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9"/></svg>Aprovações</a>
+      <a href="#/aprovacoes" data-modo-de="facebook" data-rota="aprovacoes" data-sem-soma="1"><svg viewBox="0 0 24 24"><path d="M9 11l3 3 8-8"/><path d="M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9"/></svg>Aprovações</a>
       <a href="#/facebook/publicacoes" data-modo-de="facebook" data-rota="facebook" data-aba="publicacoes"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>Publicações</a>
       <p class="lateral-grupo" data-modo-de="facebook">Comunidade</p>
       <a href="#/facebook/comentarios" data-modo-de="facebook" data-rota="facebook" data-aba="comentarios"><svg viewBox="0 0 24 24"><path d="M4 4h16v12H8l-4 4z"/></svg>Comentários</a>
@@ -187,14 +196,14 @@
       <p class="lateral-grupo" data-modo-de="marketing">Criação e publicação</p>
       <a href="#/estudio" data-modo-de="marketing" data-rota="estudio"><svg viewBox="0 0 24 24"><path d="M12 3l2.2 5.3L20 9l-4.4 3.8L17 18.5 12 15.6 7 18.5l1.4-5.7L4 9l5.8-.7z"/></svg>Estúdio de criação</a>
       <a href="#/calendario" data-modo-de="marketing" data-rota="calendario"><svg viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="16" rx="3"/><path d="M3 9.5h18M8 2.5v4M16 2.5v4"/></svg>Calendário de posts</a>
-      <a href="#/aprovacoes" data-modo-de="marketing" data-rota="aprovacoes"><svg viewBox="0 0 24 24"><path d="M9 11l3 3 8-8"/><path d="M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9"/></svg>Aprovações<b class="contador oculto" id="contador-aprovacoes"></b></a>
+      <a href="#/aprovacoes" data-modo-de="marketing" data-rota="aprovacoes"><svg viewBox="0 0 24 24"><path d="M9 11l3 3 8-8"/><path d="M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9"/></svg>Aprovações</a>
       <a href="#/midias" data-modo-de="marketing" data-rota="midias"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>Fotos e mídias</a>
       <a href="#/marcas" data-modo-de="marketing" data-rota="marcas"><svg viewBox="0 0 24 24"><path d="M20.6 13.4 13.4 20.6a2 2 0 0 1-2.8 0L3 13V3h10l7.6 7.6a2 2 0 0 1 0 2.8z"/><circle cx="7.5" cy="7.5" r="1.5"/></svg>Contas conectadas</a>
       <p class="lateral-grupo" data-modo-de="ia">Treino e memória</p>
       <a href="#/treinamento" data-modo-de="ia" data-rota="treinamento" data-motor="1"><svg viewBox="0 0 24 24"><path d="M12 3 2 8l10 5 10-5-10-5z"/><path d="M6 10.5V16c0 1.7 2.7 3 6 3s6-1.3 6-3v-5.5"/></svg>Treinar a IA</a>
-      <a href="#/aprendizados" data-modo-de="ia" data-rota="aprendizados" data-motor="1"><svg viewBox="0 0 24 24"><path d="M9.5 3a3.5 3.5 0 0 0-3.4 4.3A3.5 3.5 0 0 0 4 13.6 3.5 3.5 0 0 0 8 19a3 3 0 0 0 4 1.2V4.4A3.5 3.5 0 0 0 9.5 3z"/><path d="M14.5 3a3.5 3.5 0 0 1 3.4 4.3 3.5 3.5 0 0 1 2.1 6.3A3.5 3.5 0 0 1 16 19a3 3 0 0 1-4 1.2"/></svg>Aprendizados<b class="contador oculto" id="contador-sugestoes"></b></a>
+      <a href="#/aprendizados" data-modo-de="ia" data-rota="aprendizados" data-motor="1"><svg viewBox="0 0 24 24"><path d="M9.5 3a3.5 3.5 0 0 0-3.4 4.3A3.5 3.5 0 0 0 4 13.6 3.5 3.5 0 0 0 8 19a3 3 0 0 0 4 1.2V4.4A3.5 3.5 0 0 0 9.5 3z"/><path d="M14.5 3a3.5 3.5 0 0 1 3.4 4.3 3.5 3.5 0 0 1 2.1 6.3A3.5 3.5 0 0 1 16 19a3 3 0 0 1-4 1.2"/></svg>Aprendizados</a>
       <a href="#/clientes" data-modo-de="ia" data-rota="clientes" data-motor="1"><svg viewBox="0 0 24 24"><path d="M4 4h16v16H4z"/><path d="M4 9h16M9 9v11"/></svg>Base de clientes</a>
-      <p class="lateral-grupo">Administração</p>
+      <p class="lateral-grupo">Conta e configurações</p>
       <a href="#/integracoes" data-rota="integracoes"><svg viewBox="0 0 24 24"><path d="M9 7H6a4 4 0 0 0 0 8h3M15 7h3a4 4 0 0 1 0 8h-3M8 11h8"/></svg>Integrações</a>
       <a href="#/consumo" data-rota="consumo" data-minimo="ADMIN"><svg viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>Consumo e custos</a>
       <a href="#/plano" data-rota="plano"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="M3 10h18M7 15h4"/></svg>Plano e pagamento</a>

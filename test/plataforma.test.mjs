@@ -57,6 +57,7 @@ async function criarPlataforma(extra = {}) {
       return new Response(JSON.stringify(r), { status: 200, headers: { "content-type": "application/json" } });
     }
     if (p && p.web && p.web[String(url)] !== undefined) return new Response(p.web[String(url)], { status: 200, headers: { "content-type": "text/calendar" } });
+    if (p && p.push && String(url).startsWith("https://push.teste/")) { (p.pushes ||= []).push({ url: String(url), headers: op.headers, corpo: new Uint8Array(op.body) }); return new Response("", { status: p.push(String(url)) }); }
     if (String(url) === "https://api.resend.com/emails") { emails.push(JSON.parse(op.body)); return new Response(JSON.stringify({ id: "e1" }), { status: 200 }); }
     if (String(url).startsWith("https://engine.test/")) {
       chamadasEngine.push({ url: String(url), headers: op.headers, corpo: op.body ? JSON.parse(op.body) : null });
@@ -4529,4 +4530,56 @@ test("Chatbot — painel zerado explica o porquê: número sem envio para a DENI
   const r2 = await p.req(`/api/orgs/${inf}/relatorio?resumo=1`, { quem: "admin" });
   assert.equal(r2.dados.ultimas_24h.clientes, 1);
   assert.equal(r2.dados.hoje.clientes, 1);
+});
+
+test("Notificações no celular — inscrição, conteúdo cifrado (RFC 8291) com VAPID válido, aviso novo uma vez só e aparelho que saiu é removido", async () => {
+  const { webcrypto, createECDH, randomBytes } = await import("node:crypto");
+  const p = await criarPlataforma();
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  p.push = () => 201;
+  const k = await p.req("/api/push", { quem: "admin" });
+  assert.equal(k.status, 200); assert.match(k.dados.chave, /^[A-Za-z0-9_-]{87}$/);
+  const ua = createECDH("prime256v1"); ua.generateKeys(); const auth = randomBytes(16);
+  const insc = await p.req("/api/push/inscrever", { metodo: "POST", quem: "admin", corpo: { endpoint: "https://push.teste/aparelho-1", keys: { p256dh: ua.getPublicKey().toString("base64url"), auth: auth.toString("base64url") }, aparelho: "Android" } });
+  assert.equal(insc.status, 201);
+  // O aparelho decifra (RFC 8291) e a assinatura VAPID confere com a chave pública.
+  const ler = async envio => {
+    const b = Buffer.from(envio.corpo), salt = b.subarray(0, 16), idlen = b[20], asPub = b.subarray(21, 21 + idlen), cif = b.subarray(21 + idlen);
+    const hk = async (sal, ikm, info, n) => Buffer.from(await webcrypto.subtle.deriveBits({ name: "HKDF", hash: "SHA-256", salt: sal, info }, await webcrypto.subtle.importKey("raw", ikm, "HKDF", false, ["deriveBits"]), n * 8));
+    const ikm = await hk(auth, ua.computeSecret(asPub), Buffer.concat([Buffer.from("WebPush: info\0"), ua.getPublicKey(), asPub]), 32);
+    const cek = await hk(salt, ikm, Buffer.from("Content-Encoding: aes128gcm\0"), 16), nonce = await hk(salt, ikm, Buffer.from("Content-Encoding: nonce\0"), 12);
+    const claro = Buffer.from(await webcrypto.subtle.decrypt({ name: "AES-GCM", iv: nonce }, await webcrypto.subtle.importKey("raw", cek, "AES-GCM", false, ["decrypt"]), cif));
+    assert.equal(claro[claro.length - 1], 2);
+    const [, jwt, chave] = /^vapid t=([^,]+), k=(.+)$/.exec(envio.headers.authorization);
+    assert.equal(chave, k.dados.chave); assert.equal(envio.headers["content-encoding"], "aes128gcm");
+    const [c0, c1, c2] = jwt.split(".");
+    const pub = await webcrypto.subtle.importKey("raw", Buffer.from(chave, "base64url"), { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]);
+    assert.ok(await webcrypto.subtle.verify({ name: "ECDSA", hash: "SHA-256" }, pub, Buffer.from(c2, "base64url"), Buffer.from(`${c0}.${c1}`)), "assinatura VAPID válida");
+    assert.equal(JSON.parse(Buffer.from(c1, "base64url")).aud, "https://push.teste");
+    return JSON.parse(claro.subarray(0, -1).toString());
+  };
+  const t = await p.req("/api/push/testar", { metodo: "POST", quem: "admin", corpo: {} });
+  assert.equal(t.dados.aparelhos, 1);
+  assert.match((await ler(p.pushes[0])).titulo, /notificações ligadas/);
+  // Tarefa automática: o que já estava aberto não dispara; aviso novo dispara uma vez.
+  const { registrarProblema } = await import("../src/problemas.js");
+  const mod = await import("../src/worker.js");
+  let relogio = Date.now();
+  p.env.__agora = () => relogio;
+  const rodar = async () => { relogio += 5 * 60000; const pend = []; await mod.default.scheduled({}, p.env, { waitUntil: x => pend.push(x) }); await Promise.all(pend); };
+  await registrarProblema(p.env, 1, { chave: "antigo", area: "WHATSAPP", gravidade: "MEDIA", titulo: "Problema antigo", motivo: "já existia" });
+  await rodar();
+  assert.equal(p.pushes.length, 1, "na primeira vez só marca o que já existia");
+  await registrarProblema(p.env, 1, { chave: "post_falhou", area: "PUBLICACOES", gravidade: "ALTA", titulo: "Post de segunda não saiu no Instagram", motivo: "O acesso ao canal expirou.", link: "#/instagram/publicacoes" });
+  await rodar();
+  assert.equal(p.pushes.length, 2);
+  const av = await ler(p.pushes[1]);
+  assert.match(av.titulo, /Post de segunda não saiu no Instagram/); assert.equal(av.url, "/app#/instagram/publicacoes"); assert.equal(av.urgente, true);
+  await rodar();
+  assert.equal(p.pushes.length, 2, "o mesmo aviso não chega de novo");
+  // Aparelho que desinstalou (410): sai da lista.
+  p.push = () => 410;
+  await p.req("/api/push/testar", { metodo: "POST", quem: "admin", corpo: {} });
+  assert.equal((await p.req("/api/push", { quem: "admin" })).dados.aparelhos.length, 0);
+  delete p.env.__agora;
 });
