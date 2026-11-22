@@ -1403,3 +1403,18 @@ html.apr-cheia-ativa, html.apr-cheia-ativa body { overflow: hidden; }
   .ag-pessoa { flex: 0 0 auto; border: 1px solid var(--borda); }
   .ag-busca { max-width: none; flex: 1 1 100%; }
 }
+
+/* Avisos: o item exato que pede atenção fica destacado dentro do menu do canal */
+.barra-app-item { position: relative; }
+.lateral-nav a.tem-aviso:not([data-entra]):not([data-rota="problemas"]) { background: rgba(239, 68, 68, .10); box-shadow: inset 3px 0 0 #ef4444; }
+.mais-tp-item.tem-aviso { border-color: rgba(239, 68, 68, .55); }
+.mais-tp-item .contador { margin-left: auto; }
+/* Acesso rápido do Painel */
+.atalhos { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin: 0 0 16px; }
+.atalho { display: flex; flex-direction: column; gap: 6px; padding: 14px; border: 1px solid var(--borda); border-radius: 16px; color: var(--texto); text-decoration: none; background: var(--painel); position: relative; }
+.atalho:hover { border-color: var(--borda-forte); background: var(--painel-forte); }
+.atalho:focus-visible { outline: 2px solid var(--azul); }
+.atalho svg { width: 26px; height: 26px; fill: none; stroke: var(--azul); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.atalho strong { font-size: 15px; }
+.atalho small { color: var(--texto-3); font-size: 12.5px; line-height: 1.35; }
+.atalho .contador { position: absolute; top: 10px; right: 10px; margin: 0; }
