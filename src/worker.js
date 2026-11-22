@@ -36,7 +36,7 @@ import { rotasOS, osDoCron } from "./ordens.js";
 import { montarRelatorio, planilhaRelatorio, textoRelatorio, base64, ultimos7Dias, lerConfigRelatorio, horaDeEnviar, diaBR, dataBR, DIAS_SEMANA, inicioDoDia as inicioDoDiaBR } from "./relatorio.js";
 import { lerPlanos, acessoDa, recursoDaRota, planoMinimo, rotasPlano, webhookAsaas, lembretesDePlano, TESTE_DIAS, STATUS as STATUS_PLANO, PLANOS_PADRAO, RECURSOS } from "./planos.js";
 
-const VERSAO = "3.45.0";
+const VERSAO = "3.45.1";
 // Versão dos Termos de uso e da Política de privacidade aceitas no cadastro.
 const VERSAO_TERMOS = "2026-10-16";
 // WhatsApp da Central de Atendimento (botão flutuante do site).
@@ -721,12 +721,14 @@ async function agendaPelaIA(request, env) {
 function kitAgendaZap(env, kz) {
   const temChatbot = async o => Boolean(await env.DB.prepare("SELECT 1 FROM plt_zap_contas WHERE org_id=? AND phone_number_id IS NOT NULL AND token_cifrado IS NOT NULL AND ativo=1").bind(o).first().catch(() => null));
   return {
-    zapEquipe: async (o, tel, t, m) => {
-      if (await temChatbot(o)) return zapEquipe(env, kz, o, tel, t, m);
+    zapEquipe: async (o, tel, t, m, info = {}) => {
+      if (await temChatbot(o)) return zapEquipe(env, kz, o, tel, t, m, info);
       const con = await conexaoDa(env, o);
-      if (!con) return "";
-      const r = await chamarEngine(con, "POST", "agenda/enviar", { telefone: tel, texto: t, modelo: m || null }).catch(() => null);
-      return r?.dados?.sucesso ? r.dados.via : "";
+      if (!con) { info.erro = "Esta empresa não tem WhatsApp conectado (nem o chatbot, nem a IA do atendimento)."; return ""; }
+      const r = await chamarEngine(con, "POST", "agenda/enviar", { telefone: tel, texto: t, modelo: m || null }).catch(e => ({ dados: { erro: "Não consegui falar com a IA do atendimento: " + (e?.message || "erro") } }));
+      if (r?.dados?.sucesso) return r.dados.via;
+      info.erro = r?.dados?.erro || "A IA do atendimento não conseguiu enviar.";
+      return "";
     },
     modelosAgendaZap: async (o, criar) => {
       if (await temChatbot(o)) return modelosAgendaZap(env, kz, o, criar);
@@ -1592,6 +1594,9 @@ export default {
     const tarefa = (async () => {
       await garantirSchema(env);
       const k = kitBase(env);
+      // Agenda primeiro (lembretes têm hora certa); a última rodada fica guardada para o painel avisar se as tarefas pararem.
+      { const kz = await kitZap(env); await adminDoCron(env, { ...kz, avisarTelegram: (o, t) => avisarTelegramDaEmpresa(env, kz, o, t), enviarModeloZap: (o, tel, modelo, idioma, vars) => enviarModeloZap(env, kz, o, tel, modelo, idioma, vars), ...kitAgendaZap(env, kz) }).catch(e => console.error("administração", e?.message)); }
+      await env.DB.prepare("INSERT OR REPLACE INTO plt_meta(chave,valor) VALUES('agenda_cron_ms',?)").bind(String(agora(env))).run().catch(() => { });
       await publicarPendentes(env, k).catch(e => console.error("publicação agendada", e?.message));
       await sincronizarGooglePendentes(env, k).catch(e => console.error("google", e?.message));
       await cuidarDasAvaliacoes(env, k).catch(e => console.error("avaliações", e?.message));
@@ -1599,7 +1604,6 @@ export default {
       await vigiarWhatsapp(env).catch(e => console.error("whatsapp", e?.message));
       await vigiarRecebimento(env).catch(e => console.error("vigia de recebimento", e?.message));
       await financeiroDoCron(env, { ...(await kitZap(env)), openai: openaiBruto, enviarEmail: (para, assunto, texto, anexos) => enviarEmail(env, para, assunto, texto, anexos), emailConfigurado: () => emailConfigurado(env), responsaveis: o => responsaveisDa(env, o) }).catch(e => console.error("financeiro", e?.message));
-      { const kz = await kitZap(env); await adminDoCron(env, { ...kz, avisarTelegram: (o, t) => avisarTelegramDaEmpresa(env, kz, o, t), enviarModeloZap: (o, tel, modelo, idioma, vars) => enviarModeloZap(env, kz, o, tel, modelo, idioma, vars), ...kitAgendaZap(env, kz) }).catch(e => console.error("administração", e?.message)); }
       await limparBanco(env).catch(e => console.error("limpeza", e?.message));
       await sincronizarTemporada(env, await kitZap(env)).catch(e => console.error("temporada", e?.message));
       await processarCampanhas(env, await kitZap(env)).catch(e => console.error("campanhas", e?.message));

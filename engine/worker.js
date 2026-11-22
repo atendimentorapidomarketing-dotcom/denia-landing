@@ -36,7 +36,7 @@
 //       relatório diário. Nunca inicia conversa nova por conta própria.
 // ============================================================================
 
-const VERSAO = "34.14.0";
+const VERSAO = "34.15.0";
 const SCHEMA_VERSAO = "33.5.0"; // mude sempre que acrescentar tabela ou índice (senão o banco de produção não recebe)
 const EMPRESA_ID = 1;
 const PHONE_ID_PADRAO = "473474732510163";
@@ -3619,6 +3619,23 @@ async function processarLoteIdentificado(c, tel, id, msgs, opts) {
   return processarCliente(c, tel, id, msgs, opts);
 }
 // A plataforma decide se é um comando da agenda (só para números cadastrados lá) e devolve as respostas.
+// ID da conta do WhatsApp Business (WABA) do número da IA: a variável, ou descoberto pela própria chave da Meta (e guardado).
+async function wabaDoMotor(c) {
+  const fixo = String(c.env.WHATSAPP_WABA_ID || "").replace(/\D/g, "");
+  if (fixo) return fixo;
+  const salvo = c.env.MEMORIA ? await c.env.MEMORIA.get("config:waba_id").catch(() => null) : null;
+  if (salvo) return salvo;
+  const token = String(c.env.WHATSAPP_TOKEN || "").trim(), pnid = phoneId(c.env);
+  if (!token) return "";
+  const g = async cam => { const r = await fetch(`https://graph.facebook.com/${GRAPH}/${cam}`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(15000) }); return r.ok ? r.json().catch(() => ({})) : {}; };
+  const d = await g(`debug_token?input_token=${encodeURIComponent(token)}`);
+  const ids = [...new Set((d?.data?.granular_scopes || []).filter(x => /^whatsapp_business_(management|messaging)$/.test(x.scope)).flatMap(x => x.target_ids || []).map(String))];
+  for (const id of ids.slice(0, 10)) {
+    const nums = (await g(`${encodeURIComponent(id)}/phone_numbers?fields=id&limit=100`)).data || [];
+    if (nums.some(n => String(n.id) === pnid)) { if (c.env.MEMORIA) await c.env.MEMORIA.put("config:waba_id", id).catch(() => { }); return id; }
+  }
+  return "";
+}
 async function comandoDaAgenda(c, tel, id, msgs) {
   const texto = msgs.map(m => String(m.texto || m.conteudo || "").trim()).filter(Boolean).join("\n").slice(0, 600);
   if (!texto) return false;
@@ -4631,8 +4648,9 @@ async function platformApi(request, env, caminho, metodo) {
   }
   // Modelos da agenda na conta do WhatsApp da IA (precisa de WHATSAPP_WABA_ID no motor).
   if (caminho === "/platform/agenda/modelos" && (metodo === "GET" || metodo === "POST")) {
-    const waba = String(env.WHATSAPP_WABA_ID || "").trim(), token = String(env.WHATSAPP_TOKEN || "").trim();
-    if (!waba || !token) return json({ sucesso: false, erro: "Falta a variável WHATSAPP_WABA_ID (ID da conta do WhatsApp Business) no motor da IA para criar os modelos. Sem ela, a agenda sai como texto para quem escreveu nas últimas 24 h." }, 409);
+    const token = String(env.WHATSAPP_TOKEN || "").trim();
+    const waba = token ? await wabaDoMotor(c).catch(() => "") : "";
+    if (!waba || !token) return json({ sucesso: false, erro: "Não consegui descobrir a conta do WhatsApp Business deste número pela chave da Meta. Preencha a variável WHATSAPP_WABA_ID (ID da conta do WhatsApp Business) na Hostinger. Sem os modelos, a agenda só chega para quem escreveu nas últimas 24 h." }, 409);
     const q0 = new URL(request.url).searchParams;
     const lista = metodo === "POST" ? corpo?.modelos || [] : JSON.parse(q0.get("modelos") || "[]");
     const g = async (met, cam, b) => { const r = await fetch(`https://graph.facebook.com/${GRAPH}/${cam}`, { method: met, headers: { authorization: `Bearer ${token}`, ...(b ? { "content-type": "application/json" } : {}) }, body: b ? JSON.stringify(b) : undefined, signal: AbortSignal.timeout(20000) }); const d = await r.json().catch(() => ({})); if (!r.ok) throw new Error(d?.error?.error_user_msg || d?.error?.message || `HTTP ${r.status}`); return d; };

@@ -1670,15 +1670,15 @@ export async function enviarDaEquipe(env, k, orgId, tel, texto) {
 }
 
 // Lembrete da administração pelo WhatsApp: só por modelo aprovado pela Meta (mensagem que a empresa inicia).
-export async function enviarModeloZap(env, k, orgId, telefone, modelo, idioma, variaveis = []) {
+export async function enviarModeloZap(env, k, orgId, telefone, modelo, idioma, variaveis = [], info = null) {
   const conta = await contaDa(env, orgId);
-  if (!conta?.phone_number_id || !conta?.token_cifrado) return false;
+  if (!conta?.phone_number_id || !conta?.token_cifrado) { if (info) info.erro = "O WhatsApp da empresa não está conectado."; return false; }
   const token = await k.decifrar(env, conta.token_cifrado);
   const params = variaveis.slice(0, 10).map(v => ({ type: "text", text: cortar(String(v ?? "-").replace(/[\r\n\t]+/g, " ").replace(/ {4,}/g, "   "), 700) || "-" }));
   try {
     const d = await graphZap(token, "POST", `${encodeURIComponent(conta.phone_number_id)}/messages`, { messaging_product: "whatsapp", to: String(telefone).replace(/\D/g, ""), type: "template", template: { name: modelo, language: { code: idioma || "pt_BR" }, ...(params.length ? { components: [{ type: "body", parameters: params }] } : {}) } });
     return Boolean(d?.messages?.[0]?.id);
-  } catch { return false; }
+  } catch (e) { if (info) info.erro = `A Meta recusou o modelo ${modelo}: ${cortar(String(e?.message || "erro"), 200)}`; return false; }
 }
 
 // Texto longo (agenda do dia) em blocos de até ~3.800 caracteres, quebrando entre parágrafos.
@@ -1696,10 +1696,10 @@ async function enviarEmBlocos(z, texto) { let ok = false; for (const b of blocos
 
 // Agenda da equipe: manda para uma pessoa pelo número da empresa. Janela de 24h aberta (a pessoa escreveu
 // nas últimas 24h) = texto completo, sem custo; fechada = modelo aprovado pela Meta (curto, sem quebra de linha).
-export async function zapEquipe(env, k, contaOrg, telefone, texto, modelo = null) {
+export async function zapEquipe(env, k, contaOrg, telefone, texto, modelo = null, info = {}) {
   const conta = await env.DB.prepare("SELECT c.*, o.nome org_nome FROM plt_zap_contas c JOIN plt_organizacoes o ON o.id=c.org_id WHERE c.org_id=?").bind(contaOrg).first();
-  if (!conta?.phone_number_id || !conta?.token_cifrado || !conta.ativo) return "";
-  const tels = variantesTel(telefone); if (!tels.length) return "";
+  if (!conta?.phone_number_id || !conta?.token_cifrado || !conta.ativo) { info.erro = "O WhatsApp da empresa não está conectado."; return ""; }
+  const tels = variantesTel(telefone); if (!tels.length) { info.erro = "Número de WhatsApp inválido."; return ""; }
   const agora = k.agora(env);
   const ctt = await env.DB.prepare(`SELECT telefone, ultima_entrada_ms FROM plt_zap_contatos WHERE org_id=? AND telefone IN (${tels.map(() => "?").join(",")}) ORDER BY ultima_entrada_ms DESC LIMIT 1`).bind(contaOrg, ...tels).first();
   if (ctt && agora - Number(ctt.ultima_entrada_ms || 0) < JANELA_24H - 5 * 60000) {
@@ -1708,11 +1708,12 @@ export async function zapEquipe(env, k, contaOrg, telefone, texto, modelo = null
   }
   if (modelo?.nome) {
     const params = (modelo.params || []).map(v => cortar(String(v ?? "-").replace(/[\r\n\t]+/g, " ").replace(/ {4,}/g, "   "), 900) || "-");
-    if (await enviarModeloZap(env, k, contaOrg, ctt?.telefone || digitos(telefone), modelo.nome, modelo.idioma || "pt_BR", params)) {
+    if (await enviarModeloZap(env, k, contaOrg, ctt?.telefone || digitos(telefone), modelo.nome, modelo.idioma || "pt_BR", params, info)) {
       await env.DB.prepare("INSERT OR IGNORE INTO plt_zap_msgs(org_id,telefone,direcao,origem,texto,status,criado_ms) VALUES(?,?,'S','ROBO',?,'ENVIADA',?)").bind(contaOrg, ctt?.telefone || digitos(telefone), cortar(`[modelo ${modelo.nome}] ${params.join(" · ")}`, 4000), agora).run().catch(() => { });
       return "modelo";
     }
   }
+  info.erro = `A pessoa não escreveu para este número nas últimas 24 h${info.erro ? " e " + info.erro.replace(/^A Meta/, "a Meta") : " e não há modelo aprovado"}.`;
   return "";
 }
 // Os dois modelos da agenda (categoria Utilidade). Criados uma vez na conta do WhatsApp; a Meta aprova em minutos ou horas.

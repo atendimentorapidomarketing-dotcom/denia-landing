@@ -68,6 +68,9 @@ const ALTERS_ADMIN = ["ALTER TABLE adm_locatarios ADD COLUMN periodicidade TEXT"
   `CREATE TABLE IF NOT EXISTS adm_pessoas (org_id INTEGER NOT NULL, usuario_id INTEGER NOT NULL, telefone TEXT, ativo INTEGER NOT NULL DEFAULT 1, zap_manha INTEGER NOT NULL DEFAULT 1, zap_lembretes INTEGER NOT NULL DEFAULT 1,
     zap_relatorios INTEGER NOT NULL DEFAULT 1, so_minhas INTEGER NOT NULL DEFAULT 0, ultimo_manha TEXT, ultimo_meio TEXT, ultimo_fim TEXT, atualizado_ms INTEGER, PRIMARY KEY (org_id, usuario_id))`,
   "CREATE INDEX IF NOT EXISTS adm_pessoas_tel ON adm_pessoas(telefone)",
+  // Cada envio da agenda pelo WhatsApp (deu certo ou não, e por quê) — aparece ao lado de quem recebe.
+  "CREATE TABLE IF NOT EXISTS adm_zap_envios (id INTEGER PRIMARY KEY AUTOINCREMENT, org_id INTEGER NOT NULL, conta_org INTEGER, telefone TEXT NOT NULL, tipo TEXT, via TEXT, erro TEXT, ms INTEGER NOT NULL)",
+  "CREATE INDEX IF NOT EXISTS adm_zap_envios_tel ON adm_zap_envios(org_id, telefone, ms)",
   "CREATE TABLE IF NOT EXISTS adm_zap_estado (conta_org INTEGER NOT NULL, telefone TEXT NOT NULL, org_atual INTEGER, ultimo_tipo TEXT, ultimo_id INTEGER, ultimo_org INTEGER, ultimo_ms INTEGER, PRIMARY KEY (conta_org, telefone))",
   // Celular: link pessoal do calendário e dos alarmes (app Atalhos).
   "CREATE TABLE IF NOT EXISTS adm_alarme_tokens (usuario_id INTEGER PRIMARY KEY, token TEXT NOT NULL UNIQUE, prio_min TEXT, antecedencia INTEGER, usado_ms INTEGER, ms INTEGER)",
