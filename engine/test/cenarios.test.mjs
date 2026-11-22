@@ -1980,3 +1980,24 @@ test("Técnico a caminho: o profissional escreve 'estou a caminho' e o cliente �
   assert.equal(a.para(CLI).length, n0 + 1, "não repete o aviso");
   assert.equal(a.DB.q("SELECT COUNT(*) n FROM d30_eventos WHERE tipo='A_CAMINHO'")[0].n, 1);
 });
+
+test("Técnico a caminho pelo contexto: a atendente pergunta 'já está a caminho?' e o profissional responde 'sim' — o cliente é avisado", async () => {
+  const a = await criarAmbiente();
+  await iniciarConsultaChaveiro(a);
+  a.DB.prepare("UPDATE d30_consultas SET status='CONFIRMADA', valor_prestador=12000, valor_cliente=18000").run();
+  a.DB.prepare("UPDATE d30_casos SET etapa='AGENDADO'").run();
+  a.llmPrestador = () => prest({});
+  await a.eco(CHAVEIRO, "Anderson, já está a caminho da cliente de Botafogo?");
+  const n0 = a.para(CLI).length;
+  await a.cliente(CHAVEIRO, "Sim, chego em 15 min");
+  assert.match(a.para(CLI).slice(n0).map(e => e.texto).join("\n"), /já está a caminho.*cerca de 15 min/);
+  // "Ainda não" não dispara.
+  const b = await criarAmbiente();
+  await iniciarConsultaChaveiro(b);
+  b.DB.prepare("UPDATE d30_consultas SET status='CONFIRMADA'").run(); b.DB.prepare("UPDATE d30_casos SET etapa='AGENDADO'").run();
+  b.llmPrestador = () => prest({});
+  await b.eco(CHAVEIRO, "Já está a caminho?");
+  const m0 = b.para(CLI).length;
+  await b.cliente(CHAVEIRO, "Ainda não, saio às 14h");
+  assert.doesNotMatch(b.para(CLI).slice(m0).map(e => e.texto).join("\n"), /a caminho/);
+});

@@ -296,7 +296,9 @@ export async function rotasSocial(request, env, k, orgId, papel, resto, ajuda = 
       const [pf, posts, cs, marca] = await Promise.all([perfil(env, conta, token, canal), postsComNumeros(env, conta, token, canal), comentarios(env, conta, token, canal, conta.ig_usuario).catch(() => []),
         env.DB.prepare("SELECT * FROM plt_mk_marcas WHERE id=? AND org_id=?").bind(Number(marcaId), orgId).first().catch(() => null)]);
       const analise = oQueFunciona(posts, k.agora(env));
-      const r = { em: k.agora(env), perfil: pf, analise, checagem: checagemSocial(canal, pf, posts, cs, marca, analise) };
+      const r = { em: k.agora(env), perfil: pf, analise, checagem: checagemSocial(canal, pf, posts, cs, marca, analise),
+        // Cada publicação com os números (para os gráficos por post).
+        posts: posts.map(x => ({ id: x.id, tipo: x.tipo, quando: x.quando, imagem: x.imagem || null, link: x.link, texto: String(x.texto || "").slice(0, 160), alcance: x.alcance, interacoes: x.interacoes, visualizacoes: x.visualizacoes, salvos: x.salvos, compartilhados: x.compartilhados, curtidas: x.curtidas ?? null, comentarios: x.comentarios ?? null })) };
       await env.DB.prepare("INSERT OR REPLACE INTO plt_meta(chave,valor) VALUES(?,?)").bind(chaveCache, JSON.stringify(r)).run().catch(() => {});
       return r;
     });
@@ -316,6 +318,28 @@ export async function rotasSocial(request, env, k, orgId, papel, resto, ajuda = 
       const posts = (b.media?.data || []).map(x => ({ texto: String(x.caption || "").slice(0, 200), tipo: x.media_product_type === "REELS" ? "REELS" : x.media_type, curtidas: x.like_count ?? 0, comentarios: x.comments_count ?? 0, link: x.permalink, quando: x.timestamp }));
       const media = posts.length ? posts.reduce((s, x) => s + x.curtidas + x.comentarios, 0) / posts.length : 0;
       return { usuario: b.username, nome: b.name, bio: b.biography || "", site: b.website || "", seguidores: b.followers_count ?? null, publicacoes: b.media_count ?? null, foto: b.profile_picture_url || null, posts, engajamento_medio: Math.round(media), taxa_engajamento: b.followers_count ? Math.round((media / b.followers_count) * 10000) / 100 : null };
+    });
+    // Pesquisa de hashtag (Instagram): as publicações em alta e as mais recentes, engajamento médio e hashtags que andam junto.
+    if (resto === "social/hashtag") return responder(async () => {
+      if (canal !== "instagram") throw new Error("A pesquisa de hashtags é do Instagram.");
+      const nome = String(url.searchParams.get("nome") || "").replace(/^#/, "").trim().toLowerCase();
+      if (!/^[\p{L}\p{N}_]{2,60}$/u.test(nome)) throw new Error("Digite a hashtag sem espaços, por exemplo #petshoprio.");
+      const { conta, token } = await contaDa(env, k, orgId, marcaId);
+      let id;
+      try { id = (await graph(env, "GET", "ig_hashtag_search", { user_id: conta.ig_id, q: nome, access_token: token })).data?.[0]?.id; }
+      catch (e) { throw Object.assign(new Error(/permission|permiss|feature|public content/i.test(e.message) ? "A Meta ainda não liberou a pesquisa de hashtags para este app. Ela exige o recurso \"Instagram Public Content Access\" aprovado na análise do app (developers.facebook.com → seu app → Análise do app). Depois de aprovado, funciona aqui sem mudar nada." : e.message), { status: 502 }); }
+      if (!id) throw new Error("Hashtag não encontrada no Instagram.");
+      const campos = "id,caption,media_type,media_product_type,like_count,comments_count,permalink,timestamp";
+      const [top, recentes] = await Promise.all([graph(env, "GET", `${id}/top_media`, { user_id: conta.ig_id, fields: campos, limit: "50", access_token: token }).catch(() => ({ data: [] })), graph(env, "GET", `${id}/recent_media`, { user_id: conta.ig_id, fields: campos, limit: "50", access_token: token }).catch(() => ({ data: [] }))]);
+      const mapear = l => (l.data || []).map(x => ({ tipo: x.media_product_type === "REELS" ? "REELS" : x.media_type === "CAROUSEL_ALBUM" ? "CARROSSEL" : x.media_type, curtidas: x.like_count ?? null, comentarios: x.comments_count ?? null, link: x.permalink, quando: x.timestamp, texto: String(x.caption || "").slice(0, 200) }));
+      const t = mapear(top), rc = mapear(recentes);
+      const eng = l => { const v = l.filter(x => x.curtidas != null).map(x => x.curtidas + (x.comentarios || 0)); return v.length ? Math.round(v.reduce((a, b) => a + b, 0) / v.length) : null; };
+      const ultimas24 = rc.filter(x => Date.parse(x.quando) > k.agora(env) - DIA_MS).length;
+      const juntas = new Map();
+      for (const x of [...t, ...rc]) for (const h0 of new Set((x.texto.match(/#[\p{L}\p{N}_]+/gu) || []).map(y => y.toLowerCase()))) if (h0 !== "#" + nome) juntas.set(h0, (juntas.get(h0) || 0) + 1);
+      const formatos = {}; for (const x of t) formatos[x.tipo] = (formatos[x.tipo] || 0) + 1;
+      return { hashtag: "#" + nome, engajamento_top: eng(t), engajamento_recentes: eng(rc), posts_ultimas_24h: ultimas24, recentes_lidos: rc.length, formatos_em_alta: Object.entries(formatos).map(([tipo, n]) => ({ tipo, n })).sort((a, b) => b.n - a.n),
+        relacionadas: [...juntas.entries()].sort((a, b) => b[1] - a[1]).slice(0, 20).map(([h0, n]) => ({ hashtag: h0, vezes: n })), top: t.slice(0, 12), aviso: "A Meta permite pesquisar até 30 hashtags diferentes a cada 7 dias por conta." };
     });
     // Melhores horários: engajamento médio das últimas 100 publicações por dia da semana e hora (fuso de Brasília).
     if (resto === "social/horarios") return responder(async () => {

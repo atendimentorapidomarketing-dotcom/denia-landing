@@ -3348,6 +3348,9 @@ test("Instagram: 'O que funciona' e checagem do perfil calculados com os número
     if (/\/IG1\/media\?/.test(url)) return { data: posts };
     const mi = url.match(/\/(M\d)\/insights/);
     if (mi) { const n = Number(mi[1].slice(1)); return { data: [{ name: "reach", values: [{ value: n % 2 ? 1000 : 300 }] }, { name: "total_interactions", values: [{ value: n % 2 ? 60 : 9 }] }] }; }
+    if (url.includes("ig_hashtag_search")) return { data: [{ id: "H1" }] };
+    if (url.includes("/H1/top_media")) return { data: [{ id: "T1", caption: "Obra pronta #reforma #pintura", media_type: "VIDEO", media_product_type: "REELS", like_count: 200, comments_count: 20, permalink: "https://instagram.com/p/t1", timestamp: new Date().toISOString() }] };
+    if (url.includes("/H1/recent_media")) return { data: [{ id: "R1", caption: "#reforma #pintura #rj", media_type: "IMAGE", like_count: 10, comments_count: 0, permalink: "https://instagram.com/p/r1", timestamp: new Date().toISOString() }] };
     if (/\/IG1\?/.test(url)) return { id: "IG1", username: "reformatudort", biography: "Reformas e reparos. Peça seu orçamento pelo WhatsApp", website: "https://wa.me/5521999999999", followers_count: 900, profile_picture_url: "https://x/y.jpg" };
     return { data: [] };
   };
@@ -3365,6 +3368,12 @@ test("Instagram: 'O que funciona' e checagem do perfil calculados com os número
   assert.equal(item("chamada").ok, "ok");
   assert.equal(item("video").ok, "ok", "metade são reels");
   assert.equal(item("respostas").ok, "falta", "o comentário da Ana está sem resposta");
+  // Números de cada publicação (para os gráficos por post).
+  assert.equal(r.dados.posts.length, 8); assert.equal(r.dados.posts.find(x => x.id === "M1").alcance, 1000);
+  // Pesquisa de hashtags: engajamento, posts do dia e hashtags que andam junto.
+  const hs = (await p.req(`/api/orgs/1/mk/social/hashtag?marca=${marca}&canal=instagram&nome=%23Reforma`, { quem: "admin" })).dados;
+  assert.equal(hs.hashtag, "#reforma"); assert.equal(hs.engajamento_top, 220); assert.equal(hs.posts_ultimas_24h, 1);
+  assert.equal(hs.relacionadas[0].hashtag, "#pintura"); assert.equal(hs.relacionadas[0].vezes, 2);
   // Segunda leitura vem do cache (não gasta a cota da Meta).
   const antes = (p.metaChamadas || []).length;
   const r2 = await p.req(`/api/orgs/1/mk/social/analise?marca=${marca}&canal=instagram`, { quem: "admin" });
@@ -3499,6 +3508,9 @@ test("Google: pré-análise de qualquer empresa, mapa de posição em grade e si
   assert.equal(gr.conectada, true, JSON.stringify(gr).slice(0, 300));
   const set = gr.desempenho.meses.find(x => x.mes === "2026-09");
   assert.equal(set.visualizacoes, 400); assert.equal(set.rotas, 7); assert.equal(set.pesquisa_celular, 300);
+  assert.equal(gr.desempenho.semana.length, 7); assert.ok(gr.desempenho.ultimos90.length > 0);
+  assert.equal(gr.desempenho.palavras[0].palavra, "pedreiro tijuca");
+  assert.equal(gr.concorrentes_mapa.palavra, "pedreiro");
   assert.deepEqual(gr.avaliacoes.distribuicao.map(x => x.nota), [5, 4, 3, 2, 1]);
   assert.equal(gr.mapa[0].palavra, "pedreiro");
   // Buscar empresas: lista, segmento e mapa de calor (dados do Google Maps).
