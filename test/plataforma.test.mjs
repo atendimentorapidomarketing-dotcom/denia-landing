@@ -4627,3 +4627,21 @@ test("Chatbot — procurar onde uma loja ainda aparece (treinamento, botões, me
   assert.equal((await p.req(`/api/orgs/${inf}/zap/procurar?q=infoset`, { metodo: "POST", quem: "admin", corpo: {} })).dados.limpos, 1);
   assert.equal(db.prepare("SELECT memoria FROM plt_zap_contatos WHERE telefone='5521900001111'").get().memoria, "- prefere à tarde");
 });
+
+test("Chatbot — diagnóstico diz por que o robô não respondeu (plano vencido, conversa pausada) e mostra o último aviso da Meta", async () => {
+  const { p, inf } = await duasEmpresasComChatbot();
+  const db = p.env.DB.db;
+  const diag = async () => (await p.req(`/api/orgs/${inf}/zap/recebimento`, { quem: "admin" })).dados;
+  db.prepare("UPDATE plt_organizacoes SET plano_status='TESTE', teste_ate=? WHERE id=?").run(Date.now() - 86400000, inf);
+  const n0 = p.engine.enviados.length;
+  await webhookZap(p, "111111111111", { from: "5521977770001", type: "text", text: { body: "oi" } }, "Bia");
+  assert.equal(p.engine.enviados.length, n0, "plano vencido: não responde");
+  let d = await diag();
+  assert.ok(d.webhook_ms, "registrou o aviso da Meta"); assert.ok(d.ultima_recebida_ms);
+  assert.match(d.motivo, /teste da empresa acabou/);
+  db.prepare("UPDATE plt_organizacoes SET plano_status='CORTESIA' WHERE id=?").run(inf);
+  db.prepare("UPDATE plt_zap_contatos SET pausado_ate=? WHERE telefone='5521977770001'").run(Date.now() + 3600000);
+  await webhookZap(p, "111111111111", { from: "5521977770001", type: "text", text: { body: "oi de novo" } }, "Bia");
+  d = await diag();
+  assert.match(d.motivo, /robô pausado nesta conversa/); assert.equal(d.pausados, 1);
+});
