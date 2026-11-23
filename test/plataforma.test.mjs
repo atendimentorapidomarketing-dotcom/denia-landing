@@ -3040,8 +3040,9 @@ test("Relatórios — conversas pela janela de 24 h, planilha profissional e env
   const z = Buffer.from(x.base64, "base64");
   assert.equal(z.subarray(0, 2).toString(), "PK");
   const t = z.toString("utf8");
-  for (const aba of ["Resumo", "Por dia", "Clientes", "Categorias"]) assert.match(t, new RegExp(`name="${aba}"`));
-  assert.match(t, /Ana Lima/); assert.match(t, /Total do período/); assert.match(t, /10:05/, "hora de Brasília"); assert.match(t, /segunda-feira/);
+  for (const aba of ["Resumo", "Por dia", "Horários", "O que buscaram", "Clientes"]) assert.match(t, new RegExp(`name="${aba}"`));
+  assert.match(t, /Ana Lima/); assert.match(t, /Média por dia/); assert.match(t, /10:05/, "hora de Brasília"); assert.match(t, /segunda-feira/);
+  assert.match(t, /Período anterior/, "compara com o período anterior"); assert.match(t, /<autoFilter ref="A1:/, "lista com filtro"); assert.match(t, /Horário de pico/);
   assert.doesNotMatch(t, /[\u{1F300}-\u{1FAFF}]/u, "sem emoji na planilha");
   // Painel: últimas 24 h e chatbot contando conversas.
   p.env.__agora = () => ms("2026-10-15T12:00:00Z");
@@ -3052,7 +3053,7 @@ test("Relatórios — conversas pela janela de 24 h, planilha profissional e env
   // Envio: o administrador escolhe quarta às 10h.
   assert.equal((await p.req(`/api/orgs/${inf}/relatorio/config`, { metodo: "POST", quem: "admin", corpo: { ativo: true, dia: 3, hora: 10, emails: "gerente@loja.test, invalido" } })).status, 400, "e-mail inválido é recusado");
   const cfg = await p.req(`/api/orgs/${inf}/relatorio/config`, { metodo: "POST", quem: "admin", corpo: { ativo: true, dia: 3, hora: 10, emails: "gerente@loja.test" } });
-  assert.deepEqual(cfg.dados.config, { ativo: true, dia: 3, hora: 10, emails: "gerente@loja.test" });
+  assert.deepEqual(cfg.dados.config, { ativo: true, frequencia: "semanal", dia: 3, hora: 10, emails: "gerente@loja.test" });
   const mod = await import(new URL("../src/worker.js?t=rel" + Math.random(), import.meta.url).href);
   const rodar = async () => { { const pend = []; await mod.default.scheduled({}, p.env, { waitUntil: pr => pend.push(pr) }); await Promise.all(pend); } };
   p.env.__agora = () => ms("2026-10-19T11:30:00Z"); await rodar(); // segunda: não é o dia escolhido
@@ -3061,11 +3062,21 @@ test("Relatórios — conversas pela janela de 24 h, planilha profissional e env
   assert.equal(daLoja().length, 0);
   p.env.__agora = () => ms("2026-10-21T13:10:00Z"); await rodar(); // quarta 10:10
   assert.deepEqual(daLoja().map(e => e.to[0]).sort(), [ADMIN, "gerente@loja.test"].sort());
-  assert.match(daLoja()[0].subject, /14\/10\/2026 a 20\/10\/2026/, "os 7 dias anteriores ao envio");
-  assert.match(daLoja()[0].text, /Clientes que entraram em contato: 1/);
-  assert.equal(daLoja()[0].attachments[0].filename, "relatorio-clientes-2026-10-14-a-2026-10-20.xlsx");
+  assert.match(daLoja()[0].subject, /Relatório semanal .*14\/10\/2026 a 20\/10\/2026/, "os 7 dias anteriores ao envio");
+  assert.match(daLoja()[0].text, /Clientes que entraram em contato: 1 \(antes: 2;/);
+  assert.equal(daLoja()[0].attachments[0].filename, "relatorio-semanal-loja-chatbot-2026-10-14-a-2026-10-20.xlsx");
   await rodar();
   assert.equal(daLoja().length, 2, "uma vez só no dia");
+  // Diário: todo dia, com o dia anterior. Mensal: no dia 1, com o mês anterior inteiro.
+  await p.req(`/api/orgs/${inf}/relatorio/config`, { metodo: "POST", quem: "admin", corpo: { ativo: true, frequencia: "diario", hora: 8, emails: "" } });
+  p.env.__agora = () => ms("2026-10-22T11:10:00Z"); await rodar();
+  assert.match(daLoja().at(-1).subject, /Relatório diário .*\(21\/10\/2026\)/);
+  await p.req(`/api/orgs/${inf}/relatorio/config`, { metodo: "POST", quem: "admin", corpo: { ativo: true, frequencia: "mensal", hora: 8, emails: "" } });
+  const n0 = daLoja().length;
+  p.env.__agora = () => ms("2026-10-23T11:10:00Z"); await rodar();
+  assert.equal(daLoja().length, n0, "mensal só no dia 1");
+  p.env.__agora = () => ms("2026-11-01T11:10:00Z"); await rodar();
+  assert.match(daLoja().at(-1).subject, /Relatório mensal .*01\/10\/2026 a 31\/10\/2026/);
 });
 
 test("Relatórios — empresa com IA: clientes da IA entram na planilha, profissionais não", async () => {

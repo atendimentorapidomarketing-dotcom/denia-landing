@@ -426,7 +426,7 @@ export async function tirarDoAr(env, k, p) {
   return { resultado: res, instagram_link: pub.instagram?.link || null };
 }
 
-// Aviso de post que não saiu: aparece em Problemas e vai uma vez para o Telegram da empresa.
+// Aviso de post que não saiu: aparece em Avisos (e no celular) e vai uma vez por e-mail.
 async function avisarPost(env, k, p, oque, motivo) {
   try {
     const { registrarProblema } = await import("./problemas.js");
@@ -434,7 +434,8 @@ async function avisarPost(env, k, p, oque, motivo) {
     const ja = await env.DB.prepare("SELECT 1 FROM plt_problemas WHERE org_id=? AND chave=? AND resolvido_ms IS NULL").bind(p.org_id, chave).first().catch(() => null);
     const quando = p.data ? `${p.data.split("-").reverse().slice(0, 2).join("/")} às ${p.hora || "00:00"}` : "";
     await registrarProblema(env, p.org_id, { chave, area: "PUBLICACOES", titulo: `Post #${p.id}${quando ? " de " + quando : ""} ${oque}`, motivo: String(motivo || "").slice(0, 300), dica: "Abra o post para ver o detalhe e publicar de novo.", link: "#/aprovacoes", gravidade: "ALTA" });
-    if (!ja) { const { avisarTelegramDaEmpresa } = await import("./zap.js"); await avisarTelegramDaEmpresa(env, k, p.org_id, `⚠️ Post #${p.id}${quando ? " (" + quando + ")" : ""} ${oque}.\n${String(motivo || "").slice(0, 300)}`).catch(() => {}); }
+    // Alerta automático vai por e-mail (e notificação no app, pelos Avisos); o Telegram fica só para a equipe conversar.
+    if (!ja && k.alertarEmail) await k.alertarEmail(p.org_id, `DENIA — post #${p.id} ${oque}`, `Post #${p.id}${quando ? " (" + quando + ")" : ""} ${oque}.\n${String(motivo || "").slice(0, 300)}\n\nAbra em Marketing → Aprovações para ver o detalhe e publicar de novo.`).catch(() => {});
   } catch { /* aviso é melhor esforço */ }
 }
 async function resolverAviso(env, orgId, chave) { try { const { resolverProblema } = await import("./problemas.js"); await resolverProblema(env, orgId, chave); } catch { } }

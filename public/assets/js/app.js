@@ -747,16 +747,20 @@
     const dia = h("select", { class: "entrada", disabled: !admin }, (r.dias || []).map((n, i) => h("option", { value: String(i), selected: c.dia === i, text: n.charAt(0).toUpperCase() + n.slice(1) })));
     const hora = h("select", { class: "entrada", disabled: !admin }, Array.from({ length: 24 }, (_, i) => h("option", { value: String(i), selected: c.hora === i, text: String(i).padStart(2, "0") + ":00" })));
     const emails = h("input", { class: "entrada", type: "text", value: c.emails || "", placeholder: "gerente@empresa.com.br, diretoria@empresa.com.br", disabled: !admin });
+    const freq = h("select", { class: "entrada", disabled: !admin }, [["diario", "Diário (o dia anterior)"], ["semanal", "Semanal (últimos 7 dias)"], ["mensal", "Mensal (o mês anterior, no dia 1)"]].map(([v, n]) => h("option", { value: v, selected: (c.frequencia || "semanal") === v, text: n })));
+    const campoDia = h("div", { class: "campo" }, h("label", { text: "Dia da semana" }), dia);
+    const verDia = () => campoDia.classList.toggle("oculto", freq.value !== "semanal");
+    freq.addEventListener("change", verDia); verDia();
     caixa.replaceChildren(h("section", { class: "cartao vidro" },
-      h("h3", { style: "margin-top:0", text: "Envio automático por e-mail" }),
-      h("p", { class: "sub", text: "No dia e horário escolhidos, os administradores da empresa (e os e-mails abaixo) recebem a planilha dos últimos 7 dias: clientes, data e horário do contato, telefone, o que procuraram, quem voltou e quem já era cliente, o total por dia e as categorias mais procuradas." }),
+      h("h3", { style: "margin-top:0", text: "Relatório por e-mail (planilha profissional)" }),
+      h("p", { class: "sub", text: "Os administradores da empresa (e os e-mails abaixo) recebem por e-mail uma planilha Excel pronta: capa com os indicadores e a comparação com o período anterior, clientes por dia, horários e dias de pico, o que buscaram e a lista de cada cliente (nome, telefone, data, hora, novo ou recorrente) com filtros. Vale para o chatbot e para a IA do WhatsApp." }),
       r.email_configurado ? null : h("p", { class: "nota nota-alerta", text: "O envio de e-mail ainda não está configurado na plataforma (RESEND_API_KEY e EMAIL_REMETENTE)." }),
       h("label", { class: "guia-cat" }, ativo, h("span", { text: " Enviar o relatório automaticamente" })),
-      h("div", { class: "grade grade-2" }, h("div", { class: "campo" }, h("label", { text: "Dia da semana" }), dia), h("div", { class: "campo" }, h("label", { text: "Horário (Brasília)" }), hora)),
+      h("div", { class: "grade grade-3" }, h("div", { class: "campo" }, h("label", { text: "Frequência" }), freq), campoDia, h("div", { class: "campo" }, h("label", { text: "Horário (Brasília)" }), hora)),
       h("div", { class: "campo" }, h("label", { text: "Enviar também para (separe por vírgula)" }), emails),
       h("div", { class: "acoes" },
-        admin ? botao("Salvar", async () => { try { await org("relatorio/config", { metodo: "POST", corpo: { ativo: ativo.checked, dia: Number(dia.value), hora: Number(hora.value), emails: emails.value.trim() } }); aviso("Envio do relatório salvo.", "ok"); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario") : null,
-        pode("AGENTE") ? botao("Enviar os últimos 7 dias para o meu e-mail", async (_e, b) => { const t0 = b.textContent; b.textContent = "Enviando…"; try { const x = await org("relatorio/enviar", { metodo: "POST", corpo: {} }); aviso(x.ok ? `Relatório enviado para ${x.para}.` : "O e-mail não foi aceito. Confira o domínio no Resend.", x.ok ? "ok" : "erro"); } catch (e) { aviso(e.message, "erro"); } finally { b.textContent = t0; } }, "btn-secundario") : null)));
+        admin ? botao("Salvar", async () => { try { await org("relatorio/config", { metodo: "POST", corpo: { ativo: ativo.checked, frequencia: freq.value, dia: Number(dia.value), hora: Number(hora.value), emails: emails.value.trim() } }); aviso("Envio do relatório salvo.", "ok"); } catch (e) { aviso(e.message, "erro"); } }, "btn-primario") : null,
+        pode("AGENTE") ? botao("Enviar agora para o meu e-mail", async (_e, b) => { const t0 = b.textContent; b.textContent = "Enviando…"; try { const x = await org("relatorio/enviar", { metodo: "POST", corpo: {} }); aviso(x.ok ? `Relatório enviado para ${x.para}.` : "O e-mail não foi aceito. Confira o domínio no Resend.", x.ok ? "ok" : "erro"); } catch (e) { aviso(e.message, "erro"); } finally { b.textContent = t0; } }, "btn-secundario") : null)));
   }
   // Acesso rápido: onde fica cada coisa, em cartões grandes (só o que esta pessoa pode abrir), com os avisos.
   function acessoRapido() {
@@ -7251,7 +7255,7 @@ Botão só com texto = resposta.` })),
     ["Aprovar e acompanhar posts", ["Em Aprovações ficam os posts esperando você.", "Cada post mostra o resultado em cada rede: ✓ publicado, ✗ não publicado (com o motivo).", "Publicou na empresa errada? Abra o post e toque em Tirar do ar."]],
     ["Pós-venda e garantia (automático)", ["Alguns dias depois de um atendimento concluído, a DENIA pergunta se ficou tudo certo.", "Se o cliente disser que ficou ótimo, ela pede a avaliação no Google.", "Se disser que tem problema, ela avisa a equipe e não fala em valor: quem decide a garantia são vocês.", "Para clientes que não falaram nas últimas 24 h, o WhatsApp exige um modelo aprovado (Modelos de mensagem)."]],
     ["Equipe e permissões", ["Equipe → Convidar: cada pessoa recebe um e-mail para criar a senha.", "Administrador muda configurações; atendente conversa com os clientes; visualizador só acompanha.", "Na Auditoria aparece quem fez o quê."]],
-    ["Onde ver se algo deu errado", ["Problemas: o que precisa de atenção, com o motivo e como resolver.", "WhatsApp → Entregas das mensagens e Diagnóstico: por que uma mensagem não chegou.", "Consumo e custos: quanto a empresa está gastando com WhatsApp, IA e Google."]]
+    ["Onde ver se algo deu errado", ["Avisos e problemas: o que precisa de atenção, com o motivo e como resolver.", "WhatsApp → Entregas das mensagens e Diagnóstico: por que uma mensagem não chegou.", "Consumo e custos: quanto a empresa está gastando com WhatsApp, IA e Google."]]
   ];
   async function paginaAjuda(el) {
     el.appendChild(cabeca("Ajuda e tutoriais", "Passo a passo do que fazer na DENIA. Comece pelos primeiros passos."));
@@ -8791,7 +8795,7 @@ Botão só com texto = resposta.` })),
           h("div", { class: "acoes" }, botao("Salvar e ler agora", salvar, "btn-primario"), c.gcal_url ? botao("Ler de novo", async () => { try { const x = await adm("gcal/sincronizar", { metodo: "POST" }); aviso(`${x.eventos} evento(s) lidos.`, "ok"); navegar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario") : null)),
         h("section", { class: "cartao vidro" }, h("h3", { style: "margin:0 0 6px", text: "Avisos de compromissos e tarefas" }),
           h("p", { class: "sub", text: "O aviso vai para o responsável do compromisso (e para os e-mails acima). Também no grupo do Telegram da empresa, onde dá para escrever /agenda, /marcar vistoria terça às 10h e /tarefa pedir orçamento." }),
-          h("label", { class: "fin-check" }, avEmail, " Por e-mail"), h("label", { class: "fin-check" }, avTg, " No Telegram da empresa (conecte em WhatsApp → Conexão → Telegram)"),
+          h("label", { class: "fin-check" }, avEmail, " Por e-mail"), h("p", { class: "sub", text: "No celular, os lembretes tocam pelo app da DENIA (ative em Avisos e problemas). O Telegram fica só para a equipe conversar e atender." }),
           h("p", { class: "sub", style: "margin-top:8px", text: "WhatsApp: a Meta só deixa a empresa iniciar conversa com um modelo aprovado. Crie em WhatsApp → Modelos de mensagem um modelo de Utilidade com duas variáveis ({{1}} o compromisso, {{2}} quando) e escreva o nome dele aqui." }),
           h("div", { class: "fin-duas" }, campo("Modelo aprovado", zapModelo), campo("Números que recebem", zapNumeros)),
           h("div", { class: "acoes" }, botao("Salvar", salvar, "btn-primario"))),

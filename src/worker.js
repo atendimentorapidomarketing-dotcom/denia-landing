@@ -34,10 +34,10 @@ import { rotasPush, avisosNoCelular, pushAgenda } from "./push.js";
 import { DDL_ZAP, webhookZap, rotasZap, webhookTelegram, segredoTelegram, tokenTelegramPlataforma, processarCampanhas, posVendaChatbot, lembrarAgenda, brutoRelatorioZap, avisarTelegramDaEmpresa , enviarModeloZap, zapEquipe, modelosAgendaZap, MODELOS_AGENDA } from "./zap.js";
 import { publicoCelular, comandoEquipeZap } from "./agendaequipe.js";
 import { rotasOS, osDoCron } from "./ordens.js";
-import { montarRelatorio, planilhaRelatorio, textoRelatorio, base64, ultimos7Dias, lerConfigRelatorio, horaDeEnviar, diaBR, dataBR, DIAS_SEMANA, inicioDoDia as inicioDoDiaBR } from "./relatorio.js";
+import { montarRelatorio, planilhaRelatorio, textoRelatorio, base64, ultimos7Dias, lerConfigRelatorio, horaDeEnviar, periodoDoRelatorio, NOME_FREQ, diaBR, dataBR, DIAS_SEMANA, inicioDoDia as inicioDoDiaBR } from "./relatorio.js";
 import { lerPlanos, acessoDa, recursoDaRota, planoMinimo, rotasPlano, webhookAsaas, lembretesDePlano, TESTE_DIAS, STATUS as STATUS_PLANO, PLANOS_PADRAO, RECURSOS } from "./planos.js";
 
-const VERSAO = "3.47.1";
+const VERSAO = "3.48.0";
 // Versão dos Termos de uso e da Política de privacidade aceitas no cadastro.
 const VERSAO_TERMOS = "2026-10-16";
 // WhatsApp da Central de Atendimento (botão flutuante do site).
@@ -813,14 +813,14 @@ async function cuidarDasAvaliacoes(env, k) {
   const central = await primeiraEmpresa(env).catch(() => 0);
   for (const a of ruins) {
     const texto = `⚠️ Avaliação ${a.nota}★ no Google${a.marca ? " — " + a.marca : ""}\n${a.autor || "Cliente"}: "${String(a.texto || "(sem texto, só a nota)").slice(0, 600)}"\n\nA DENIA não respondeu sozinha. A resposta sugerida está em Google → Avaliações${base ? ": " + base + "/app#/google/avaliacoes" : ""}.`;
-    const foi = await avisarTelegramDaEmpresa(env, { ...kitBase(env), ehCentral: a.org_id === central }, a.org_id, texto).catch(() => false);
-    if (!foi && emailConfigurado(env)) for (const para of await responsaveisDa(env, a.org_id)) await enviarEmail(env, para, `DENIA — avaliação ${a.nota}★ no Google${a.marca ? " (" + a.marca + ")" : ""}`, texto);
+    // Alerta automático: por e-mail (e no celular, pelos Avisos). O Telegram fica só para a equipe conversar.
+    if (emailConfigurado(env)) for (const para of await responsaveisDa(env, a.org_id)) await enviarEmail(env, para, `DENIA — avaliação ${a.nota}★ no Google${a.marca ? " (" + a.marca + ")" : ""}`, texto);
     await env.DB.prepare("UPDATE plt_mk_avaliacoes SET avisado_ms=? WHERE id=?").bind(agora(env), a.id).run().catch(() => {});
   }
   // Relatório do Google em PDF para os clientes (dia 1 e, no quinzenal, dia 16).
   if (emailConfigurado(env)) await enviarRelatoriosPdf(env, k, (para, assunto, texto, anexos) => enviarEmail(env, para, assunto, texto, anexos)).catch(e => console.error("relatórios pdf", e?.message));
   // Situação de cada perfil do Google (suspensão e mudanças feitas pelo Google), uma vez por dia.
-  await vigiarPerfis(env, k, (org, texto) => avisarTelegramDaEmpresa(env, { ...kitBase(env), ehCentral: org === central }, org, texto)).catch(e => console.error("vigiar perfis", e?.message));
+  await vigiarPerfis(env, k, async (org, texto) => { if (!emailConfigurado(env)) return false; let ok = false; for (const para of await responsaveisDa(env, org)) if (await enviarEmail(env, para, "DENIA — mudança no perfil do Google", texto)) ok = true; return ok; }).catch(e => console.error("vigiar perfis", e?.message));
   // Relatório semanal (segunda-feira), para as empresas com perfil do Google conectado.
   const comGoogle = (await env.DB.prepare("SELECT DISTINCT org_id FROM plt_mk_google LIMIT 20").all().catch(() => null))?.results || [];
   for (const { org_id } of comGoogle) {
@@ -848,8 +848,6 @@ async function vigiarRecebimento(env) {
       const ja = await env.DB.prepare("SELECT 1 FROM plt_problemas WHERE org_id=? AND chave=? AND resolvido_ms IS NULL").bind(c.org_id, chave).first().catch(() => null);
       await registrarProblema(env, c.org_id, { chave, area: "WHATSAPP", titulo: `Nenhuma mensagem do WhatsApp chegou há ${horas} h`, motivo: `Esta empresa recebe em média ${Math.round(porDia)} mensagens por dia e a última chegou há ${horas} h. Pode ser o número desconectado, o webhook da Meta apontando para outro endereço ou a chave do app recusada.`, dica: "Abra WhatsApp → Conexão do número e confira a última mensagem recebida e os avisos. No app da Meta, o webhook deve ser https://denia-ai.com/webhook/whatsapp.", link: "#/chatbot/conexao", gravidade: "ALTA" });
       if (!ja) {
-        const { avisarTelegramDaEmpresa } = await import("./zap.js");
-        await avisarTelegramDaEmpresa(env, kitBase(env), c.org_id, `⚠️ A DENIA não recebe mensagens do WhatsApp de ${c.nome} há ${horas} h (normal: ~${Math.round(porDia)} por dia). Confira a conexão do número.`).catch(() => {});
         if (emailConfigurado(env)) for (const para of await responsaveisDa(env, c.org_id)) await enviarEmail(env, para, `DENIA — o WhatsApp de ${c.nome} parou de chegar`, `Nenhuma mensagem do WhatsApp chegou há ${horas} h. Esta empresa recebe em média ${Math.round(porDia)} por dia.\n\nConfira em WhatsApp → Conexão do número. No app da Meta, o webhook deve ser https://denia-ai.com/webhook/whatsapp.`).catch(() => {});
       }
     } else await resolverProblema(env, c.org_id, chave);
@@ -913,19 +911,25 @@ async function brutoRelatorio(env, orgId, ini, fim) {
 async function configRelatorio(env, orgId) {
   return lerConfigRelatorio((await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave=?").bind("relatorio_" + orgId).first().catch(() => null))?.valor);
 }
-async function gerarRelatorioOrg(env, orgId, ini, fim) {
+// Relatório de um período, com o período anterior de mesmo tamanho para a comparação (variação %).
+async function gerarRelatorioOrg(env, orgId, ini, fim, { frequencia = "semanal", iniAnt = null, fimAnt = null } = {}) {
   const org = await env.DB.prepare("SELECT nome FROM plt_organizacoes WHERE id=?").bind(orgId).first().catch(() => null);
   const { bruto, fontes } = await brutoRelatorio(env, orgId, ini, fim);
   const d = montarRelatorio(bruto, ini, fim);
-  return { d, fontes, empresa: org?.nome || "", arquivo: { nome: `relatorio-clientes-${d.de}-a-${d.ate}.xlsx`, base64: base64(planilhaRelatorio(d, org?.nome || "")) } };
+  const ia = iniAnt ?? ini - (fim - ini), fa = fimAnt ?? ini;
+  const anterior = await brutoRelatorio(env, orgId, ia, fa).then(b => montarRelatorio(b.bruto, ia, fa)).catch(() => null);
+  const xlsx = planilhaRelatorio(d, org?.nome || "", { anterior, frequencia, fontes, geradoMs: agora(env) });
+  return { d, anterior, fontes, empresa: org?.nome || "", arquivo: { nome: `relatorio-${frequencia}-${(org?.nome || "clientes").toLowerCase().normalize("NFD").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}-${d.de}-a-${d.ate}.xlsx`, base64: base64(xlsx) } };
 }
-async function enviarRelatorioOrg(env, orgId, ini, fim, para = null) {
+async function enviarRelatorioOrg(env, orgId, ini, fim, para = null, periodo = {}) {
   const cfg = await configRelatorio(env, orgId);
-  const g = await gerarRelatorioOrg(env, orgId, ini, fim);
+  const frequencia = periodo.frequencia || cfg.frequencia;
+  const g = await gerarRelatorioOrg(env, orgId, ini, fim, { frequencia, iniAnt: periodo.iniAnt, fimAnt: periodo.fimAnt });
   const extras = cfg.emails.split(/[,;\s]+/).map(e => e.trim()).filter(emailValido);
   const destinos = para ? [para] : [...new Set([...(await responsaveisDa(env, orgId)), ...extras])].slice(0, 10);
   let enviados = 0;
-  for (const e of destinos) if (await enviarEmail(env, e, `Relatório de atendimento ${g.empresa ? "- " + g.empresa + " " : ""}(${dataBR(g.d.de)} a ${dataBR(g.d.ate)})`, textoRelatorio(g.d, g.empresa), [g.arquivo])) enviados++;
+  const assunto = `Relatório ${NOME_FREQ[frequencia]} de atendimento${g.empresa ? " - " + g.empresa : ""} (${g.d.de === g.d.ate ? dataBR(g.d.de) : `${dataBR(g.d.de)} a ${dataBR(g.d.ate)}`})`;
+  for (const e of destinos) if (await enviarEmail(env, e, assunto, textoRelatorio(g.d, g.empresa, { anterior: g.anterior, frequencia }), [g.arquivo])) enviados++;
   return { enviados, destinos: destinos.length, totais: g.d.totais, fontes: g.fontes };
 }
 // A cada 5 min: empresa cujo dia e hora de envio chegaram recebe os últimos 7 dias (uma vez por dia escolhido).
@@ -941,8 +945,8 @@ async function relatoriosAgendados(env) {
     const temFonte = await env.DB.prepare("SELECT 1 FROM plt_zap_contas WHERE org_id=? AND phone_number_id IS NOT NULL").bind(id).first().catch(() => null) || await conexaoDa(env, id).catch(() => null);
     if (!temFonte) continue;
     await env.DB.prepare("INSERT OR IGNORE INTO plt_meta(chave,valor) VALUES(?,?)").bind(chave, String(t)).run();
-    const { ini, fim } = ultimos7Dias(t);
-    try { await enviarRelatorioOrg(env, id, ini, fim); } catch (e) { console.error("relatório", id, e?.message); }
+    const per = periodoDoRelatorio(cfg.frequencia, t);
+    try { await enviarRelatorioOrg(env, id, per.ini, per.fim, null, { frequencia: cfg.frequencia, iniAnt: per.iniAnt, fimAnt: per.fimAnt }); } catch (e) { console.error("relatório", id, e?.message); }
   }
 }
 async function rotasRelatorio(request, env, sessao, orgId, papel, resto) {
@@ -973,9 +977,9 @@ async function rotasRelatorio(request, env, sessao, orgId, papel, resto) {
     const emails = String(c.emails || "").split(/[,;\s]+/).map(e => e.trim()).filter(Boolean);
     const invalidos = emails.filter(e => !emailValido(e));
     if (invalidos.length) return json({ erro: `E-mail inválido: ${invalidos.slice(0, 3).join(", ")}` }, 400);
-    const cfg = lerConfigRelatorio(JSON.stringify({ ativo: c.ativo !== false, dia: Number(c.dia), hora: Number(c.hora), emails: emails.slice(0, 8).join(", ") }));
+    const cfg = lerConfigRelatorio(JSON.stringify({ ativo: c.ativo !== false, frequencia: c.frequencia, dia: Number(c.dia), hora: Number(c.hora), emails: emails.slice(0, 8).join(", ") }));
     await env.DB.prepare("INSERT OR REPLACE INTO plt_meta(chave,valor) VALUES(?,?)").bind("relatorio_" + orgId, JSON.stringify(cfg)).run();
-    await auditar(env, request, sessao, orgId, "RELATORIO", cfg.ativo ? `Envio do relatório: ${DIAS_SEMANA[cfg.dia]} às ${cfg.hora}h` : "Envio do relatório desligado");
+    await auditar(env, request, sessao, orgId, "RELATORIO", cfg.ativo ? `Envio do relatório ${NOME_FREQ[cfg.frequencia]}: ${cfg.frequencia === "semanal" ? DIAS_SEMANA[cfg.dia] + " " : cfg.frequencia === "mensal" ? "dia 1 " : "todo dia "}às ${cfg.hora}h` : "Envio do relatório desligado");
     return json({ ok: true, config: cfg });
   }
   if (resto === "relatorio" && metodo === "GET") {
@@ -998,9 +1002,9 @@ async function rotasRelatorio(request, env, sessao, orgId, papel, resto) {
   if (resto === "relatorio/enviar" && metodo === "POST") {
     if (!pode(papel, "AGENTE")) return json({ erro: "Seu perfil não pode enviar relatórios." }, 403);
     if (!emailConfigurado(env)) return json({ erro: "O envio de e-mail ainda não está configurado (RESEND_API_KEY e EMAIL_REMETENTE)." }, 409);
-    const { ini, fim } = ultimos7Dias(t);
-    const r = await enviarRelatorioOrg(env, orgId, ini, fim, sessao.usuario.email);
-    await auditar(env, request, sessao, orgId, "RELATORIO", "Enviou o relatório dos últimos 7 dias para o próprio e-mail");
+    const cfg = await configRelatorio(env, orgId), per = periodoDoRelatorio(cfg.frequencia, t);
+    const r = await enviarRelatorioOrg(env, orgId, per.ini, per.fim, sessao.usuario.email, { frequencia: cfg.frequencia, iniAnt: per.iniAnt, fimAnt: per.fimAnt });
+    await auditar(env, request, sessao, orgId, "RELATORIO", `Enviou o relatório ${NOME_FREQ[cfg.frequencia]} para o próprio e-mail`);
     return json({ ok: r.enviados > 0, ...r, para: sessao.usuario.email });
   }
   return null;
