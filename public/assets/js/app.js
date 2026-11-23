@@ -3446,6 +3446,33 @@ Botão só com texto = resposta.` })),
     };
     FBx.login(resp => { concluir(resp && resp.authResponse && resp.authResponse.code); }, { config_id: cfg.config_id, response_type: "code", override_default_response_type: true, extras: { setup: {}, featureType: coexistencia ? "whatsapp_business_app_onboarding" : "", sessionInfoVersion: "3" } });
   }
+  // Diagnóstico do chatbot: a Meta está entregando? a DENIA aceitou? o robô respondeu? e, se não, por quê.
+  function cartaoDiagnosticoZap() {
+    const caixa = h("section", { class: "cartao vidro", style: "margin-bottom:14px" }, carregando("Conferindo o recebimento…"));
+    const quando = ms => ms ? new Date(ms).toLocaleString(LOCALE) : "nunca";
+    const carregar = async () => {
+      let d; try { d = await zap("recebimento"); } catch (e) { caixa.replaceChildren(h("p", { class: "sub", text: e.message })); return; }
+      const ok = !d.motivo;
+      const linha = (rot, val, bom) => h("li", {}, h("strong", { text: rot + ": " }), h("span", { style: bom === false ? "color:#ef4444" : bom ? "color:#22c55e" : "", text: val }));
+      caixa.replaceChildren(h("h3", { style: "margin:0 0 6px", text: ok ? "✅ Diagnóstico: recebendo e respondendo" : "⚠️ Diagnóstico: o que está impedindo" }),
+        d.motivo ? h("p", { style: "margin:0 0 6px;font-weight:600", text: d.motivo }) : null,
+        d.acao ? h("p", { class: "sub", style: "margin:0 0 8px", text: "O que fazer: " + d.acao }) : null,
+        h("ul", { class: "lista-simples", style: "margin:0 0 8px" },
+          linha("Número conectado", d.conectado ? (d.numero || "sim") : "não", d.conectado),
+          linha("Último aviso da Meta para a DENIA", quando(d.webhook_ms), Boolean(d.webhook_ms)),
+          linha("Última mensagem de cliente aceita", quando(d.ultima_recebida_ms), Boolean(d.ultima_recebida_ms)),
+          d.assinatura_falhou_ms ? linha("Mensagens recusadas (chave secreta errada)", quando(d.assinatura_falhou_ms), false) : null,
+          linha("Última resposta do robô", d.ultima_resposta ? `${quando(d.ultima_resposta.ms)}${d.ultima_resposta.status === "FALHOU" ? " — não entregue: " + (d.ultima_resposta.erro || "") : ""}` : "nenhuma", d.ultima_resposta ? d.ultima_resposta.status !== "FALHOU" : null),
+          d.plano ? linha("Plano da empresa", d.plano.liberado ? "liberado" : "bloqueado ou teste vencido", d.plano.liberado) : null,
+          d.pausados ? linha("Conversas com o robô pausado (equipe atendendo)", String(d.pausados), null) : null,
+          d.apps ? linha("Apps da Meta que recebem este número", d.apps.map(a => a.nome || a.id).join(", ") || "nenhum", d.apps.length > 0) : null),
+        h("div", { class: "acoes" }, botao("Verificar de novo", () => carregar(), "btn-secundario btn-pequeno"),
+          d.conectado && pode("ADMIN") ? botao("Ligar o recebimento", async (_e, b) => { b.disabled = true; try { await zap("recebimento", { metodo: "POST", corpo: {} }); aviso("Pedido à Meta enviado. Mande um “oi” de teste.", "ok"); carregar(); } catch (e) { aviso(e.message, "erro"); b.disabled = false; } }, "btn-secundario btn-pequeno") : null),
+        h("p", { class: "sub", style: "margin:8px 0 0", text: "Para testar: mande “oi” de outro celular (que não seja da equipe) e toque em Verificar de novo." }));
+    };
+    carregar();
+    return caixa;
+  }
   async function abaZapConexao(area, vivo) {
     const [c, tg, emb] = await Promise.all([zap("conta"), zap("telegram").catch(() => ({})), zap("embedded").catch(() => ({}))]);
     if (!vivo()) return;
@@ -3456,7 +3483,7 @@ Botão só com texto = resposta.` })),
     const tgToken = h("input", { class: "entrada", type: "password", autocomplete: "off", placeholder: c.telegram ? "Já configurado — cole outro só para trocar" : "123456:ABC… (do @BotFather)" });
     const tgChat = h("input", { class: "entrada", placeholder: "-100123456789" });
     const copia = (rot, valor) => h("div", { class: "campo" }, h("label", { text: rot }), h("div", { style: "display:flex;gap:8px" }, h("input", { class: "entrada", value: valor, readOnly: true }), botao("Copiar", () => copiar(valor), "btn-secundario btn-pequeno")));
-    trocar(area,
+    trocar(area, cartaoDiagnosticoZap(),
       h("section", { class: "cartao vidro destaque-ia" }, h("h3", { style: "margin:0", text: "Conectar com o Facebook — o jeito mais fácil" }),
         h("p", { class: "sub", style: "margin:0", text: "Entre com o Facebook da empresa e escolha o número. Com a coexistência, o MESMO número continua no aplicativo WhatsApp Business do celular: a DENIA atende, e quando você responde pelo celular a mensagem aparece aqui e o robô pausa naquela conversa. O histórico recente e os contatos vêm junto." }),
         emb.disponivel && pode("ADMIN") ? h("div", { class: "acoes" }, botao("Conectar o número que já uso no WhatsApp Business (coexistência)", () => conectarPeloFacebook(emb, true), "btn-primario"), botao("Conectar um número novo", () => conectarPeloFacebook(emb, false), "btn-secundario"))

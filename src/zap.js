@@ -641,6 +641,7 @@ async function processarWebhook(env, k, d, bruto, assinatura) {
     if (!contas.has(pnid)) {
       const conta = await env.DB.prepare("SELECT c.*, o.nome org_nome, o.status org_status, o.plano, o.plano_status, o.teste_ate, o.pago_ate FROM plt_zap_contas c JOIN plt_organizacoes o ON o.id=c.org_id WHERE c.phone_number_id=?").bind(pnid).first();
       let valida = Boolean(conta);
+      if (conta) await env.DB.prepare("INSERT OR REPLACE INTO plt_meta(chave,valor) VALUES(?,?)").bind("zap_webhook_" + conta.org_id, String(k.agora(env))).run().catch(() => {});
       if (conta) {
         const segredos = [conta.segredo_cifrado ? await k.decifrar(env, conta.segredo_cifrado) : "", String(env.META_APP_SECRET || "")].filter(Boolean);
         // Só aceita o que a Meta assinou (com a chave do app da empresa ou a da plataforma): ninguém consegue
@@ -777,9 +778,11 @@ async function receberMensagem(env, k, conta, msg, nome) {
     env.DB.prepare("SELECT id FROM plt_zap_msgs WHERE wamid=?").bind(wamid)
   ]);
   z.msgId = Number(idMsg?.results?.[0]?.id || 0);
+  // Quando o robô fica calado, guarda o porquê (aparece no Diagnóstico da conexão).
+  const calado = motivo => env.DB.prepare("INSERT OR REPLACE INTO plt_meta(chave,valor) VALUES(?,?)").bind("zap_silencio_" + z.org, JSON.stringify({ ms: agora, tel: tel.slice(-4), motivo })).run().catch(() => {});
   if (!Number(ins?.meta?.changes)) return; // a Meta reenviou a mesma mensagem
   const enviadaMs = Number(msg.timestamp || 0) * 1000;
-  if (enviadaMs && agora - enviadaMs > 30 * 60000) return; // mensagem velha (reenvio depois de queda): não responde fora de hora
+  if (enviadaMs && agora - enviadaMs > 30 * 60000) { await calado("mensagem antiga (chegou mais de 30 min depois de enviada)"); return; } // não responde fora de hora
   const c = ctt?.results?.[0] || {};
   // Pessoa da equipe (número cadastrado na Administração): comandos da agenda — AGENDA, MARCAR, FEITO C12, PAGO P34…
   if (e.texto && !e.acao) {
@@ -793,10 +796,10 @@ async function receberMensagem(env, k, conta, msg, nome) {
     return;
   }
   if (/^\s*voltar\s*[.!]?\s*$/i.test(e.texto) && Number(c.optout || 0)) await env.DB.prepare("UPDATE plt_zap_contatos SET optout=0 WHERE org_id=? AND telefone=?").bind(z.org, tel).run().catch(() => { });
-  if (bloqueadoNoChatbot(z.cfg, tel)) return; // número bloqueado pela empresa: só fica registrado
-  if (Number(c.pausado_ate || 0) > agora) return; // a equipe está atendendo
-  if (Number(recentes?.results?.[0]?.n || 0) >= 25) return; // trava contra robô conversando com robô
-  if (!rec.includes("chatbot")) return;
+  if (bloqueadoNoChatbot(z.cfg, tel)) { await calado("número bloqueado em Mensagens e IA → Números bloqueados"); return; } // só fica registrado
+  if (Number(c.pausado_ate || 0) > agora) { await calado(`robô pausado nesta conversa até ${new Date(Number(c.pausado_ate) - 3 * 3600000).toISOString().slice(11, 16)} (a equipe respondeu pelo celular ou pediu atendente)`); return; } // a equipe está atendendo
+  if (Number(recentes?.results?.[0]?.n || 0) >= 25) { await calado("trava de segurança: muitas mensagens em 10 minutos"); return; } // robô conversando com robô
+  if (!rec.includes("chatbot")) { await calado(conta.acesso?.status === "TESTE_ACABOU" ? "o período de teste da empresa acabou (Plano e pagamento)" : "o plano da empresa não está em dia ou não inclui o chatbot (Plano e pagamento)"); return; }
   z.nome = nome || c.nome || "";
   z.ultimoMenu = c.ultimo_menu;
   // Cliente escrevendo em várias mensagens seguidas ("oi" / "tudo bem?" / "quanto custa?"): espera ele
@@ -1914,6 +1917,14 @@ async function rotasZapExtra(request, env, k, orgId, papel, r, { json, ler, prec
     const assin = Number((await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave=?").bind("zap_assinatura_falhou_" + orgId).first().catch(() => null))?.valor || 0) || null;
     const out = { conectado: Boolean(conta?.phone_number_id && conta?.token_cifrado), ativo: Boolean(conta?.ativo), numero: conta?.numero || "", ultima_recebida_ms: ult, mensagens_recebidas: total,
       assinatura_falhou_ms: assin && assin > Number(ult || 0) ? assin : null, apps: null, denia_recebe: null, motivo: "", acao: "" };
+    out.webhook_ms = Number((await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave=?").bind("zap_webhook_" + orgId).first().catch(() => null))?.valor || 0) || null;
+    try { out.silencio = JSON.parse((await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave=?").bind("zap_silencio_" + orgId).first().catch(() => null))?.valor || "null"); } catch { out.silencio = null; }
+    const org = await env.DB.prepare("SELECT * FROM plt_organizacoes WHERE id=?").bind(orgId).first().catch(() => null);
+    const { acessoDa: acDa, lerPlanos: lp } = await import("./planos.js");
+    const ac = org ? acDa(org, agora, (await lp(env)).planos) : null;
+    out.plano = ac ? { liberado: ac.liberado && (ac.recursos || []).includes("chatbot"), status: ac.status, ate: ac.ate } : null;
+    out.ultima_resposta = await env.DB.prepare("SELECT criado_ms ms, status, erro FROM plt_zap_msgs WHERE org_id=? AND direcao='S' ORDER BY id DESC LIMIT 1").bind(orgId).first().catch(() => null);
+    out.pausados = Number((await env.DB.prepare("SELECT COUNT(*) n FROM plt_zap_contatos WHERE org_id=? AND pausado_ate>?").bind(orgId, agora).first().catch(() => null))?.n || 0);
     if (out.conectado && conta.waba_id) {
       try {
         const token = await k.decifrar(env, conta.token_cifrado);
@@ -1928,8 +1939,13 @@ async function rotasZapExtra(request, env, k, orgId, papel, r, { json, ler, prec
         out.denia_recebe = appId ? out.apps.some(a => a.id === appId) : out.apps.length > 0 ? null : false;
       } catch (e) { out.erro_meta = cortar(e.message, 200); }
     }
+    const ultResp = out.ultima_resposta;
     if (!out.conectado) { out.motivo = "O WhatsApp desta empresa não está conectado à DENIA: nenhuma mensagem pode chegar."; out.acao = "Conecte o número em WhatsApp → Conexão."; }
     else if (!out.ativo) { out.motivo = "O chatbot está desligado nesta empresa."; out.acao = "Ligue o chatbot em WhatsApp → Conexão."; }
+    else if (out.assinatura_falhou_ms) { out.motivo = `A Meta está entregando as mensagens (a última às ${new Date(out.assinatura_falhou_ms - 3 * 3600000).toISOString().slice(11, 16)}), mas a DENIA recusou: a Chave secreta do app salva aqui não é a do app da Meta onde este número está.`; out.acao = "No app da Meta deste número: Configurações do app → Básico → Chave secreta do app → copie e cole em WhatsApp → Conexão → Chave secreta do app → Salvar."; }
+    else if (out.plano && !out.plano.liberado) { out.motivo = `As mensagens chegam, mas o robô não responde: ${out.plano.status === "TESTE_ACABOU" ? "o período de teste da empresa acabou" : "o plano da empresa não está em dia ou não inclui o chatbot"}.`; out.acao = "Abra Plano e pagamento (ou, no administrador geral, Empresas → esta empresa → Plano) e libere o acesso."; }
+    else if (out.silencio && out.silencio.ms >= Number(ult || 0) - 5000 && agora - out.silencio.ms < 6 * 3600000) { out.motivo = `A última mensagem (final ${out.silencio.tel}) chegou, mas o robô ficou calado: ${out.silencio.motivo}.`; out.acao = /pausado/.test(out.silencio.motivo) ? "Teste de outro celular, ou espere a pausa acabar. Em Conversas do chatbot dá para devolver a conversa ao robô." : /bloqueado/.test(out.silencio.motivo) ? "Tire o número da lista de bloqueados." : /plano|teste/.test(out.silencio.motivo) ? "Libere o plano da empresa." : "Mande uma mensagem nova para testar."; }
+    else if (ultResp && ultResp.status === "FALHOU" && agora - ultResp.ms < 6 * 3600000) { out.motivo = `O robô respondeu, mas a Meta recusou a entrega: ${ultResp.erro || "sem detalhe"}.`; out.acao = "Confira o token (permissão whatsapp_business_messaging) e se o número está ativo no app da Meta."; }
     else if (out.assinatura_falhou_ms) { out.motivo = "As mensagens chegam, mas a DENIA recusa porque a Chave secreta do app salva aqui é diferente da usada pela Meta."; out.acao = "Em WhatsApp → Conexão, cole a Chave secreta do app que esse número usa (se veio do Botpress, é o Client Secret da integração do WhatsApp)."; }
     else if (out.denia_recebe === false) { out.motivo = `A Meta não está mandando as mensagens deste número para a DENIA${out.apps?.length ? ` — hoje vão para: ${out.apps.map(a => a.nome || a.id).join(", ")}` : ""}.`; out.acao = "Toque em “Ligar o recebimento” (a DENIA passa a receber). Se outro sistema (ex.: Botpress) também responde, desligue-o para o cliente não receber duas respostas."; }
     else if (!ult) { out.motivo = "O número está conectado, mas nenhuma mensagem de cliente chegou até agora. Os números do painel contam só o que chegou à DENIA desde a conexão (o histórico de outro sistema não vem junto)."; out.acao = "Mande um “oi” de outro celular para o número. Se não aparecer em Conversas em 1 minuto, toque em “Ligar o recebimento”."; }
