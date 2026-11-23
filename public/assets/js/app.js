@@ -3298,15 +3298,9 @@ Botão só com texto = resposta.` })),
     // Busca sem acento e sem espaço ("Info Set" acha "Infoset"). Também procura o nome escrito dentro do texto
     // das opções do menu (ex.: loja trazida do Botpress como texto): aí excluir o contato não basta.
     const norm = t => String(t || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "");
-    const noTexto = h("div", {});
     const desenhar = () => {
       const q = norm(busca.value);
       const f = cat.filter(c => !q || norm([c.nome, c.local, ...(c.itens || []).map(i => nomeItem.get(i))].join(" ")).includes(q));
-      const emTexto = q.length >= 3 ? itens.filter(i => norm(i.texto).includes(q) || norm(i.extra).includes(q) || norm(i.titulo).includes(q)) : [];
-      noTexto.replaceChildren(...(emTexto.length ? [h("div", { class: "nota nota-alerta", style: "margin:0 0 12px" },
-        h("strong", { text: `"${busca.value.trim()}" também está escrito no texto de ${emTexto.length} opção(ões) do menu — por isso continua aparecendo no WhatsApp mesmo sem o contato:` }),
-        h("ul", { style: "margin:6px 0" }, emTexto.map(i => h("li", { text: caminho(i) }))),
-        h("span", { text: "Abra WhatsApp → Menu de botões, edite cada opção acima, apague o nome do texto e salve. " }), h("a", { href: "#/chatbot/menu", text: "Abrir o Menu de botões →" }))] : []));
       corpo.replaceChildren(...f.map(c => h("tr", {},
         h("td", {}, h("strong", { text: c.nome }), c.destaque ? h("span", { text: " ★" }) : null, !c.ativo ? h("small", { style: "display:block;color:var(--texto-3)", text: "oculto" }) : null),
         h("td", { text: c.local || "—" }),
@@ -3316,6 +3310,25 @@ Botão só com texto = resposta.` })),
           botao("Excluir", async () => { if (!(await modal({ titulo: "Excluir o contato?", conteudo: `"${c.nome}" deixa de aparecer para os clientes.`, confirmar: "Excluir", perigo: true }))) return; try { await zap(`catalogo/${c.id}/excluir`, { metodo: "POST", corpo: {} }); recarregar(); } catch (e) { aviso(e.message, "erro"); } }, "btn-secundario btn-pequeno")) : null))));
       if (!f.length) corpo.appendChild(h("tr", {}, h("td", { colspan: "5", text: cat.length ? "Nada encontrado." : "Nenhum contato ainda. Importe a planilha ou cadastre o primeiro." })));
     };
+    // Busca completa no servidor: onde mais o nome aparece (treinamento da IA, mensagens, memória dos clientes)
+    // e se o robô da DENIA enviou esse nome de verdade nos últimos 14 dias.
+    const completa = h("div", {});
+    let espera = null;
+    const procurarTudo = async () => {
+      const t0 = busca.value.trim();
+      if (norm(t0).length < 3) { completa.replaceChildren(); return; }
+      let r; try { r = await zap(`procurar?q=${encodeURIComponent(t0)}`); } catch (e) { completa.replaceChildren(h("p", { class: "sub", text: e.message })); return; }
+      if (busca.value.trim() !== t0) return;
+      const blocos = [];
+      if (r.lugares.length) blocos.push(h("strong", { text: `"${t0}" ainda está escrito em ${r.lugares.length} lugar(es) — apague de cada um:` }), h("ul", { style: "margin:6px 0" }, r.lugares.map(l => h("li", {}, h("a", { href: l.link, text: l.onde }), l.trecho ? h("small", { style: "display:block;color:var(--texto-3)", text: "“" + l.trecho + "”" }) : null))));
+      if (r.memoria_clientes) blocos.push(h("p", { style: "margin:6px 0", text: `A IA guardou "${t0}" na memória de ${r.memoria_clientes} cliente(s) e pode voltar a citar.` }),
+        pode("AGENTE") ? botao("Apagar da memória dos clientes", async (_e, b) => { b.disabled = true; try { const x = await zap(`procurar?q=${encodeURIComponent(t0)}`, { metodo: "POST", corpo: {} }); aviso(`Apagado da memória de ${x.limpos} cliente(s).`, "ok"); procurarTudo(); } catch (e) { aviso(e.message, "erro"); b.disabled = false; } }, "btn-secundario btn-pequeno") : null);
+      blocos.push(h("p", { style: "margin:8px 0 0", text: r.enviadas_14d
+        ? `O chatbot da DENIA enviou "${t0}" em ${r.enviadas_14d} mensagem(ns) nos últimos 14 dias (a última em ${new Date(r.ultima_enviada_ms).toLocaleString(LOCALE)}).${r.exemplos[0] ? " Exemplo: “" + r.exemplos[0].trecho + "”" : ""}`
+        : `O chatbot da DENIA não enviou nenhuma mensagem com "${t0}" nos últimos 14 dias.${r.lugares.length || r.memoria_clientes ? "" : " Se ainda aparece no WhatsApp, é mensagem antiga na conversa (o WhatsApp guarda o histórico) ou outro sistema (ex.: o Botpress) ainda está respondendo por esse número — desligue-o lá."}` }));
+      completa.replaceChildren(h("div", { class: "nota" + (r.lugares.length || r.memoria_clientes || r.enviadas_14d ? " nota-alerta" : ""), style: "margin:0 0 12px" }, ...blocos.filter(Boolean)));
+    };
+    busca.addEventListener("input", () => { clearTimeout(espera); espera = setTimeout(procurarTudo, 500); });
     busca.addEventListener("input", desenhar); desenhar();
     trocar(area,
       h("section", { class: "grade grade-4" },
@@ -3327,7 +3340,7 @@ Botão só com texto = resposta.` })),
         h("div", { class: "cabeca-grafico" }, h("h3", { style: "margin:0", text: "Contatos e lojas" }),
           pode("AGENTE") ? h("div", { class: "acoes" }, botao("Novo contato", () => editar(null), "btn-primario btn-pequeno"), botao("Importar planilha", () => importarZap(recarregar), "btn-secundario btn-pequeno"),
             botao("Baixar planilha", () => baixarCsv("contatos-chatbot.csv", [["nome", "telefone", "whatsapp", "local", "descricao", "opcoes"], ...cat.map(c => [c.nome, c.telefone, c.whatsapp, c.local, c.descricao, (c.itens || []).map(i => caminho(itens.find(x => x.id === i))).join(", ")])]), "btn-secundario btn-pequeno")) : null),
-        h("div", { style: "margin:12px 0" }, busca), noTexto,
+        h("div", { style: "margin:12px 0" }, busca), completa,
         h("div", { class: "tabela-caixa" }, h("table", {}, h("thead", {}, h("tr", {}, ["Nome", "Local", "WhatsApp", "Aparece em", ""].map(t => h("th", { text: t })))), corpo))));
   }
   function importarZap(recarregar) {
