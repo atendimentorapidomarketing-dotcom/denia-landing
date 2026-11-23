@@ -1532,7 +1532,6 @@ export async function adminDoCron(env, k) {
       const para = [...new Set([...(resp ? [resp] : []), ...(lista.length ? lista : resp ? [] : await k.responsaveis(orgId))])];
       for (const e of para) if (await k.enviarEmail(e, assunto, texto)) n++;
     }
-    if (c.aviso_telegram !== 0 && k.avisarTelegram) { if (await k.avisarTelegram(orgId, `🔔 ${assunto}\n${texto}`).catch(() => false)) n++; }
     if (!opc.semZap && opc.zap && k.zapEquipe) n += await avisarPessoasZap(env, k, orgId, opc.zap.item, opc.zap.texto, params, ms).catch(() => 0);
     if (!opc.semZap && c.zap_modelo && c.zap_numeros && k.enviarModeloZap) for (const tel of String(c.zap_numeros).split(",").filter(Boolean)) if (await k.enviarModeloZap(orgId, tel, c.zap_modelo, c.zap_idioma || "pt_BR", params).catch(() => false)) n++;
     return n;
@@ -1582,7 +1581,6 @@ export async function adminDoCron(env, k) {
         const lista = String(c.emails || "").split(/,\s*/).filter(Boolean);
         for (const para of lista.length ? lista : await k.responsaveis(c.org_id)) if (await k.enviarEmail(para, `DENIA — seu dia ${br(hoje)}${emp ? " (" + emp + ")" : ""}`, texto)) out.resumos++;
       }
-      if (c.aviso_telegram !== 0 && k.avisarTelegram && await k.avisarTelegram(c.org_id, "☀️ " + texto).catch(() => false)) out.resumos++;
     } catch (e) { console.error("adm resumo", c.org_id, e?.message); }
   }
   // Agenda da equipe pelo WhatsApp: lembrete na hora, contas, manhã, meio-dia, fim do dia e repetições.
