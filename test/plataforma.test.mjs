@@ -4611,3 +4611,19 @@ test("Notificações no celular — inscrição, conteúdo cifrado (RFC 8291) co
   assert.equal((await p.req("/api/push", { quem: "admin" })).dados.aparelhos.length, 0);
   delete p.env.__agora;
 });
+
+test("Chatbot — procurar onde uma loja ainda aparece (treinamento, botões, memória e mensagens enviadas) e limpar da memória", async () => {
+  const { p, inf } = await duasEmpresasComChatbot();
+  const db = p.env.DB.db;
+  db.prepare("UPDATE plt_zap_contas SET config=? WHERE org_id=?").run(JSON.stringify({ ia_servicos: "Informática: Infoset (loja 20), Cell Center", saudacao: "Olá!" }), inf);
+  db.prepare("INSERT INTO plt_zap_itens(org_id,pai_id,tipo,titulo,texto,ordem,ativo) VALUES(?,0,'RESPOSTA','Notebook','Procure a Info Set na loja 20',1,1)").run(inf);
+  db.prepare("INSERT INTO plt_zap_contatos(org_id,telefone,nome,memoria) VALUES(?,?,?,?)").run(inf, "5521900001111", "Ana", "- gosta da Infoset\n- prefere à tarde");
+  db.prepare("INSERT INTO plt_zap_msgs(org_id,telefone,direcao,origem,texto,criado_ms) VALUES(?,?,'S','IA',?,?)").run(inf, "5521900001111", "Tente a Infoset, loja 20!", Date.now() - 3600000);
+  const r = await p.req(`/api/orgs/${inf}/zap/procurar?q=infoset`, { quem: "admin" });
+  assert.equal(r.status, 200, JSON.stringify(r.dados));
+  assert.ok(r.dados.lugares.some(l => /Produtos e serviços/.test(l.onde)), "achou no treinamento da IA");
+  assert.ok(r.dados.lugares.some(l => /opção "Notebook"/.test(l.onde)), "achou no texto da opção (mesmo escrito Info Set)");
+  assert.equal(r.dados.memoria_clientes, 1); assert.equal(r.dados.enviadas_14d, 1);
+  assert.equal((await p.req(`/api/orgs/${inf}/zap/procurar?q=infoset`, { metodo: "POST", quem: "admin", corpo: {} })).dados.limpos, 1);
+  assert.equal(db.prepare("SELECT memoria FROM plt_zap_contatos WHERE telefone='5521900001111'").get().memoria, "- prefere à tarde");
+});

@@ -1870,6 +1870,41 @@ async function rotasZapExtra(request, env, k, orgId, papel, r, { json, ler, prec
   };
   const falhou = e => json({ erro: e.message, codigo: e.codigo }, e.status && e.status < 500 ? (e.status === 401 ? 400 : e.status) : 502);
 
+  // Onde um nome (ex.: uma loja que saiu) ainda aparece no chatbot: treinamento da IA, mensagens, botões, lojas,
+  // memória dos clientes e o que o robô enviou de verdade nos últimos 14 dias. POST limpa da memória dos clientes.
+  if (r === "procurar" && (metodo === "GET" || metodo === "POST")) {
+    const termo = String(url.searchParams.get("q") || "").trim().slice(0, 60);
+    const norm = t => String(t || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+    const q = norm(termo);
+    if (q.length < 3) return json({ erro: "Escreva pelo menos 3 letras." }, 400);
+    const like = `%${termo.replace(/[%_]/g, "")}%`;
+    if (metodo === "POST") {
+      const negado = precisa("AGENTE"); if (negado) return negado;
+      const linhas = (await env.DB.prepare("SELECT telefone, memoria FROM plt_zap_contatos WHERE org_id=? AND memoria LIKE ?").bind(orgId, like).all())?.results || [];
+      for (const c of linhas) {
+        const nova = String(c.memoria || "").split("\n").filter(l => !norm(l).includes(q)).join("\n");
+        await env.DB.prepare("UPDATE plt_zap_contatos SET memoria=? WHERE org_id=? AND telefone=?").bind(nova || null, orgId, c.telefone).run();
+      }
+      try { await k.auditar(env, request, k.sessao, orgId, "WHATSAPP", `Limpou "${termo}" da memória de ${linhas.length} cliente(s)`); } catch { }
+      return json({ ok: true, limpos: linhas.length });
+    }
+    const conta = await contaDa(env, orgId);
+    let cfg = {}; try { cfg = JSON.parse(conta?.config || "{}") || {}; } catch { cfg = {}; }
+    const NOMES = { sobre: "Mensagens e IA → O que a IA pode responder sobre a empresa", ia_tom: "Treinamento da IA → Jeito de atender", ia_servicos: "Treinamento da IA → Produtos e serviços", ia_precos: "Treinamento da IA → Preços autorizados", ia_regras: "Treinamento da IA → Regras da empresa", ia_exemplos: "Treinamento da IA → Exemplos de respostas",
+      saudacao: "Mensagens → Saudação", boas_vindas: "Mensagens → Boas-vindas", nao_entendi: "Mensagens → Quando não entende", encerramento: "Mensagens → Encerramento", humano: "Mensagens → Chamar atendente", rodape_lista: "Mensagens → Rodapé das listas", rodape_pergunta: "Mensagens → Rodapé da pergunta", lead_titulo: "Mensagens → Título do aviso" };
+    const lugares = [];
+    for (const [chave, valor] of Object.entries(cfg)) if (typeof valor === "string" && norm(valor).includes(q)) lugares.push({ onde: NOMES[chave] || `Mensagens e IA (${chave})`, link: "#/chatbot/mensagens", trecho: cortar(valor.slice(Math.max(0, valor.toLowerCase().indexOf(termo.toLowerCase()) - 60)), 160) });
+    const itens = (await env.DB.prepare("SELECT id, titulo, texto, extra FROM plt_zap_itens WHERE org_id=?").bind(orgId).all())?.results || [];
+    for (const i of itens) if (norm(i.titulo).includes(q) || norm(i.texto).includes(q) || norm(i.extra).includes(q)) lugares.push({ onde: `Menu de botões → opção "${i.titulo}"`, link: "#/chatbot/menu", trecho: cortar(i.texto || i.titulo, 160) });
+    const cat = (await env.DB.prepare("SELECT nome, local, descricao, ativo FROM plt_zap_catalogo WHERE org_id=?").bind(orgId).all())?.results || [];
+    for (const c of cat) if (norm([c.nome, c.local, c.descricao].join(" ")).includes(q)) lugares.push({ onde: `Contatos e lojas → "${c.nome}"${c.ativo ? "" : " (oculto)"}`, link: "#/chatbot/contatos", trecho: c.descricao || c.local || "" });
+    const mem = await env.DB.prepare("SELECT COUNT(*) n FROM plt_zap_contatos WHERE org_id=? AND memoria LIKE ?").bind(orgId, like).first().catch(() => null);
+    const env14 = (await env.DB.prepare("SELECT origem, texto, criado_ms FROM plt_zap_msgs WHERE org_id=? AND direcao='S' AND criado_ms>? AND texto LIKE ? ORDER BY criado_ms DESC LIMIT 5").bind(orgId, agora - 14 * 86400000, like).all().catch(() => null))?.results || [];
+    const total14 = await env.DB.prepare("SELECT COUNT(*) n, MAX(criado_ms) ult FROM plt_zap_msgs WHERE org_id=? AND direcao='S' AND criado_ms>? AND texto LIKE ?").bind(orgId, agora - 14 * 86400000, like).first().catch(() => null);
+    const ultimaSaida = await env.DB.prepare("SELECT MAX(criado_ms) m FROM plt_zap_msgs WHERE org_id=? AND direcao='S' AND origem IN ('ROBO','IA')").bind(orgId).first().catch(() => null);
+    return json({ termo, lugares, memoria_clientes: Number(mem?.n || 0), enviadas_14d: Number(total14?.n || 0), ultima_enviada_ms: total14?.ult || null,
+      exemplos: env14.map(m => ({ origem: m.origem, ms: m.criado_ms, trecho: cortar(m.texto, 200) })), modo: cfg.modo || conta?.modo || "", robo_respondeu_ms: ultimaSaida?.m || null });
+  }
   // Por que não chega mensagem? Confere tudo o que pode impedir o recebimento e diz o motivo provável.
   if (r === "recebimento" && (metodo === "GET" || metodo === "POST")) {
     const conta = await contaDa(env, orgId);
