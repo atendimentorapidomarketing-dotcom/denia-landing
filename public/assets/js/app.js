@@ -3467,6 +3467,7 @@ Botão só com texto = resposta.` })),
           d.pausados ? linha("Conversas com o robô pausado (equipe atendendo)", String(d.pausados), null) : null,
           d.apps ? linha("Apps da Meta que recebem este número", d.apps.map(a => a.nome || a.id).join(", ") || "nenhum", d.apps.length > 0) : null),
         h("div", { class: "acoes" }, botao("Verificar de novo", () => carregar(), "btn-secundario btn-pequeno"),
+          d.pausados && pode("AGENTE") ? botao(`Devolver ${d.pausados} conversa(s) ao robô`, async (_e, b) => { b.disabled = true; try { const x = await zap("recebimento?despausar=1", { metodo: "POST", corpo: {} }); aviso(`${x.devolvidas} conversa(s) de volta com o robô.`, "ok"); carregar(); } catch (e) { aviso(e.message, "erro"); b.disabled = false; } }, "btn-primario btn-pequeno") : null,
           d.conectado && pode("ADMIN") ? botao("Ligar o recebimento", async (_e, b) => { b.disabled = true; try { await zap("recebimento", { metodo: "POST", corpo: {} }); aviso("Pedido à Meta enviado. Mande um “oi” de teste.", "ok"); carregar(); } catch (e) { aviso(e.message, "erro"); b.disabled = false; } }, "btn-secundario btn-pequeno") : null),
         h("p", { class: "sub", style: "margin:8px 0 0", text: "Para testar: mande “oi” de outro celular (que não seja da equipe) e toque em Verificar de novo." }));
     };

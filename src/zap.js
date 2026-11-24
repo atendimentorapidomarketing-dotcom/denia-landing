@@ -125,6 +125,7 @@ async function gravarMsg(z, direcao, origem, texto, wamid, status, erro) {
 async function enviar(z, corpo, textoLog, origem = "ROBO") {
   if (z.sim) { z.registro.push({ texto: textoLog, interativo: corpo.type === "interactive" ? corpo.interactive : null, ...(corpo.type === "image" ? { imagem: corpo.image.link } : {}) }); return true; }
   if (z.enviadas >= 6) return false; // nunca mais que 6 mensagens por mensagem recebida
+  if (corpo.type === "text" && !String(corpo.text?.body || "").trim()) return false; // mensagem em branco: a Meta recusa — não envia
   z.enviadas++;
   const token = await tokenDa(z);
   let id = null, erro = null;
@@ -142,10 +143,12 @@ async function enviar(z, corpo, textoLog, origem = "ROBO") {
 }
 const enviarTexto = (z, texto, origem) => enviar(z, { type: "text", text: { body: cortar(texto, 4000), preview_url: false } }, texto, origem);
 function botoes(z, corpo, lista, origem, imagem) {
+  corpo = String(corpo || "").trim() || "Escolha uma opção:";
   return enviar(z, { type: "interactive", interactive: { type: "button", ...(imagem ? { header: { type: "image", image: { link: imagem } } } : {}), body: { text: cortar(corpo, 1024) }, action: { buttons: lista.slice(0, 3).map(b => ({ type: "reply", reply: { id: b.id, title: cortar(b.titulo, 20) } })) } } },
     `${corpo} ${lista.map(b => `[${b.titulo}]`).join(" ")}`, origem);
 }
 function lista(z, corpo, secao, linhas, origem) {
+  corpo = String(corpo || "").trim() || "Escolha uma opção:";
   return enviar(z, { type: "interactive", interactive: { type: "list", body: { text: cortar(corpo, 1024) }, action: { button: "Ver opções", sections: [{ title: cortar(secao, 24), rows: linhas.slice(0, 10).map(l => ({ id: l.id, title: cortar(l.titulo, 24), ...(l.descricao ? { description: cortar(l.descricao, 72) } : {}) })) }] } } },
     `${corpo} [lista: ${linhas.map(l => l.titulo).join(", ")}]`, origem);
 }
@@ -381,7 +384,8 @@ function cartaoContato(c) {
     c.telefone && link && !c.link && c.whatsapp && digitos(c.telefone) !== digitos(c.whatsapp) ? `📞 ${c.telefone}` : ""].filter(Boolean).join("\n");
 }
 async function transferir(z, texto) {
-  await enviarTexto(z, texto || z.cfg.humano);
+  // "Chamar atendente" em branco nas configurações: usa o texto padrão (mensagem vazia a Meta recusa).
+  await enviarTexto(z, String(texto || "").trim() || String(z.cfg.humano || "").trim() || ZAP_PADRAO.humano);
   if (!z.sim) await z.env.DB.prepare("UPDATE plt_zap_contatos SET pausado_ate=? WHERE org_id=? AND telefone=?").bind(z.agora + PAUSA_HUMANO_MS, z.org, z.tel).run();
   await alertarEquipe(z, `💬 ${z.nome || "Um cliente"} (${z.tel}) quer falar com alguém da equipe no WhatsApp de ${z.nomeEmpresa}.${z.texto ? `\nEscreveu: "${cortar(z.texto, 200)}"` : ""}\nO robô ficou em pausa nessa conversa por 12 h. Responda pela DENIA (Chatbot → Conversas).${z.k.base ? "\n" + z.k.base + "/app#/chatbot/conversas" : ""}`);
 }
@@ -1910,6 +1914,13 @@ async function rotasZapExtra(request, env, k, orgId, papel, r, { json, ler, prec
   }
   // Por que não chega mensagem? Confere tudo o que pode impedir o recebimento e diz o motivo provável.
   if (r === "recebimento" && (metodo === "GET" || metodo === "POST")) {
+    // Devolver ao robô todas as conversas pausadas (a equipe já terminou de atender).
+    if (metodo === "POST" && url.searchParams.get("despausar")) {
+      const negado = precisa("AGENTE"); if (negado) return negado;
+      const x = await env.DB.prepare("UPDATE plt_zap_contatos SET pausado_ate=0 WHERE org_id=? AND pausado_ate>?").bind(orgId, agora).run();
+      try { await k.auditar(env, request, k.sessao, orgId, "WHATSAPP", `Devolveu ${x.meta?.changes || 0} conversa(s) ao robô`); } catch { }
+      return json({ ok: true, devolvidas: x.meta?.changes || 0 });
+    }
     const conta = await contaDa(env, orgId);
     const linha = async sql => (await env.DB.prepare(sql).bind(orgId).first().catch(() => null)) || {};
     const ult = (await linha("SELECT MAX(criado_ms) ms FROM plt_zap_msgs WHERE org_id=? AND direcao='E'")).ms || null;
@@ -1928,7 +1939,7 @@ async function rotasZapExtra(request, env, k, orgId, papel, r, { json, ler, prec
     if (out.conectado && conta.waba_id) {
       try {
         const token = await k.decifrar(env, conta.token_cifrado);
-        if (metodo === "POST") {
+        if (metodo === "POST" && !url.searchParams.get("despausar")) {
           const negado = precisa("ADMIN"); if (negado) return negado;
           await graphZap(token, "POST", `${encodeURIComponent(conta.waba_id)}/subscribed_apps`);
           try { await k.auditar(env, request, k.sessao, orgId, "WHATSAPP", "Ligou o recebimento das mensagens (assinatura do webhook)"); } catch { }
@@ -1944,7 +1955,7 @@ async function rotasZapExtra(request, env, k, orgId, papel, r, { json, ler, prec
     else if (!out.ativo) { out.motivo = "O chatbot está desligado nesta empresa."; out.acao = "Ligue o chatbot em WhatsApp → Conexão."; }
     else if (out.assinatura_falhou_ms) { out.motivo = `A Meta está entregando as mensagens (a última às ${new Date(out.assinatura_falhou_ms - 3 * 3600000).toISOString().slice(11, 16)}), mas a DENIA recusou: a Chave secreta do app salva aqui não é a do app da Meta onde este número está.`; out.acao = "No app da Meta deste número: Configurações do app → Básico → Chave secreta do app → copie e cole em WhatsApp → Conexão → Chave secreta do app → Salvar."; }
     else if (out.plano && !out.plano.liberado) { out.motivo = `As mensagens chegam, mas o robô não responde: ${out.plano.status === "TESTE_ACABOU" ? "o período de teste da empresa acabou" : "o plano da empresa não está em dia ou não inclui o chatbot"}.`; out.acao = "Abra Plano e pagamento (ou, no administrador geral, Empresas → esta empresa → Plano) e libere o acesso."; }
-    else if (out.silencio && out.silencio.ms >= Number(ult || 0) - 5000 && agora - out.silencio.ms < 6 * 3600000) { out.motivo = `A última mensagem (final ${out.silencio.tel}) chegou, mas o robô ficou calado: ${out.silencio.motivo}.`; out.acao = /pausado/.test(out.silencio.motivo) ? "Teste de outro celular, ou espere a pausa acabar. Em Conversas do chatbot dá para devolver a conversa ao robô." : /bloqueado/.test(out.silencio.motivo) ? "Tire o número da lista de bloqueados." : /plano|teste/.test(out.silencio.motivo) ? "Libere o plano da empresa." : "Mande uma mensagem nova para testar."; }
+    else if (out.silencio && out.silencio.ms >= Number(ult || 0) - 5000 && agora - out.silencio.ms < 6 * 3600000) { out.motivo = `A última mensagem (final ${out.silencio.tel}) chegou, mas o robô ficou calado: ${out.silencio.motivo}.`; out.acao = /pausado/.test(out.silencio.motivo) ? "Toque em “Devolver ao robô” aqui embaixo (ou teste de outro celular). A pausa acontece quando o cliente pede atendente ou a equipe responde pelo celular." : /bloqueado/.test(out.silencio.motivo) ? "Tire o número da lista de bloqueados." : /plano|teste/.test(out.silencio.motivo) ? "Libere o plano da empresa." : "Mande uma mensagem nova para testar."; }
     else if (ultResp && ultResp.status === "FALHOU" && agora - ultResp.ms < 6 * 3600000) { out.motivo = `O robô respondeu, mas a Meta recusou a entrega: ${ultResp.erro || "sem detalhe"}.`; out.acao = "Confira o token (permissão whatsapp_business_messaging) e se o número está ativo no app da Meta."; }
     else if (out.assinatura_falhou_ms) { out.motivo = "As mensagens chegam, mas a DENIA recusa porque a Chave secreta do app salva aqui é diferente da usada pela Meta."; out.acao = "Em WhatsApp → Conexão, cole a Chave secreta do app que esse número usa (se veio do Botpress, é o Client Secret da integração do WhatsApp)."; }
     else if (out.denia_recebe === false) { out.motivo = `A Meta não está mandando as mensagens deste número para a DENIA${out.apps?.length ? ` — hoje vão para: ${out.apps.map(a => a.nome || a.id).join(", ")}` : ""}.`; out.acao = "Toque em “Ligar o recebimento” (a DENIA passa a receber). Se outro sistema (ex.: Botpress) também responde, desligue-o para o cliente não receber duas respostas."; }

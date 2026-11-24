@@ -4645,3 +4645,21 @@ test("Chatbot — diagnóstico diz por que o robô não respondeu (plano vencido
   d = await diag();
   assert.match(d.motivo, /robô pausado nesta conversa/); assert.equal(d.pausados, 1);
 });
+
+test("Chatbot — 'Chamar atendente' em branco usa o texto padrão (nunca mensagem vazia) e as conversas pausadas voltam ao robô", async () => {
+  const { p, inf } = await duasEmpresasComChatbot();
+  const db = p.env.DB.db;
+  db.prepare("UPDATE plt_zap_contas SET config=? WHERE org_id=?").run(JSON.stringify({ humano: "" }), inf);
+  const id = db.prepare("INSERT INTO plt_zap_itens(org_id,pai_id,tipo,titulo,texto,ordem,ativo) VALUES(?,0,'HUMANO','Falar com atendente','',1,1)").run(inf).lastInsertRowid;
+  const CLI = "5521977775964";
+  await clicar(p, "111111111111", CLI, "z:i:" + id);
+  const ult = db.prepare("SELECT texto, status, erro FROM plt_zap_msgs WHERE org_id=? AND direcao='S' ORDER BY id DESC LIMIT 1").get(inf);
+  assert.match(ult.texto, /Vou chamar alguém da equipe/); assert.notEqual(ult.status, "FALHOU");
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM plt_zap_msgs WHERE org_id=? AND direcao='S' AND (texto IS NULL OR trim(texto)='')").get(inf).n, 0, "nenhuma mensagem vazia");
+  let d = (await p.req(`/api/orgs/${inf}/zap/recebimento`, { quem: "admin" })).dados;
+  assert.equal(d.pausados, 1);
+  const r = await p.req(`/api/orgs/${inf}/zap/recebimento?despausar=1`, { metodo: "POST", quem: "admin", corpo: {} });
+  assert.equal(r.dados.devolvidas, 1);
+  d = (await p.req(`/api/orgs/${inf}/zap/recebimento`, { quem: "admin" })).dados;
+  assert.equal(d.pausados, 0);
+});
