@@ -79,7 +79,9 @@ const ALTERS_ADMIN = ["ALTER TABLE adm_locatarios ADD COLUMN periodicidade TEXT"
   "CREATE INDEX IF NOT EXISTS adm_contatos_org ON adm_contatos(org_id)",
   "ALTER TABLE adm_agenda ADD COLUMN contato_id INTEGER", "ALTER TABLE adm_tarefas ADD COLUMN contato_id INTEGER",
   // Agenda profissional: telefone de com quem é o compromisso (confirmar pelo WhatsApp) e quem recebe os lembretes de todos.
-  "ALTER TABLE adm_agenda ADD COLUMN quem_tel TEXT", "ALTER TABLE adm_pessoas ADD COLUMN lembretes_todos INTEGER NOT NULL DEFAULT 0", "ALTER TABLE adm_contatos ADD COLUMN lembretes_todos INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE adm_agenda ADD COLUMN quem_tel TEXT",
+  // Agenda pelo WhatsApp: desligada por padrão em todas as empresas (liga em Lembretes → WhatsApp e celular).
+  "ALTER TABLE adm_config ADD COLUMN zap_agenda INTEGER NOT NULL DEFAULT 0", "ALTER TABLE adm_pessoas ADD COLUMN lembretes_todos INTEGER NOT NULL DEFAULT 0", "ALTER TABLE adm_contatos ADD COLUMN lembretes_todos INTEGER NOT NULL DEFAULT 0",
   "CREATE TABLE IF NOT EXISTS adm_alarmes_ok (usuario_id INTEGER NOT NULL, chave TEXT NOT NULL, ms INTEGER, PRIMARY KEY (usuario_id, chave))"];
 
 const prontos = new WeakSet();
@@ -1533,7 +1535,7 @@ export async function adminDoCron(env, k) {
       for (const e of para) if (await k.enviarEmail(e, assunto, texto)) n++;
     }
     if (!opc.semZap && opc.zap && k.zapEquipe) n += await avisarPessoasZap(env, k, orgId, opc.zap.item, opc.zap.texto, params, ms).catch(() => 0);
-    if (!opc.semZap && c.zap_modelo && c.zap_numeros && k.enviarModeloZap) for (const tel of String(c.zap_numeros).split(",").filter(Boolean)) if (await k.enviarModeloZap(orgId, tel, c.zap_modelo, c.zap_idioma || "pt_BR", params).catch(() => false)) n++;
+    if (!opc.semZap && Number(c.zap_agenda) === 1 && c.zap_modelo && c.zap_numeros && k.enviarModeloZap) for (const tel of String(c.zap_numeros).split(",").filter(Boolean)) if (await k.enviarModeloZap(orgId, tel, c.zap_modelo, c.zap_idioma || "pt_BR", params).catch(() => false)) n++;
     return n;
   };
   // Compromisso com hora: aviso no horário escolhido (uma vez só). Dia todo: às 8h do dia.

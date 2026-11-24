@@ -4243,7 +4243,8 @@ test("Agenda inteligente — prioridades, histórico de quem fez, comandos e age
   const PN = "111111111111", EQ = "5521999990000", CLI = "5521955550000";
   const ag = (cam, op = {}) => p.req(`/api/orgs/${inf}/adm/${cam}`, { quem: "admin", ...op });
   p.env.__agora = () => Date.parse("2099-10-20T10:00:00Z"); // 07:00 em Brasília
-  await p.entrar("admin", ADMIN, SENHA_ADMIN); // sessão no relógio de teste
+  await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  assert.equal((await p.req(`/api/orgs/${inf}/adm/zap`, { metodo: "PUT", quem: "admin", corpo: { zap_agenda: true } })).status, 200); // a agenda pelo WhatsApp vem desligada // sessão no relógio de teste
   const eu = (await p.req("/api/eu", { quem: "admin" })).dados.usuario.id;
   // Equipe no WhatsApp: o administrador (sem ser membro) aparece e cadastra o número.
   const pes = await ag("pessoas");
@@ -4373,6 +4374,7 @@ test("Agenda — quem recebe no WhatsApp sem login: lista do dia (mesmo fora das
   const ag = (cam, op = {}) => p.req(`/api/orgs/${inf}/adm/${cam}`, { quem: "admin", ...op });
   p.env.__agora = () => Date.parse("2099-10-20T10:00:00Z");
   await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  assert.equal((await p.req(`/api/orgs/${inf}/adm/zap`, { metodo: "PUT", quem: "admin", corpo: { zap_agenda: true } })).status, 200); // a agenda pelo WhatsApp vem desligada
   assert.equal((await ag("contatos", { metodo: "POST", corpo: { nome: "João mecânico", telefone: "123" } })).status, 400);
   const c = await ag("contatos", { metodo: "POST", corpo: { nome: "João mecânico", telefone: "(21) 99999-9162" } });
   assert.equal(c.status, 201); assert.equal(c.dados.telefone, MEC);
@@ -4388,6 +4390,14 @@ test("Agenda — quem recebe no WhatsApp sem login: lista do dia (mesmo fora das
   // Ele nunca escreveu para o número: a lista do dia vai dentro do modelo aprovado.
   const mod = await import("../src/worker.js");
   const rodar = async () => { const pend = []; await mod.default.scheduled({}, p.env, { waitUntil: x => pend.push(x) }); await Promise.all(pend); };
+  // Desligada: nada sai pelo WhatsApp e o teste avisa.
+  await ag("zap", { metodo: "PUT", corpo: { zap_agenda: false } });
+  p.env.__agora = () => Date.parse("2099-10-20T10:58:00Z");
+  let nOff = p.engine.enviados.length; await rodar();
+  assert.equal(p.engine.enviados.slice(nOff).filter(e => e.to === MEC).length, 0, "desligada: não manda a lista");
+  assert.equal((await ag(`contatos/${c.dados.id}/testar`, { metodo: "POST", corpo: {} })).status, 409);
+  await ag("zap", { metodo: "PUT", corpo: { zap_agenda: true } });
+  p.env.DB.db.exec("UPDATE adm_contatos SET ultimo_manha=NULL");
   p.env.__agora = () => Date.parse("2099-10-20T11:00:00Z"); // 08:00
   let n0 = p.engine.enviados.length; await rodar();
   let paraEle = p.engine.enviados.slice(n0).filter(e => e.to === MEC);
@@ -4417,6 +4427,7 @@ test("Agenda profissional — secretária recebe o dia de todos (por pessoa) e o
   const ag = (cam, op = {}) => p.req(`/api/orgs/${inf}/adm/${cam}`, { quem: "admin", ...op });
   p.env.__agora = () => Date.parse("2099-10-20T10:00:00Z");
   await p.entrar("admin", ADMIN, SENHA_ADMIN);
+  assert.equal((await p.req(`/api/orgs/${inf}/adm/zap`, { metodo: "PUT", quem: "admin", corpo: { zap_agenda: true } })).status, 200); // a agenda pelo WhatsApp vem desligada
   const SEC = "5521911112222", DRJ = "5521933334444", DRM = "5521955556666";
   const sec = await ag("contatos", { metodo: "POST", corpo: { nome: "Carla secretária", telefone: "21 91111-2222" } });
   assert.equal((await ag(`contatos/${sec.dados.id}`, { metodo: "PUT", corpo: { so_minhas: false, lembretes_todos: true } })).dados.lembretes_todos, 1);

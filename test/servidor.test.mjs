@@ -243,6 +243,7 @@ test("Servidor Node — agenda pelo WhatsApp da própria IA (Central): lista do 
   try {
     const req = cliente(s.porta);
     assert.equal((await req("/api/entrar", { metodo: "POST", corpo: { email: "dono@teste.com", senha: SENHA } })).status, 200);
+    assert.equal((await req("/api/orgs/1/adm/zap", { metodo: "PUT", corpo: { zap_agenda: true } })).status, 200); // vem desligada
     const z = await req("/api/orgs/1/adm/zap");
     assert.equal(z.status, 200, z.texto);
     assert.ok(z.dados.opcoes.some(c => c.org_id === 1), "o número da IA aparece como conta da agenda");
