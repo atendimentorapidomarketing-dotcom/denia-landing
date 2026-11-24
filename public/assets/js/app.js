@@ -8422,6 +8422,15 @@ Botão só com texto = resposta.` })),
     const alertaTarefas = atrasoMin !== null && atrasoMin > 15 ? h("section", { class: "cartao vidro", style: "margin-top:12px;border-color:var(--erro,#b42318)" }, h("h3", { text: "⚠️ Os lembretes automáticos estão parados" }),
       h("p", { class: "sub", text: `A última verificação da agenda foi há ${atrasoMin >= 120 ? Math.round(atrasoMin / 60) + " horas" : atrasoMin + " minutos"} (o normal é a cada 5 minutos). Isso acontece quando a hospedagem adormece o site sem visitas. Solução: na Hostinger, em Avançado → Cron Jobs, crie uma tarefa a cada 5 minutos com o comando curl -s "https://denia-ai.com/__denia/tique?chave=SUA_CHAVE" — troque SUA_CHAVE pelo valor de DENIA_CHAVE_SERVIDOR (cole você mesmo, não mande para ninguém).` })) : null;
     const blocos = [alertaTarefas, cabeca("WhatsApp e celular", "A lista do dia, os lembretes e as pendências chegam pelo WhatsApp que a empresa já usa — e pelo mesmo número quem recebe consulta e conclui. No iPhone, alarmes de verdade pelo app Atalhos.")];
+    // Interruptor geral: a agenda só vai pelo WhatsApp se a empresa ligar (padrão: desligada).
+    const zapLigado = Boolean(zap && !zap.erro && zap.config && zap.config.zap_agenda);
+    blocos.push(h("section", { class: "cartao vidro", style: "margin-top:12px" + (zapLigado ? "" : ";border-color:var(--borda-forte)") },
+      h("h3", { style: "margin:0 0 6px", text: zapLigado ? "📲 Agenda pelo WhatsApp: LIGADA" : "📵 Agenda pelo WhatsApp: DESLIGADA" }),
+      h("p", { class: "sub", style: "margin:0 0 8px", text: zapLigado ? "A lista da manhã, os lembretes e os avisos da agenda saem pelo WhatsApp para quem está cadastrado abaixo, e quem está cadastrado pode mandar comandos (AGENDA, MARCAR…) para o número." : "Nenhuma mensagem da agenda sai pelo WhatsApp (nem lista da manhã, nem lembretes) e as mensagens para o número não viram comandos da agenda. Os alarmes no app da DENIA e os e-mails continuam." }),
+      admin && zap && !zap.erro ? botao(zapLigado ? "Desligar a agenda pelo WhatsApp" : "Ligar a agenda pelo WhatsApp", async () => {
+        const c0 = zap.config || {};
+        try { await adm("zap", { metodo: "PUT", corpo: { zap_agenda: !zapLigado, zap_org_id: zap.conta_org || null, hora_resumo: c0.hora_resumo, hora_meio: c0.hora_meio, hora_fim: c0.hora_fim, aviso_fin_dias: c0.aviso_fin_dias, transferir: c0.transferir !== 0, relatorio_meio: c0.relatorio_meio !== 0, relatorio_fim: c0.relatorio_fim !== 0 } }); aviso(zapLigado ? "Desligada: a agenda não sai mais pelo WhatsApp." : "Ligada.", "ok"); recarregarAdm(); } catch (e) { aviso(e.message, "erro"); }
+      }, zapLigado ? "btn-secundario" : "btn-primario") : null));
     // Quem recebe (sem login): nome e WhatsApp. Depois é só escolher a pessoa no compromisso.
     const nomeN = entradaTxt("", "Nome (ex.: João mecânico)"), telN = h("input", { class: "entrada", type: "tel", placeholder: "WhatsApp com DDD (ex.: 21 99999-9162)" });
     const ck = (v, rot) => h("label", { class: "fin-check" }, h("input", { type: "checkbox", checked: Boolean(v) }), " ", rot);

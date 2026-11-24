@@ -269,8 +269,12 @@ async function lembrarUltimo(env, contaOrg, tel, tipo, id, orgId, ms) {
     .bind(contaOrg, tel, tipo, id, orgId, ms).run().catch(() => { });
 }
 // Envia a uma pessoa: texto completo se a janela de 24h estiver aberta; senão o modelo aprovado (curto).
+// A agenda só vai pelo WhatsApp se a empresa ligou (Lembretes → WhatsApp e celular). Padrão: desligada.
+export async function zapAgendaLigado(env, orgId) {
+  return Number((await env.DB.prepare("SELECT zap_agenda FROM adm_config WHERE org_id=?").bind(orgId).first().catch(() => null))?.zap_agenda) === 1;
+}
 async function enviarPessoa(env, k, pessoa, texto, modelo, tipo = "aviso") {
-  if (!k.zapEquipe) return "";
+  if (!k.zapEquipe || !(await zapAgendaLigado(env, pessoa.org_id))) return "";
   const conta = await contaZapDaOrg(env, pessoa.org_id);
   return (await enviarRegistrando(env, k, pessoa.org_id, conta, pessoa.telefone, texto, modelo, tipo)).via;
 }
@@ -341,10 +345,10 @@ export async function comandoEquipeZap(env, k, contaOrg, tel, texto, responder) 
   const tels = variantesTel(tel); if (!tels.length) return false;
   const pessoas = (await env.DB.prepare(`SELECT p.*, COALESCE(NULLIF(u.nome,''), u.email) AS nome, u.email, u.super_admin, o.nome AS org_nome, m.papel
     FROM adm_pessoas p JOIN plt_usuarios u ON u.id=p.usuario_id JOIN plt_organizacoes o ON o.id=p.org_id LEFT JOIN plt_membros m ON m.org_id=p.org_id AND m.usuario_id=p.usuario_id LEFT JOIN adm_config c ON c.org_id=p.org_id
-    WHERE p.telefone IN (${tels.map(() => "?").join(",")}) AND p.ativo=1 AND u.ativo=1 AND o.status='ATIVA' AND COALESCE(c.zap_org_id, p.org_id)=? ORDER BY p.org_id`).bind(...tels, contaOrg).all().catch(() => null))?.results || [];
+    WHERE p.telefone IN (${tels.map(() => "?").join(",")}) AND p.ativo=1 AND u.ativo=1 AND o.status='ATIVA' AND COALESCE(c.zap_agenda, 0)=1 AND COALESCE(c.zap_org_id, p.org_id)=? ORDER BY p.org_id`).bind(...tels, contaOrg).all().catch(() => null))?.results || [];
   // Contatos de fora da equipe (sem login) também consultam a própria agenda e concluem pelo WhatsApp.
   const contatos = (await env.DB.prepare(`SELECT p.*, p.id AS contato_id, NULL AS usuario_id, o.nome AS org_nome FROM adm_contatos p JOIN plt_organizacoes o ON o.id=p.org_id LEFT JOIN adm_config c ON c.org_id=p.org_id
-    WHERE p.telefone IN (${tels.map(() => "?").join(",")}) AND p.ativo=1 AND o.status='ATIVA' AND COALESCE(c.zap_org_id, p.org_id)=? ORDER BY p.org_id`).bind(...tels, contaOrg).all().catch(() => null))?.results || [];
+    WHERE p.telefone IN (${tels.map(() => "?").join(",")}) AND p.ativo=1 AND o.status='ATIVA' AND COALESCE(c.zap_agenda, 0)=1 AND COALESCE(c.zap_org_id, p.org_id)=? ORDER BY p.org_id`).bind(...tels, contaOrg).all().catch(() => null))?.results || [];
   for (const c0 of contatos) if (!pessoas.some(p => p.org_id === c0.org_id)) pessoas.push(c0);
   if (!pessoas.length) return false;
   const t = semAcento(bruto).toLowerCase().replace(/\s+/g, " ").replace(/^[/!]/, "").trim();
@@ -534,7 +538,7 @@ export async function cronAgendaEquipe(env, k, avisar) {
   // Modelos da agenda: cria sozinho os que faltam (uma vez por dia por número) e limpa o registro de envios antigo.
   if (k.modelosAgendaZap) {
     const contas = new Set();
-    for (const r of await q("SELECT DISTINCT org_id FROM adm_contatos WHERE ativo=1 UNION SELECT DISTINCT org_id FROM adm_pessoas WHERE ativo=1 AND telefone IS NOT NULL")) contas.add(await contaZapDaOrg(env, r.org_id));
+    for (const r of await q("SELECT DISTINCT x.org_id FROM (SELECT org_id FROM adm_contatos WHERE ativo=1 UNION SELECT org_id FROM adm_pessoas WHERE ativo=1 AND telefone IS NOT NULL) x JOIN adm_config c ON c.org_id=x.org_id AND c.zap_agenda=1")) contas.add(await contaZapDaOrg(env, r.org_id));
     for (const conta of contas) {
       const ja = await env.DB.prepare("SELECT 1 FROM adm_zap_envios WHERE conta_org=? AND tipo='modelos' AND ms >= ?").bind(conta, ms - 20 * 3600000).first().catch(() => null);
       if (ja) continue;
@@ -843,7 +847,7 @@ export async function rotasAgendaEquipe(request, env, k, orgId, papel, partes, a
   const q = async (sql, ...a) => (await env.DB.prepare(sql).bind(...a).all()).results || [];
 
   // Os modelos aprovados da Meta são criados sozinhos na primeira vez que alguém é cadastrado para receber.
-  const garantirModelos = async () => { try { const cfg = await ajudas.config(); if (k.modelosAgendaZap) await k.modelosAgendaZap(Number(cfg.zap_org_id) || orgId, true); } catch { /* sem WhatsApp conectado ainda */ } };
+  const garantirModelos = async () => { if (!(await zapAgendaLigado(env, orgId))) return; try { const cfg = await ajudas.config(); if (k.modelosAgendaZap) await k.modelosAgendaZap(Number(cfg.zap_org_id) || orgId, true); } catch { /* sem WhatsApp conectado ainda */ } };
 
   // Quem recebe no WhatsApp sem precisar de login (ex.: o mecânico, a secretária, o cliente da oficina).
   if (area === "contatos") {
@@ -886,6 +890,7 @@ export async function rotasAgendaEquipe(request, env, k, orgId, papel, partes, a
         return json({ ok: true });
       }
       if (partes[2] === "testar" && metodo === "POST") {
+        if (!(await zapAgendaLigado(env, orgId))) return json({ erro: "A agenda pelo WhatsApp está desligada nesta empresa. Ligue em Lembretes (WhatsApp e celular) se quiser usar." }, 409);
         const cfg = await ajudas.config();
         const d = await itensDoDia(env, orgId, hoje, hoje, { contatoId: id, soMinhas: Boolean(atual.so_minhas), fin: false });
         const via = k.zapEquipe ? await enviarRegistrando(env, k, orgId, Number(cfg.zap_org_id) || orgId, atual.telefone, textoDoDiaEquipe(d, { hoje }), { nome: MODELO_RESUMO, idioma: "pt_BR", params: [`hoje, ${br(hoje)}`, listaCurta(d)] }, "teste") : { via: "", erro: "WhatsApp indisponível." };
@@ -971,7 +976,7 @@ export async function rotasAgendaEquipe(request, env, k, orgId, papel, partes, a
       let modelos = null;
       if (k.modelosAgendaZap && opcoes.some(o => o.org_id === contaOrg)) modelos = await k.modelosAgendaZap(contaOrg, false).catch(e => ({ erro: e.message }));
       const ultimaVerificacao = Number((await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave='agenda_cron_ms'").first().catch(() => null))?.valor) || null;
-      return json({ conta_org: opcoes.some(o => o.org_id === contaOrg) ? contaOrg : null, opcoes, modelos, ultima_verificacao_ms: ultimaVerificacao, agora_ms: ms, config: { hora_resumo: cfg.hora_resumo ?? 8, hora_meio: cfg.hora_meio ?? 12, hora_fim: cfg.hora_fim ?? 18, transferir: cfg.transferir ?? 1, aviso_fin_dias: cfg.aviso_fin_dias ?? 2, relatorio_meio: cfg.relatorio_meio ?? 1, relatorio_fim: cfg.relatorio_fim ?? 1 } });
+      return json({ conta_org: opcoes.some(o => o.org_id === contaOrg) ? contaOrg : null, opcoes, modelos, ultima_verificacao_ms: ultimaVerificacao, agora_ms: ms, config: { zap_agenda: Number(cfg.zap_agenda) === 1, hora_resumo: cfg.hora_resumo ?? 8, hora_meio: cfg.hora_meio ?? 12, hora_fim: cfg.hora_fim ?? 18, transferir: cfg.transferir ?? 1, aviso_fin_dias: cfg.aviso_fin_dias ?? 2, relatorio_meio: cfg.relatorio_meio ?? 1, relatorio_fim: cfg.relatorio_fim ?? 1 } });
     }
     if (metodo === "PUT" && !partes[1]) {
       const { c, erro } = await corpo(); if (erro) return erro;
@@ -982,8 +987,8 @@ export async function rotasAgendaEquipe(request, env, k, orgId, papel, partes, a
         if (zapOrg === orgId) zapOrg = null;
       }
       const n = (v, a, b, p) => { const x = Math.round(Number(v)); return Number.isFinite(x) ? Math.min(b, Math.max(a, x)) : p; };
-      await env.DB.prepare("UPDATE adm_config SET zap_org_id=?, hora_resumo=?, hora_meio=?, hora_fim=?, transferir=?, aviso_fin_dias=?, relatorio_meio=?, relatorio_fim=?, atualizado_ms=? WHERE org_id=?")
-        .bind(zapOrg, n(c.hora_resumo, 5, 22, 8), n(c.hora_meio, 10, 16, 12), n(c.hora_fim, 15, 23, 18), c.transferir === false ? 0 : 1, n(c.aviso_fin_dias, 0, 30, 2), c.relatorio_meio === false ? 0 : 1, c.relatorio_fim === false ? 0 : 1, ms, orgId).run();
+      await env.DB.prepare("UPDATE adm_config SET zap_org_id=?, hora_resumo=?, hora_meio=?, hora_fim=?, transferir=?, aviso_fin_dias=?, relatorio_meio=?, relatorio_fim=?, zap_agenda=COALESCE(?, zap_agenda), atualizado_ms=? WHERE org_id=?")
+        .bind(zapOrg, n(c.hora_resumo, 5, 22, 8), n(c.hora_meio, 10, 16, 12), n(c.hora_fim, 15, 23, 18), c.transferir === false ? 0 : 1, n(c.aviso_fin_dias, 0, 30, 2), c.relatorio_meio === false ? 0 : 1, c.relatorio_fim === false ? 0 : 1, c.zap_agenda === undefined ? null : c.zap_agenda ? 1 : 0, ms, orgId).run();
       return json({ ok: true });
     }
     if (partes[1] === "modelos" && metodo === "POST") {
@@ -992,6 +997,7 @@ export async function rotasAgendaEquipe(request, env, k, orgId, papel, partes, a
       return r.erro ? json(r, 502) : json(r);
     }
     if (partes[1] === "testar" && metodo === "POST") {
+      if (!(await zapAgendaLigado(env, orgId))) return json({ erro: "A agenda pelo WhatsApp está desligada nesta empresa. Ligue em Lembretes (WhatsApp e celular) se quiser usar." }, 409);
       // Testa para quem recebe sem login (contato_id) ou para o próprio usuário.
       const { c: ct } = await corpo().catch(() => ({ c: {} }));
       const cid = Number(ct?.contato_id) || 0;
