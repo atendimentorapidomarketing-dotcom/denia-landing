@@ -3157,7 +3157,7 @@
         h("label", { class: "guia-cat" }, ligado, "Avisar quando o cliente chegar numa loja ou resposta"),
         campo("Título do aviso", tit), campo("Etiquetas (hashtags)", tags, "Separadas por vírgula. Vazio: o nome da empresa + #leads."),
         h("p", { class: "fx-rot", text: "Como chega no grupo" }), exemplo,
-        h("p", { class: "fx-nota", text: "Em cada botão de Lojas ou Resposta dá para desligar o aviso. O mesmo pedido do mesmo cliente não repete o aviso dentro de 1 hora." }),
+        h("p", { class: "fx-nota", text: "O aviso sai toda vez que o cliente escolhe uma opção. Em cada botão de Lojas ou Resposta dá para desligar o aviso." }),
         podeEditar ? h("div", { class: "acoes" }, botao("Salvar", async () => { await salvarConfig({ avisar_buscas: ligado.checked, telegram_msgs: todasMsgs.value, lead_titulo: tit.value, lead_tags: tags.value }); fechar(); }, "btn-primario")) : null]);
     };
 

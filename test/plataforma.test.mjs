@@ -1903,7 +1903,7 @@ test("Fluxo de botões (como no Botpress) — submenus, lojas em cartões, image
   await clicar(p, "111111111111", CLI, "z:i:" + info2);
   assert.equal(p.engine.telegram.length, tg, "opção com aviso desligado não manda para o Telegram");
   await clicar(p, "111111111111", CLI, "z:i:" + tela);
-  assert.equal(p.engine.telegram.length, tg, "o mesmo pedido em menos de 1 hora não repete o aviso");
+  assert.equal(p.engine.telegram.length, tg + 1, "toda vez que o cliente escolhe a opção, sai o aviso (sem limite por hora)");
   const CLI2 = "5521911112222";
   await clicar(p, "111111111111", CLI2, "z:i:" + tela);
   assert.match(p.engine.telegram.at(-1), /^🔔 Cliente novo\n[\s\S]*#infomix #vendas$/);
