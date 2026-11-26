@@ -3140,6 +3140,8 @@
       const tit = h("input", { class: "entrada", maxlength: "80", value: cfg.lead_titulo || "🔔 NOVO CLIENTE!" });
       const tags = h("input", { class: "entrada", maxlength: "120", value: cfg.lead_tags || "", placeholder: "Ex.: infomix, leads (vazio = automático)" });
       const ligado = h("input", { type: "checkbox", checked: cfg.avisar_buscas !== false });
+      const todasMsgs = h("select", { class: "entrada" }, [["todas", "Todas as mensagens que o cliente escrever"], ["conversa", "Só a primeira mensagem de cada conversa (24 h)"], ["nao", "Não mandar as mensagens"]].map(([v, n]) => h("option", { value: v, text: n })));
+      todasMsgs.value = cfg.telegram_mensagens || "todas";
       const exemplo = h("pre", { class: "fx-tg" });
       const atualizar = () => {
         const etiquetas = tags.value.trim() ? tags.value.split(/[\s,]+/).filter(Boolean).map(t => "#" + t.replace(/^#+/, "").normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^A-Za-z0-9_]/g, "")).join(" ")
@@ -3151,11 +3153,12 @@
       const fechar = gaveta("Avisos no Telegram", [
         h("p", { class: "sub", text: tg && tg.conectado ? `Os avisos vão para ${tg.grupo || "o grupo conectado"}.` : "O Telegram ainda não está conectado." }),
         tg && tg.conectado ? null : h("a", { class: "btn btn-secundario btn-pequeno", href: "#/chatbot/conexao" }, "Conectar o Telegram"),
+        campo("Mensagens dos clientes no Telegram", todasMsgs, "Chegam mesmo com o robô pausado. Responda a mensagem no Telegram e a resposta vai para o cliente no WhatsApp."),
         h("label", { class: "guia-cat" }, ligado, "Avisar quando o cliente chegar numa loja ou resposta"),
         campo("Título do aviso", tit), campo("Etiquetas (hashtags)", tags, "Separadas por vírgula. Vazio: o nome da empresa + #leads."),
         h("p", { class: "fx-rot", text: "Como chega no grupo" }), exemplo,
         h("p", { class: "fx-nota", text: "Em cada botão de Lojas ou Resposta dá para desligar o aviso. O mesmo pedido do mesmo cliente não repete o aviso dentro de 1 hora." }),
-        podeEditar ? h("div", { class: "acoes" }, botao("Salvar", async () => { await salvarConfig({ avisar_buscas: ligado.checked, lead_titulo: tit.value, lead_tags: tags.value }); fechar(); }, "btn-primario")) : null]);
+        podeEditar ? h("div", { class: "acoes" }, botao("Salvar", async () => { await salvarConfig({ avisar_buscas: ligado.checked, telegram_mensagens: todasMsgs.value, lead_titulo: tit.value, lead_tags: tags.value }); fechar(); }, "btn-primario")) : null]);
     };
 
     let comecar = null;
