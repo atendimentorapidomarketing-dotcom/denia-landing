@@ -4689,4 +4689,17 @@ test("Chatbot — diagnóstico do Telegram: sem grupo diz o motivo; com grupo, o
   assert.ok(p.engine.telegram.some(t => /NOVO CLIENTE/.test(t) && /Teste do aviso/.test(t)));
   d = (await p.req(`/api/orgs/${inf}/zap/recebimento`, { quem: "admin" })).dados;
   assert.equal(d.telegram.conectado, true); assert.equal(d.telegram.ultimo.ok, true);
+  // Opção marcada "sem aviso" (ex.: veio assim do Botpress): o diagnóstico diz e um toque liga em todas.
+  const db = p.env.DB.db;
+  const id = db.prepare("INSERT INTO plt_zap_itens(org_id,pai_id,tipo,titulo,texto,ordem,ativo,extra) VALUES(?,0,'RESPOSTA','Informática','Lojas de informática',1,1,?)").run(inf, JSON.stringify({ lead: false })).lastInsertRowid;
+  const n0 = p.engine.telegram.length;
+  await clicar(p, "111111111111", "5521988880001", "z:i:" + id);
+  assert.equal(p.engine.telegram.length, n0);
+  d = (await p.req(`/api/orgs/${inf}/zap/recebimento`, { quem: "admin" })).dados;
+  assert.equal(d.telegram_lead.ultimo.enviado, false); assert.match(d.telegram_lead.ultimo.motivo, /sem aviso/); assert.equal(d.telegram_lead.opcoes_sem_aviso, 1);
+  assert.equal((await p.req(`/api/orgs/${inf}/zap/recebimento?ligar_avisos=1`, { metodo: "POST", quem: "admin", corpo: {} })).dados.opcoes, 1);
+  await clicar(p, "111111111111", "5521988880001", "z:i:" + id);
+  assert.ok(p.engine.telegram.slice(n0).some(t => /NOVO CLIENTE/.test(t) && /Informática/.test(t)), "agora o aviso sai");
+  d = (await p.req(`/api/orgs/${inf}/zap/recebimento`, { quem: "admin" })).dados;
+  assert.equal(d.telegram_lead.ultimo.enviado, true); assert.equal(d.telegram_lead.opcoes_sem_aviso, 0);
 });

@@ -326,8 +326,13 @@ async function rodape(z, item) {
 async function registrarBusca(z, item, via, resultados, caminho) {
   if (!z.sim) await z.env.DB.prepare("INSERT INTO plt_zap_buscas(org_id,telefone,nome,item_id,tipo,titulo,caminho,texto,via,resultados,criado_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?)").bind(z.org, z.tel, z.nome || "", item.id, item.tipo, item.titulo, caminho, cortar(z.texto, 300), via, resultados, z.agora).run();
   // Aviso de NOVO CLIENTE no Telegram toda vez que o cliente chega numa opção (sem limite por hora).
-  if (z.cfg.avisar_buscas && item.tipo !== "HUMANO" && extraDe(item).lead !== false)
-    await telegram(z, textoLead(z, caminho), z.tel, true, true);
+  // O resultado (e o motivo, quando não sai) fica guardado para o Diagnóstico da conexão.
+  if (item.tipo === "HUMANO") return;
+  let enviado = false, motivo = "";
+  if (!z.cfg.avisar_buscas) motivo = "os avisos de novo cliente estão desligados (Avisos no Telegram)";
+  else if (extraDe(item).lead === false) motivo = `a opção "${item.titulo}" está marcada "sem aviso"`;
+  else { enviado = await telegram(z, textoLead(z, caminho), z.tel, true, true); if (!enviado) motivo = "o Telegram não aceitou (veja o último envio ao Telegram)"; }
+  if (!z.sim) await z.env.DB.prepare("INSERT OR REPLACE INTO plt_meta(chave,valor) VALUES(?,?)").bind("tg_lead_" + z.org, JSON.stringify({ ms: z.agora, tel: String(z.tel).slice(-4), opcao: caminho || item.titulo, enviado, motivo })).run().catch(() => {});
 }
 const semAcento = t => String(t || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 export function tagsLead(cfg, nomeEmpresa) {
@@ -1950,6 +1955,19 @@ async function rotasZapExtra(request, env, k, orgId, papel, r, { json, ler, prec
       let ult = null; try { ult = JSON.parse((await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave=?").bind("tg_ultimo_" + orgId).first())?.valor || "null"); } catch { ult = null; }
       return ok ? json({ ok: true }) : json({ erro: "O teste não chegou ao Telegram: " + (ult?.motivo || "Telegram não conectado.") }, 409);
     }
+    // Ligar o aviso de NOVO CLIENTE em todas as opções (tira o "sem aviso" e liga os avisos).
+    if (metodo === "POST" && url.searchParams.get("ligar_avisos")) {
+      const negado = precisa("AGENTE"); if (negado) return negado;
+      const conta = await contaDa(env, orgId);
+      let cfg = {}; try { cfg = JSON.parse(conta?.config || "{}") || {}; } catch { cfg = {}; }
+      cfg.avisar_buscas = true;
+      await env.DB.prepare("UPDATE plt_zap_contas SET config=? WHERE org_id=?").bind(JSON.stringify(cfg), orgId).run();
+      const itens = (await env.DB.prepare("SELECT id, extra FROM plt_zap_itens WHERE org_id=? AND extra LIKE '%\"lead\"%'").bind(orgId).all())?.results || [];
+      let n = 0;
+      for (const i of itens) { const ex = extraDe(i); if (ex.lead === false) { delete ex.lead; await env.DB.prepare("UPDATE plt_zap_itens SET extra=? WHERE id=?").bind(JSON.stringify(ex), i.id).run(); n++; } }
+      try { await k.auditar(env, request, k.sessao, orgId, "WHATSAPP", `Ligou o aviso de novo cliente em todas as opções (${n} estavam sem aviso)`); } catch { }
+      return json({ ok: true, opcoes: n });
+    }
     // Devolver ao robô todas as conversas pausadas (a equipe já terminou de atender).
     if (metodo === "POST" && url.searchParams.get("despausar")) {
       const negado = precisa("AGENTE"); if (negado) return negado;
@@ -1972,6 +1990,9 @@ async function rotasZapExtra(request, env, k, orgId, papel, r, { json, ler, prec
     out.plano = ac ? { liberado: ac.liberado && (ac.recursos || []).includes("chatbot"), status: ac.status, ate: ac.ate } : null;
     out.ultima_resposta = await env.DB.prepare("SELECT criado_ms ms, status, erro FROM plt_zap_msgs WHERE org_id=? AND direcao='S' ORDER BY id DESC LIMIT 1").bind(orgId).first().catch(() => null);
     { const tgc = conta || {}; let ult = null; try { ult = JSON.parse((await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave=?").bind("tg_ultimo_" + orgId).first().catch(() => null))?.valor || "null"); } catch { ult = null; }
+      let lead = null; try { lead = JSON.parse((await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave=?").bind("tg_lead_" + orgId).first().catch(() => null))?.valor || "null"); } catch { lead = null; }
+      const semAviso = ((await env.DB.prepare("SELECT extra FROM plt_zap_itens WHERE org_id=? AND ativo=1 AND extra LIKE '%\"lead\"%'").bind(orgId).all().catch(() => null))?.results || []).filter(i => extraDe(i).lead === false).length;
+      out.telegram_lead = { ultimo: lead, opcoes_sem_aviso: semAviso };
       out.telegram = { conectado: Boolean(tgc.telegram_chat || tgc.telegram_cifrado), tipo: tgc.telegram_cifrado ? "bot próprio" : tgc.telegram_chat ? "bot da DENIA" : "", grupo: tgc.telegram_nome || "", sem_chave_servidor: Boolean(tgc.telegram_chat && !tgc.telegram_cifrado && !tokenTelegramPlataforma(env)), ultimo: ult, avisar_buscas: lerConfig(tgc).avisar_buscas !== false }; }
     out.pausados = Number((await env.DB.prepare("SELECT COUNT(*) n FROM plt_zap_contatos WHERE org_id=? AND pausado_ate>?").bind(orgId, agora).first().catch(() => null))?.n || 0);
     if (out.conectado && conta.waba_id) {
