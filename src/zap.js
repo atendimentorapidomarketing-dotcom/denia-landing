@@ -57,7 +57,7 @@ export const ZAP_PADRAO = {
   avisar_buscas: true,
   // Mensagens dos clientes no Telegram da equipe: "todas" (cada mensagem escrita), "conversa" (a primeira de cada
   // conversa de 24 h) ou "nao". Os toques em opções já viram o aviso de novo cliente (com o pedido).
-  telegram_mensagens: "todas",
+  telegram_msgs: "nao",
   // Aviso de novo cliente no Telegram (quando ele chega numa loja/resposta do fluxo).
   // Boas-vindas em mensagem separada, antes da mensagem com os botões; e o que fazer com texto livre:
   // BUSCAR (procura pelas palavras-chave) ou INICIO (qualquer mensagem mostra o começo, como no Botpress).
@@ -390,7 +390,10 @@ async function transferir(z, texto) {
   // "Chamar atendente" em branco nas configurações: usa o texto padrão (mensagem vazia a Meta recusa).
   await enviarTexto(z, String(texto || "").trim() || String(z.cfg.humano || "").trim() || ZAP_PADRAO.humano);
   if (!z.sim) await z.env.DB.prepare("UPDATE plt_zap_contatos SET pausado_ate=? WHERE org_id=? AND telefone=?").bind(z.agora + PAUSA_HUMANO_MS, z.org, z.tel).run();
-  await alertarEquipe(z, `💬 ${z.nome || "Um cliente"} (${z.tel}) quer falar com alguém da equipe no WhatsApp de ${z.nomeEmpresa}.${z.texto ? `\nEscreveu: "${cortar(z.texto, 200)}"` : ""}\nO robô ficou em pausa nessa conversa por 12 h. Responda pela DENIA (Chatbot → Conversas).${z.k.base ? "\n" + z.k.base + "/app#/chatbot/conversas" : ""}`);
+  // No Telegram, no mesmo formato do aviso de novo cliente (Pedido: Falar com atendente). Sem Telegram: e-mail.
+  if (z.sim) return;
+  if (await telegram(z, textoLead(z, "Falar com atendente"), z.tel, true, true)) return;
+  if (z.k.alertarEmail) await z.k.alertarEmail(z.org, "DENIA — cliente quer falar com a equipe no WhatsApp", `${z.nome || "Um cliente"} (${z.tel}) quer falar com alguém da equipe no WhatsApp de ${z.nomeEmpresa}.${z.texto ? `\nEscreveu: "${cortar(z.texto, 200)}"` : ""}\nO robô ficou em pausa nessa conversa por 12 h. Responda pela DENIA (Chatbot → Conversas).${z.k.base ? "\n" + z.k.base + "/app#/chatbot/conversas" : ""}`).catch(() => {});
 }
 
 // Busca por palavra (grátis): título e palavras-chave das opções; nome dos contatos do catálogo.
@@ -793,10 +796,10 @@ async function receberMensagem(env, k, conta, msg, nome) {
   const c = ctt?.results?.[0] || {};
   // Toda mensagem escrita pelo cliente chega ao grupo do Telegram (mesmo com o robô pausado e a equipe atendendo);
   // responder a mensagem no Telegram manda a resposta ao cliente no WhatsApp.
-  if (!e.acao && z.cfg.telegram_mensagens !== "nao" && !bloqueadoNoChatbot(z.cfg, tel)) {
+  if (!e.acao && ["todas", "conversa"].includes(z.cfg.telegram_msgs) && !bloqueadoNoChatbot(z.cfg, tel)) {
     const antes = await env.DB.prepare("SELECT COUNT(*) n FROM plt_zap_msgs WHERE org_id=? AND telefone=? AND direcao='E' AND criado_ms>? AND id<>?").bind(z.org, tel, agora - 86400000, z.msgId || 0).first().catch(() => null);
     const nova = !Number(antes?.n || 0);
-    if (nova || z.cfg.telegram_mensagens === "todas") {
+    if (nova || z.cfg.telegram_msgs === "todas") {
       const quem = semMarkdown(nome || c.nome || "Cliente"), quando = new Date(agora).toLocaleString("pt-BR", { timeZone: fusoDeCfg(z.cfg), hour12: false, day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
       const pausado = Number(c.pausado_ate || 0) > agora ? "\n🙋 Robô pausado: a equipe está atendendo esta conversa." : "";
       const txt = nova
@@ -1283,7 +1286,8 @@ export async function rotasZap(request, env, k, orgId, papel, resto) {
     if (cfg.exibicao_inicio !== "NUMERADO") cfg.exibicao_inicio = "AUTO";
     if (!fusoValido(cfg.fuso)) cfg.fuso = "America/Sao_Paulo";
     if (cfg.texto_livre !== "INICIO") cfg.texto_livre = "BUSCAR";
-    if (!["todas", "conversa", "nao"].includes(cfg.telegram_mensagens)) cfg.telegram_mensagens = "todas";
+    if (!["todas", "conversa", "nao"].includes(cfg.telegram_msgs)) cfg.telegram_msgs = "nao";
+    delete cfg.telegram_mensagens;
     for (const [ch, pad] of [["rotulo_menu", "🏠 Menu inicial"], ["rotulo_voltar", "⬅️ Voltar"], ["rotulo_fim", "✅ Finalizar"]]) cfg[ch] = cortar(cfg[ch], 20) || pad;
     cfg.rodape_pergunta = cortar(cfg.rodape_pergunta, 300) || ZAP_PADRAO.rodape_pergunta;
     if (corpo.imagem_inicio !== undefined) cfg.imagem_inicio = String(corpo.imagem_inicio ?? "");
