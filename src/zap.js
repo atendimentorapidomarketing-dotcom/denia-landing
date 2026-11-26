@@ -324,12 +324,9 @@ async function rodape(z, item) {
   return botoes(z, z.cfg.rodape_pergunta || "Posso te ajudar com mais alguma coisa?", lista);
 }
 async function registrarBusca(z, item, via, resultados, caminho) {
-  const umaHora = z.agora - 3600000;
-  const [repetida] = z.sim ? [null] : await z.env.DB.batch([
-    z.env.DB.prepare("SELECT 1 x FROM plt_zap_buscas WHERE org_id=? AND telefone=? AND item_id=? AND criado_ms>? LIMIT 1").bind(z.org, z.tel, item.id, umaHora),
-    z.env.DB.prepare("INSERT INTO plt_zap_buscas(org_id,telefone,nome,item_id,tipo,titulo,caminho,texto,via,resultados,criado_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?)").bind(z.org, z.tel, z.nome || "", item.id, item.tipo, item.titulo, caminho, cortar(z.texto, 300), via, resultados, z.agora)
-  ]);
-  if (z.cfg.avisar_buscas && item.tipo !== "HUMANO" && extraDe(item).lead !== false && !(repetida?.results || []).length)
+  if (!z.sim) await z.env.DB.prepare("INSERT INTO plt_zap_buscas(org_id,telefone,nome,item_id,tipo,titulo,caminho,texto,via,resultados,criado_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?)").bind(z.org, z.tel, z.nome || "", item.id, item.tipo, item.titulo, caminho, cortar(z.texto, 300), via, resultados, z.agora).run();
+  // Aviso de NOVO CLIENTE no Telegram toda vez que o cliente chega numa opção (sem limite por hora).
+  if (z.cfg.avisar_buscas && item.tipo !== "HUMANO" && extraDe(item).lead !== false)
     await telegram(z, textoLead(z, caminho), z.tel, true, true);
 }
 const semAcento = t => String(t || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "");
