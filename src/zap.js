@@ -214,15 +214,23 @@ function motivoTelegram(r) {
   if (/too many requests/i.test(d)) return "O Telegram limitou os envios por alguns instantes.";
   return "Resposta do Telegram: " + d.slice(0, 200);
 }
+// Último envio ao Telegram de cada empresa (aparece no Diagnóstico da conexão).
+const marcarTg = (z, ok, motivo) => z.env.DB.prepare("INSERT OR REPLACE INTO plt_meta(chave,valor) VALUES(?,?)").bind("tg_ultimo_" + z.org, JSON.stringify({ ms: z.agora || Date.now(), ok, motivo: motivo || "" })).run().catch(() => {});
 async function telegram(z, texto, telCliente, semDica = false, markdown = false) {
   if (z.sim) return false;
   const d = await destinoTelegram(z.env, z.k, z.conta);
-  if (!d) return false;
+  if (!d) {
+    const motivo = z.conta?.telegram_chat ? "o grupo foi ligado pelo bot da DENIA, mas o servidor está sem a chave desse bot (variável TELEGRAM_BOT_TOKEN_PLATAFORMA na Hostinger)" : "o Telegram não está conectado nesta empresa";
+    await marcarTg(z, false, motivo);
+    await registrarProblema(z.env, z.org, { chave: "telegram", area: "AVISOS", gravidade: "ALTA", titulo: "O aviso de novo cliente não foi para o Telegram", motivo: "Motivo: " + motivo + ".", dica: "Em WhatsApp → Conexão, conecte o grupo do Telegram (o bot precisa estar no grupo).", link: "#/chatbot/conexao" }).catch(() => {});
+    return false;
+  }
   const corpo = cortar(texto, 3500) + (telCliente && !semDica ? "\n\n↩️ Responda esta mensagem aqui no Telegram e a resposta vai para o cliente no WhatsApp." : "");
   let r = await tgApi(d.token, "sendMessage", { chat_id: d.chat, text: corpo, disable_web_page_preview: true, ...(markdown ? { parse_mode: "Markdown" } : {}) });
   // Se o Telegram recusar a formatação, manda o mesmo aviso sem negrito.
   if (markdown && !r?.ok) r = await tgApi(d.token, "sendMessage", { chat_id: d.chat, text: corpo.replace(/\\([_*`\[])/g, "$1").replace(/\*/g, ""), disable_web_page_preview: true });
   const id = r?.result?.message_id;
+  await marcarTg(z, Boolean(r?.ok), r?.ok ? "" : motivoTelegram(r));
   if (r?.ok) await resolverProblema(z.env, z.org, "telegram");
   else await registrarProblema(z.env, z.org, { chave: "telegram", area: "AVISOS", gravidade: "ALTA", titulo: "O aviso para a equipe no Telegram não foi enviado", motivo: motivoTelegram(r), dica: "Em Conectar número, conecte o grupo do Telegram de novo (o bot precisa estar no grupo). Enquanto isso, o aviso vai por e-mail.", link: "#/chatbot/conexao" });
   // Guarda de qual cliente é o aviso, para a equipe responder pelo próprio Telegram.
@@ -1936,6 +1944,15 @@ async function rotasZapExtra(request, env, k, orgId, papel, r, { json, ler, prec
   }
   // Por que não chega mensagem? Confere tudo o que pode impedir o recebimento e diz o motivo provável.
   if (r === "recebimento" && (metodo === "GET" || metodo === "POST")) {
+    // Testar o Telegram: manda um aviso de exemplo (no formato de NOVO CLIENTE) para o grupo.
+    if (metodo === "POST" && url.searchParams.get("telegram")) {
+      const negado = precisa("AGENTE"); if (negado) return negado;
+      const conta = await env.DB.prepare("SELECT c.*, o.nome org_nome FROM plt_zap_contas c JOIN plt_organizacoes o ON o.id=c.org_id WHERE c.org_id=?").bind(orgId).first();
+      const z = { env, k, org: orgId, conta, cfg: lerConfig(conta), agora, nome: "Teste da DENIA", tel: "5500000000000", nomeEmpresa: conta?.org_nome || "" };
+      const ok = conta ? await telegram(z, textoLead(z, "Teste do aviso (pode apagar)"), null, true, true) : false;
+      let ult = null; try { ult = JSON.parse((await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave=?").bind("tg_ultimo_" + orgId).first())?.valor || "null"); } catch { ult = null; }
+      return ok ? json({ ok: true }) : json({ erro: "O teste não chegou ao Telegram: " + (ult?.motivo || "Telegram não conectado.") }, 409);
+    }
     // Devolver ao robô todas as conversas pausadas (a equipe já terminou de atender).
     if (metodo === "POST" && url.searchParams.get("despausar")) {
       const negado = precisa("AGENTE"); if (negado) return negado;
@@ -1957,6 +1974,8 @@ async function rotasZapExtra(request, env, k, orgId, papel, r, { json, ler, prec
     const ac = org ? acDa(org, agora, (await lp(env)).planos) : null;
     out.plano = ac ? { liberado: ac.liberado && (ac.recursos || []).includes("chatbot"), status: ac.status, ate: ac.ate } : null;
     out.ultima_resposta = await env.DB.prepare("SELECT criado_ms ms, status, erro FROM plt_zap_msgs WHERE org_id=? AND direcao='S' ORDER BY id DESC LIMIT 1").bind(orgId).first().catch(() => null);
+    { const tgc = conta || {}; let ult = null; try { ult = JSON.parse((await env.DB.prepare("SELECT valor FROM plt_meta WHERE chave=?").bind("tg_ultimo_" + orgId).first().catch(() => null))?.valor || "null"); } catch { ult = null; }
+      out.telegram = { conectado: Boolean(tgc.telegram_chat || tgc.telegram_cifrado), tipo: tgc.telegram_cifrado ? "bot próprio" : tgc.telegram_chat ? "bot da DENIA" : "", grupo: tgc.telegram_nome || "", sem_chave_servidor: Boolean(tgc.telegram_chat && !tgc.telegram_cifrado && !tokenTelegramPlataforma(env)), ultimo: ult, avisar_buscas: lerConfig(tgc).avisar_buscas !== false }; }
     out.pausados = Number((await env.DB.prepare("SELECT COUNT(*) n FROM plt_zap_contatos WHERE org_id=? AND pausado_ate>?").bind(orgId, agora).first().catch(() => null))?.n || 0);
     if (out.conectado && conta.waba_id) {
       try {
