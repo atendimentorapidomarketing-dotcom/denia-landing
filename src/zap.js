@@ -55,6 +55,9 @@ export const ZAP_PADRAO = {
   // Listas "limpas" (como no Botpress): sem a dica "Toque em Ver opções" e sem a descrição automática.
   lista_simples: false,
   avisar_buscas: true,
+  // Mensagens dos clientes no Telegram da equipe: "todas" (cada mensagem escrita), "conversa" (a primeira de cada
+  // conversa de 24 h) ou "nao". Os toques em opções já viram o aviso de novo cliente (com o pedido).
+  telegram_mensagens: "todas",
   // Aviso de novo cliente no Telegram (quando ele chega numa loja/resposta do fluxo).
   // Boas-vindas em mensagem separada, antes da mensagem com os botões; e o que fazer com texto livre:
   // BUSCAR (procura pelas palavras-chave) ou INICIO (qualquer mensagem mostra o começo, como no Botpress).
@@ -788,6 +791,20 @@ async function receberMensagem(env, k, conta, msg, nome) {
   const enviadaMs = Number(msg.timestamp || 0) * 1000;
   if (enviadaMs && agora - enviadaMs > 30 * 60000) { await calado("mensagem antiga (chegou mais de 30 min depois de enviada)"); return; } // não responde fora de hora
   const c = ctt?.results?.[0] || {};
+  // Toda mensagem escrita pelo cliente chega ao grupo do Telegram (mesmo com o robô pausado e a equipe atendendo);
+  // responder a mensagem no Telegram manda a resposta ao cliente no WhatsApp.
+  if (!e.acao && z.cfg.telegram_mensagens !== "nao" && !bloqueadoNoChatbot(z.cfg, tel)) {
+    const antes = await env.DB.prepare("SELECT COUNT(*) n FROM plt_zap_msgs WHERE org_id=? AND telefone=? AND direcao='E' AND criado_ms>? AND id<>?").bind(z.org, tel, agora - 86400000, z.msgId || 0).first().catch(() => null);
+    const nova = !Number(antes?.n || 0);
+    if (nova || z.cfg.telegram_mensagens === "todas") {
+      const quem = semMarkdown(nome || c.nome || "Cliente"), quando = new Date(agora).toLocaleString("pt-BR", { timeZone: fusoDeCfg(z.cfg), hour12: false, day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+      const pausado = Number(c.pausado_ate || 0) > agora ? "\n🙋 Robô pausado: a equipe está atendendo esta conversa." : "";
+      const txt = nova
+        ? `📩 *Cliente novo no WhatsApp*\n👤 *Nome:* ${quem}\n📱 *WhatsApp:* ${tel}\n💬 "${semMarkdown(cortar(e.rotulo, 900))}"\n🕒 ${quando}${pausado}`
+        : `💬 *${quem}* (${tel}): "${semMarkdown(cortar(e.rotulo, 900))}"\n🕒 ${quando}${pausado}`;
+      await telegram(z, txt, tel, !nova, true).catch(() => false);
+    }
+  }
   // Pessoa da equipe (número cadastrado na Administração): comandos da agenda — AGENDA, MARCAR, FEITO C12, PAGO P34…
   if (e.texto && !e.acao) {
     try { if (await comandoEquipeZap(env, k, z.org, tel, e.texto, t => enviarEmBlocos(z, t))) return; }
@@ -1266,6 +1283,7 @@ export async function rotasZap(request, env, k, orgId, papel, resto) {
     if (cfg.exibicao_inicio !== "NUMERADO") cfg.exibicao_inicio = "AUTO";
     if (!fusoValido(cfg.fuso)) cfg.fuso = "America/Sao_Paulo";
     if (cfg.texto_livre !== "INICIO") cfg.texto_livre = "BUSCAR";
+    if (!["todas", "conversa", "nao"].includes(cfg.telegram_mensagens)) cfg.telegram_mensagens = "todas";
     for (const [ch, pad] of [["rotulo_menu", "🏠 Menu inicial"], ["rotulo_voltar", "⬅️ Voltar"], ["rotulo_fim", "✅ Finalizar"]]) cfg[ch] = cortar(cfg[ch], 20) || pad;
     cfg.rodape_pergunta = cortar(cfg.rodape_pergunta, 300) || ZAP_PADRAO.rodape_pergunta;
     if (corpo.imagem_inicio !== undefined) cfg.imagem_inicio = String(corpo.imagem_inicio ?? "");

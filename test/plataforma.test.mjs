@@ -1616,6 +1616,8 @@ test("Chatbot — palavra sem IA, IA barata só na dúvida, 'falar com alguém' 
   const n = enviadosPara(p, CLI).length;
   await webhookZap(p, "111111111111", { from: CLI, type: "text", text: { body: "oi?" } });
   assert.equal(enviadosPara(p, CLI).length, n, "em pausa, o robô não responde");
+  assert.ok(p.engine.telegram.some(t => /"oi\?"/.test(t) && /Robô pausado/.test(t)), "a mensagem do cliente chega ao Telegram mesmo com o robô pausado");
+  assert.ok(p.engine.telegram.some(t => /quero falar com atendente/.test(t)), "toda mensagem escrita vai para o Telegram");
   const conv = await p.req(`/api/orgs/${inf}/zap/conversas`, { quem: "admin" });
   assert.equal(conv.dados.conversas[0].pausado, true);
   assert.equal((await p.req(`/api/orgs/${inf}/zap/conversas/${CLI}/enviar`, { metodo: "POST", quem: "admin", corpo: { texto: "Oi Marcos, aqui é a Ana!" } })).status, 200);
