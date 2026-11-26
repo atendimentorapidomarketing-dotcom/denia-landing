@@ -1612,12 +1612,12 @@ test("Chatbot — palavra sem IA, IA barata só na dúvida, 'falar com alguém' 
   await p.req(`/api/orgs/${inf}/zap/conta/telegram`, { metodo: "POST", quem: "admin", corpo: { telegram_token: "123456:" + "A".repeat(30), telegram_chat: "-100123456" } });
   await webhookZap(p, "111111111111", { from: CLI, type: "text", text: { body: "quero falar com atendente" } });
   assert.match(enviadosPara(p, CLI).at(-1).corpo.text.body, /chamar alguém da equipe/);
-  assert.ok(p.engine.telegram.some(t => /quer falar com alguém/.test(t)));
+  assert.ok(p.engine.telegram.some(t => /Falar com atendente/.test(t)));
   const n = enviadosPara(p, CLI).length;
   await webhookZap(p, "111111111111", { from: CLI, type: "text", text: { body: "oi?" } });
   assert.equal(enviadosPara(p, CLI).length, n, "em pausa, o robô não responde");
-  assert.ok(p.engine.telegram.some(t => /"oi\?"/.test(t) && /Robô pausado/.test(t)), "a mensagem do cliente chega ao Telegram mesmo com o robô pausado");
-  assert.ok(p.engine.telegram.some(t => /quero falar com atendente/.test(t)), "toda mensagem escrita vai para o Telegram");
+  assert.ok(!p.engine.telegram.some(t => /"oi\?"/.test(t)), "padrão: só o aviso de NOVO CLIENTE, sem as mensagens escritas");
+  assert.ok(p.engine.telegram.some(t => /NOVO CLIENTE/.test(t) && /Pedido:\*? Falar com atendente/.test(t)), "pedido de atendente no formato do aviso de novo cliente");
   const conv = await p.req(`/api/orgs/${inf}/zap/conversas`, { quem: "admin" });
   assert.equal(conv.dados.conversas[0].pausado, true);
   assert.equal((await p.req(`/api/orgs/${inf}/zap/conversas/${CLI}/enviar`, { metodo: "POST", quem: "admin", corpo: { texto: "Oi Marcos, aqui é a Ana!" } })).status, 200);
@@ -1782,7 +1782,7 @@ test("Telegram — bot da plataforma conecta o grupo com um toque e a equipe res
     const CLI = "5521933332222";
     await webhookZap(p, "111111111111", { from: CLI, type: "text", text: { body: "quero falar com atendente" } });
     const aviso = tg.filter(x => x.metodo === "sendMessage").at(-1);
-    assert.equal(aviso.corpo.chat_id, "-100777"); assert.match(aviso.corpo.text, /Responda esta mensagem/);
+    assert.equal(aviso.corpo.chat_id, "-100777"); assert.match(aviso.corpo.text, /NOVO CLIENTE/); assert.match(aviso.corpo.text, /Falar com atendente/);
     const idAviso = 500 + tg.indexOf(aviso) + 1;
     // A equipe responde o aviso no Telegram e o cliente recebe no WhatsApp.
     await upd("Oi Marcos! Aqui é a Ana, já te ajudo.", { reply_to_message: { message_id: idAviso } });
