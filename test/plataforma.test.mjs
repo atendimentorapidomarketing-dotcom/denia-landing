@@ -4676,3 +4676,17 @@ test("Chatbot — 'Chamar atendente' em branco usa o texto padrão (nunca mensag
   d = (await p.req(`/api/orgs/${inf}/zap/recebimento`, { quem: "admin" })).dados;
   assert.equal(d.pausados, 0);
 });
+
+test("Chatbot — diagnóstico do Telegram: sem grupo diz o motivo; com grupo, o teste chega no formato de NOVO CLIENTE", async () => {
+  const { p, inf } = await duasEmpresasComChatbot();
+  let d = (await p.req(`/api/orgs/${inf}/zap/recebimento`, { quem: "admin" })).dados;
+  assert.equal(d.telegram.conectado, false);
+  const t1 = await p.req(`/api/orgs/${inf}/zap/recebimento?telegram=1`, { metodo: "POST", quem: "admin", corpo: {} });
+  assert.equal(t1.status, 409); assert.match(t1.dados.erro, /não está conectado/);
+  await p.req(`/api/orgs/${inf}/zap/conta/telegram`, { metodo: "POST", quem: "admin", corpo: { telegram_token: "123456:" + "A".repeat(30), telegram_chat: "-100123456" } });
+  const t2 = await p.req(`/api/orgs/${inf}/zap/recebimento?telegram=1`, { metodo: "POST", quem: "admin", corpo: {} });
+  assert.equal(t2.status, 200, JSON.stringify(t2.dados));
+  assert.ok(p.engine.telegram.some(t => /NOVO CLIENTE/.test(t) && /Teste do aviso/.test(t)));
+  d = (await p.req(`/api/orgs/${inf}/zap/recebimento`, { quem: "admin" })).dados;
+  assert.equal(d.telegram.conectado, true); assert.equal(d.telegram.ultimo.ok, true);
+});
